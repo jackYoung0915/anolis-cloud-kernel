@@ -1594,8 +1594,8 @@ int genphy_read_status(struct phy_device *phydev)
 
 		common_adv = lpa & adv;
 
-		phydev->speed = SPEED_10;
-		phydev->duplex = DUPLEX_HALF;
+		phydev->speed = SPEED_UNKNOWN;
+		phydev->duplex = DUPLEX_UNKNOWN;
 		phydev->pause = 0;
 		phydev->asym_pause = 0;
 
