@@ -722,6 +722,12 @@ static void __meminit resize_pgdat_range(struct pglist_data *pgdat, unsigned lon
 
 	pgdat->node_spanned_pages = max(start_pfn + nr_pages, old_end_pfn) - pgdat->node_start_pfn;
 
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	if (pgdat->node_folio_age) {
+		vfree(pgdat->node_folio_age);
+		pgdat->node_folio_age = NULL;
+	}
+#endif
 }
 
 #ifdef CONFIG_ZONE_DEVICE
@@ -2121,6 +2127,9 @@ static int check_no_memblock_for_node_cb(struct memory_block *mem, void *arg)
 void try_offline_node(int nid)
 {
 	int rc;
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	pg_data_t *pgdat = NODE_DATA(nid);
+#endif
 
 	/*
 	 * If the node still spans pages (especially ZONE_DEVICE), don't
@@ -2141,6 +2150,13 @@ void try_offline_node(int nid)
 
 	if (check_cpu_on_node(nid))
 		return;
+
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	if (pgdat->node_folio_age) {
+		vfree(pgdat->node_folio_age);
+		pgdat->node_folio_age = NULL;
+	}
+#endif
 
 	/*
 	 * all memory/cpu of this node are removed, we can offline this
