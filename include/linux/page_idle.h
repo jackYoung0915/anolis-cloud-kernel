@@ -87,6 +87,8 @@ static inline void folio_clear_idle(struct folio *folio)
 	clear_bit(PAGE_EXT_IDLE, &page_ext->flags);
 	page_ext_put(page_ext);
 }
+#else  /* !CONFIG_64BIT */
+void page_idle_clear_pte_refs(struct folio *folio);
 #endif /* !CONFIG_64BIT */
 
 #else /* !CONFIG_PAGE_IDLE_FLAG */
@@ -115,6 +117,10 @@ static inline void folio_set_idle(struct folio *folio)
 }
 
 static inline void folio_clear_idle(struct folio *folio)
+{
+}
+
+static inline void page_idle_clear_pte_refs(struct folio *folio)
 {
 }
 
