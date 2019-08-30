@@ -24,6 +24,7 @@
 #include <linux/shrinker.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
+#include <linux/kidled.h>
 
 struct mem_cgroup;
 struct obj_cgroup;
@@ -440,6 +441,14 @@ struct mem_cgroup {
 
 #ifdef CONFIG_ASYNC_FORK
 	unsigned long async_fork;
+#endif
+
+#ifdef CONFIG_KIDLED
+	struct rw_semaphore idle_stats_rwsem;
+	unsigned long idle_scans;
+	struct kidled_scan_period scan_period;
+	int idle_stable_idx;
+	struct idle_page_stats idle_stats[KIDLED_STATS_NR_TYPE];
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -1298,6 +1307,29 @@ static inline struct mem_cgroup *rich_container_get_memcg(void)
 	return NULL;
 }
 #endif
+
+#ifdef CONFIG_KIDLED
+static inline struct idle_page_stats *
+mem_cgroup_get_stable_idle_stats(struct mem_cgroup *memcg)
+{
+	return &memcg->idle_stats[memcg->idle_stable_idx];
+}
+
+static inline struct idle_page_stats *
+mem_cgroup_get_unstable_idle_stats(struct mem_cgroup *memcg)
+{
+	return &memcg->idle_stats[KIDLED_STATS_NR_TYPE - 1 -
+				  memcg->idle_stable_idx];
+}
+
+static inline void
+mem_cgroup_idle_page_stats_switch(struct mem_cgroup *memcg)
+{
+	memcg->idle_stable_idx = KIDLED_STATS_NR_TYPE - 1 -
+				 memcg->idle_stable_idx;
+}
+#endif /* CONFIG_KIDLED */
+
 
 static inline bool is_wmark_ok(struct mem_cgroup *memcg, bool high)
 {
