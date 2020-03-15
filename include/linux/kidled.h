@@ -5,8 +5,10 @@
 #ifdef CONFIG_KIDLED
 
 #include <linux/types.h>
+#include <linux/mm.h>
 
 #define KIDLED_VERSION			"1.0"
+struct mem_cgroup;
 
 /*
  * We want to get more info about a specified idle page, whether it's
@@ -17,17 +19,19 @@
  * KIDLE_FILE   : page is a page cache or not;
  * KIDLE_UNEVIT : page is unevictable or evictable;
  * KIDLE_ACTIVE : page is in active LRU list or not.
+ * KIDLE_SLAB	: whether it belongs to a slab or not.
  *
  * Each KIDLE_<flag> occupies one bit position in a specified idle type.
- * There exist total 2^4=16 idle types.
+ * There exist total 2^4+1=17 idle types.
  */
 #define KIDLE_BASE			0
 #define KIDLE_DIRTY			(1 << 0)
 #define KIDLE_FILE			(1 << 1)
 #define KIDLE_UNEVICT			(1 << 2)
 #define KIDLE_ACTIVE			(1 << 3)
+#define KIDLE_SLAB			(1 << 4)
 
-#define KIDLE_NR_TYPE			16
+#define KIDLE_NR_TYPE			17
 
 /*
  * Each page has an idle age which means how long the page is keeping
@@ -68,6 +72,9 @@
  * kidled_get_bucket(). User shouldn't use KIDLED_INVALID_BUCKET directly.
  */
 #define KIDLED_INVALID_BUCKET		(KIDLED_MAX_IDLE_AGE + 1)
+/* Mark the higher byte as an sign of slab objects access in a round */
+#define KIDLED_SLAB_ACCESS_MASK		0xff00
+#define KIDLED_SLAB_ACCESS_SHIFT	0x8
 
 #define KIDLED_MARK_BUCKET_INVALID(buckets)	\
 	(buckets[0] = KIDLED_INVALID_BUCKET)
@@ -75,6 +82,12 @@
 	(buckets[0] == KIDLED_INVALID_BUCKET)
 
 DECLARE_STATIC_KEY_FALSE(kidled_enabled_key);
+
+static inline bool kidled_is_slab_scanned(unsigned short slab_age,
+					  unsigned long scan_rounds)
+{
+	return slab_age >> KIDLED_SLAB_ACCESS_SHIFT == (scan_rounds & 0xff);
+}
 
 /*
  * We account number of idle pages depending on idle type and buckets
@@ -108,9 +121,21 @@ struct kidled_scan_period {
 	};
 };
 extern struct kidled_scan_period kidled_scan_period;
+extern unsigned long kidled_scan_rounds;
 
 #define KIDLED_OP_SET_DURATION		(1 << 0)
 #define KIDLED_OP_INC_SEQ		(1 << 1)
+
+extern void kidled_mem_cgroup_account(struct folio *folio,
+				      void *ptr, int age, unsigned long size);
+static inline void kidled_mem_cgroup_slab_account(void *object,
+						  int age, int size)
+{
+	struct folio *folio;
+
+	folio = virt_to_folio(object);
+	kidled_mem_cgroup_account(folio, object, age, size);
+}
 
 static inline struct kidled_scan_period kidled_get_current_scan_period(void)
 {
