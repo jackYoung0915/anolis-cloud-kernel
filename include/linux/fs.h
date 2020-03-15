@@ -758,6 +758,9 @@ struct inode {
 
 	void			*i_private; /* fs or device private pointer */
 
+#ifdef CONFIG_KIDLED
+	unsigned short age;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 } __randomize_layout;

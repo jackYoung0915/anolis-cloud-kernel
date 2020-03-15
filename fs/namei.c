@@ -858,10 +858,14 @@ out_dput:
 
 static inline int d_revalidate(struct dentry *dentry, unsigned int flags)
 {
+	int status = 1;
+
 	if (unlikely(dentry->d_flags & DCACHE_OP_REVALIDATE))
-		return dentry->d_op->d_revalidate(dentry, flags);
-	else
-		return 1;
+		status = dentry->d_op->d_revalidate(dentry, flags);
+	/* Reset the age when lookuping the dentry successfully */
+	if (status > 0 && KIDLED_GET_SLAB_AGE(dentry))
+		KIDLED_SET_SLAB_AGE(dentry, 0);
+	return status;
 }
 
 /**

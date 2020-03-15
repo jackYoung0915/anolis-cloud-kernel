@@ -4,6 +4,9 @@
  * Copyright (C) 2006 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
  */
+#ifdef CONFIG_KIDLED
+#include <linux/kidled.h>
+#endif
 
 struct super_block;
 struct file_system_type;
@@ -207,6 +210,12 @@ extern struct dentry * d_alloc_pseudo(struct super_block *, const struct qstr *)
 extern char *simple_dname(struct dentry *, char *, int);
 extern void dput_to_list(struct dentry *, struct list_head *);
 extern void shrink_dentry_list(struct list_head *);
+#ifdef CONFIG_KIDLED
+extern void cold_dcache_sb(struct super_block *sb,
+			   struct shrink_control *sc);
+extern void cold_icache_sb(struct super_block *sb,
+			   struct shrink_control *sc);
+#endif
 
 /*
  * pipe.c
@@ -298,3 +307,35 @@ ssize_t __kernel_write_iter(struct file *file, struct iov_iter *from, loff_t *po
 struct mnt_idmap *alloc_mnt_idmap(struct user_namespace *mnt_userns);
 struct mnt_idmap *mnt_idmap_get(struct mnt_idmap *idmap);
 void mnt_idmap_put(struct mnt_idmap *idmap);
+
+#ifdef CONFIG_KIDLED
+#define KIDLED_GET_SLAB_AGE(object)		(object->age)
+#define KIDLED_SET_SLAB_AGE(object, slab_age)	(object->age = slab_age)
+#define	KIDLED_INC_SLAB_AGE(object)					\
+({									\
+	u16 slab_age = KIDLED_GET_SLAB_AGE(object);			\
+									\
+	if (slab_age < KIDLED_MAX_IDLE_AGE) {				\
+		slab_age++;						\
+		KIDLED_SET_SLAB_AGE(object, slab_age);			\
+	}								\
+	slab_age;							\
+})
+#define KIDLED_CLEAR_SLAB_SCANNED(object)				\
+({									\
+	u16 slab_age = KIDLED_GET_SLAB_AGE(object);			\
+									\
+	slab_age &= ~KIDLED_SLAB_ACCESS_MASK;				\
+	KIDLED_SET_SLAB_AGE(object, slab_age);				\
+})
+#define KIDLED_MARK_SLAB_SCANNED(object, scan_rounds)			\
+({									\
+	u16 slab_age = KIDLED_GET_SLAB_AGE(object);			\
+									\
+	slab_age |= (scan_rounds & 0xff) << KIDLED_SLAB_ACCESS_SHIFT;	\
+	KIDLED_SET_SLAB_AGE(object, slab_age);				\
+})
+#else
+#define KIDLED_GET_SLAB_AGE(object)	0
+#define KIDLED_SET_SLAB_AGE(object, slab_age)
+#endif

@@ -11,6 +11,9 @@
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/kidled.h>
+#include <linux/slab.h>
+#include "slab.h"
+#include <linux/swap.h>
 #include <linux/memblock.h>
 #include <uapi/linux/sched/types.h>
 
@@ -79,7 +82,7 @@ struct kidled_scan_period kidled_scan_period;
 const int kidled_default_buckets[NUM_KIDLED_BUCKETS] = {
 	1, 2, 5, 15, 30, 60, 120, 240 };
 static DECLARE_WAIT_QUEUE_HEAD(kidled_wait);
-static unsigned long kidled_scan_rounds __read_mostly;
+unsigned long kidled_scan_rounds __read_mostly;
 
 static inline int kidled_get_bucket(int *idle_buckets, int age)
 {
@@ -100,6 +103,11 @@ static inline int kidled_get_idle_type(struct folio *folio)
 {
 	int idle_type = KIDLE_BASE;
 
+	if (folio_test_slab(folio)) {
+		idle_type |= KIDLE_SLAB;
+		goto out;
+	}
+
 	if (folio_test_dirty(folio) || folio_test_writeback(folio))
 		idle_type |= KIDLE_DIRTY;
 	if (folio_is_file_lru(folio))
@@ -113,6 +121,7 @@ static inline int kidled_get_idle_type(struct folio *folio)
 		idle_type |= KIDLE_UNEVICT;
 	if (folio_test_active(folio))
 		idle_type |= KIDLE_ACTIVE;
+out:
 	return idle_type;
 }
 
@@ -154,24 +163,31 @@ EXPORT_SYMBOL_GPL(kidled_set_folio_age);
 #endif /* !KIDLED_AGE_NOT_IN_PAGE_FLAGS */
 
 #ifdef CONFIG_MEMCG
-static inline void kidled_mem_cgroup_account(struct folio *folio,
-					     int age,
-					     unsigned long size)
+void kidled_mem_cgroup_account(struct folio *folio,
+			       void *ptr, int age, unsigned long size)
 {
 	struct mem_cgroup *memcg;
 	struct idle_page_stats *stats;
 	int type, bucket;
+	bool locked = false;
 
 	if (mem_cgroup_disabled())
 		return;
 
 	type = kidled_get_idle_type(folio);
-
-	folio_memcg_lock(folio);
-	memcg = folio_memcg(folio);
-	if (unlikely(!memcg)) {
-		folio_memcg_unlock(folio);
-		return;
+	if (type == KIDLE_SLAB) {
+		if (!memcg_kmem_online())
+			memcg = root_mem_cgroup;
+		else
+			memcg = mem_cgroup_from_obj(ptr);
+	} else {
+		folio_memcg_lock(folio);
+		memcg = folio_memcg(folio);
+		if (unlikely(!memcg)) {
+			folio_memcg_unlock(folio);
+			return;
+		}
+		locked = true;
 	}
 
 	stats = mem_cgroup_get_unstable_idle_stats(memcg);
@@ -179,7 +195,8 @@ static inline void kidled_mem_cgroup_account(struct folio *folio,
 	if (bucket >= 0)
 		stats->count[type][bucket] += size;
 
-	folio_memcg_unlock(folio);
+	if (locked)
+		folio_memcg_unlock(folio);
 }
 
 void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
@@ -303,8 +320,7 @@ static inline void kidled_mem_cgroup_reset(void)
 }
 #else /* !CONFIG_MEMCG */
 static inline void kidled_mem_cgroup_account(struct folio *folio,
-					     int age,
-					     unsigned long size)
+					     void *ptr, int age, unsigned long size)
 {
 }
 static inline void kidled_mem_cgroup_scan_done(struct kidled_scan_period
@@ -424,7 +440,7 @@ static inline int kidled_scan_folio(pg_data_t *pgdat, unsigned long pfn)
 	if (idle) {
 		age = kidled_inc_folio_age(pgdat, pfn);
 		if (age > 0)
-			kidled_mem_cgroup_account(folio, age,
+			kidled_mem_cgroup_account(folio, NULL, age,
 						  nr_pages << PAGE_SHIFT);
 		else
 			age = 0;
@@ -601,6 +617,26 @@ void kidled_free_folio_age(pg_data_t *pgdat)
 }
 #endif
 
+static inline void kidled_scan_slab_node(int nid)
+{
+	struct mem_cgroup *memcg;
+
+	memcg = mem_cgroup_iter(NULL, NULL, NULL);
+	do {
+		kidled_scan_slab(nid, memcg);
+		if (!memcg_kmem_online())
+			break;
+	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)) != NULL);
+}
+
+static inline void kidled_scan_slabs(void)
+{
+	int nid;
+
+	for_each_online_node(nid)
+		kidled_scan_slab_node(nid);
+}
+
 static inline void kidled_scan_done(struct kidled_scan_period scan_period)
 {
 	kidled_mem_cgroup_scan_done(scan_period);
@@ -735,9 +771,11 @@ static int kidled(void *dummy)
 		put_online_mems();
 
 		if (scan_done) {
+			kidled_scan_slabs();
 			kidled_scan_done(scan_period);
 			restart = true;
 		} else {
+			kidled_scan_slabs();
 			restart = false;
 		}
 
