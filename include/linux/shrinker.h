@@ -86,6 +86,10 @@ struct shrinker {
 	unsigned long (*scan_objects)(struct shrinker *,
 				      struct shrink_control *sc);
 
+#ifdef CONFIG_KIDLED
+	unsigned long (*cold_objects)(struct shrinker *,
+				      struct shrink_control *sc);
+#endif
 	long batch;	/* reclaim batch size, 0 = default */
 	int seeks;	/* seeks to recreate an obj */
 	unsigned flags;
