@@ -21,6 +21,9 @@ enum lru_status {
 	LRU_REMOVED_RETRY,	/* item removed, but lock has been
 				   dropped and reacquired */
 	LRU_ROTATE,		/* item referenced, give another pass */
+#ifdef CONFIG_KIDLED
+	LRU_ROTATE_DELAY,	/* item rotate, but not execute immediately */
+#endif
 	LRU_SKIP,		/* item cannot be locked, skip */
 	LRU_RETRY,		/* item not freeable. May drop the lock
 				   internally, but has to return locked. */
