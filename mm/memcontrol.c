@@ -4431,9 +4431,10 @@ output:
 	seq_puts(m, "#  / _----=> swap/file\n");
 	seq_puts(m, "# | / _---=> evict/unevict\n");
 	seq_puts(m, "# || / _--=> inactive/active\n");
-	seq_puts(m, "# ||| /\n");
+	seq_puts(m, "# ||| / _-=> slab\n");
+	seq_puts(m, "# |||| /\n");
 
-	seq_printf(m, "# %-8s", "||||");
+	seq_printf(m, "# %-8s", "|||||");
 	for (i = 0; i < j; i++) {
 		char region[20];
 
@@ -4453,11 +4454,15 @@ output:
 	for (t = 0; t < KIDLE_NR_TYPE; t++) {
 		char kidled_type_str[5];
 
-		kidled_type_str[0] = t & KIDLE_DIRTY   ? 'd' : 'c';
-		kidled_type_str[1] = t & KIDLE_FILE    ? 'f' : 's';
-		kidled_type_str[2] = t & KIDLE_UNEVICT ? 'u' : 'e';
-		kidled_type_str[3] = t & KIDLE_ACTIVE  ? 'a' : 'i';
-		kidled_type_str[4] = '\0';
+		if (t & KIDLE_SLAB)
+			memcpy(kidled_type_str, "slab", 5);
+		else {
+			kidled_type_str[0] = t & KIDLE_DIRTY   ? 'd' : 'c';
+			kidled_type_str[1] = t & KIDLE_FILE    ? 'f' : 's';
+			kidled_type_str[2] = t & KIDLE_UNEVICT ? 'u' : 'e';
+			kidled_type_str[3] = t & KIDLE_ACTIVE  ? 'a' : 'i';
+			kidled_type_str[4] = '\0';
+		}
 		seq_printf(m, "  %-8s", kidled_type_str);
 
 		for (i = 0; i < j; i++) {
