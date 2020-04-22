@@ -4459,8 +4459,7 @@ output:
 		seq_printf(m, "  %-8s", kidled_type_str);
 
 		for (i = 0; i < j; i++) {
-			seq_printf(m, " %14lu",
-				   stats->count[t][i] << PAGE_SHIFT);
+			seq_printf(m, " %14lu", stats->count[t][i]);
 		}
 
 		seq_puts(m, "\n");
@@ -7741,7 +7740,7 @@ static int mem_cgroup_move_account(struct page *page,
 	ret = 0;
 	nid = folio_nid(folio);
 
-	kidled_mem_cgroup_move_stats(from, to, folio, nr_pages);
+	kidled_mem_cgroup_move_stats(from, to, folio, nr_pages << PAGE_SHIFT);
 
 	local_irq_disable();
 	mem_cgroup_charge_statistics(to, nr_pages);
