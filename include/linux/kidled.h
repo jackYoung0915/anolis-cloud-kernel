@@ -224,7 +224,7 @@ extern const int kidled_default_buckets[NUM_KIDLED_BUCKETS];
 void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
 				  struct mem_cgroup *to,
 				  struct folio *folio,
-				  unsigned int nr_pages);
+				  unsigned long size);
 #endif /* CONFIG_MEMCG */
 
 #ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
@@ -237,7 +237,7 @@ void kidled_free_folio_age(pg_data_t *pgdat);
 static inline void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
 						struct mem_cgroup *to,
 						struct folio *folio,
-						unsigned int nr_pages)
+						unsigned long size)
 {
 }
 #endif /* CONFIG_MEMCG */
