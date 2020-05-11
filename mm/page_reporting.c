@@ -103,7 +103,8 @@ void __page_reporting_notify(void)
 
 static void
 page_reporting_drain(struct page_reporting_dev_info *prdev,
-		     struct scatterlist *sgl, unsigned int nents, bool reported)
+		     struct scatterlist *sgl, struct zone *zone,
+		     unsigned int nents, bool reported)
 {
 	struct scatterlist *sg = sgl;
 
@@ -129,8 +130,10 @@ page_reporting_drain(struct page_reporting_dev_info *prdev,
 		 * report on the new larger page when we make our way
 		 * up to that higher order.
 		 */
-		if (PageBuddy(page) && buddy_order(page) == order)
+		if (PageBuddy(page) && buddy_order(page) == order) {
 			__SetPageReported(page);
+			zone->reported_pages += (1 << order);
+		}
 	} while ((sg = sg_next(sg)));
 
 	/* reinitialize scatterlist now that it is empty */
@@ -234,7 +237,8 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 		spin_lock_irq(&zone->lock);
 
 		/* flush reported pages from the sg list */
-		page_reporting_drain(prdev, sgl, PAGE_REPORTING_CAPACITY, !err);
+		page_reporting_drain(prdev, sgl, zone,
+				PAGE_REPORTING_CAPACITY, !err);
 
 		/*
 		 * Reset next to first entry, the old next isn't valid
@@ -297,7 +301,7 @@ page_reporting_process_zone(struct page_reporting_dev_info *prdev,
 
 		/* flush any remaining pages out from the last report */
 		spin_lock_irq(&zone->lock);
-		page_reporting_drain(prdev, sgl, leftover, !err);
+		page_reporting_drain(prdev, sgl, zone, leftover, !err);
 		spin_unlock_irq(&zone->lock);
 	}
 
