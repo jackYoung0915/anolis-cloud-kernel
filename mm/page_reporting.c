@@ -47,6 +47,8 @@ MODULE_PARM_DESC(page_reporting_order, "Set page reporting order");
  */
 EXPORT_SYMBOL_GPL(page_reporting_order);
 
+static int reporting_factor = 100;
+
 #define PAGE_REPORTING_DELAY	(2 * HZ)
 static struct page_reporting_dev_info __rcu *pr_dev_info __read_mostly;
 
@@ -154,6 +156,7 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 	struct list_head *list = &area->free_list[mt];
 	unsigned int page_len = PAGE_SIZE << order;
 	struct page *page, *next;
+	unsigned long threshold;
 	long budget;
 	int err = 0;
 
@@ -164,6 +167,7 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 	if (list_empty(list))
 		return err;
 
+	threshold = zone_managed_pages(zone)  * reporting_factor / 100;
 	spin_lock_irq(&zone->lock);
 
 	/*
@@ -201,6 +205,8 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 
 		/* Attempt to pull page from list and place in scatterlist */
 		if (*offset) {
+			unsigned long nr_pages;
+
 			if (!__isolate_free_page(page, order)) {
 				next = page;
 				break;
@@ -209,6 +215,12 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 			/* Add page to scatter list */
 			--(*offset);
 			sg_set_page(&sgl[*offset], page, page_len, 0);
+
+			nr_pages = (PAGE_REPORTING_CAPACITY - *offset) << order;
+			if (zone->reported_pages + nr_pages >= threshold) {
+				err = 1;
+				break;
+			}
 
 			continue;
 		}
@@ -265,8 +277,12 @@ page_reporting_process_zone(struct page_reporting_dev_info *prdev,
 			    struct scatterlist *sgl, struct zone *zone)
 {
 	unsigned int order, mt, leftover, offset = PAGE_REPORTING_CAPACITY;
-	unsigned long watermark;
+	unsigned long watermark, threshold;
 	int err = 0;
+
+	threshold = zone_managed_pages(zone) * reporting_factor / 100;
+	if (zone->reported_pages >= threshold)
+		return err;
 
 	/* Generate minimum watermark to be able to guarantee progress */
 	watermark = low_wmark_pages(zone) +
@@ -288,11 +304,18 @@ page_reporting_process_zone(struct page_reporting_dev_info *prdev,
 
 			err = page_reporting_cycle(prdev, zone, order, mt,
 						   sgl, &offset);
+			/* Exceed threshold go to report leftover */
+			if (err > 0) {
+				err = 0;
+				goto leftover;
+			}
+
 			if (err)
 				return err;
 		}
 	}
 
+leftover:
 	/* report the leftover pages before going idle */
 	leftover = PAGE_REPORTING_CAPACITY - offset;
 	if (leftover) {
@@ -450,8 +473,44 @@ static ssize_t reported_kbytes_store(struct kobject *kobj,
 }
 REPORTING_ATTR(reported_kbytes);
 
+static ssize_t reporting_factor_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%u\n", reporting_factor);
+}
+
+static ssize_t reporting_factor_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int new, old, err;
+	struct page *page;
+
+	err = kstrtoint(buf, 10, &new);
+	if (err || (new < 0 || new > 100))
+		return -EINVAL;
+
+	old = reporting_factor;
+	reporting_factor = new;
+
+	if (new <= old)
+		goto out;
+
+	/* Trigger reporting with new larger reporting_factor */
+	smp_mb();
+	page = alloc_pages(__GFP_HIGHMEM | __GFP_NOWARN,
+			page_reporting_order);
+	if (page)
+		__free_pages(page, page_reporting_order);
+
+out:
+	return count;
+}
+REPORTING_ATTR(reporting_factor);
+
 static struct attribute *reporting_attrs[] = {
 	&reported_kbytes_attr.attr,
+	&reporting_factor_attr.attr,
 	NULL,
 };
 
