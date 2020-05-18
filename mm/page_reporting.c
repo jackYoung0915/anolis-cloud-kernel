@@ -419,3 +419,61 @@ void page_reporting_unregister(struct page_reporting_dev_info *prdev)
 	mutex_unlock(&page_reporting_mutex);
 }
 EXPORT_SYMBOL_GPL(page_reporting_unregister);
+
+#ifdef CONFIG_SYSFS
+#define REPORTING_ATTR(_name) \
+	static struct kobj_attribute _name##_attr = \
+		__ATTR(_name, 0644, _name##_show, _name##_store)
+
+static unsigned long get_reported_kbytes(void)
+{
+	struct zone *z;
+	unsigned long nr_reported = 0;
+
+	for_each_populated_zone(z)
+		nr_reported += z->reported_pages;
+
+	return nr_reported << (PAGE_SHIFT - 10);
+}
+
+static ssize_t reported_kbytes_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%lu\n", get_reported_kbytes());
+}
+
+static ssize_t reported_kbytes_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	return -EINVAL;
+}
+REPORTING_ATTR(reported_kbytes);
+
+static struct attribute *reporting_attrs[] = {
+	&reported_kbytes_attr.attr,
+	NULL,
+};
+
+static struct attribute_group reporting_attr_group = {
+	.attrs = reporting_attrs,
+	.name = "page_reporting",
+};
+#endif
+
+static int __init page_reporting_init(void)
+{
+#ifdef CONFIG_SYSFS
+	int err;
+
+	err = sysfs_create_group(mm_kobj, &reporting_attr_group);
+	if (err) {
+		pr_err("%s: Unable to populate sysfs files\n", __func__);
+		return err;
+	}
+#endif
+
+	return 0;
+}
+
+module_init(page_reporting_init);
