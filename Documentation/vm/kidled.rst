@@ -26,6 +26,11 @@ than one time. So the maximal age is 255. kidled eventually shows the histogram
 statistics through memory cgroup files (``memory.idle_page_stats``). The statistics
 could be used to evaluate the working-set size of that memory cgroup or the hierarchy.
 
+Especially, we add a switch to control whether slab scan or not. That isolate
+page scan and slab scan effectively to avoid too many slab objects interfering
+with page scan. Because it is important for us to reap cold userspace page, which
+reclaim more memory at the lower cost.
+
 Note: The implementation of kidled had referred to Michel Lespinasse's patch:
 https://lore.kernel.org/lkml/20110922161448.91a2e2b2.akpm@google.com/T/
 Thanks for Michel Lespinasse's idea about page age and buckets!

@@ -119,8 +119,10 @@ struct kidled_scan_period {
 			u16		duration;	/* in seconds */
 		};
 	};
+	bool slab_scan_enabled;	/* whether scan slab or not */
 };
 extern struct kidled_scan_period kidled_scan_period;
+extern bool   kidled_slab_scan_enabled;
 extern unsigned long kidled_scan_rounds;
 
 #define KIDLED_OP_SET_DURATION		(1 << 0)
@@ -142,6 +144,10 @@ static inline struct kidled_scan_period kidled_get_current_scan_period(void)
 	struct kidled_scan_period scan_period;
 
 	atomic_set(&scan_period.val, atomic_read(&kidled_scan_period.val));
+	if (kidled_slab_scan_enabled)
+		scan_period.slab_scan_enabled = true;
+	else
+		scan_period.slab_scan_enabled = false;
 	return scan_period;
 }
 
@@ -156,6 +162,7 @@ static inline unsigned int kidled_get_current_scan_duration(void)
 static inline void kidled_reset_scan_period(struct kidled_scan_period *p)
 {
 	atomic_set(&p->val, 0);
+	p->slab_scan_enabled = false;
 }
 
 /*
@@ -164,6 +171,12 @@ static inline void kidled_reset_scan_period(struct kidled_scan_period *p)
 static inline bool kidled_is_scan_period_equal(struct kidled_scan_period *p)
 {
 	return atomic_read(&p->val) == atomic_read(&kidled_scan_period.val);
+}
+
+static inline bool
+kidled_is_slab_scan_enabled_equal(struct kidled_scan_period *p)
+{
+	return kidled_slab_scan_enabled == p->slab_scan_enabled;
 }
 
 static inline bool kidled_set_scan_period(int op, u16 duration,
