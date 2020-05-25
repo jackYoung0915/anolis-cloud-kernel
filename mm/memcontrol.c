@@ -4360,6 +4360,11 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 		goto output;
 	}
 
+	if (scan_period.slab_scan_enabled &&
+	    !kidled_is_slab_scan_enabled_equal(&scan_period))
+		memset(&stats->count[KIDLE_SLAB], 0,
+		       sizeof(stats->count[KIDLE_SLAB]));
+
 	if (has_hierarchy) {
 		for_each_mem_cgroup_tree(iter, memcg) {
 			/* The root memcg was just accounted */
