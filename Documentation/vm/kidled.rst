@@ -74,13 +74,24 @@ Here are their functions:
    statistics, but it won't be very odd due to the duration are the same at
    least.
 
-* ``/sys/kernel/mm/kidled/slab_scan_enabled``
+* ``/sys/kernel/mm/kidled/scan_target``
 
-  It controls whether slab scan or not. By default, kidled will not scan slab
-  because the cpu load will very high if the system has a lot of reclaimable
-  slabs. But we need to enable it when userspace pages have been reclaimed and
-  a lot of reclaimable slabs is in the system. we'd better mark and reclaim the
-  cold slab in front of the memory reclaim triggered by allocating memory request.
+  It controls which type kidled will scan, there are three kinds of type
+  could be selected: scan page only, scan slab only, scan both page and
+  slab. The users can enable them as follows. Other value will be invalid.
+
+  To scan user page only
+        echo 1 > ``/sys/kernel/mm/kidled/scan_target``
+  To scan slab only
+        echo 2 > ``/sys/kernel/mm/kidled/scan_target``
+  Both scan page and slab
+        echo 3 > ``/sys/kernel/mm/kidled/scan_target``
+
+  By default, kidled will not scan slab because the cpu load will very
+  high if the system has a lot of reclaimable slabs. But we need to enable
+  it when userspace pages have been reclaimed and a lot of reclaimable
+  slabs is in the system. We'd better mark and reclaim the cold slab in
+  front of the memory reclaim triggered by allocating memory request.
 
 
   It shows histogram of idle statistics for the corresponding memory cgroup.
