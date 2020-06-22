@@ -384,7 +384,7 @@ static long add_nr_deferred(long nr, struct shrinker *shrinker,
 #ifdef CONFIG_KIDLED
 static void kidled_scan_slab_common(struct shrinker *shrinker,
 				struct shrink_control *sc,
-				struct kidled_scan_period scan_period)
+				struct kidled_scan_control scan_control)
 {
 	long batch_size = shrinker->batch ?: SHRINK_BATCH;
 	long freeable, nr_free;
@@ -395,7 +395,7 @@ static void kidled_scan_slab_common(struct shrinker *shrinker,
 	if (freeable == 0 || freeable == SHRINK_EMPTY)
 		return;
 
-	nr_free = DIV_ROUND_UP(freeable, scan_period.duration);
+	nr_free = DIV_ROUND_UP(freeable, scan_control.duration);
 	while (nr_free > 0) {
 		unsigned long nr_scanned;
 
@@ -406,15 +406,15 @@ static void kidled_scan_slab_common(struct shrinker *shrinker,
 		nr_free -= nr_scanned;
 		cond_resched();
 
-		if (unlikely(!kidled_is_scan_period_equal(&scan_period) ||
-			     !kidled_is_slab_scan_enabled_equal(&scan_period)))
+		if (unlikely(!kidled_is_scan_period_equal(&scan_control) ||
+			     !kidled_has_slab_target_equal(&scan_control)))
 			break;
 	}
 }
 
 #ifdef CONFIG_MEMCG
 static void kidled_scan_slab_memcg(int nid, struct mem_cgroup *memcg,
-				   struct kidled_scan_period scan_period)
+				   struct kidled_scan_control scan_control)
 {
 	struct shrinker_info *info;
 	int offset, index = 0;
@@ -458,7 +458,7 @@ again:
 			    !(shrinker->flags & SHRINKER_NONSLAB))
 				continue;
 
-			kidled_scan_slab_common(shrinker, &sc, scan_period);
+			kidled_scan_slab_common(shrinker, &sc, scan_control);
 			shrinker_put(shrinker);
 		}
 
@@ -470,18 +470,18 @@ out:
 }
 #else /* !CONFIG_MEMCG */
 static void kidled_scan_slab_memcg(int nid, struct mem_cgroup *memcg,
-				   struct kidled_scan_period scan_period)
+				   struct kidled_scan_control scan_control)
 {
 }
 #endif /* CONFIG_MEMCG */
 
 void kidled_scan_slab(int nid, struct mem_cgroup *memcg,
-		      struct kidled_scan_period scan_period)
+		      struct kidled_scan_control scan_control)
 {
 	struct shrinker *shrinker;
 
 	if (!mem_cgroup_disabled() && !mem_cgroup_is_root(memcg))
-		return kidled_scan_slab_memcg(nid, memcg, scan_period);
+		return kidled_scan_slab_memcg(nid, memcg, scan_control);
 
 	rcu_read_lock();
 	list_for_each_entry(shrinker, &shrinker_list, list) {
@@ -495,7 +495,7 @@ void kidled_scan_slab(int nid, struct mem_cgroup *memcg,
 
 		rcu_read_unlock();
 
-		kidled_scan_slab_common(shrinker, &sc, scan_period);
+		kidled_scan_slab_common(shrinker, &sc, scan_control);
 		rcu_read_lock();
 		shrinker_put(shrinker);
 	}
