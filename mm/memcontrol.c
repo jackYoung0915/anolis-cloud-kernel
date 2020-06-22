@@ -4327,7 +4327,7 @@ static ssize_t mem_cgroup_reset(struct kernfs_open_file *of, char *buf,
 static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 {
 	struct mem_cgroup *iter, *memcg = mem_cgroup_from_css(seq_css(m));
-	struct kidled_scan_period scan_period, period;
+	struct kidled_scan_control scan_control;
 	struct idle_page_stats *stats, *cache;
 	unsigned long scans;
 	bool has_hierarchy = !!seq_cft(m)->private;
@@ -4342,7 +4342,7 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 	down_read(&memcg->idle_stats_rwsem);
 	*stats = memcg->idle_stats[memcg->idle_stable_idx];
 	scans = memcg->idle_scans;
-	scan_period = memcg->scan_period;
+	scan_control = memcg->scan_control;
 	up_read(&memcg->idle_stats_rwsem);
 
 	/* Nothing will be outputed with invalid buckets */
@@ -4353,34 +4353,45 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 	}
 
 	/* Zeroes will be output with mismatched scan period */
-	if (!kidled_is_scan_period_equal(&scan_period)) {
+	if (!kidled_is_scan_period_equal(&scan_control)) {
 		memset(&stats->count, 0, sizeof(stats->count));
-		scan_period = kidled_get_current_scan_period();
+		scan_control = kidled_get_current_scan_control();
 		scans = 0;
 		goto output;
 	}
 
-	if (scan_period.slab_scan_enabled &&
-	    !kidled_is_slab_scan_enabled_equal(&scan_period))
-		memset(&stats->count[KIDLE_SLAB], 0,
-		       sizeof(stats->count[KIDLE_SLAB]));
+	/* Zeroes will be output with mismatched scan type */
+	if (!kidled_is_scan_target_equal(&scan_control)) {
+		if (!kidled_has_page_target_equal(&scan_control)) {
+			int i;
+
+			for (i = 0; i < KIDLE_NR_TYPE - 1; i++)
+				memset(&stats->count[i], 0,
+				       sizeof(stats->count[i]));
+		} else if (!kidled_has_slab_target_equal(&scan_control)) {
+			memset(&stats->count[KIDLE_SLAB], 0,
+			       sizeof(stats->count[KIDLE_SLAB]));
+		}
+	}
 
 	if (has_hierarchy) {
 		for_each_mem_cgroup_tree(iter, memcg) {
+			struct kidled_scan_control scan_control;
+
 			/* The root memcg was just accounted */
 			if (iter == memcg)
 				continue;
 
 			down_read(&iter->idle_stats_rwsem);
 			*cache = iter->idle_stats[iter->idle_stable_idx];
-			period = memcg->scan_period;
+			scan_control = memcg->scan_control;
 			up_read(&iter->idle_stats_rwsem);
 
 			/*
 			 * Skip to account if the scan period is mismatched
 			 * or buckets are invalid.
 			 */
-			if (!kidled_is_scan_period_equal(&period) ||
+			if (!kidled_is_scan_period_equal(&scan_control) ||
 			    KIDLED_IS_BUCKET_INVALID(cache->buckets))
 				continue;
 
@@ -4410,7 +4421,7 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 output:
 	seq_printf(m, "# version: %s\n", KIDLED_VERSION);
 	seq_printf(m, "# scans: %lu\n", scans);
-	seq_printf(m, "# scan_period_in_seconds: %u\n", scan_period.duration);
+	seq_printf(m, "# scan_period_in_seconds: %u\n", scan_control.duration);
 	seq_puts(m, "# buckets: ");
 	if (no_buckets) {
 		seq_puts(m, "no valid bucket available\n");

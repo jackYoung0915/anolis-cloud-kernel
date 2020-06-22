@@ -11,6 +11,21 @@
 struct mem_cgroup;
 
 /*
+ * Kidled_scan_type define the scan type that kidled will
+ * work at. The default option is to scan page only, but
+ * it can be modified by a specified interface at any time.
+ */
+enum kidled_scan_type {
+	SCAN_TARGET_PAGE = 0,
+	SCAN_TARGET_SLAB,
+	SCAN_TARGET_ALL
+};
+
+#define KIDLED_SCAN_PAGE	(1 << SCAN_TARGET_PAGE)
+#define KIDLED_SCAN_SLAB	(1 << SCAN_TARGET_SLAB)
+#define KIDLED_SCAN_ALL	(KIDLED_SCAN_PAGE | KIDLED_SCAN_SLAB)
+
+/*
  * We want to get more info about a specified idle page, whether it's
  * a page cache or in active LRU list and so on. We use KIDLE_<flag>
  * to mark these different page attributes, we support 4 flags:
@@ -111,7 +126,7 @@ struct idle_page_stats {
  * least.
  */
 #define KIDLED_MAX_SCAN_DURATION	U16_MAX		/* max 65536 seconds */
-struct kidled_scan_period {
+struct kidled_scan_control {
 	union {
 		atomic_t		val;
 		struct {
@@ -119,10 +134,10 @@ struct kidled_scan_period {
 			u16		duration;	/* in seconds */
 		};
 	};
-	bool slab_scan_enabled;	/* whether scan slab or not */
+	unsigned int scan_target;	/* decide how kidled to scan */
 };
-extern struct kidled_scan_period kidled_scan_period;
-extern bool   kidled_slab_scan_enabled;
+extern struct kidled_scan_control kidled_scan_control;
+extern unsigned int kidled_scan_target;
 extern unsigned long kidled_scan_rounds;
 
 #define KIDLED_OP_SET_DURATION		(1 << 0)
@@ -139,63 +154,93 @@ static inline void kidled_mem_cgroup_slab_account(void *object,
 	kidled_mem_cgroup_account(folio, object, age, size);
 }
 
-static inline struct kidled_scan_period kidled_get_current_scan_period(void)
+static inline struct kidled_scan_control kidled_get_current_scan_control(void)
 {
-	struct kidled_scan_period scan_period;
+	struct kidled_scan_control scan_control;
 
-	atomic_set(&scan_period.val, atomic_read(&kidled_scan_period.val));
-	if (kidled_slab_scan_enabled)
-		scan_period.slab_scan_enabled = true;
-	else
-		scan_period.slab_scan_enabled = false;
-	return scan_period;
+	atomic_set(&scan_control.val, atomic_read(&kidled_scan_control.val));
+	scan_control.scan_target = kidled_scan_target;
+	return scan_control;
 }
 
 static inline unsigned int kidled_get_current_scan_duration(void)
 {
-	struct kidled_scan_period scan_period =
-		kidled_get_current_scan_period();
+	struct kidled_scan_control scan_control =
+		kidled_get_current_scan_control();
 
-	return scan_period.duration;
+	return scan_control.duration;
 }
 
-static inline void kidled_reset_scan_period(struct kidled_scan_period *p)
+static inline void kidled_reset_scan_control(struct kidled_scan_control *p)
 {
 	atomic_set(&p->val, 0);
-	p->slab_scan_enabled = false;
+	p->scan_target = KIDLED_SCAN_PAGE;
 }
 
 /*
- * Compare with global kidled_scan_period, return true if equals.
+ * Compare with global kidled_scan_control, return true if equals.
  */
-static inline bool kidled_is_scan_period_equal(struct kidled_scan_period *p)
+static inline bool kidled_is_scan_period_equal(struct kidled_scan_control *p)
 {
-	return atomic_read(&p->val) == atomic_read(&kidled_scan_period.val);
+	return atomic_read(&p->val) == atomic_read(&kidled_scan_control.val);
+}
+
+static inline bool kidled_has_slab_target(struct kidled_scan_control *p)
+{
+	return p->scan_target & KIDLED_SCAN_SLAB;
+}
+
+static inline bool kidled_has_page_target(struct kidled_scan_control *p)
+{
+	return p->scan_target & KIDLED_SCAN_PAGE;
+}
+
+static inline bool kidled_has_slab_target_equal(struct kidled_scan_control *p)
+{
+	if (!kidled_has_slab_target(p))
+		return false;
+
+	return kidled_scan_target & KIDLED_SCAN_SLAB;
 }
 
 static inline bool
-kidled_is_slab_scan_enabled_equal(struct kidled_scan_period *p)
+kidled_is_scan_target_equal(struct kidled_scan_control *p)
 {
-	return kidled_slab_scan_enabled == p->slab_scan_enabled;
+	return p->scan_target == kidled_scan_target;
 }
 
-static inline bool kidled_set_scan_period(int op, u16 duration,
-					  struct kidled_scan_period *orig)
+static inline bool
+kidled_is_slab_target(struct kidled_scan_control *p)
+{
+	return p->scan_target == KIDLED_SCAN_SLAB;
+}
+
+static inline bool
+kidled_has_page_target_equal(struct kidled_scan_control *p)
+{
+	if (!kidled_has_page_target(p))
+		return false;
+
+	return kidled_scan_target & KIDLED_SCAN_PAGE;
+}
+
+static inline bool kidled_set_scan_control(int op, u16 duration,
+					   struct kidled_scan_control *orig)
 {
 	bool retry = false;
 
 	/*
-	 * atomic_cmpxchg() tries to update kidled_scan_period, shouldn't
+	 * atomic_cmpxchg() tries to update kidled_scan_control, shouldn't
 	 * retry to avoid endless loop when caller specify a period.
 	 */
 	if (!orig) {
-		orig = &kidled_scan_period;
+		orig = &kidled_scan_control;
 		retry = true;
 	}
 
 	while (true) {
 		int new_period_val, old_period_val;
-		struct kidled_scan_period new_period;
+		struct kidled_scan_control new_period;
 
 		old_period_val = atomic_read(&orig->val);
 		atomic_set(&new_period.val, old_period_val);
@@ -205,7 +250,7 @@ static inline bool kidled_set_scan_period(int op, u16 duration,
 			new_period.duration = duration;
 		new_period_val = atomic_read(&new_period.val);
 
-		if (atomic_cmpxchg(&kidled_scan_period.val,
+		if (atomic_cmpxchg(&kidled_scan_control.val,
 				   old_period_val,
 				   new_period_val) == old_period_val)
 			return true;
@@ -217,7 +262,7 @@ static inline bool kidled_set_scan_period(int op, u16 duration,
 
 static inline void kidled_set_scan_duration(u16 duration)
 {
-	kidled_set_scan_period(KIDLED_OP_INC_SEQ |
+	kidled_set_scan_control(KIDLED_OP_INC_SEQ |
 			       KIDLED_OP_SET_DURATION,
 			       duration, NULL);
 }
@@ -231,7 +276,8 @@ static inline bool is_kidled_enabled(void)
  * Caller must specify the original scan period, avoid the race between
  * the double operation and user's updates through sysfs interface.
  */
-static inline bool kidled_try_double_scan_period(struct kidled_scan_period orig)
+static inline bool
+kidled_try_double_scan_control(struct kidled_scan_control orig)
 {
 	u16 duration = orig.duration;
 
@@ -241,7 +287,7 @@ static inline bool kidled_try_double_scan_period(struct kidled_scan_period orig)
 	duration <<= 1;
 	if (duration < orig.duration)
 		duration = KIDLED_MAX_SCAN_DURATION;
-	return kidled_set_scan_period(KIDLED_OP_INC_SEQ |
+	return kidled_set_scan_control(KIDLED_OP_INC_SEQ |
 				      KIDLED_OP_SET_DURATION,
 				      duration,
 				      &orig);
@@ -253,7 +299,7 @@ static inline bool kidled_try_double_scan_period(struct kidled_scan_period orig)
  */
 static inline void kidled_inc_scan_seq(void)
 {
-	kidled_set_scan_period(KIDLED_OP_INC_SEQ, 0, NULL);
+	kidled_set_scan_control(KIDLED_OP_INC_SEQ, 0, NULL);
 }
 
 extern const int kidled_default_buckets[NUM_KIDLED_BUCKETS];
