@@ -216,6 +216,12 @@ kidled_is_slab_target(struct kidled_scan_control *p)
 }
 
 static inline bool
+kidled_is_page_target(struct kidled_scan_control *p)
+{
+	return p->scan_target == KIDLED_SCAN_PAGE;
+}
+
+static inline bool
 kidled_has_page_target_equal(struct kidled_scan_control *p)
 {
 	if (!kidled_has_page_target(p))
