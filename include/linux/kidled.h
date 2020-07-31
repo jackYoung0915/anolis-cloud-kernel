@@ -210,13 +210,13 @@ kidled_is_scan_target_equal(struct kidled_scan_control *p)
 }
 
 static inline bool
-kidled_is_slab_target(struct kidled_scan_control *p)
+kidled_has_slab_target_only(struct kidled_scan_control *p)
 {
 	return p->scan_target == KIDLED_SCAN_SLAB;
 }
 
 static inline bool
-kidled_is_page_target(struct kidled_scan_control *p)
+kidled_has_page_target_only(struct kidled_scan_control *p)
 {
 	return p->scan_target == KIDLED_SCAN_PAGE;
 }
@@ -228,6 +228,15 @@ kidled_has_page_target_equal(struct kidled_scan_control *p)
 		return false;
 
 	return kidled_scan_target & KIDLED_SCAN_PAGE;
+}
+
+static inline void kidled_get_reset_type(struct kidled_scan_control *p,
+					 bool *page_disabled, bool *slab_disabled)
+{
+	if (kidled_has_page_target(p) && !kidled_has_page_target_equal(p))
+		*page_disabled = 1;
+	if (kidled_has_slab_target(p) && !kidled_has_slab_target_equal(p))
+		*slab_disabled = 1;
 }
 
 static inline bool kidled_set_scan_control(int op, u16 duration,
