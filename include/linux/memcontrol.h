@@ -483,7 +483,8 @@ struct mem_cgroup {
 
 #ifdef CONFIG_KIDLED
 	struct rw_semaphore idle_stats_rwsem;
-	unsigned long idle_scans;
+	unsigned long idle_page_scans;
+	unsigned long idle_slab_scans;
 	struct kidled_scan_control scan_control;
 	int idle_stable_idx;
 	struct idle_page_stats idle_stats[KIDLED_STATS_NR_TYPE];
