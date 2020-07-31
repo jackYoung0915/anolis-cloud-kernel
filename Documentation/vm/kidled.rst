@@ -106,7 +106,8 @@ Here are their functions:
 
   ----------------------------- snapshot start -----------------------------
   # version: 1.0
-  # scans: 92
+  # page_scans: 92
+  # slab_scans: 92
   # scan_period_in_seconds: 120
   # buckets: 1,2,5,15,30,60,120,240
   #
@@ -136,7 +137,8 @@ Here are their functions:
     slab               2704            832          15600          20800          70720      763819160              0              0
   ----------------------------- snapshot end -----------------------------
 
-  ``scans`` means how many rounds current cgroup has been scanned.
+  ``page_scans`` means how many rounds current cgroup's pagecache has been scanned.
+  ``slab_scans`` means how many rounds current cgroup's slab has been scanned.
   ``scan_period_in_seconds`` means kidled will take how long to finish
   one round. ``buckets`` is to allow scripts parsing easily. The table
   shows how many bytes are in idle state, the row is indexed by idle
@@ -163,7 +165,8 @@ Here are their functions:
   $ sudo bash -c "echo '' > /sys/fs/cgroup/memory/test/memory.idle_page_stats"
   $ cat /sys/fs/cgroup/memory/test/memory.idle_page_stats
   # version: 1.0
-  # scans: 0
+  # page_scans: 0
+  # slab_scans: 0
   # scan_period_in_seconds: 1
   # buckets: no valid bucket available
   ----------------------------- snapshot end -----------------------------

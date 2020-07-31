@@ -268,6 +268,7 @@ kidled_mem_cgroup_scan_done(struct kidled_scan_control scan_control)
 {
 	struct mem_cgroup *memcg;
 	struct idle_page_stats *stable_stats, *unstable_stats;
+	bool slab_only = false;
 
 	for (memcg = mem_cgroup_iter(NULL, NULL, NULL);
 	     memcg != NULL;
@@ -284,7 +285,13 @@ kidled_mem_cgroup_scan_done(struct kidled_scan_control scan_control)
 		 */
 		if (!KIDLED_IS_BUCKET_INVALID(unstable_stats->buckets)) {
 			mem_cgroup_idle_page_stats_switch(memcg);
-			memcg->idle_scans++;
+			if (kidled_has_page_target(&scan_control))
+				memcg->idle_page_scans++;
+			if (kidled_has_slab_target(&scan_control) &&
+			    (memcg_kmem_online() || mem_cgroup_is_root(memcg)))
+				memcg->idle_slab_scans++;
+
+			slab_only = kidled_has_slab_target_only(&scan_control);
 		} else {
 			memcpy(unstable_stats->buckets, stable_stats->buckets,
 			       sizeof(unstable_stats->buckets));
@@ -296,6 +303,9 @@ kidled_mem_cgroup_scan_done(struct kidled_scan_control scan_control)
 		unstable_stats = mem_cgroup_get_unstable_idle_stats(memcg);
 		memset(&unstable_stats->count, 0,
 		       sizeof(unstable_stats->count));
+
+		if (slab_only && !memcg_kmem_online())
+			break;
 	}
 }
 
@@ -341,7 +351,7 @@ kidled_mem_cgroup_reset(enum kidled_scan_type scan_type)
 		} else {
 			memset(&stable_stats->count, 0,
 			       sizeof(stable_stats->count));
-			memcg->idle_scans = 0;
+			memcg->idle_page_scans = 0;
 			kidled_reset_scan_control(&memcg->scan_control);
 			up_write(&memcg->idle_stats_rwsem);
 			memset(&unstable_stats->count, 0,
@@ -500,7 +510,7 @@ static bool kidled_scan_node(pg_data_t *pgdat,
 	int nr_nodes = num_online_nodes();
 #endif
 
-	if (kidled_is_slab_target(&scan_control))
+	if (kidled_has_slab_target_only(&scan_control))
 		return false;
 	else if (pgdat->node_idle_scan_pfn >= node_end)
 		return true;
@@ -777,15 +787,23 @@ static inline bool kidled_should_run(struct kidled_scan_control *p,
 		*new = true;
 	} else if (unlikely(!kidled_is_scan_target_equal(p))) {
 		struct kidled_scan_control scan_control;
+		bool page_disabled = false;
+		bool slab_disabled = false;
 
 		scan_control = kidled_get_current_scan_control();
-		if (!kidled_has_page_target_equal(p))
-			kidled_mem_cgroup_reset(SCAN_TARGET_PAGE);
-		else if (!kidled_has_slab_target_equal(p)) {
+		kidled_get_reset_type(p, &page_disabled, &slab_disabled);
+		if (slab_disabled) {
 			kidled_mem_cgroup_reset(SCAN_TARGET_SLAB);
 			*count_slab_scan = 0;
 		}
-		if (kidled_is_slab_target(p))
+		if (page_disabled)
+			kidled_mem_cgroup_reset(SCAN_TARGET_PAGE);
+
+		/*
+		 * It need to restart the page scan when user enable
+		 * the specified scan type again.
+		 */
+		if (kidled_has_slab_target_only(p))
 			*new = true;
 		else
 			*new = false;
@@ -806,9 +824,9 @@ static inline bool is_kidled_scan_done(bool scan_done,
 {
 	u16 duration = scan_control.duration;
 
-	if (kidled_is_slab_target(&scan_control))
+	if (kidled_has_slab_target_only(&scan_control))
 		return count_slab_scan >= duration;
-	else if (kidled_is_page_target(&scan_control))
+	else if (kidled_has_page_target_only(&scan_control))
 		return scan_done;
 	else
 		return scan_done && (count_slab_scan >= duration);
