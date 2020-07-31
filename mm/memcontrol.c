@@ -4331,7 +4331,7 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 	struct mem_cgroup *iter, *memcg = mem_cgroup_from_css(seq_css(m));
 	struct kidled_scan_control scan_control;
 	struct idle_page_stats *stats, *cache;
-	unsigned long scans;
+	unsigned long page_scans, slab_scans;
 	bool has_hierarchy = !!seq_cft(m)->private;
 	bool no_buckets = false;
 	int i, j, t;
@@ -4343,14 +4343,16 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 
 	down_read(&memcg->idle_stats_rwsem);
 	*stats = memcg->idle_stats[memcg->idle_stable_idx];
-	scans = memcg->idle_scans;
+	page_scans = memcg->idle_page_scans;
+	slab_scans = memcg->idle_slab_scans;
 	scan_control = memcg->scan_control;
 	up_read(&memcg->idle_stats_rwsem);
 
 	/* Nothing will be outputed with invalid buckets */
 	if (KIDLED_IS_BUCKET_INVALID(stats->buckets)) {
 		no_buckets = true;
-		scans = 0;
+		page_scans = 0;
+		slab_scans = 0;
 		goto output;
 	}
 
@@ -4358,22 +4360,35 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 	if (!kidled_is_scan_period_equal(&scan_control)) {
 		memset(&stats->count, 0, sizeof(stats->count));
 		scan_control = kidled_get_current_scan_control();
-		scans = 0;
+		page_scans = 0;
+		slab_scans = 0;
 		goto output;
 	}
 
 	/* Zeroes will be output with mismatched scan type */
 	if (!kidled_is_scan_target_equal(&scan_control)) {
-		if (!kidled_has_page_target_equal(&scan_control)) {
-			int i;
+		bool page_disabled = false;
+		bool slab_disabled = false;
 
-			for (i = 0; i < KIDLE_NR_TYPE - 1; i++)
-				memset(&stats->count[i], 0,
-				       sizeof(stats->count[i]));
-		} else if (!kidled_has_slab_target_equal(&scan_control)) {
+		kidled_get_reset_type(&scan_control, &page_disabled, &slab_disabled);
+		if (slab_disabled) {
 			memset(&stats->count[KIDLE_SLAB], 0,
 			       sizeof(stats->count[KIDLE_SLAB]));
+			slab_scans = 0;
 		}
+		if (page_disabled) {
+			int i;
+
+			for (i = 0; i < KIDLE_NR_TYPE - 1; i++) {
+				memset(&stats->count[i], 0, sizeof(stats->count[i]));
+				page_scans = 0;
+			}
+		}
+	} else {
+		if (kidled_has_slab_target_only(&scan_control) && page_scans != 0)
+			page_scans = 0;
+		if (kidled_has_page_target_only(&scan_control) && slab_scans != 0)
+			slab_scans = 0;
 	}
 
 	if (has_hierarchy) {
@@ -4422,7 +4437,8 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 
 output:
 	seq_printf(m, "# version: %s\n", KIDLED_VERSION);
-	seq_printf(m, "# scans: %lu\n", scans);
+	seq_printf(m, "# page_scans: %lu\n", page_scans);
+	seq_printf(m, "# slab_scans: %lu\n", slab_scans);
 	seq_printf(m, "# scan_period_in_seconds: %u\n", scan_control.duration);
 	seq_puts(m, "# buckets: ");
 	if (no_buckets) {
@@ -4546,7 +4562,8 @@ static ssize_t mem_cgroup_idle_page_stats_write(struct kernfs_open_file *of,
 	 * holding any read side locks.
 	 */
 	KIDLED_MARK_BUCKET_INVALID(unstable_stats->buckets);
-	memcg->idle_scans = 0;
+	memcg->idle_page_scans = 0;
+	memcg->idle_slab_scans = 0;
 	up_write(&memcg->idle_stats_rwsem);
 
 	return nbytes;
