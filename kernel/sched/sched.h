@@ -1337,6 +1337,10 @@ struct rq {
 
 	/* This is used to determine avg_idle's max value */
 	u64			max_idle_balance_cost;
+
+#ifdef CONFIG_HOTPLUG_CPU
+	struct rcuwait		hotplug_wait;
+#endif
 #endif /* CONFIG_SMP */
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) && (defined(CONFIG_X86) || defined(CONFIG_LOONGARCH))
