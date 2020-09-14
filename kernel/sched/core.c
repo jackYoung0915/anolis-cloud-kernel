@@ -8823,6 +8823,9 @@ void __init sched_init(void)
 #ifdef CONFIG_HOTPLUG_CPU
 		rcuwait_init(&rq->hotplug_wait);
 #endif
+#ifdef CONFIG_HOTPLUG_CPU
+		rcuwait_init(&rq->hotplug_wait);
+#endif
 #endif /* CONFIG_SMP */
 
 #ifdef CONFIG_SCHED_ACPU
