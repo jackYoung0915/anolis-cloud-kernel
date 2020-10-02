@@ -2756,12 +2756,15 @@ static int slave_configure_v3_hw(struct scsi_device *sdev)
 		}
 	}
 
+<<<<<<< HEAD
 	/* Set according to IOMMU IOVA caching limit */
 	max_sectors = min_t(size_t, queue_max_hw_sectors(sdev->request_queue),
 			    (PAGE_SIZE * 32) >> SECTOR_SHIFT);
 
 	blk_queue_max_hw_sectors(sdev->request_queue, max_sectors);
 
+=======
+>>>>>>> 16fd4a7c5917 (scsi: hisi_sas: Add device link between SCSI devices and hisi_hba)
 	return 0;
 }
 
