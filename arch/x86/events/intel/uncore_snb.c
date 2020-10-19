@@ -82,6 +82,8 @@
 #define PCI_DEVICE_ID_INTEL_ADL_19_IMC		0x4618
 #define PCI_DEVICE_ID_INTEL_ADL_20_IMC		0x461B
 #define PCI_DEVICE_ID_INTEL_ADL_21_IMC		0x461C
+#define PCI_DEVICE_ID_INTEL_RKL_1_IMC		0x4c43
+#define PCI_DEVICE_ID_INTEL_RKL_2_IMC		0x4c53
 #define PCI_DEVICE_ID_INTEL_RPL_1_IMC		0xA700
 #define PCI_DEVICE_ID_INTEL_RPL_2_IMC		0xA702
 #define PCI_DEVICE_ID_INTEL_RPL_3_IMC		0xA706
@@ -107,7 +109,6 @@
 #define PCI_DEVICE_ID_INTEL_RPL_23_IMC		0xA728
 #define PCI_DEVICE_ID_INTEL_RPL_24_IMC		0xA729
 #define PCI_DEVICE_ID_INTEL_RPL_25_IMC		0xA72A
-
 
 #define IMC_UNCORE_DEV(a)						\
 {									\
@@ -480,6 +481,12 @@ static struct intel_uncore_type *tgl_msr_uncores[] = {
 	NULL,
 };
 
+static void rkl_uncore_msr_init_box(struct intel_uncore_box *box)
+{
+	if (box->pmu->pmu_idx == 0)
+		wrmsrl(SKL_UNC_PERF_GLOBAL_CTL, SNB_UNC_GLOBAL_CTL_EN);
+}
+
 void tgl_uncore_cpu_init(void)
 {
 	uncore_msr_uncores = tgl_msr_uncores;
@@ -487,6 +494,7 @@ void tgl_uncore_cpu_init(void)
 	icl_uncore_cbox.ops = &skl_uncore_msr_ops;
 	icl_uncore_clockbox.ops = &skl_uncore_msr_ops;
 	snb_uncore_arb.ops = &skl_uncore_msr_ops;
+	skl_uncore_msr_ops.init_box = rkl_uncore_msr_init_box;
 }
 
 static void adl_uncore_msr_init_box(struct intel_uncore_box *box)
@@ -961,6 +969,8 @@ static const struct pci_device_id skl_uncore_pci_ids[] = {
 static const struct pci_device_id icl_uncore_pci_ids[] = {
 	IMC_UNCORE_DEV(ICL_U),
 	IMC_UNCORE_DEV(ICL_U2),
+	IMC_UNCORE_DEV(RKL_1),
+	IMC_UNCORE_DEV(RKL_2),
 	{ /* end: all zeroes */ },
 };
 
@@ -1054,6 +1064,8 @@ static const struct imc_uncore_pci_dev desktop_imc_pci_ids[] = {
 	IMC_DEV(CML_S5_IMC, &skl_uncore_pci_driver),
 	IMC_DEV(ICL_U_IMC, &icl_uncore_pci_driver),	/* 10th Gen Core Mobile */
 	IMC_DEV(ICL_U2_IMC, &icl_uncore_pci_driver),	/* 10th Gen Core Mobile */
+	IMC_DEV(RKL_1_IMC, &icl_uncore_pci_driver),
+	IMC_DEV(RKL_2_IMC, &icl_uncore_pci_driver),
 	{  /* end marker */ }
 };
 
