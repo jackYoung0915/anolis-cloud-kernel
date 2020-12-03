@@ -323,12 +323,13 @@ static bool smc_negotiator_prog_is_valid_access(int off, int size, enum bpf_acce
 }
 
 static int smc_negotiator_prog_btf_struct_access(struct bpf_verifier_log *log,
+						 const struct btf *btf,
 						 const struct btf_type *t, int off,
 						 int size, enum bpf_access_type atype,
 						 u32 *next_btf_id)
 {
 	if (atype == BPF_READ)
-		return btf_struct_access(log, t, off, size, atype, next_btf_id);
+		return btf_struct_access(log, btf, t, off, size, atype, next_btf_id);
 	return -EACCES;
 }
 
