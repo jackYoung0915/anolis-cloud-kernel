@@ -2461,6 +2461,11 @@ static int interrupt_init_v3_hw(struct hisi_hba *hisi_hba)
 			dev_err(dev, "could not get cq%d irq affinity!\n", i);
 			return -ENOENT;
 		}
+		cq->irq_mask = pci_irq_get_affinity(pdev, i + BASE_VECTORS_V3_HW);
+		if (!cq->irq_mask) {
+			dev_err(dev, "could not get cq%d irq affinity!\n", i);
+			return -ENOENT;
+		}
 	}
 
 	return 0;
