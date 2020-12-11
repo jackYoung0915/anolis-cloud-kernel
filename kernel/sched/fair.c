@@ -4141,6 +4141,47 @@ static inline u64 cfs_rq_last_update_time(struct cfs_rq *cfs_rq)
 				 cfs_rq->last_update_time_copy);
 }
 #ifdef CONFIG_FAIR_GROUP_SCHED
+DEFINE_PER_CPU(struct cpumask, cpus_allowed_alt);
+/* Decide which node for @tg to run on*/
+void set_group_prefer_node(struct task_group *tg)
+{
+	int cpu, node;
+	unsigned long min_load = ULONG_MAX, now = jiffies, load;
+	static int prev_node;
+	static unsigned long prev_jiffies;
+
+	/* Choose Round-Robin way with frequent call */
+	if (now - prev_jiffies < HZ) {
+		prev_jiffies = now;
+
+		prev_node = next_online_node(prev_node);
+		if (prev_node >= 0 && prev_node < MAX_NUMNODES) {
+			tg->prefer_node = prev_node;
+			return;
+		}
+
+		prev_node = first_online_node;
+		tg->prefer_node = prev_node;
+		return;
+	}
+
+	prev_jiffies = now;
+
+	/* find the idlest node */
+	prev_node = first_online_node;
+	for_each_online_node(node) {
+		load = ULONG_MAX;
+		for_each_cpu(cpu, cpumask_of_node(node))
+			load += cpu_load(cpu_rq(cpu));
+		if (load < min_load) {
+			min_load = load;
+			prev_node = node;
+		}
+	}
+
+	tg->prefer_node = prev_node;
+}
+
 /*
  * Because list_add_leaf_cfs_rq always places a child cfs_rq on the list
  * immediately before a parent cfs_rq, and cfs_rqs are removed from the list
@@ -9122,54 +9163,12 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
 
 static unsigned long __read_mostly max_load_balance_interval = HZ/10;
 
-/*
- * 'group_type' describes the group of CPUs at the moment of load balancing.
- *
- * The enum is ordered by pulling priority, with the group with lowest priority
- * first so the group_type can simply be compared when selecting the busiest
- * group. See update_sd_pick_busiest().
- */
-enum group_type {
-	/* The group has spare capacity that can be used to run more tasks.  */
-	group_has_spare = 0,
-	/*
-	 * The group is fully used and the tasks don't compete for more CPU
-	 * cycles. Nevertheless, some tasks might wait before running.
-	 */
-	group_fully_busy,
-	/*
-	 * One task doesn't fit with CPU's capacity and must be migrated to a
-	 * more powerful CPU.
-	 */
-	group_misfit_task,
-	/*
-	 * Balance SMT group that's fully busy. Can benefit from migration
-	 * a task on SMT with busy sibling to another CPU on idle core.
-	 */
-	group_smt_balance,
-	/*
-	 * SD_ASYM_PACKING only: One local CPU with higher capacity is available,
-	 * and the task should be migrated to it instead of running on the
-	 * current CPU.
-	 */
-	group_asym_packing,
-	/*
-	 * The tasks' affinity constraints previously prevented the scheduler
-	 * from balancing the load across the system.
-	 */
-	group_imbalanced,
-	/*
-	 * The CPU is overloaded and can't provide expected CPU cycles to all
-	 * tasks.
-	 */
-	group_overloaded
-};
-
 #define LBF_ALL_PINNED	0x01
 #define LBF_NEED_BREAK	0x02
 #define LBF_DST_PINNED  0x04
 #define LBF_SOME_PINNED	0x08
 #define LBF_ACTIVE_LB	0x10
+#define LBF_MIG_CGROUP	0x40
 
 /*
  * Is this task likely cache-hot:
@@ -9299,6 +9298,62 @@ static inline int task_is_ineligible_on_dst_cpu(struct task_struct *p, int dest_
 	return 0;
 }
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static inline bool
+group_is_overloaded(unsigned int imabalance_pct, struct sg_lb_stats *sgs);
+static inline bool
+group_has_capacity(unsigned int imbalacne_pct, struct sg_lb_stats *sgs);
+
+/* We only migrate a task_group when src_node is overloaded and
+ * the dst_ndoe has enough capacity to run this group.
+ */
+static
+int can_migrate_group(struct task_group *tg, struct lb_env *env)
+{
+	unsigned long capacity, group_util = 0;
+	unsigned long busiest, local, ts;
+	int node = cpu_to_node(cpu_of(env->src_rq)), i;
+
+	if (cpu_to_node(env->dst_cpu) == node)
+		return 0;
+
+	ts = jiffies;
+	if (ts - tg->numa_affine_ts < HZ)
+		return 0;
+
+#ifdef CONFIG_PREEMPT
+	if (env->idle == CPU_NEWLY_IDLE)
+		return 0;
+#endif
+	if (!group_is_overloaded(env->sd->imbalance_pct, &env->busiest))
+		return 0;
+	if (!group_has_capacity(env->sd->imbalance_pct, &env->local))
+		return 0;
+	for_each_online_cpu(i)
+		group_util += tg->cfs_rq[i]->avg.util_avg;
+
+	capacity = max(env->local.group_capacity, env->local.group_util) -
+			env->local.group_util;
+	if (group_util > capacity)
+		return 0;
+
+	busiest = env->busiest.group_util;
+	local = env->local.group_util;
+
+	if (busiest <= local)
+		return 0;
+
+	if (group_util >= busiest - local)
+		return 0;
+
+	env->flags |= LBF_MIG_CGROUP;
+	tg->prefer_node = cpu_to_node(env->dst_cpu);
+
+	tg->numa_affine_ts = ts;
+	return 1;
+}
+
+#endif
 /*
  * can_migrate_task - may task p from runqueue rq be migrated to this_cpu?
  */
@@ -9465,6 +9520,7 @@ static int detach_tasks(struct lb_env *env)
 	unsigned long util, load;
 	struct task_struct *p;
 	int detached = 0;
+	long prev_imbalance;
 
 	lockdep_assert_rq_held(env->src_rq);
 
@@ -9505,6 +9561,7 @@ static int detach_tasks(struct lb_env *env)
 		if (!can_migrate_task(p, env))
 			goto next;
 
+		prev_imbalance = env->imbalance;
 		switch (env->migration_type) {
 		case migrate_load:
 			/*
@@ -9553,7 +9610,14 @@ static int detach_tasks(struct lb_env *env)
 			env->imbalance = 0;
 			break;
 		}
-
+#ifdef CONFIG_FAIR_GROUP_SCHED
+		if (sched_feat(NUMA_AFFINE) && (env->sd->flags & SD_NUMA) && detached == 0) {
+			if (can_migrate_group(task_group(p), env))
+				return 0;
+			env->imbalance = prev_imbalance;
+			goto next;
+		}
+#endif
 		detach_task(p, env);
 		list_add(&p->se.group_node, &env->tasks);
 
@@ -9845,29 +9909,6 @@ static void update_blocked_averages(int cpu)
 }
 
 /********** Helpers for find_busiest_group ************************/
-
-/*
- * sg_lb_stats - stats of a sched_group required for load_balancing
- */
-struct sg_lb_stats {
-	unsigned long avg_load; /*Avg load across the CPUs of the group */
-	unsigned long group_load; /* Total load over the CPUs of the group */
-	unsigned long group_capacity;
-	unsigned long group_util; /* Total utilization over the CPUs of the group */
-	unsigned long group_runnable; /* Total runnable time over the CPUs of the group */
-	unsigned int sum_nr_running; /* Nr of tasks running in the group */
-	unsigned int sum_h_nr_running; /* Nr of CFS tasks running in the group */
-	unsigned int idle_cpus;
-	unsigned int group_weight;
-	enum group_type group_type;
-	unsigned int group_asym_packing; /* Tasks should be moved to preferred CPU */
-	unsigned int group_smt_balance;  /* Task on busy SMT be moved */
-	unsigned long group_misfit_task_load; /* A CPU has a task too big for its capacity */
-#ifdef CONFIG_NUMA_BALANCING
-	unsigned int nr_numa_running;
-	unsigned int nr_preferred_running;
-#endif
-};
 
 /*
  * sd_lb_stats - Structure to store the statistics of a sched_domain
@@ -11291,6 +11332,12 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 		goto force_balance;
 
 	local = &sds.local_stat;
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	if (sched_feat(NUMA_AFFINE)) {
+		env->local = *local;
+		env->busiest = *busiest;
+	}
+#endif
 	/*
 	 * If the local group is busier than the selected busiest group
 	 * don't try and pull any tasks.
@@ -11786,6 +11833,11 @@ more_balance:
 		}
 
 		local_irq_restore(rf.flags);
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+		if (sched_feat(NUMA_AFFINE) && (env.flags & LBF_MIG_CGROUP))
+			goto out;
+#endif
 
 		if (env.flags & LBF_NEED_BREAK) {
 			env.flags &= ~LBF_NEED_BREAK;
@@ -13466,6 +13518,11 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 		se->ht_ratio = 100;
 #endif
 	}
+
+#ifdef CONFIG_SMP
+	if (sched_feat(NUMA_AFFINE))
+		set_group_prefer_node(tg);
+#endif
 
 	return 1;
 
