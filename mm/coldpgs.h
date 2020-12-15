@@ -3,8 +3,11 @@
 #ifndef __RECLAIM_COLDPGS_H__
 #define __RECLAIM_COLDPGS_H__
 
-/* Correspond to global control flags */
+/* Correspond to global & memcg control flags */
 #define FLAG_IGNORE_MLOCK	0x1
+#define	FLAG_DROPPABLE(val)	((val) & 0xffffffff)
+#define	FLAG_MODE(val)		((val) >> 32 & 0x7)
+#define	FLAG_MLOCK(val)		((val) >> 35 & 0x1)
 
 enum {
 	RECLAIM_MODE_PGCACHE_OUT,

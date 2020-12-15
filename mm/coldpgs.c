@@ -1000,13 +1000,23 @@ static unsigned long reclaim_coldpgs_from_lru(struct mem_cgroup *memcg,
 }
 
 static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
-				       struct reclaim_coldpgs_filter *filter)
+				       struct reclaim_coldpgs_filter *memcg_orig)
 {
 	pg_data_t *pgdat;
 	struct lruvec *lruvec;
+	struct reclaim_coldpgs_control *control = &memcg->coldpgs_control;
+	struct reclaim_coldpgs_filter memcg_filter;
+	struct reclaim_coldpgs_filter *filter = &memcg_filter;
 	unsigned long bitmap;
 	unsigned long nr_reclaimed = 0;
 	int nid, lru;
+
+	memcpy(filter, memcg_orig, sizeof(struct reclaim_coldpgs_filter));
+	/*
+	 * Filter out the useless mode and flags.
+	 */
+	filter->mode &= FLAG_MODE(control->flags);
+	filter->flags &= FLAG_MLOCK(control->flags);
 
 	/*
 	 * Figure out the eligible LRUs. Here we have a bitmap to track the
