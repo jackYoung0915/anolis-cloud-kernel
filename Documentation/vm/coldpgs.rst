@@ -135,10 +135,19 @@ below:
 
 * ``memory.coldpgs.flags``
 
-  The module doesn't use it. The user space program leverages it at will.
-  Currently, the userland daemon (idlemd) uses this one to determine the
-  coldness threshold for the corresponding memory cgroup. It also indicates
-  if the memory cgroup is involved in reclaiming cold pages.
+  Currently, the field is used as three different purpose, its low 32bit is
+  designed to determine the coldness threshold for the corresponding memory
+  cgroup by userland daemon (idlemd). Meanwhile, it also indicates if the
+  memory cgroup is involved in reclaiming cold pages. The low 8bit of high
+  32bit represent the reclaim type of the cgroup. It means that the cgroup
+  allows to reclaim the available page controlled by user.
+
+  This 64bit field is divided as follows.
+
+                 FFFFFFF | 1 | 111 | FFFFFFFF
+                ----+----|-+-|--+--|-----+----|
+                    |      |    |        |
+                reserved mlock mode   coldness
 
 * ``memory.coldpgs.threshold``
 
