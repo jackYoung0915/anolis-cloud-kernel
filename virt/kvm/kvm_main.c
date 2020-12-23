@@ -4769,11 +4769,11 @@ static int vcpu_stat_clear(void *_offset, u64 val)
 DEFINE_SIMPLE_ATTRIBUTE(vcpu_stat_fops, vcpu_stat_get, vcpu_stat_clear,
 			"%llu\n");
 
-#ifdef CONFIG_SW64
 void __attribute__((weak)) kvm_arch_vcpu_stat_reset(struct kvm_vcpu_stat *vcpu_stat)
 {
 }
 
+#ifdef CONFIG_SW64
 /*
  * copy of seq_buf_alloc of kernel, kernel not export it
  */
@@ -4908,6 +4908,7 @@ static int __dfx_vcpu_stats_get(struct seq_file *p, void *v)
 				break;
 			memcpy(vcpu_stats + index, &vcpu->stat,
 			       sizeof(struct kvm_vcpu_stat));
+			kvm_arch_vcpu_stat_reset(&vcpu->stat);
 			++index;
 		}
 	mutex_unlock(&kvm_lock);
