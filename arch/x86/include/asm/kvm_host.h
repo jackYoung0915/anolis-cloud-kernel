@@ -1132,6 +1132,18 @@ struct kvm_vcpu_stat {
 	u64 notify_window_exits;
 	u64 preemption_reported;
 	u64 preemption_other;
+	u64 cr_exits;
+	u64 msr_rd_exits;
+	u64 msr_wr_exits;
+	u64 apic_wr_exits;
+	u64 ept_vio_exits;
+	u64 ept_mis_exits;
+	u64 pause_exits;
+	u64 steal;
+	u64 st_max;
+	u64 utime;
+	u64 stime;
+	u64 gtime;
 };
 
 struct x86_instruction_info;
