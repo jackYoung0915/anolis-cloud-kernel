@@ -1762,7 +1762,7 @@ static void ioc_rqos_throttle(struct rq_qos *rqos, struct bio *bio, spinlock_t *
 
 	iocg = blkg_to_iocg(blkg);
 	/* bypass IOs for root cgroup */
-	if (!iocg->level)
+	if (!iocg || !iocg->level)
 		return;
 
 	/* always activate so that even 0 cost IOs get protected to some level */
@@ -1915,7 +1915,7 @@ static void ioc_rqos_merge(struct rq_qos *rqos, struct request *rq,
 
 	iocg = blkg_to_iocg(blkg);
 	/* bypass for root cgroup */
-	if (!iocg->level)
+	if (!iocg || !iocg->level)
 		return;
 
 	abs_cost = calc_vtime_cost(bio, iocg, true);
@@ -2069,6 +2069,12 @@ static int blk_iocost_init(struct request_queue *q)
 	ioc_refresh_params(ioc, true);
 	spin_unlock_irq(&ioc->lock);
 
+	/*
+	 * rqos must be added before activation to allow iocg_pd_init() to
+	 * lookup the ioc from q. This means that the rqos methods may get
+	 * called before policy activation completion, can't assume that the
+	 * target bio has an iocg associated and need to test for NULL iocg.
+	 */
 	rq_qos_add(q, rqos);
 	ret = blkcg_activate_policy(q, &blkcg_policy_iocost);
 	if (ret) {
