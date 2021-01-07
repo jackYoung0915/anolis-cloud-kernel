@@ -2461,11 +2461,6 @@ static int interrupt_init_v3_hw(struct hisi_hba *hisi_hba)
 			dev_err(dev, "could not get cq%d irq affinity!\n", i);
 			return -ENOENT;
 		}
-		cq->irq_mask = pci_irq_get_affinity(pdev, i + BASE_VECTORS_V3_HW);
-		if (!cq->irq_mask) {
-			dev_err(dev, "could not get cq%d irq affinity!\n", i);
-			return -ENOENT;
-		}
 	}
 
 	return 0;
@@ -2761,15 +2756,12 @@ static int slave_configure_v3_hw(struct scsi_device *sdev)
 		}
 	}
 
-<<<<<<< HEAD
 	/* Set according to IOMMU IOVA caching limit */
 	max_sectors = min_t(size_t, queue_max_hw_sectors(sdev->request_queue),
 			    (PAGE_SIZE * 32) >> SECTOR_SHIFT);
 
 	blk_queue_max_hw_sectors(sdev->request_queue, max_sectors);
 
-=======
->>>>>>> 16fd4a7c5917 (scsi: hisi_sas: Add device link between SCSI devices and hisi_hba)
 	return 0;
 }
 
@@ -3336,7 +3328,7 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_err(dev, "%d hw queues\n", shost->nr_hw_queues);
 	rc = scsi_add_host(shost, dev);
 	if (rc)
-		goto err_out_debugfs;
+		goto err_out_free_irq_vectors;
 
 	rc = sas_register_ha(sha);
 	if (rc)
@@ -3363,6 +3355,8 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 err_out_register_ha:
 	scsi_remove_host(shost);
+err_out_free_irq_vectors:
+	pci_free_irq_vectors(pdev);
 err_out_debugfs:
 	hisi_sas_debugfs_exit(hisi_hba);
 err_out_ha:
