@@ -8529,7 +8529,6 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 {
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
 	struct sched_domain *this_sd;
-	u64 avg_cost, avg_idle;
 	u64 time;
 	int this = smp_processor_id();
 	int cpu, nr = INT_MAX, id_backup = -1;
@@ -8539,23 +8538,24 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 	if (!this_sd)
 		return -1;
 
-	/*
-	 * Due to large variance we need a large fuzz factor; hackbench in
-	 * particularly is sensitive here.
-	 */
-	avg_idle = get_avg_idle(this_rq()) / 512;
-	avg_cost = this_sd->avg_scan_cost + 1;
+	if (sched_feat(SIS_PROP)) {
+		u64 avg_cost, avg_idle, span_avg;
 
-	if (sched_feat(SIS_AVG_CPU) && avg_idle < avg_cost)
-		return -1;
+		/*
+		 * Due to large variance we need a large fuzz factor; hackbench in
+		 * particularly is sensitive here.
+		 */
+		avg_idle = get_avg_idle(this_rq()) / 512;
+		avg_cost = this_sd->avg_scan_cost + 1;
 
-	is_seeker = is_idle_seeker_task(p);
-	if (!is_seeker && sched_feat(SIS_PROP)) {
-		u64 span_avg = sd->span_weight * avg_idle;
-		if (span_avg > 4*avg_cost)
-			nr = div_u64(span_avg, avg_cost);
-		else
-			nr = 4;
+		is_seeker = is_idle_seeker_task(p);
+		if (!is_seeker) {
+			span_avg = sd->span_weight * avg_idle;
+			if (span_avg > 4*avg_cost)
+				nr = div_u64(span_avg, avg_cost);
+			else
+				nr = 4;
+		}
 	}
 
 	time = cpu_clock(this);
