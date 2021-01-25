@@ -8726,29 +8726,6 @@ static int select_idle_core(struct task_struct *p, int core, struct cpumask *cpu
 	return -1;
 }
 
-/*
- * Scan the local SMT mask for idle CPUs.
- */
-static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int target)
-{
-	int cpu;
-	bool is_expellee;
-
-	if (!static_branch_likely(&sched_smt_present))
-		return -1;
-
-	is_expellee = is_expellee_task(p);
-	for_each_cpu(cpu, cpu_smt_mask(target)) {
-		if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)) ||
-		    !cpumask_test_cpu(cpu, sched_domain_span(sd)))
-			continue;
-		if (id_idle_cpu(p, cpu, is_expellee, NULL) || sched_idle_cpu(cpu))
-			return cpu;
-	}
-
-	return -1;
-}
-
 #else /* CONFIG_SCHED_SMT */
 
 static inline void set_idle_cores(int cpu, int val)
@@ -8764,11 +8741,6 @@ static inline int
 select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu, int *id_backup)
 {
 	return __select_idle_cpu(core, p, id_backup);
-}
-
-static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int target)
-{
-	return -1;
 }
 
 #endif /* CONFIG_SCHED_SMT */
@@ -8985,10 +8957,6 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 		return target;
 
 	i = select_idle_cpu(p, sd, target);
-	if ((unsigned)i < nr_cpumask_bits)
-		return i;
-
-	i = select_idle_smt(p, sd, target);
 	if ((unsigned)i < nr_cpumask_bits)
 		return i;
 
