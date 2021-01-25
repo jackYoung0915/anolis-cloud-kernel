@@ -492,7 +492,7 @@ retry:
 	pdu->meta_buffer = nvme_to_user_ptr(d.metadata);
 	pdu->meta_len = d.metadata_len;
 
-	blk_execute_rq_nowait(req->q, NULL, req, 0, nvme_uring_cmd_end_io);
+	blk_execute_rq_nowait(NULL, req, 0, nvme_uring_cmd_end_io);
 	return -EIOCBQUEUED;
 }
 
