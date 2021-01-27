@@ -8388,6 +8388,31 @@ static inline int find_idlest_cpu(struct sched_domain *sd, struct task_struct *p
 	return new_cpu;
 }
 
+static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_backup)
+{
+	bool idle, is_seeker, is_expellee;
+
+	is_seeker = is_idle_seeker_task(p);
+	is_expellee = is_expellee_task(p);
+	/*
+	 * Here is the best opportunity to locate a real
+	 * idle CPU for seeker, so consider id idle cpu as
+	 * a backup option, which will be pick only when
+	 * failed to locate a real idle one.
+	 */
+	if ((id_idle_cpu(p, cpu, is_expellee, &idle) || sched_idle_cpu(cpu)) &&
+	    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
+		if (!group_identity_disabled()) {
+			if (idle || !is_seeker)
+				return cpu;
+			*id_backup = cpu;
+		} else
+			return cpu;
+	}
+
+	return -1;
+}
+
 #ifdef CONFIG_SCHED_SMT
 DEFINE_STATIC_KEY_FALSE(sched_smt_present);
 EXPORT_SYMBOL_GPL(sched_smt_present);
@@ -8446,40 +8471,34 @@ unlock:
  * there are no idle cores left in the system; tracked through
  * sd_llc->shared->has_idle_cores and enabled through update_idle_core() above.
  */
-static int select_idle_core(struct task_struct *p, struct sched_domain *sd, int target)
+static int select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu, int *id_backup)
 {
-	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
-	int core, cpu;
+	bool idle = true;
+	int cpu;
 
 	if (!static_branch_likely(&sched_smt_present))
-		return -1;
+		return __select_idle_cpu(core, p, id_backup);
 
-	if (!test_idle_cores(target, false))
-		return -1;
-
-	cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
-
-	for_each_cpu_wrap(core, cpus, target) {
-		bool idle = true;
-
-		for_each_cpu(cpu, cpu_smt_mask(core)) {
-			if (!available_idle_cpu(cpu)) {
-				idle = false;
-				break;
+	for_each_cpu(cpu, cpu_smt_mask(core)) {
+		if (!available_idle_cpu(cpu)) {
+			idle = false;
+			if (*idle_cpu == -1) {
+				if (sched_idle_cpu(cpu) && cpumask_test_cpu(cpu, p->cpus_ptr)) {
+					*idle_cpu = cpu;
+					break;
+				}
+				continue;
 			}
+			break;
 		}
-		cpumask_andnot(cpus, cpus, cpu_smt_mask(core));
-
-		if (idle)
-			return core;
-
+		if (*idle_cpu == -1 && cpumask_test_cpu(cpu, p->cpus_ptr))
+			*idle_cpu = cpu;
 	}
 
-	/*
-	 * Failed to find an idle core; stop looking for one.
-	 */
-	set_idle_cores(target, 0);
+	if (idle)
+		return core;
 
+	cpumask_andnot(cpus, cpus, cpu_smt_mask(core));
 	return -1;
 }
 
@@ -8508,9 +8527,19 @@ static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int t
 
 #else /* CONFIG_SCHED_SMT */
 
-static inline int select_idle_core(struct task_struct *p, struct sched_domain *sd, int target)
+static inline void set_idle_cores(int cpu, int val)
 {
-	return -1;
+}
+
+static inline bool test_idle_cores(int cpu, bool def)
+{
+	return def;
+}
+
+static inline int
+select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu, int *id_backup)
+{
+	return __select_idle_cpu(core, p, id_backup);
 }
 
 static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int target)
@@ -8528,11 +8557,12 @@ static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd
 static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int target)
 {
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
+	int i, cpu, idle_cpu = -1, nr = INT_MAX, id_backup = -1;
+	bool smt = test_idle_cores(target, false);
+	int this = smp_processor_id();
 	struct sched_domain *this_sd;
 	u64 time;
-	int this = smp_processor_id();
-	int cpu, nr = INT_MAX, id_backup = -1;
-	bool is_seeker, is_expellee;
+	bool is_seeker;
 
 	this_sd = rcu_dereference(*this_cpu_ptr(&sd_llc));
 	if (!this_sd)
@@ -8540,7 +8570,7 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 
 	cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
 
-	if (sched_feat(SIS_PROP)) {
+	if (sched_feat(SIS_PROP) && !smt) {
 		u64 avg_cost, avg_idle, span_avg;
 
 		/*
@@ -8561,38 +8591,31 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 		time = cpu_clock(this);
 	}
 
-	is_expellee = is_expellee_task(p);
 	for_each_cpu_wrap(cpu, cpus, target) {
-		bool idle;
-
-		if (!--nr)
-			return -1;
-
-		/*
-		 * Here is the best opportunity to locate a real
-		 * idle CPU for seeker, so consider id idle cpu as
-		 * a backup option, which will be pick only when
-		 * failed to locate a real idle one.
-		 */
-		if ((id_idle_cpu(p, cpu, is_expellee, &idle) || sched_idle_cpu(cpu)) &&
-		    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
-			if (!group_identity_disabled()) {
-				if (idle || !is_seeker)
-					break;
-				id_backup = cpu;
-			} else
+		if (smt) {
+			i = select_idle_core(p, cpu, cpus, &idle_cpu, &id_backup);
+			if ((unsigned int)i < nr_cpumask_bits)
+				return i;
+		} else {
+			if (!--nr)
+				return -1;
+			idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
+			if ((unsigned int)idle_cpu < nr_cpumask_bits)
 				break;
 		}
 	}
 
-	if (sched_feat(SIS_PROP)) {
+	if (smt)
+		set_idle_cores(this, false);
+
+	if (sched_feat(SIS_PROP) && !smt) {
 		time = cpu_clock(this) - time;
 		update_avg(&this_sd->avg_scan_cost, time);
 	}
 
 	if (!group_identity_disabled())
-		return (unsigned int)cpu < nr_cpumask_bits ? cpu : id_backup;
-	return cpu;
+		return (unsigned int)idle_cpu < nr_cpumask_bits ? idle_cpu : id_backup;
+	return idle_cpu;
 }
 
 /*
@@ -8729,10 +8752,6 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	sd = rcu_dereference(per_cpu(sd_llc, target));
 	if (!sd)
 		return target;
-
-	i = select_idle_core(p, sd, target);
-	if ((unsigned)i < nr_cpumask_bits)
-		return i;
 
 	i = select_idle_cpu(p, sd, target);
 	if ((unsigned)i < nr_cpumask_bits)
