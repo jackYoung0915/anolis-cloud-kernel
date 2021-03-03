@@ -4692,7 +4692,6 @@ void scheduler_tick(void)
 	curr->sched_class->task_tick(rq, curr, 0);
 	update_acpu(rq, curr, curr);
 	calc_global_load_tick(rq);
-	psi_task_tick(rq);
 	sched_core_tick(rq);
 
 	rq_unlock(rq, &rf);
