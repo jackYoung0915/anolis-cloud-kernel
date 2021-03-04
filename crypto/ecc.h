@@ -26,6 +26,8 @@
 #ifndef _CRYPTO_ECC_H
 #define _CRYPTO_ECC_H
 
+#include <crypto/ecc_curve.h>
+
 /* One digit is u64 qword. */
 #define ECC_CURVE_NIST_P192_DIGITS  3
 #define ECC_CURVE_NIST_P256_DIGITS  4
@@ -36,42 +38,7 @@
 
 #define ECC_MAX_BYTES (ECC_MAX_DIGITS << ECC_DIGITS_TO_BYTES_SHIFT)
 
-/**
- * struct ecc_point - elliptic curve point in affine coordinates
- *
- * @x:		X coordinate in vli form.
- * @y:		Y coordinate in vli form.
- * @ndigits:	Length of vlis in u64 qwords.
- */
-struct ecc_point {
-	u64 *x;
-	u64 *y;
-	u8 ndigits;
-};
-
 #define ECC_POINT_INIT(x, y, ndigits)	(struct ecc_point) { x, y, ndigits }
-
-/**
- * struct ecc_curve - definition of elliptic curve
- *
- * @name:	Short name of the curve.
- * @g:		Generator point of the curve.
- * @p:		Prime number, if Barrett's reduction is used for this curve
- *		pre-calculated value 'mu' is appended to the @p after ndigits.
- *		Use of Barrett's reduction is heuristically determined in
- *		vli_mmod_fast().
- * @n:		Order of the curve group.
- * @a:		Curve parameter a.
- * @b:		Curve parameter b.
- */
-struct ecc_curve {
-	char *name;
-	struct ecc_point g;
-	u64 *p;
-	u64 *n;
-	u64 *a;
-	u64 *b;
-};
 
 /**
  * ecc_swap_digits() - Copy ndigits from big endian array to native array
@@ -87,14 +54,6 @@ static inline void ecc_swap_digits(const u64 *in, u64 *out, unsigned int ndigits
 	for (i = 0; i < ndigits; i++)
 		out[i] = be64_to_cpu(src[ndigits - 1 - i]);
 }
-
-/**
- * ecc_get_curve()  - Get a curve given its curve_id
- * @curve_id:  Id of the curve
- *
- * Returns pointer to the curve data, NULL if curve is not available
- */
-const struct ecc_curve *ecc_get_curve(unsigned int curve_id);
 
 /**
  * ecc_is_key_valid() - Validate a given ECDH private key
