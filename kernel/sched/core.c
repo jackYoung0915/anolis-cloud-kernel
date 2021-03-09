@@ -2573,7 +2573,7 @@ static int migration_cpu_stop(void *data)
 		 * ->pi_lock, so the allowed mask is stable - if it got
 		 * somewhere allowed, we're done.
 		 */
-		if (cpumask_test_cpu(task_cpu(p), p->cpus_ptr)) {
+		if (cpumask_test_cpu(task_cpu(p), task_allowed_cpu(p))) {
 			p->migration_pending = NULL;
 			complete = true;
 			goto out;
@@ -3399,10 +3399,10 @@ int migrate_swap(struct task_struct *cur, struct task_struct *p,
 	if (!cpu_active(arg.src_cpu) || !cpu_active(arg.dst_cpu))
 		goto out;
 
-	if (!cpumask_test_cpu(arg.dst_cpu, arg.src_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg.dst_cpu, task_allowed_cpu(arg.src_task)))
 		goto out;
 
-	if (!cpumask_test_cpu(arg.src_cpu, arg.dst_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg.src_cpu, task_allowed_cpu(arg.dst_task)))
 		goto out;
 
 	trace_sched_swap_numa(cur, arg.src_cpu, p, arg.dst_cpu);
@@ -3482,7 +3482,7 @@ static int select_fallback_rq(int cpu, struct task_struct *p)
 
 	for (;;) {
 		/* Any allowed, online CPU? */
-		for_each_cpu(dest_cpu, p->cpus_ptr) {
+		for_each_cpu(dest_cpu, task_allowed_cpu(p)) {
 			if (!is_cpu_allowed(p, dest_cpu))
 				continue;
 
@@ -3541,7 +3541,7 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
 		cpu = p->sched_class->select_task_rq(p, cpu, *wake_flags);
 		*wake_flags |= WF_RQ_SELECTED;
 	} else {
-		cpu = cpumask_any(p->cpus_ptr);
+		cpu = cpumask_any(task_allowed_cpu(p));
 	}
 
 	/*
@@ -3895,7 +3895,7 @@ static inline bool ttwu_queue_cond(struct task_struct *p, int cpu)
 		return false;
 
 	/* Ensure the task will still be allowed to run on the CPU. */
-	if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+	if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)))
 		return false;
 
 	/*
@@ -7879,7 +7879,7 @@ int migrate_task_to(struct task_struct *p, int target_cpu)
 	if (curr_cpu == target_cpu)
 		return 0;
 
-	if (!cpumask_test_cpu(target_cpu, p->cpus_ptr))
+	if (!cpumask_test_cpu(target_cpu, task_allowed_cpu(p)))
 		return -EINVAL;
 
 	/* TODO: This is not properly updating schedstats */
