@@ -4166,4 +4166,8 @@ void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx);
 
 #include "ext.h"
 
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
+{
+	return p->cpus_ptr;
+}
 #endif /* _KERNEL_SCHED_SCHED_H */
