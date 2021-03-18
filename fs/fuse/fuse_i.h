@@ -671,10 +671,10 @@ struct fuse_conn {
 	/** Maximum write size */
 	unsigned max_write;
 
-	/* Maxmum number of pages that write request should be aligned with */
+	/* Maximum number of pages that write request should be aligned with */
 	unsigned int write_align_pages;
 
-	/** Maxmum number of pages that can be used in a single request */
+	/** Maximum number of pages that can be used in a single request */
 	unsigned int max_pages;
 
 	/** Constrain ->max_pages to this value during feature negotiation */
