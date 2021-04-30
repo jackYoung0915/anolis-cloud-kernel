@@ -15,6 +15,7 @@
  *          (lots of bits borrowed from Ingo Molnar & Andrew Morton)
  */
 
+#include "linux/compiler_types.h"
 #include "linux/vm_event_item.h"
 #include <linux/stddef.h>
 #include <linux/mm.h>
@@ -3741,7 +3742,8 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z)
 }
 
 /* Remove page from the per-cpu list, caller must protect the list */
-static struct page *__rmqueue_pcplist(struct zone *zone, gfp_t gfp_flags,
+static inline
+struct page *__rmqueue_pcplist(struct zone *zone, gfp_t gfp_flags,
 				      unsigned int order, int migratetype,
 				      unsigned int alloc_flags,
 				      struct per_cpu_pages *pcp,
