@@ -641,7 +641,7 @@ EXPORT_SYMBOL_GPL(vp_modern_get_queue_notify_off);
  *
  * Returns the address of the notification area
  */
-void *vp_modern_map_vq_notify(struct virtio_pci_modern_device *mdev,
+void __iomem *vp_modern_map_vq_notify(struct virtio_pci_modern_device *mdev,
 			      u16 index)
 {
 	u16 off = vp_modern_get_queue_notify_off(mdev, index);
@@ -657,10 +657,9 @@ void *vp_modern_map_vq_notify(struct virtio_pci_modern_device *mdev,
 				 index, mdev->notify_len);
 			return NULL;
 		}
-		return (void __force *)mdev->notify_base +
-			off * mdev->notify_offset_multiplier;
+		return mdev->notify_base + off * mdev->notify_offset_multiplier;
 	} else {
-		return (void __force *)vp_modern_map_capability(mdev,
+		return vp_modern_map_capability(mdev,
 				       mdev->notify_map_cap, 2, 2,
 				       off * mdev->notify_offset_multiplier, 2,
 				       NULL);
