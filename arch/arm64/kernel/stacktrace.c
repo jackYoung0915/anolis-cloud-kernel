@@ -44,11 +44,15 @@ int notrace unwind_frame(struct task_struct *tsk, struct stackframe *frame)
 	unsigned long fp = frame->fp;
 	struct stack_info info;
 
-	if (fp & 0xf)
-		return -EINVAL;
-
 	if (!tsk)
 		tsk = current;
+
+	/* Final frame; nothing to unwind */
+	if (fp == (unsigned long)task_pt_regs(tsk)->stackframe)
+		return -ENOENT;
+
+	if (fp & 0xf)
+		return -EINVAL;
 
 	if (!on_accessible_stack(tsk, fp, &info))
 		return -EINVAL;
