@@ -5785,6 +5785,9 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 		if (!se->on_rq)
 			goto done;
 
+		if (se->my_q != cfs_rq)
+			cgroup_idle_start(se);
+
 		dequeue_entity(qcfs_rq, se, DEQUEUE_SLEEP);
 
 		if (cfs_rq_is_idle(group_cfs_rq(se)))
@@ -5833,6 +5836,7 @@ done:
 
 void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 {
+	struct cfs_rq *bottom_cfs_rq = cfs_rq;
 	struct rq *rq = rq_of(cfs_rq);
 	struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
 	struct sched_entity *se;
@@ -5876,6 +5880,9 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 
 		if (se->on_rq)
 			break;
+
+		if (se->my_q != bottom_cfs_rq)
+			cgroup_idle_end(se);
 		enqueue_entity(qcfs_rq, se, ENQUEUE_WAKEUP);
 
 		if (cfs_rq_is_idle(group_cfs_rq(se)))
@@ -6762,6 +6769,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq = cfs_rq_of(se);
 		enqueue_entity(cfs_rq, se, flags);
 
+		if (!entity_is_task(se))
+			cgroup_idle_end(se);
+
 		cfs_rq->h_nr_running++;
 		cfs_rq->idle_h_nr_running += idle_h_nr_running;
 
@@ -6769,8 +6779,13 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 			idle_h_nr_running = 1;
 
 		/* end evaluation on encountering a throttled cfs_rq */
-		if (cfs_rq_throttled(cfs_rq))
+		if (cfs_rq_throttled(cfs_rq)) {
+#ifdef CONFIG_FAIR_GROUP_SCHED
+			if (cfs_rq->nr_running == 1)
+				cgroup_idle_end(se->parent);
+#endif
 			goto enqueue_throttle;
+		}
 
 		flags = ENQUEUE_WAKEUP;
 	}
@@ -6840,6 +6855,9 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq = cfs_rq_of(se);
 		dequeue_entity(cfs_rq, se, flags);
 
+		if (!entity_is_task(se))
+			cgroup_idle_start(se);
+
 		cfs_rq->h_nr_running--;
 		cfs_rq->idle_h_nr_running -= idle_h_nr_running;
 
@@ -6847,8 +6865,13 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 			idle_h_nr_running = 1;
 
 		/* end evaluation on encountering a throttled cfs_rq */
-		if (cfs_rq_throttled(cfs_rq))
+		if (cfs_rq_throttled(cfs_rq)) {
+#ifdef CONFIG_FAIR_GROUP_SCHED
+			if (!cfs_rq->nr_running)
+				cgroup_idle_start(se->parent);
+#endif
 			goto dequeue_throttle;
+		}
 
 		/* Don't dequeue parent if it has other entities besides us */
 		if (cfs_rq->load.weight) {
@@ -13038,6 +13061,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	/* guarantee group entities always have weight */
 	update_load_set(&se->load, NICE_0_LOAD);
 	se->parent = parent;
+	seqlock_init(&se->idle_seqlock);
+	se->cg_idle_start = cpu_clock(cpu);
 }
 
 static DEFINE_MUTEX(shares_mutex);
