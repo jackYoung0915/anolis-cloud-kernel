@@ -2751,7 +2751,7 @@ static void nvme_activate_ns(struct nvme_dev *ndev)
 
 	ret = __nvme_submit_sync_cmd(ndev->ctrl.admin_q, &c, NULL,
 			&ndev->activation_info, sizeof(struct nvme_activation_info),
-			0, NVME_QID_ANY, 0, 0, false);
+			0, NVME_QID_ANY, 0, 0);
 
 	ndev->activation_result = ret;
 	ndev->activation_count++;
