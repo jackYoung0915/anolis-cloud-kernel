@@ -1252,7 +1252,6 @@ static void init_vmcb(struct vcpu_svm *svm)
 	 * It also updates the guest-visible cr0 value.
 	 */
 	svm_set_cr0(&svm->vcpu, X86_CR0_NW | X86_CR0_CD | X86_CR0_ET);
-	kvm_mmu_reset_context(&svm->vcpu);
 
 	save->cr4 = X86_CR4_PAE;
 	/* rdx = ?? */
