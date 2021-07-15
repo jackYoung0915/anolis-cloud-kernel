@@ -2170,6 +2170,19 @@ static const struct arm64_cpu_capabilities arm64_features[] = {
 		.min_field_value = 1,
 	},
 #endif /* CONFIG_ARM64_MPAM */
+
+#ifdef CONFIG_ARM64_TWED
+	{
+		.desc = "Delayed Trapping of WFE",
+		.capability = ARM64_HAS_TWED,
+		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
+		.matches = has_cpuid_feature,
+		.sys_reg = SYS_ID_AA64MMFR1_EL1,
+		.field_pos = ID_AA64MMFR1_TWED_SHIFT,
+		.sign = FTR_UNSIGNED,
+		.min_field_value = 1,
+	},
+#endif
 	{},
 };
 
