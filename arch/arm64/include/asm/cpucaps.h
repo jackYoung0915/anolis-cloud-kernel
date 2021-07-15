@@ -68,4 +68,7 @@
 #define ARM64_MPAM				60
 #define ARM64_NCAPS				61
 
+
+#define ARM64_HAS_TWED				64
+
 #endif /* __ASM_CPUCAPS_H */
