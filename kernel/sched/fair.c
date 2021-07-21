@@ -6889,11 +6889,9 @@ static void __push_expellee(struct rq *rq)
 				break;
 		}
 migrate:
-		p->on_rq = TASK_ON_RQ_MIGRATING;
 		deactivate_task(rq, p, 0);
 		set_task_cpu(p, dst_cpu);
 		activate_task(dst_rq, p, 0);
-		p->on_rq = TASK_ON_RQ_QUEUED;
 		put_task_struct(p);
 
 		resched_curr(dst_rq);
