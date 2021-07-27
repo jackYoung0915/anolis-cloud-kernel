@@ -570,8 +570,11 @@ static int register_pcc_channel(int pcc_ss_idx)
 		pcc_data[pcc_ss_idx]->pcc_nominal = pcc_chan->latency;
 
 		pcc_data[pcc_ss_idx]->pcc_comm_addr =
-			acpi_os_ioremap(pcc_chan->shmem_base_addr,
-					pcc_chan->shmem_size);
+#ifdef CONFIG_ARCH_HISI
+			acpi_os_ioremap_pcc(pcc_chan->shmem_base_addr, pcc_chan->shmem_size);
+#else
+			acpi_os_ioremap(pcc_chan->shmem_base_addr, pcc_chan->shmem_size);
+#endif
 		if (!pcc_data[pcc_ss_idx]->pcc_comm_addr) {
 			pr_err("Failed to ioremap PCC comm region mem for %d\n",
 			       pcc_ss_idx);
