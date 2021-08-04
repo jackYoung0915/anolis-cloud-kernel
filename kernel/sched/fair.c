@@ -8809,7 +8809,7 @@ static noinline int select_idle_cpu(struct task_struct *p, struct sched_domain *
 		time = cpu_clock(this);
 	}
 
-	for_each_cpu_wrap(cpu, cpus, target) {
+	for_each_cpu_wrap(cpu, cpus, target + 1) {
 		if (has_idle_core) {
 			i = select_idle_core(p, cpu, cpus, &idle_cpu, &id_backup);
 			if ((unsigned int)i < nr_cpumask_bits)
