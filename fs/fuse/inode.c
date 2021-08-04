@@ -1714,6 +1714,10 @@ static int fuse_fill_super(struct super_block *sb, struct fs_context *fsc)
 	struct fuse_conn *fc;
 	struct fuse_mount *fm;
 
+	if (!ctx->fd_present || !ctx->rootmode_present ||
+	    !ctx->user_id_present || !ctx->group_id_present)
+		return -EINVAL;
+
 	if (ctx->tag_present) {
 		if (fuse_find_instance(ctx->tag)) {
 			err = -EEXIST;
@@ -1809,14 +1813,10 @@ static int fuse_get_tree(struct fs_context *fsc)
 	bool is_virtfuse;
 	int err;
 
-	if (!ctx->fd_present || !ctx->rootmode_present ||
-	    !ctx->user_id_present || !ctx->group_id_present)
-		return -EINVAL;
-
-#ifdef CONFIG_BLOCK
-	if (ctx->is_bdev)
+	if (IS_ENABLED(CONFIG_BLOCK) && ctx->is_bdev) {
 		return get_tree_bdev(fsc, fuse_fill_super);
-#endif
+	}
+
 	/*
 	 * While block dev mount can be initialized with a dummy device fd
 	 * (found by device name), normal fuse mounts can't
