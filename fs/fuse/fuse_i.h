@@ -563,6 +563,7 @@ static inline bool fuse_is_inode_dax_mode(enum fuse_dax_mode mode)
 
 struct fuse_fs_context {
 	int fd;
+	struct file *file;
 	const char *tag;
 	unsigned int rootmode;
 	kuid_t user_id;
