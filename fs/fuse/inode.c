@@ -1709,12 +1709,11 @@ static bool fuse_find_instance(const char *tag)
 static int fuse_fill_super(struct super_block *sb, struct fs_context *fsc)
 {
 	struct fuse_fs_context *ctx = fsc->fs_private;
-	struct file *file;
 	int err;
 	struct fuse_conn *fc;
 	struct fuse_mount *fm;
 
-	if (!ctx->fd_present || !ctx->rootmode_present ||
+	if (!ctx->file || !ctx->rootmode_present ||
 	    !ctx->user_id_present || !ctx->group_id_present)
 		return -EINVAL;
 
@@ -1726,33 +1725,27 @@ static int fuse_fill_super(struct super_block *sb, struct fs_context *fsc)
 		}
 	}
 
-	err = -EINVAL;
-	file = fget(ctx->fd);
-	if (!file) {
-		pr_err("fuse: invalid fd option\n");
-		goto err;
-	}
-
 	/*
 	 * Require mount to happen from the same user namespace which
 	 * opened /dev/fuse to prevent potential attacks.  While for
 	 * virtual fuse, the mount is always bound to init_user_ns.
 	 */
-	if (!is_virtfuse_device(file) &&
-	    ((file->f_op != &fuse_dev_operations) ||
-	     (file->f_cred->user_ns != sb->s_user_ns)))
-		goto err_fput;
-	ctx->fudptr = &file->private_data;
+	err = -EINVAL;
+	if (!is_virtfuse_device(ctx->file) &&
+	    ((ctx->file->f_op != &fuse_dev_operations) ||
+	     (ctx->file->f_cred->user_ns != sb->s_user_ns)))
+		goto err;
+	ctx->fudptr = &ctx->file->private_data;
 
 	fc = kmalloc(sizeof(*fc), GFP_KERNEL);
 	err = -ENOMEM;
 	if (!fc)
-		goto err_fput;
+		goto err;
 
 	fm = kzalloc(sizeof(*fm), GFP_KERNEL);
 	if (!fm) {
 		kfree(fc);
-		goto err_fput;
+		goto err;
 	}
 
 	fuse_conn_init(fc, fm, sb->s_user_ns, &fuse_dev_fiq_ops, NULL);
@@ -1765,12 +1758,8 @@ static int fuse_fill_super(struct super_block *sb, struct fs_context *fsc)
 	err = fuse_fill_super_common(sb, ctx);
 	if (err)
 		goto err_put_conn;
-	/*
-	 * atomic_dec_and_test() in fput() provides the necessary
-	 * memory barrier for file->private_data to be visible on all
-	 * CPUs after this
-	 */
-	fput(file);
+	/* file->private_data shall be visible on all CPUs after this */
+	smp_mb();
 	fuse_send_init(get_fuse_mount_super(sb));
 	return 0;
 
@@ -1778,8 +1767,6 @@ static int fuse_fill_super(struct super_block *sb, struct fs_context *fsc)
 	fuse_conn_put(fc);
 	kfree(fm);
 	sb->s_fs_info = NULL;
- err_fput:
-	fput(file);
  err:
 	return err;
 }
@@ -1809,20 +1796,22 @@ static int fuse_get_tree(struct fs_context *fsc)
 	struct fuse_fs_context *ctx = fsc->fs_private;
 	struct fuse_dev *fud;
 	struct super_block *sb;
-	struct file *file;
 	bool is_virtfuse;
 	int err;
 
+	if (ctx->fd_present)
+		ctx->file = fget(ctx->fd);
+
 	if (IS_ENABLED(CONFIG_BLOCK) && ctx->is_bdev) {
-		return get_tree_bdev(fsc, fuse_fill_super);
+		err = get_tree_bdev(fsc, fuse_fill_super);
+		goto out_fput;
 	}
 
 	/*
 	 * While block dev mount can be initialized with a dummy device fd
 	 * (found by device name), normal fuse mounts can't
 	 */
-	file = fget(ctx->fd);
-	if (!file) {
+	if (!ctx->file) {
 		pr_err("fuse: invalid fd option\n");
 		return -EINVAL;
 	}
@@ -1831,9 +1820,9 @@ static int fuse_get_tree(struct fs_context *fsc)
 	 * Allow creating a fuse mount with an already initialized fuse
 	 * connection
 	 */
-	is_virtfuse = is_virtfuse_device(file);
-	fud = READ_ONCE(file->private_data);
-	if ((file->f_op == &fuse_dev_operations || is_virtfuse) && fud) {
+	is_virtfuse = is_virtfuse_device(ctx->file);
+	fud = READ_ONCE(ctx->file->private_data);
+	if ((ctx->file->f_op == &fuse_dev_operations || is_virtfuse) && fud) {
 		fsc->sget_key = fud->fc;
 		sb = sget_fc(fsc, fuse_test_super, fuse_set_no_super);
 		err = PTR_ERR_OR_ZERO(sb);
@@ -1850,12 +1839,14 @@ static int fuse_get_tree(struct fs_context *fsc)
 		if (WARN_ON(!fuse_mount_callback))
 			err = -EINVAL;
 		else
-			err = fuse_mount_callback(file);
+			err = fuse_mount_callback(ctx->file);
 		if (err)
 			fc_drop_locked(fsc);
 	}
 
-	fput(file);
+out_fput:
+	if (ctx->file)
+		fput(ctx->file);
 	return err;
 }
 
