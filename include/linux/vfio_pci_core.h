@@ -260,8 +260,6 @@ extern int vfio_pci_set_ext_irq_trigger(struct vfio_pci_core_device *vdev,
 int vfio_pci_migration_init(struct vfio_pci_core_device *vdev, uint32_t size);
 
 /* Will be exported for vfio pci drivers usage */
-void vfio_pci_core_cleanup(void);
-int vfio_pci_core_init(void);
 void vfio_pci_core_set_params(bool nointxmask, bool is_disable_vga,
 			      bool is_disable_idle_d3);
 void vfio_pci_core_close_device(struct vfio_device *core_vdev);
