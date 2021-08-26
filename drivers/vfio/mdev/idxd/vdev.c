@@ -21,7 +21,7 @@
 #include <uapi/linux/idxd.h>
 #include "registers.h"
 #include "idxd.h"
-#include "../../vfio/pci/vfio_pci_private.h"
+#include "../../vfio/pci/vfio_pci_core.h"
 #include "../mdev_private.h"
 #include "mdev.h"
 
