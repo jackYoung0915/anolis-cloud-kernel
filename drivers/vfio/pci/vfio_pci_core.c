@@ -122,7 +122,7 @@ static bool vfio_pci_is_denylisted(struct pci_dev *pdev)
  */
 static unsigned int vfio_pci_set_vga_decode(void *opaque, bool single_vga)
 {
-	struct vfio_pci_device *vdev = opaque;
+	struct vfio_pci_core_device *vdev = opaque;
 	struct pci_dev *tmp = NULL, *pdev = vdev->pdev;
 	unsigned char max_busnr;
 	unsigned int decodes;
@@ -156,7 +156,7 @@ static inline bool vfio_pci_is_vga(struct pci_dev *pdev)
 	return (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA;
 }
 
-static void vfio_pci_probe_mmaps(struct vfio_pci_device *vdev)
+static void vfio_pci_probe_mmaps(struct vfio_pci_core_device *vdev)
 {
 	struct resource *res;
 	int i;
@@ -226,7 +226,7 @@ no_mmap:
 
 struct vfio_pci_group_info;
 static bool vfio_pci_dev_set_try_reset(struct vfio_device_set *dev_set);
-static void vfio_pci_disable(struct vfio_pci_device *vdev);
+static void vfio_pci_disable(struct vfio_pci_core_device *vdev);
 static int vfio_pci_dev_set_hot_reset(struct vfio_device_set *dev_set,
 				      struct vfio_pci_group_info *groups);
 
@@ -261,7 +261,7 @@ static bool vfio_pci_nointx(struct pci_dev *pdev)
 	return false;
 }
 
-static void vfio_pci_probe_power_state(struct vfio_pci_device *vdev)
+static void vfio_pci_probe_power_state(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	u16 pmcsr;
@@ -281,7 +281,7 @@ static void vfio_pci_probe_power_state(struct vfio_pci_device *vdev)
  * by PM capability emulation and separately from pci_dev internal saved state
  * to avoid it being overwritten and consumed around other resets.
  */
-int vfio_pci_set_power_state(struct vfio_pci_device *vdev, pci_power_t state)
+int vfio_pci_set_power_state(struct vfio_pci_core_device *vdev, pci_power_t state)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	bool needs_restore = false, needs_save = false;
@@ -312,7 +312,7 @@ int vfio_pci_set_power_state(struct vfio_pci_device *vdev, pci_power_t state)
 	return ret;
 }
 
-static void vfio_pci_dma_fault_release(struct vfio_pci_device *vdev,
+static void vfio_pci_dma_fault_release(struct vfio_pci_core_device *vdev,
 				       struct vfio_pci_region *region)
 {
 	/*
@@ -325,7 +325,7 @@ static void vfio_pci_dma_fault_release(struct vfio_pci_device *vdev,
 	kfree(vdev->fault_pages);
 }
 
-static int vfio_pci_dma_fault_mmap(struct vfio_pci_device *vdev,
+static int vfio_pci_dma_fault_mmap(struct vfio_pci_core_device *vdev,
 				   struct vfio_pci_region *region,
 				   struct vm_area_struct *vma)
 {
@@ -356,7 +356,7 @@ static int vfio_pci_dma_fault_mmap(struct vfio_pci_device *vdev,
 	return ret;
 }
 
-static int vfio_pci_dma_fault_add_capability(struct vfio_pci_device *vdev,
+static int vfio_pci_dma_fault_add_capability(struct vfio_pci_core_device *vdev,
 					     struct vfio_pci_region *region,
 					     struct vfio_info_cap *caps)
 {
@@ -398,7 +398,7 @@ static const struct vfio_pci_regops vfio_pci_dma_fault_regops = {
 	.add_capability = vfio_pci_dma_fault_add_capability,
 };
 
-static void vfio_pci_mregion_release(struct vfio_pci_device *vdev,
+static void vfio_pci_mregion_release(struct vfio_pci_core_device *vdev,
 				      struct vfio_pci_region *region)
 {
 	if (!vdev->mig_pages)
@@ -407,7 +407,7 @@ static void vfio_pci_mregion_release(struct vfio_pci_device *vdev,
 	kfree(vdev->mig_pages);
 }
 
-static int vfio_pci_mregion_mmap(struct vfio_pci_device *vdev,
+static int vfio_pci_mregion_mmap(struct vfio_pci_core_device *vdev,
 				  struct vfio_pci_region *region,
 				  struct vm_area_struct *vma)
 {
@@ -440,7 +440,7 @@ static int vfio_pci_mregion_mmap(struct vfio_pci_device *vdev,
 	return ret;
 }
 
-static int vfio_pci_mregion_add_capability(struct vfio_pci_device *vdev,
+static int vfio_pci_mregion_add_capability(struct vfio_pci_core_device *vdev,
 					    struct vfio_pci_region *region,
 					    struct vfio_info_cap *caps)
 {
@@ -476,7 +476,7 @@ static const struct vfio_pci_regops vfio_pci_mig_regops = {
 	.add_capability	= vfio_pci_mregion_add_capability,
 };
 
-int vfio_pci_migration_init(struct vfio_pci_device *vdev, uint32_t state_size)
+int vfio_pci_migration_init(struct vfio_pci_core_device *vdev, uint32_t state_size)
 {
 	struct vfio_device_migration_info *mig_info;
 	size_t size;
@@ -512,7 +512,7 @@ EXPORT_SYMBOL_GPL(vfio_pci_migration_init);
 
 int vfio_pci_iommu_dev_fault_handler(struct iommu_fault *fault, void *data)
 {
-	struct vfio_pci_device *vdev = (struct vfio_pci_device *)data;
+	struct vfio_pci_core_device *vdev = (struct vfio_pci_core_device *)data;
 	struct vfio_region_dma_fault *reg =
 		(struct vfio_region_dma_fault *)vdev->fault_pages;
 	struct iommu_fault *new;
@@ -548,7 +548,7 @@ unlock:
 
 #define DMA_FAULT_RING_LENGTH 512
 
-int vfio_pci_dma_fault_init(struct vfio_pci_device *vdev,  bool register_fault)
+int vfio_pci_dma_fault_init(struct vfio_pci_core_device *vdev,  bool register_fault)
 {
 	struct vfio_region_dma_fault *header;
 	size_t size;
@@ -598,7 +598,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(vfio_pci_dma_fault_init);
 
-static int vfio_pci_enable(struct vfio_pci_device *vdev)
+static int vfio_pci_enable(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	int ret;
@@ -711,7 +711,7 @@ disable_exit:
 	return ret;
 }
 
-static void vfio_pci_disable(struct vfio_pci_device *vdev)
+static void vfio_pci_disable(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	struct vfio_pci_dummy_resource *dummy_res, *tmp;
@@ -829,7 +829,7 @@ out:
 
 static struct pci_driver vfio_pci_driver;
 
-static struct vfio_pci_device *get_pf_vdev(struct vfio_pci_device *vdev)
+static struct vfio_pci_core_device *get_pf_vdev(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *physfn = pci_physfn(vdev->pdev);
 	struct vfio_device *pf_dev;
@@ -846,12 +846,12 @@ static struct vfio_pci_device *get_pf_vdev(struct vfio_pci_device *vdev)
 		return NULL;
 	}
 
-	return container_of(pf_dev, struct vfio_pci_device, vdev);
+	return container_of(pf_dev, struct vfio_pci_core_device, vdev);
 }
 
-static void vfio_pci_vf_token_user_add(struct vfio_pci_device *vdev, int val)
+static void vfio_pci_vf_token_user_add(struct vfio_pci_core_device *vdev, int val)
 {
-	struct vfio_pci_device *pf_vdev = get_pf_vdev(vdev);
+	struct vfio_pci_core_device *pf_vdev = get_pf_vdev(vdev);
 
 	if (!pf_vdev)
 		return;
@@ -866,8 +866,8 @@ static void vfio_pci_vf_token_user_add(struct vfio_pci_device *vdev, int val)
 
 static void vfio_pci_close_device(struct vfio_device *core_vdev)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 
 	vfio_pci_vf_token_user_add(vdev, -1);
 	vfio_spapr_pci_eeh_release(vdev->pdev);
@@ -887,8 +887,8 @@ static void vfio_pci_close_device(struct vfio_device *core_vdev)
 
 static int vfio_pci_open_device(struct vfio_device *core_vdev)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	int ret = 0;
 
 	ret = vfio_pci_enable(vdev);
@@ -900,7 +900,7 @@ static int vfio_pci_open_device(struct vfio_device *core_vdev)
 	return 0;
 }
 
-static int vfio_pci_get_irq_count(struct vfio_pci_device *vdev, int irq_type)
+static int vfio_pci_get_irq_count(struct vfio_pci_core_device *vdev, int irq_type)
 {
 	if (irq_type == VFIO_PCI_INTX_IRQ_INDEX) {
 		u8 pin;
@@ -1024,7 +1024,7 @@ static int vfio_pci_for_each_slot_or_bus(struct pci_dev *pdev,
 	return walk.ret;
 }
 
-static int msix_mmappable_cap(struct vfio_pci_device *vdev,
+static int msix_mmappable_cap(struct vfio_pci_core_device *vdev,
 			      struct vfio_info_cap *caps)
 {
 	struct vfio_info_cap_header header = {
@@ -1035,7 +1035,7 @@ static int msix_mmappable_cap(struct vfio_pci_device *vdev,
 	return vfio_info_add_capability(caps, &header, sizeof(header));
 }
 
-int vfio_pci_register_dev_region(struct vfio_pci_device *vdev,
+int vfio_pci_register_dev_region(struct vfio_pci_core_device *vdev,
 				 unsigned int type, unsigned int subtype,
 				 const struct vfio_pci_regops *ops,
 				 size_t size, u32 flags, void *data)
@@ -1064,8 +1064,8 @@ int vfio_pci_register_dev_region(struct vfio_pci_device *vdev,
 static long vfio_pci_ioctl(struct vfio_device *core_vdev,
 			   unsigned int cmd, unsigned long arg)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	unsigned long minsz;
 
 	if (cmd == VFIO_DEVICE_GET_INFO) {
@@ -1662,7 +1662,7 @@ hot_reset_release:
 	return -ENOTTY;
 }
 
-static ssize_t vfio_pci_rw(struct vfio_pci_device *vdev, char __user *buf,
+static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			   size_t count, loff_t *ppos, bool iswrite)
 {
 	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
@@ -1696,8 +1696,8 @@ static ssize_t vfio_pci_rw(struct vfio_pci_device *vdev, char __user *buf,
 static ssize_t vfio_pci_read(struct vfio_device *core_vdev, char __user *buf,
 			     size_t count, loff_t *ppos)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 
 	if (!count)
 		return 0;
@@ -1708,8 +1708,8 @@ static ssize_t vfio_pci_read(struct vfio_device *core_vdev, char __user *buf,
 static ssize_t vfio_pci_write(struct vfio_device *core_vdev, const char __user *buf,
 			      size_t count, loff_t *ppos)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 
 	if (!count)
 		return 0;
@@ -1718,7 +1718,7 @@ static ssize_t vfio_pci_write(struct vfio_device *core_vdev, const char __user *
 }
 
 /* Return 1 on zap and vma_lock acquired, 0 on contention (only with @try) */
-static int vfio_pci_zap_and_vma_lock(struct vfio_pci_device *vdev, bool try)
+static int vfio_pci_zap_and_vma_lock(struct vfio_pci_core_device *vdev, bool try)
 {
 	struct vfio_pci_mmap_vma *mmap_vma, *tmp;
 
@@ -1806,14 +1806,14 @@ static int vfio_pci_zap_and_vma_lock(struct vfio_pci_device *vdev, bool try)
 	}
 }
 
-void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_device *vdev)
+void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_core_device *vdev)
 {
 	vfio_pci_zap_and_vma_lock(vdev, false);
 	down_write(&vdev->memory_lock);
 	mutex_unlock(&vdev->vma_lock);
 }
 
-u16 vfio_pci_memory_lock_and_enable(struct vfio_pci_device *vdev)
+u16 vfio_pci_memory_lock_and_enable(struct vfio_pci_core_device *vdev)
 {
 	u16 cmd;
 
@@ -1826,14 +1826,14 @@ u16 vfio_pci_memory_lock_and_enable(struct vfio_pci_device *vdev)
 	return cmd;
 }
 
-void vfio_pci_memory_unlock_and_restore(struct vfio_pci_device *vdev, u16 cmd)
+void vfio_pci_memory_unlock_and_restore(struct vfio_pci_core_device *vdev, u16 cmd)
 {
 	pci_write_config_word(vdev->pdev, PCI_COMMAND, cmd);
 	up_write(&vdev->memory_lock);
 }
 
 /* Caller holds vma_lock */
-static int __vfio_pci_add_vma(struct vfio_pci_device *vdev,
+static int __vfio_pci_add_vma(struct vfio_pci_core_device *vdev,
 			      struct vm_area_struct *vma)
 {
 	struct vfio_pci_mmap_vma *mmap_vma;
@@ -1859,7 +1859,7 @@ static void vfio_pci_mmap_open(struct vm_area_struct *vma)
 
 static void vfio_pci_mmap_close(struct vm_area_struct *vma)
 {
-	struct vfio_pci_device *vdev = vma->vm_private_data;
+	struct vfio_pci_core_device *vdev = vma->vm_private_data;
 	struct vfio_pci_mmap_vma *mmap_vma;
 
 	mutex_lock(&vdev->vma_lock);
@@ -1876,7 +1876,7 @@ static void vfio_pci_mmap_close(struct vm_area_struct *vma)
 static vm_fault_t vfio_pci_mmap_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
-	struct vfio_pci_device *vdev = vma->vm_private_data;
+	struct vfio_pci_core_device *vdev = vma->vm_private_data;
 	struct vfio_pci_mmap_vma *mmap_vma;
 	vm_fault_t ret = VM_FAULT_NOPAGE;
 
@@ -1926,8 +1926,8 @@ static const struct vm_operations_struct vfio_pci_mmap_ops = {
 
 static int vfio_pci_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
 	unsigned int index;
 	u64 phys_len, req_len, pgoff, req_start;
@@ -1997,8 +1997,8 @@ static int vfio_pci_mmap(struct vfio_device *core_vdev, struct vm_area_struct *v
 
 static void vfio_pci_request(struct vfio_device *core_vdev, unsigned int count)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
 
 	mutex_lock(&vdev->igate);
@@ -2017,7 +2017,7 @@ static void vfio_pci_request(struct vfio_device *core_vdev, unsigned int count)
 	mutex_unlock(&vdev->igate);
 }
 
-static int vfio_pci_validate_vf_token(struct vfio_pci_device *vdev,
+static int vfio_pci_validate_vf_token(struct vfio_pci_core_device *vdev,
 				      bool vf_token, uuid_t *uuid)
 {
 	/*
@@ -2049,7 +2049,7 @@ static int vfio_pci_validate_vf_token(struct vfio_pci_device *vdev,
 		return 0; /* No VF token provided or required */
 
 	if (vdev->pdev->is_virtfn) {
-		struct vfio_pci_device *pf_vdev = get_pf_vdev(vdev);
+		struct vfio_pci_core_device *pf_vdev = get_pf_vdev(vdev);
 		bool match;
 
 		if (!pf_vdev) {
@@ -2113,8 +2113,8 @@ static int vfio_pci_validate_vf_token(struct vfio_pci_device *vdev,
 
 static int vfio_pci_match(struct vfio_device *core_vdev, char *buf)
 {
-	struct vfio_pci_device *vdev =
-		container_of(core_vdev, struct vfio_pci_device, vdev);
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	bool vf_token = false;
 	uuid_t uuid;
 	int ret;
@@ -2176,8 +2176,8 @@ static const struct vfio_device_ops vfio_pci_ops = {
 static int vfio_pci_bus_notifier(struct notifier_block *nb,
 				 unsigned long action, void *data)
 {
-	struct vfio_pci_device *vdev = container_of(nb,
-						    struct vfio_pci_device, nb);
+	struct vfio_pci_core_device *vdev = container_of(nb,
+						    struct vfio_pci_core_device, nb);
 	struct device *dev = data;
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct pci_dev *physfn = pci_physfn(pdev);
@@ -2201,7 +2201,7 @@ static int vfio_pci_bus_notifier(struct notifier_block *nb,
 	return 0;
 }
 
-static int vfio_pci_vf_init(struct vfio_pci_device *vdev)
+static int vfio_pci_vf_init(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	int ret;
@@ -2225,7 +2225,7 @@ static int vfio_pci_vf_init(struct vfio_pci_device *vdev)
 	return 0;
 }
 
-static void vfio_pci_vf_uninit(struct vfio_pci_device *vdev)
+static void vfio_pci_vf_uninit(struct vfio_pci_core_device *vdev)
 {
 	if (!vdev->vf_token)
 		return;
@@ -2236,7 +2236,7 @@ static void vfio_pci_vf_uninit(struct vfio_pci_device *vdev)
 	kfree(vdev->vf_token);
 }
 
-static int vfio_pci_vga_init(struct vfio_pci_device *vdev)
+static int vfio_pci_vga_init(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	int ret;
@@ -2251,7 +2251,7 @@ static int vfio_pci_vga_init(struct vfio_pci_device *vdev)
 	return 0;
 }
 
-static void vfio_pci_vga_uninit(struct vfio_pci_device *vdev)
+static void vfio_pci_vga_uninit(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 
@@ -2265,7 +2265,7 @@ static void vfio_pci_vga_uninit(struct vfio_pci_device *vdev)
 
 static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	struct vfio_pci_device *vdev;
+	struct vfio_pci_core_device *vdev;
 	struct iommu_group *group;
 	int ret;
 
@@ -2369,7 +2369,7 @@ out_group_put:
 
 static void vfio_pci_remove(struct pci_dev *pdev)
 {
-	struct vfio_pci_device *vdev = dev_get_drvdata(&pdev->dev);
+	struct vfio_pci_core_device *vdev = dev_get_drvdata(&pdev->dev);
 
 	pci_disable_sriov(pdev);
 
@@ -2393,14 +2393,14 @@ static void vfio_pci_remove(struct pci_dev *pdev)
 static pci_ers_result_t vfio_pci_aer_err_detected(struct pci_dev *pdev,
 						  pci_channel_state_t state)
 {
-	struct vfio_pci_device *vdev;
+	struct vfio_pci_core_device *vdev;
 	struct vfio_device *device;
 
 	device = vfio_device_get_from_dev(&pdev->dev);
 	if (device == NULL)
 		return PCI_ERS_RESULT_DISCONNECT;
 
-	vdev = container_of(device, struct vfio_pci_device, vdev);
+	vdev = container_of(device, struct vfio_pci_core_device, vdev);
 
 	mutex_lock(&vdev->igate);
 
@@ -2451,7 +2451,7 @@ static struct pci_driver vfio_pci_driver = {
 	.err_handler		= &vfio_err_handlers,
 };
 
-static bool vfio_dev_in_groups(struct vfio_pci_device *vdev,
+static bool vfio_dev_in_groups(struct vfio_pci_core_device *vdev,
 			       struct vfio_pci_group_info *groups)
 {
 	unsigned int i;
@@ -2495,7 +2495,8 @@ vfio_pci_dev_set_resettable(struct vfio_device_set *dev_set)
 	 * reset, so any pci_dev will have the same outcomes for
 	 * pci_probe_reset_*() and pci_reset_bus().
 	 */
-	pdev = list_first_entry(&dev_set->device_list, struct vfio_pci_device,
+	pdev = list_first_entry(&dev_set->device_list,
+				struct vfio_pci_core_device,
 				vdev.dev_set_list)->pdev;
 
 	/* pci_reset_bus() is supported */
@@ -2517,16 +2518,17 @@ vfio_pci_dev_set_resettable(struct vfio_device_set *dev_set)
 static int vfio_pci_dev_set_hot_reset(struct vfio_device_set *dev_set,
 				      struct vfio_pci_group_info *groups)
 {
-	struct vfio_pci_device *cur_mem;
-	struct vfio_pci_device *cur_vma;
-	struct vfio_pci_device *cur;
+	struct vfio_pci_core_device *cur_mem;
+	struct vfio_pci_core_device *cur_vma;
+	struct vfio_pci_core_device *cur;
 	struct pci_dev *pdev;
 	bool is_mem = true;
 	int ret;
 
 	mutex_lock(&dev_set->lock);
 	cur_mem = list_first_entry(&dev_set->device_list,
-				   struct vfio_pci_device, vdev.dev_set_list);
+				   struct vfio_pci_core_device,
+				   vdev.dev_set_list);
 
 	pdev = vfio_pci_dev_set_resettable(dev_set);
 	if (!pdev) {
@@ -2584,7 +2586,7 @@ err_unlock:
 
 static bool vfio_pci_dev_set_needs_reset(struct vfio_device_set *dev_set)
 {
-	struct vfio_pci_device *cur;
+	struct vfio_pci_core_device *cur;
 	bool needs_reset = false;
 
 	list_for_each_entry(cur, &dev_set->device_list, vdev.dev_set_list) {
@@ -2606,7 +2608,7 @@ static bool vfio_pci_dev_set_needs_reset(struct vfio_device_set *dev_set)
  */
 static bool vfio_pci_dev_set_try_reset(struct vfio_device_set *dev_set)
 {
-	struct vfio_pci_device *cur;
+	struct vfio_pci_core_device *cur;
 	struct pci_dev *pdev;
 	int ret;
 

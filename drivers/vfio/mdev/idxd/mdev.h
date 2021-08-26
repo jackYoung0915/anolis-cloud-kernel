@@ -94,7 +94,7 @@ struct vdcm_idxd {
 	bool paused;
 
 	int refcount;
-	struct vfio_pci_device vfio_pdev;
+	struct vfio_pci_core_device vfio_pdev;
 };
 
 #define vdev_to_vidxd(vdev) container_of(vdev, struct vdcm_idxd, vdev)

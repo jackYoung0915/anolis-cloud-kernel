@@ -68,7 +68,7 @@ void idxd_mdev_host_release(struct kref *kref)
 {
 	struct idxd_device *idxd = container_of(kref, struct idxd_device, mdev_kref);
 	struct device *dev = &idxd->pdev->dev;
-	struct vfio_pci_device *vfio_pdev = &idxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &idxd->vfio_pdev;
 	int i, rc;
 
 	if (!idxd->mdev_host_init)
