@@ -29,7 +29,7 @@ static void vidxd_do_command(struct vdcm_idxd *vidxd, u32 val);
 
 void vidxd_send_interrupt(struct vdcm_idxd *vidxd, int msix_idx)
 {
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 
 	eventfd_signal(vfio_pdev->ctx[msix_idx].trigger, 1);
 }

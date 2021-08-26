@@ -79,7 +79,7 @@ static const char idxd_iax_1swq_name[] = "iax-1swq-v1";
 static int idxd_vdcm_get_irq_count(struct mdev_device *mdev, int type)
 {
 	struct vdcm_idxd *vidxd = mdev_get_drvdata(mdev);
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 
 	/*
 	 * Even though the number of MSIX vectors supported are not tied to number of
@@ -333,7 +333,7 @@ static void vidxd_free_resources(struct vdcm_idxd *vidxd)
 static void vidxd_source_prepare_for_migration(struct vdcm_idxd *vidxd)
 {
 	int i;
-	struct vfio_pci_device *vdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vdev = &vidxd->vfio_pdev;
 	struct vfio_device_migration_info *mig_info =
 		(struct vfio_device_migration_info *)vdev->mig_pages;
 	u8 *data_ptr = (u8 *)vdev->mig_pages;
@@ -473,7 +473,7 @@ static int vidxd_resume_wq_state(struct vdcm_idxd *vidxd)
 
 static unsigned int vidxd_dest_load_state(struct vdcm_idxd *vidxd)
 {
-	struct vfio_pci_device *vdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vdev = &vidxd->vfio_pdev;
 	struct vfio_device_migration_info *mig_info =
 		(struct vfio_device_migration_info *)vdev->mig_pages;
 	u8	*data_ptr = (u8 *)vdev->mig_pages;
@@ -496,7 +496,7 @@ static unsigned int vidxd_dest_load_state(struct vdcm_idxd *vidxd)
 static int vidxd_resume_ims_state(struct vdcm_idxd *vidxd,
 		unsigned int *offset, bool *int_handle_revoked)
 {
-	struct vfio_pci_device *vdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vdev = &vidxd->vfio_pdev;
 	u8 *data_ptr = (u8 *)vdev->mig_pages;
 	u8 *bar0 = vidxd->bar0;
 	int i;
@@ -553,7 +553,7 @@ static int vidxd_resume_ims_state(struct vdcm_idxd *vidxd,
 static int vidxd_resubmit_pending_descs(struct vdcm_idxd *vidxd,
 		unsigned int *offset)
 {
-	struct vfio_pci_device *vdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vdev = &vidxd->vfio_pdev;
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 	u8 *data_ptr = (u8 *)vdev->mig_pages;
 	struct idxd_virtual_wq *vwq;
@@ -618,7 +618,7 @@ static int vidxd_dest_complete_migration(struct vdcm_idxd *vidxd)
 	int rc = 0;
 	unsigned int offset;
 	bool int_handle_revoked = false;
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 
 	offset = vidxd_dest_load_state(vidxd);
 
@@ -659,7 +659,7 @@ static int vidxd_dest_complete_migration(struct vdcm_idxd *vidxd)
 	return rc;
 }
 
-static int vidxd_migration_state_change(struct vfio_pci_device *vfio_vdev,
+static int vidxd_migration_state_change(struct vfio_pci_core_device *vfio_vdev,
 		u32 new_state)
 {
 	struct vdcm_idxd *vidxd = container_of(vfio_vdev, struct vdcm_idxd, vfio_pdev);
@@ -998,7 +998,7 @@ static void idxd_vdcm_remove(struct mdev_device *mdev)
 	struct idxd_device *idxd = vidxd->idxd;
 	struct device *dev = &idxd->pdev->dev;
 	struct idxd_wq *wq = vidxd->wq;
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	int i;
 
 	dev_dbg(dev, "%s: removing for wq %d\n", __func__, vidxd->wq->id);
@@ -1145,7 +1145,7 @@ static ssize_t idxd_vdcm_rw(struct vfio_device *vdev, char *buf, size_t count, l
 	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
 	u64 pos = *ppos & VFIO_PCI_OFFSET_MASK;
 	struct device *dev = vdev->dev;
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	int rc = -EINVAL;
 
 	if (index >= VFIO_PCI_NUM_REGIONS + vfio_pdev->num_regions) {
@@ -1214,7 +1214,7 @@ static ssize_t idxd_vdcm_read(struct vfio_device *vdev, char __user *buf, size_t
 	case VFIO_PCI_ROM_REGION_INDEX:
 		break;
 	default: {
-		struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+		struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 		struct device *dev = vdev->dev;
 
 		dev_dbg(dev, "vendor specific region: %u\n", index);
@@ -1311,7 +1311,7 @@ static ssize_t idxd_vdcm_write(struct vfio_device *vdev, const char __user *buf,
 	case VFIO_PCI_ROM_REGION_INDEX:
 		break;
 	default: {
-		struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+		struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 		struct device *dev = vdev->dev;
 
 		dev_dbg(dev, "vendor specific region: %u\n", index);
@@ -1467,7 +1467,7 @@ static irqreturn_t idxd_vdcm_msix_handler(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-static void idxd_vdcm_free_irq(struct vfio_pci_device *vfio_pdev, int vector, int irq)
+static void idxd_vdcm_free_irq(struct vfio_pci_core_device *vfio_pdev, int vector, int irq)
 {
 	u32 auxval;
 
@@ -1483,7 +1483,7 @@ static void idxd_vdcm_free_irq(struct vfio_pci_device *vfio_pdev, int vector, in
 
 static int idxd_vdcm_msix_set_vector_signal(struct vdcm_idxd *vidxd, int vector, int fd)
 {
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 	struct device *dev = mdev_dev(mdev);
 	struct eventfd_ctx *trigger;
@@ -1629,7 +1629,7 @@ static int idxd_vdcm_msix_set_vector_signal(struct vdcm_idxd *vidxd, int vector,
 static int idxd_vdcm_msix_set_vector_signals(struct vdcm_idxd *vidxd, u32 start,
 					     u32 count, int *fds)
 {
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	int i, j, rc = 0;
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 	struct device *dev = mdev_dev(mdev);
@@ -1660,7 +1660,7 @@ static int idxd_vdcm_msix_enable(struct vdcm_idxd *vidxd, int nvec)
 {
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 	struct device *dev = mdev_dev(mdev);
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	int rc;
 
 	dev_dbg(dev, "%s: nvec: %d\n", __func__, nvec);
@@ -1697,7 +1697,7 @@ static int idxd_vdcm_msix_disable(struct vdcm_idxd *vidxd)
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 	struct device *dev = mdev_dev(mdev);
 	struct irq_domain *irq_domain;
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 
 	/* Check if somebody already disabled it */
 	if (vfio_pdev->num_ctx == 0)
@@ -1716,7 +1716,7 @@ static int idxd_vdcm_msix_disable(struct vdcm_idxd *vidxd)
 static int idxd_vdcm_set_msix_trigger(struct vdcm_idxd *vidxd, u32 index, u32 start,
 				      u32 count, u32 flags, void *data)
 {
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	int rc, i;
 
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
@@ -1845,7 +1845,7 @@ static int idxd_vdcm_set_irqs(struct vdcm_idxd *vidxd, uint32_t flags,
 {
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 	struct device *dev = mdev_dev(mdev);
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 
 	dev_dbg(dev, "%s: flags: %#x index: %#x, start: %#x, count: %#x, data: %px\n",
 		__func__, flags, index, start, count, data);
@@ -1885,7 +1885,7 @@ static long idxd_vdcm_ioctl(struct vfio_device *vdev, unsigned int cmd,
 	unsigned long minsz;
 	int rc = -EINVAL;
 	struct device *dev = vdev->dev;
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 
 	dev_dbg(dev, "vidxd %p ioctl, cmd: %d\n", vidxd, cmd);
@@ -2209,7 +2209,7 @@ static long idxd_vdcm_ioctl(struct vfio_device *vdev, unsigned int cmd,
 static void idxd_vdcm_mdev_request(struct vfio_device *vdev, unsigned int count)
 {
 	struct vdcm_idxd *vidxd = vdev_to_vidxd(vdev);
-	struct vfio_pci_device *vfio_pdev = &vidxd->vfio_pdev;
+	struct vfio_pci_core_device *vfio_pdev = &vidxd->vfio_pdev;
 	struct mdev_device *mdev = vidxd->ivdev.mdev;
 
 	mutex_lock(&vfio_pdev->igate);

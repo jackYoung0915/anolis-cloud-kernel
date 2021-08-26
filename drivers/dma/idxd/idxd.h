@@ -371,7 +371,7 @@ struct idxd_device {
 	struct workqueue_struct *wq;
 	struct work_struct work;
 	struct irq_domain *ims_domain;
-	struct vfio_pci_device vfio_pdev;
+	struct vfio_pci_core_device vfio_pdev;
 	struct idxd_pmu *idxd_pmu;
 	struct kref mdev_kref;
 	struct mutex kref_lock;
