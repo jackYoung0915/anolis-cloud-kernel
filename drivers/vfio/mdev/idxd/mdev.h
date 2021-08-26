@@ -5,7 +5,7 @@
 #define _IDXD_MDEV_H_
 
 #include <linux/vfio.h>
-#include "../../pci/vfio_pci_core.h"
+#include <linux/vfio_pci_core.h>
 
 /* two 64-bit BARs implemented */
 #define VIDXD_MAX_BARS 2

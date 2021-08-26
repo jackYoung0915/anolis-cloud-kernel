@@ -17,7 +17,7 @@
 #include <linux/perf_event.h>
 #include <uapi/linux/idxd.h>
 #include "registers.h"
-#include "../../vfio/pci/vfio_pci_core.h"
+#include <linux/vfio_pci_core.h>
 
 #define IDXD_DRIVER_VERSION	"1.00"
 
