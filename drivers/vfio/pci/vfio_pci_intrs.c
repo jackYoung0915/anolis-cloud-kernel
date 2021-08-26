@@ -21,7 +21,7 @@
 #include <linux/slab.h>
 #include <linux/nospec.h>
 
-#include "vfio_pci_private.h"
+#include "vfio_pci_core.h"
 
 /*
  * INTx

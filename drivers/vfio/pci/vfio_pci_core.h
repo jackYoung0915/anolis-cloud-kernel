@@ -15,8 +15,8 @@
 #include <linux/uuid.h>
 #include <linux/notifier.h>
 
-#ifndef VFIO_PCI_PRIVATE_H
-#define VFIO_PCI_PRIVATE_H
+#ifndef VFIO_PCI_CORE_H
+#define VFIO_PCI_CORE_H
 
 #define VFIO_PCI_OFFSET_SHIFT   40
 
@@ -258,4 +258,4 @@ extern int vfio_pci_set_ext_irq_trigger(struct vfio_pci_device *vdev,
 
 int vfio_pci_migration_init(struct vfio_pci_device *vdev, uint32_t size);
 
-#endif /* VFIO_PCI_PRIVATE_H */
+#endif /* VFIO_PCI_CORE_H  */
