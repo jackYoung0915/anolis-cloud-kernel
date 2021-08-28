@@ -8297,11 +8297,17 @@ static void balance_push(struct rq *rq)
 	struct task_struct *push_task = rq->curr;
 
 	lockdep_assert_rq_held(rq);
-	SCHED_WARN_ON(rq->cpu != smp_processor_id());
+
 	/*
 	 * Ensure the thing is persistent until balance_push_set(.on = false);
 	 */
 	rq->balance_callback = &balance_push_callback;
+
+	/*
+	 * Only active when invoked on the outgoing CPU.
+	 */
+	if (rq != this_rq())
+		return;
 
 	/*
 	 * Both the cpu-hotplug and stop task are in this case and are
