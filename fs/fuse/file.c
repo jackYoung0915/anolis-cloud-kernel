@@ -2018,8 +2018,7 @@ static void fuse_writepage_end(struct fuse_mount *fm, struct fuse_args *args,
 	fuse_writepage_free(wpa);
 }
 
-static struct fuse_file *__fuse_write_file_get(struct fuse_conn *fc,
-					       struct fuse_inode *fi)
+static struct fuse_file *__fuse_write_file_get(struct fuse_inode *fi)
 {
 	struct fuse_file *ff = NULL;
 
@@ -2034,17 +2033,15 @@ static struct fuse_file *__fuse_write_file_get(struct fuse_conn *fc,
 	return ff;
 }
 
-static struct fuse_file *fuse_write_file_get(struct fuse_conn *fc,
-					     struct fuse_inode *fi)
+static struct fuse_file *fuse_write_file_get(struct fuse_inode *fi)
 {
-	struct fuse_file *ff = __fuse_write_file_get(fc, fi);
+	struct fuse_file *ff = __fuse_write_file_get(fi);
 	WARN_ON(!ff);
 	return ff;
 }
 
 int fuse_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	struct fuse_conn *fc = get_fuse_conn(inode);
 	struct fuse_inode *fi = get_fuse_inode(inode);
 	struct fuse_file *ff;
 	int err;
@@ -2060,7 +2057,7 @@ int fuse_write_inode(struct inode *inode, struct writeback_control *wbc)
 	 */
 	WARN_ON(wbc->for_reclaim);
 
-	ff = __fuse_write_file_get(fc, fi);
+	ff = __fuse_write_file_get(fi);
 	err = fuse_flush_times(inode, ff);
 	if (ff)
 		fuse_file_put(ff, false, false);
@@ -2091,7 +2088,6 @@ static int fuse_writepage_locked(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
 	struct inode *inode = mapping->host;
-	struct fuse_conn *fc = get_fuse_conn(inode);
 	struct fuse_inode *fi = get_fuse_inode(inode);
 	struct fuse_writepage_args *wpa;
 	struct fuse_args_pages *ap;
@@ -2110,7 +2106,7 @@ static int fuse_writepage_locked(struct page *page)
 		goto err_free;
 
 	error = -EIO;
-	wpa->ia.ff = fuse_write_file_get(fc, fi);
+	wpa->ia.ff = fuse_write_file_get(fi);
 	if (!wpa->ia.ff)
 		goto err_nofile;
 
@@ -2333,7 +2329,7 @@ static int fuse_writepages_fill(struct page *page,
 
 	if (!data->ff) {
 		err = -EIO;
-		data->ff = fuse_write_file_get(fc, fi);
+		data->ff = fuse_write_file_get(fi);
 		if (!data->ff)
 			goto out_unlock;
 	}
