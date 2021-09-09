@@ -883,7 +883,7 @@ static int __pci_p2pdma_map_sg(struct pci_p2pdma_pagemap *p2p_pgmap,
 #endif
 
 	for_each_sg(sg, s, nents, i) {
-		s->dma_address = sg_phys(s) - p2p_pgmap->bus_offset;
+		s->dma_address = sg_phys(s) + p2p_pgmap->bus_offset;
 		sg_dma_len(s) = s->length;
 	}
 
