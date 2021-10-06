@@ -314,6 +314,7 @@ struct io_submit_state {
 	unsigned int		free_reqs;
 
 	bool			plug_started;
+	unsigned short		submit_nr;
 
 	/*
 	 * Batch completion logic
@@ -7412,7 +7413,7 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	 */
 	if (!state->plug_started && state->ios_left > 1 &&
 	    io_op_defs[req->opcode].plug) {
-		blk_start_plug(&state->plug);
+		blk_start_plug_nr_ios(&state->plug, state->submit_nr);
 		state->plug_started = true;
 	}
 
@@ -7532,6 +7533,7 @@ static void io_submit_state_start(struct io_submit_state *state,
 {
 	state->plug_started = false;
 	state->ios_left = max_ios;
+	state->submit_nr = max_ios;
 	/* set only head, no need to init link_last in advance */
 	state->link.head = NULL;
 }
