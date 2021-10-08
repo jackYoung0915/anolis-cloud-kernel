@@ -47,6 +47,7 @@ extern void blk_mq_exit_shared_sbitmap(struct blk_mq_tag_set *set);
 extern unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data);
 extern void blk_mq_put_tag(struct blk_mq_tags *tags, struct blk_mq_ctx *ctx,
 			   unsigned int tag);
+void blk_mq_put_tags(struct blk_mq_tags *tags, int *tag_array, int nr_tags);
 extern int blk_mq_tag_update_depth(struct blk_mq_hw_ctx *hctx,
 					struct blk_mq_tags **tags,
 					unsigned int depth, bool can_grow);
