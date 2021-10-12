@@ -148,9 +148,9 @@ struct blk_mq_hw_ctx {
 	/** @kobj: Kernel object for sysfs. */
 	struct kobject		kobj;
 
-	/** @poll_considered: Count times blk_poll() was called. */
+	/** @poll_considered: Count times blk_mq_poll() was called. */
 	unsigned long		poll_considered;
-	/** @poll_invoked: Count how many requests blk_poll() polled. */
+	/** @poll_invoked: Count how many requests blk_mq_poll() polled. */
 	unsigned long		poll_invoked;
 	/** @poll_success: Count how many polled requests were completed. */
 	unsigned long		poll_success;
@@ -615,22 +615,10 @@ static inline void *blk_mq_rq_to_pdu(struct request *rq)
 	for ((i) = 0; (i) < (hctx)->nr_ctx &&				\
 	     ({ ctx = (hctx)->ctxs[(i)]; 1; }); (i)++)
 
-static inline blk_qc_t request_to_qc_t(struct blk_mq_hw_ctx *hctx,
-		struct request *rq)
-{
-	if (rq->tag != -1)
-		return rq->tag | (hctx->queue_num << BLK_QC_T_SHIFT);
-
-	return rq->internal_tag | (hctx->queue_num << BLK_QC_T_SHIFT) |
-			BLK_QC_T_INTERNAL;
-}
-
 static inline void blk_mq_cleanup_rq(struct request *rq)
 {
 	if (rq->q->mq_ops->cleanup_rq)
 		rq->q->mq_ops->cleanup_rq(rq);
 }
-
-blk_qc_t blk_mq_submit_bio(struct bio *bio);
 
 #endif
