@@ -379,7 +379,7 @@ int swap_readpage(struct page *page, bool synchronous)
 	 */
 	bio_set_op_attrs(bio, REQ_OP_READ, 0);
 	if (synchronous) {
-		bio->bi_opf |= REQ_HIPRI;
+		bio->bi_opf |= REQ_POLLED;
 		get_task_struct(current);
 		bio->bi_private = current;
 	}
