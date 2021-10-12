@@ -999,8 +999,9 @@ blk_status_t errno_to_blk_status(int errno);
 #define BLK_POLL_ONESHOT		(1 << 0)
 /* do not sleep to wait for the expected completion time */
 #define BLK_POLL_NOSLEEP		(1 << 1)
-int bio_poll(struct bio *bio, unsigned int flags);
-int iocb_bio_iopoll(struct kiocb *kiocb, unsigned int flags);
+int bio_poll(struct bio *bio, struct io_comp_batch *iob, unsigned int flags);
+int iocb_bio_iopoll(struct kiocb *kiocb, struct io_comp_batch *iob,
+			unsigned int flags);
 
 static inline struct request_queue *bdev_get_queue(struct block_device *bdev)
 {
@@ -2162,5 +2163,13 @@ int thaw_bdev(struct block_device *bdev, struct super_block *sb);
 
 #define rq_list_next(rq)	(rq)->rq_next
 #define rq_list_empty(list)	((list) == (struct request *) NULL)
+
+struct io_comp_batch {
+	struct request *req_list;
+	bool need_ts;
+	void (*complete)(struct io_comp_batch *);
+};
+
+#define DEFINE_IO_COMP_BATCH(name)	struct io_comp_batch name = { }
 
 #endif /* _LINUX_BLKDEV_H */

@@ -641,7 +641,7 @@ int nvme_ns_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd)
 			struct nvme_ns, cdev);
 	q = ns->queue;
 	if (test_bit(QUEUE_FLAG_POLL, &q->queue_flags))
-		ret = bio_poll(req->bio, 0);
+		ret = bio_poll(req->bio, NULL, 0);
 	return ret;
 }
 #ifdef CONFIG_NVME_MULTIPATH
@@ -741,7 +741,7 @@ int nvme_ns_head_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd)
 		req = READ_ONCE(ioucmd->cookie);
 		q = ns->queue;
 		if (test_bit(QUEUE_FLAG_POLL, &q->queue_flags))
-			ret = bio_poll(req->bio, 0);
+			ret = bio_poll(req->bio, NULL, 0);
 	}
 	srcu_read_unlock(&head->srcu, srcu_idx);
 	return ret;
