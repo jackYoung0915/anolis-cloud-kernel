@@ -2658,7 +2658,7 @@ static int io_do_iopoll(struct io_ring_ctx *ctx, unsigned int *nr_events,
 
 			ret = req->file->f_op->uring_cmd_iopoll(ioucmd);
 		} else
-			ret = kiocb->ki_filp->f_op->iopoll(kiocb, poll_flags);
+			ret = kiocb->ki_filp->f_op->iopoll(kiocb, NULL, poll_flags);
 		if (unlikely(ret < 0))
 			return ret;
 		else if (ret)

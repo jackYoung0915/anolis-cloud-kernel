@@ -4016,7 +4016,7 @@ static bool blk_mq_poll_hybrid(struct request_queue *q, blk_qc_t qc)
 }
 
 static int blk_mq_poll_classic(struct request_queue *q, blk_qc_t cookie,
-		unsigned int flags)
+			       struct io_comp_batch *iob, unsigned int flags)
 {
 	struct blk_mq_hw_ctx *hctx = blk_qc_to_hctx(q, cookie);
 	long state = current->state;
@@ -4027,7 +4027,7 @@ static int blk_mq_poll_classic(struct request_queue *q, blk_qc_t cookie,
 	do {
 		hctx->poll_invoked++;
 
-		ret = q->mq_ops->poll(hctx);
+		ret = q->mq_ops->poll(hctx, iob);
 		if (ret > 0) {
 			hctx->poll_success++;
 			__set_current_state(TASK_RUNNING);
@@ -4048,14 +4048,15 @@ static int blk_mq_poll_classic(struct request_queue *q, blk_qc_t cookie,
 	return 0;
 }
 
-int blk_mq_poll(struct request_queue *q, blk_qc_t cookie, unsigned int flags)
+int blk_mq_poll(struct request_queue *q, blk_qc_t cookie, struct io_comp_batch *iob,
+		unsigned int flags)
 {
 	if (!(flags & BLK_POLL_NOSLEEP) &&
 	    q->poll_nsec != BLK_MQ_POLL_CLASSIC) {
 		if (blk_mq_poll_hybrid(q, cookie))
 			return 1;
 	}
-	return blk_mq_poll_classic(q, cookie, flags);
+	return blk_mq_poll_classic(q, cookie, iob, flags);
 }
 
 unsigned int blk_mq_rq_cpu(struct request *rq)
