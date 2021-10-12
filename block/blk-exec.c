@@ -43,7 +43,7 @@ EXPORT_SYMBOL_GPL(blk_rq_is_poll);
 static void blk_rq_poll_completion(struct request *rq, struct completion *wait)
 {
 	do {
-		blk_poll(rq->q, request_to_qc_t(rq->mq_hctx, rq), true);
+		blk_poll(rq->q, request_to_qc_t(rq->mq_hctx, rq), 0);
 		cond_resched();
 	} while (!completion_done(wait));
 }
