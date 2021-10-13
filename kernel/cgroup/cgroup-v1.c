@@ -617,6 +617,108 @@ static int cgroup_clone_children_write(struct cgroup_subsys_state *css,
 		clear_bit(CGRP_CPUSET_CLONE_CHILDREN, &css->cgroup->flags);
 	return 0;
 }
+static u64 cgroup_pool_size_read(struct cgroup_subsys_state *css,
+				 struct cftype *cft)
+{
+	/* kernfs r/w access is serialized by kernfs_open_file->mutex */
+	return css->cgroup->pool_size;
+}
+
+#define CGROUP_POOL_MAX		10000
+
+static ssize_t cgroup_pool_size_write(struct kernfs_open_file *of,
+				  char *buf, size_t nbytes, loff_t off)
+{
+	char name[NAME_MAX + 1];
+	struct cgroup *cgrp;
+	ssize_t ret = -EPERM;
+	u64 val;
+	int i;
+
+	cgrp = of->kn->parent->priv;
+
+	if (kstrtoull(buf, 0, &val))
+		return -EINVAL;
+
+	if (val > CGROUP_POOL_MAX)
+		return -EINVAL;
+
+	if (!cgroup_tryget(cgrp))
+		return -ENODEV;
+
+	kernfs_break_active_protection(of->kn);
+	cgroup_lock();
+	mutex_lock(&cgrp->pool_lock);
+
+	/* only non-zero -> zero or zero -> non-zero settings is valid. */
+	if ((cgrp->pool_size && val) || (!cgrp->pool_size && !val))
+		goto out_fail;
+
+	if (cgroup_is_dead(cgrp)) {
+		ret = -ENODEV;
+		goto out_fail;
+	}
+
+	/* set pool_size to avoid cgrp be removed */
+	cgrp->pool_size = val;
+	mutex_unlock(&cgrp->pool_lock);
+	cgroup_unlock();
+
+	if (val) {
+		struct kernfs_node *parent = cgrp->kn;
+
+		cgrp->hidden_place = kernfs_create_root(NULL, 0, NULL);
+
+		/*
+		 * cgroup whose name with prefix 'pool-' may exist, cgroup_mkdir
+		 * may fail, create cgroup util pool is full.
+		 */
+		for (i = 0; i < val;) {
+			snprintf(name, sizeof(name), "pool-%llu",
+				 atomic64_add_return(1, &cgrp->pool_index));
+			kernfs_get_active(parent);
+			if (!cgroup_mkdir(parent, name, CGROUP_MODE_IN_POOL))
+				i++;
+			kernfs_put_active(parent);
+		}
+		atomic64_set(&cgrp->pool_amount, val);
+
+		mutex_lock(&cgrp->pool_lock);
+		cgrp->enable_pool = true;
+		mutex_unlock(&cgrp->pool_lock);
+	} else {
+		struct kernfs_node *child, *n;
+		struct rb_root *hidden_root;
+
+		hidden_root = &(kernfs_root_to_node(cgrp->hidden_place)->dir.children);
+
+		mutex_lock(&cgrp->pool_lock);
+		cgrp->enable_pool = false;
+		mutex_unlock(&cgrp->pool_lock);
+		cancel_delayed_work_sync(&cgrp->supply_pool_work);
+
+		while (hidden_root->rb_node) {
+			rbtree_postorder_for_each_entry_safe(child, n, hidden_root, rb) {
+				kernfs_get_active(child);
+				cgroup_rmdir(child);
+				kernfs_put_active(child);
+			}
+		}
+		kernfs_destroy_root(cgrp->hidden_place);
+		atomic64_set(&cgrp->pool_amount, 0);
+	}
+
+	ret = nbytes;
+	goto out_success;
+
+out_fail:
+	mutex_unlock(&cgrp->pool_lock);
+	cgroup_unlock();
+out_success:
+	kernfs_unbreak_active_protection(of->kn);
+	cgroup_put(cgrp);
+	return ret;
+}
 
 /* cgroup core interface files for the legacy hierarchies */
 struct cftype cgroup1_base_files[] = {
@@ -659,6 +761,11 @@ struct cftype cgroup1_base_files[] = {
 		.seq_show = cgroup_release_agent_show,
 		.write = cgroup_release_agent_write,
 		.max_write_len = PATH_MAX - 1,
+	},
+	{
+		.name = "pool_size",
+		.read_u64 = cgroup_pool_size_read,
+		.write = cgroup_pool_size_write,
 	},
 	{ }	/* terminate */
 };
