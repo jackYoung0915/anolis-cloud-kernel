@@ -373,6 +373,7 @@ static inline void cgroup_unlock(void)
 {
 	mutex_unlock(&cgroup_mutex);
 }
+extern unsigned int cgroup_supply_delay_time;
 
 /**
  * task_css_set_check - obtain a task's css_set with extra access conditions
@@ -634,6 +635,9 @@ static inline void cgroup_kthread_ready(void)
 
 void cgroup_path_from_kernfs_id(u64 id, char *buf, size_t buflen);
 struct cgroup *cgroup_get_from_id(u64 id);
+
+extern struct kernfs_node *kernfs_get_active(struct kernfs_node *kn);
+extern void kernfs_put_active(struct kernfs_node *kn);
 #else /* !CONFIG_CGROUPS */
 
 struct cgroup_subsys_state;
