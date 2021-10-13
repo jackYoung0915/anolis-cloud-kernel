@@ -446,8 +446,7 @@ retry:
 				return rq;
 			if (e || data->hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)
 				return rq;
-			rq->rq_next = *data->cached_rq;
-			*data->cached_rq = rq;
+			rq_list_add(data->cached_rq, rq);
 			data->flags |= BLK_MQ_REQ_NOWAIT;
 			continue;
 		}
@@ -463,13 +462,7 @@ retry:
 		goto retry;
 	} while (1);
 
-	if (data->cached_rq) {
-		rq = *data->cached_rq;
-		*data->cached_rq = rq->rq_next;
-		return rq;
-	}
-
-	return NULL;
+	return rq_list_pop(data->cached_rq);
 }
 
 struct request *blk_mq_alloc_request(struct request_queue *q, unsigned int op,
@@ -615,11 +608,9 @@ EXPORT_SYMBOL_GPL(blk_mq_free_request);
 
 void blk_mq_free_plug_rqs(struct blk_plug *plug)
 {
-	while (plug->cached_rq) {
-		struct request *rq;
+	struct request *rq;
 
-		rq = plug->cached_rq;
-		plug->cached_rq = rq->rq_next;
+	while ((rq = rq_list_pop(&plug->cached_rq)) != NULL) {
 		percpu_ref_get(&rq->q->q_usage_counter);
 		blk_mq_free_request(rq);
 	}
@@ -2302,8 +2293,7 @@ void blk_mq_submit_bio(struct bio *bio)
 
 	plug = blk_mq_plug(q, bio);
 	if (plug && plug->cached_rq) {
-		rq = plug->cached_rq;
-		plug->cached_rq = rq->rq_next;
+		rq = rq_list_pop(&plug->cached_rq);
 		INIT_LIST_HEAD(&rq->queuelist);
 		data.hctx = rq->mq_hctx;
 	} else {
