@@ -226,6 +226,8 @@ void resctrl_cpu_detect(struct cpuinfo_x86 *c);
 bool resctrl_arch_get_cdp_enabled(enum resctrl_res_level l);
 int resctrl_arch_set_cdp_enabled(enum resctrl_res_level l, bool enable);
 
+bool resctrl_arch_is_hwdrc_mb_capable(void);
+
 #else
 
 static inline void resctrl_arch_sched_in(struct task_struct *tsk) {}
