@@ -10,6 +10,16 @@
 #include <linux/tick.h>
 
 #include <asm/resctrl.h>
+#include <asm/intel-family.h>
+
+/* Memory bandwidth HWDRC */
+#define HWDRC_MSR_OS_MAILBOX_INTERFACE	0xb0
+#define HWDRC_MSR_OS_MAILBOX_DATA	0xb1
+#define HWDRC_MSR_OS_MAILBOX_BUSY_BIT	BIT_ULL(31)
+#define HWDRC_COMMAND_MEM_CLOS_EN	0xd0
+#define HWDRC_SUB_COMMAND_MEM_CLOS_EN	0x54
+#define HWDRC_MEMCLOS_AVAILABLE		BIT_ULL(0)
+#define HWDRC_OS_MAILBOX_RETRY_COUNT	30
 
 #define L3_QOS_CDP_ENABLE		0x01ULL
 
@@ -19,6 +29,7 @@
 
 #define RMID_VAL_ERROR			BIT_ULL(63)
 #define RMID_VAL_UNAVAIL		BIT_ULL(62)
+
 /*
  * With the above fields in use 62 bits remain in MSR_IA32_QM_CTR for
  * data to be returned. The counter width is discovered from the hardware
