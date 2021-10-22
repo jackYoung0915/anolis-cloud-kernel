@@ -39,10 +39,9 @@ int fuse_setxattr(struct inode *inode, const char *name, const void *value,
 		fm->fc->no_setxattr = 1;
 		err = -EOPNOTSUPP;
 	}
-	if (!err) {
-		fuse_invalidate_attr(inode);
+	if (!err)
 		fuse_update_ctime(inode);
-	}
+
 	return err;
 }
 
@@ -170,10 +169,9 @@ int fuse_removexattr(struct inode *inode, const char *name)
 		fm->fc->no_removexattr = 1;
 		err = -EOPNOTSUPP;
 	}
-	if (!err) {
-		fuse_invalidate_attr(inode);
+	if (!err)
 		fuse_update_ctime(inode);
-	}
+
 	return err;
 }
 
