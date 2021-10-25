@@ -200,8 +200,9 @@ static void virtblk_cleanup_cmd(struct request *req)
 	}
 }
 
-static int virtblk_setup_cmd(struct virtio_device *vdev, struct request *req,
-		struct virtblk_req *vbr)
+static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
+				      struct request *req,
+				      struct virtblk_req *vbr)
 {
 	bool unmap = false;
 	u32 type;
@@ -309,15 +310,16 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	unsigned long flags;
 	int num;
 	int qid = hctx->queue_num;
-	int err;
 	bool notify = false;
+	blk_status_t status;
+	int err;
 
 	if (req_op(req) != REQ_OP_DISCARD)
 		BUG_ON(req->nr_phys_segments + 2 > vblk->sg_elems);
 
-	err = virtblk_setup_cmd(vblk->vdev, req, vbr);
-	if (unlikely(err))
-		return err;
+	status = virtblk_setup_cmd(vblk->vdev, req, vbr);
+	if (unlikely(status))
+		return status;
 
 	blk_mq_start_request(req);
 
