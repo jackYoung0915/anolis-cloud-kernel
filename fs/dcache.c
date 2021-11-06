@@ -1301,7 +1301,7 @@ static enum lru_status dentry_lru_cold_count(struct list_head *item,
 {
 	struct dentry *dentry = container_of(item, struct dentry, d_lru);
 	static int dentry_size;
-	u16 dentry_age = KIDLED_GET_SLAB_AGE(dentry);
+	u16 dentry_age = kidled_get_slab_age(dentry);
 
 	/* avoid an object to scan twice in an round */
 	if (dentry_age &&
@@ -1311,16 +1311,16 @@ static enum lru_status dentry_lru_cold_count(struct list_head *item,
 	if (READ_ONCE(dentry->d_lockref.count) ||
 	    (dentry->d_flags & DCACHE_REFERENCED)) {
 		if (dentry_age)
-			KIDLED_SET_SLAB_AGE(dentry, 0);
+			kidled_set_slab_age(dentry, 0);
 		goto out;
 	}
 
-	KIDLED_CLEAR_SLAB_SCANNED(dentry);
+	kidled_clear_slab_scanned(dentry);
 	if (unlikely(!dentry_size))
 		dentry_size = ksize(dentry);
-	dentry_age = KIDLED_INC_SLAB_AGE(dentry);
+	dentry_age = kidled_inc_slab_age(dentry);
 	kidled_mem_cgroup_slab_account(dentry, dentry_age, dentry_size);
-	KIDLED_MARK_SLAB_SCANNED(dentry, kidled_scan_rounds);
+	kidled_mark_slab_scanned(dentry, kidled_scan_rounds);
 out:
 	return LRU_ROTATE_DELAY;
 }
@@ -1857,7 +1857,7 @@ static struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 
 	dentry->d_lockref.count = 1;
 	dentry->d_flags = 0;
-	KIDLED_SET_SLAB_AGE(dentry, 0);
+	kidled_set_slab_age(dentry, 0);
 	spin_lock_init(&dentry->d_lock);
 	seqcount_spinlock_init(&dentry->d_seq, &dentry->d_lock);
 	dentry->d_inode = NULL;

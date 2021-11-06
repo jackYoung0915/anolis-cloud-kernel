@@ -452,7 +452,8 @@ static inline struct obj_cgroup **slab_objcgs(struct slab *slab)
 
 	VM_BUG_ON_PAGE(memcg_data && !(memcg_data & MEMCG_DATA_OBJCGS),
 							slab_page(slab));
-	VM_BUG_ON_PAGE(memcg_data & MEMCG_DATA_KMEM, slab_page(slab));
+	VM_BUG_ON_PAGE((memcg_data & MEMCG_DATA_FLAGS_MASK) != MEMCG_DATA_KMEM,
+		       slab_page(slab));
 
 	return (struct obj_cgroup **)(memcg_data & ~MEMCG_DATA_FLAGS_MASK);
 }
@@ -653,6 +654,10 @@ static __always_inline void unaccount_slab(struct slab *slab, int order,
 {
 	if (memcg_kmem_online())
 		memcg_free_slab_cgroups(slab);
+	else {
+		VM_BUG_ON_PAGE(!page_has_slab_age(slab), slab);
+		kidled_free_slab_age(slab);
+	}
 
 	mod_node_page_state(slab_pgdat(slab), cache_vmstat_idx(s),
 			    -(PAGE_SIZE << order));
