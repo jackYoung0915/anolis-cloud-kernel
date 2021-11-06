@@ -113,9 +113,6 @@ struct dentry {
 	 	struct rcu_head d_rcu;
 	} d_u;
 
-#ifdef CONFIG_KIDLED
-	unsigned short age;
-#endif
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
