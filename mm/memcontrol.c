@@ -3224,6 +3224,10 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 	unsigned long memcg_data;
 	void *vec;
 
+#ifdef CONFIG_KIDLED
+	/* extra allocate an special pointer for cold slab */
+	objects += 1;
+#endif
 	gfp &= ~OBJCGS_CLEAR_MASK;
 	vec = kcalloc_node(objects, sizeof(struct obj_cgroup *), gfp,
 			   slab_nid(slab));
@@ -3260,7 +3264,7 @@ struct mem_cgroup *mem_cgroup_from_obj_folio(struct folio *folio, void *p)
 	 * Memcg membership data for each individual object is saved in
 	 * slab->memcg_data.
 	 */
-	if (folio_test_slab(folio)) {
+	if (folio_test_slab(folio) && !page_has_slab_age(folio_slab(folio))) {
 		struct obj_cgroup **objcgs;
 		struct slab *slab;
 		unsigned int off;
