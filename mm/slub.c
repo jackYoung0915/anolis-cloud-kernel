@@ -2084,6 +2084,8 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 		}
 		set_freepointer(s, p, NULL);
 	}
+	if (unlikely(kidled_alloc_slab_age(slab, s, alloc_gfp)))
+		pr_warn("Fails to trace %s:%p cold slab distribution.\n", s->name, slab);
 
 	return slab;
 }

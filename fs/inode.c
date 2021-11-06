@@ -163,7 +163,7 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_flags = 0;
-	KIDLED_SET_SLAB_AGE(inode, 0);
+	kidled_set_slab_age(inode, 0);
 	atomic64_set(&inode->i_sequence, 0);
 	atomic_set(&inode->i_count, 1);
 	inode->i_op = &empty_iops;
@@ -941,7 +941,7 @@ static enum lru_status inode_lru_cold_count(struct list_head *item,
 {
 	struct inode *inode = container_of(item, struct inode, i_lru);
 	static int inode_size;
-	u16 inode_age = KIDLED_GET_SLAB_AGE(inode);
+	u16 inode_age = kidled_get_slab_age(inode);
 
 	if (inode_age &&
 	    kidled_is_slab_scanned(inode_age, kidled_scan_rounds))
@@ -950,23 +950,23 @@ static enum lru_status inode_lru_cold_count(struct list_head *item,
 	if (atomic_read(&inode->i_count) ||
 	    (inode->i_state & I_REFERENCED)) {
 		if (unlikely(inode_age))
-			KIDLED_SET_SLAB_AGE(inode, 0);
+			kidled_set_slab_age(inode, 0);
 		goto out;
 	}
 
 	if (inode->i_data.nrpages ||
 	    !list_empty(&inode->i_data.private_list)) {
 		if (unlikely(inode_age))
-			KIDLED_SET_SLAB_AGE(inode, 0);
+			kidled_set_slab_age(inode, 0);
 		goto out;
 	}
 
-	KIDLED_CLEAR_SLAB_SCANNED(inode);
+	kidled_clear_slab_scanned(inode);
 	if (unlikely(!inode_size))
 		inode_size = ksize(inode);
-	inode_age = KIDLED_INC_SLAB_AGE(inode);
+	inode_age = kidled_inc_slab_age(inode);
 	kidled_mem_cgroup_slab_account(inode, inode_age, inode_size);
-	KIDLED_MARK_SLAB_SCANNED(inode, kidled_scan_rounds);
+	kidled_mark_slab_scanned(inode, kidled_scan_rounds);
 out:
 	return LRU_ROTATE_DELAY;
 }
@@ -1589,8 +1589,8 @@ again:
 			goto again;
 		} else {
 			/* reset its age if it has already had an age */
-			if (KIDLED_GET_SLAB_AGE(inode))
-				KIDLED_SET_SLAB_AGE(inode, 0);
+			if (kidled_get_slab_age(inode))
+				kidled_set_slab_age(inode, 0);
 		}
 	}
 	return inode;
@@ -1623,8 +1623,8 @@ again:
 			goto again;
 		} else {
 			/* reset its age if it has already had an age */
-			if (KIDLED_GET_SLAB_AGE(inode))
-				KIDLED_SET_SLAB_AGE(inode, 0);
+			if (kidled_get_slab_age(inode))
+				kidled_set_slab_age(inode, 0);
 		}
 	}
 	return inode;
