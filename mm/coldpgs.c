@@ -1069,6 +1069,12 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 			nr_page_reclaimed = reclaim_coldpgs_from_lru(memcg,
 							filter, pgdat, lruvec,
 							lru, reclaim);
+
+			if (lru == LRU_UNEVICTABLE)
+				reclaim_coldpgs_update_stats(memcg,
+					RECLIMA_COLDPGS_STAT_MLOCK_DROP,
+					nr_page_reclaimed << PAGE_SHIFT);
+
 			nr_reclaimed += nr_page_reclaimed << PAGE_SHIFT;
 		}
 	}
@@ -1260,6 +1266,8 @@ static int reclaim_coldpgs_read_stats(struct seq_file *m, void *v)
 		"anon migrate out",
 		"anon zswap out",
 		"anon swap out",
+		"mlock dropped",
+		"mlock refault",
 	};
 
 	self = kzalloc(sizeof(*self) * 3, GFP_KERNEL);
