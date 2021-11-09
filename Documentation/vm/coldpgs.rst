@@ -142,7 +142,7 @@ below:
 
   The coldness threshold used in memory cgroup scoped reclaim. The memory
   cgroup's page cache or anonymous pages, which are colder than the threshold,
-  will be reclaimed. The amount (number of pages) to be reclaimed is limited
+  will be reclaimed. The amount (memory in bytes) to be reclaimed is limited
   by ``memory.coldpgs.size``. The corresponding memory cgroup might have
   subordinate offline memory cgroups. During the memory cgroup scoped reclaim,
   the subordinate offline memory cgroups will experience page reclaim as well.
@@ -151,7 +151,7 @@ below:
 
 * ``memory.coldpgs.size``
 
-  The amount of pages that can be reclaimed from the corresponding memory
+  The amount of memory that can be reclaimed from the corresponding memory
   cgroup. The coldness threshold is given by ``memory.coldpgs.threshold``
   in memory cgroup scoped reclaim. The corresponding memory cgroup might have
   subordinate offline memory cgroups. During the memory cgroup scoped reclaim,
