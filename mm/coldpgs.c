@@ -223,12 +223,12 @@ static void my__update_lru_size(struct lruvec *lruvec,
 
 static inline void reclaim_coldpgs_update_stats(struct mem_cgroup *memcg,
 						unsigned int index,
-						unsigned long nr_pages)
+						unsigned long size)
 {
 	if (index >= RECLAIM_COLDPGS_STAT_MAX)
 		return;
 
-	__this_cpu_add(memcg->coldpgs_stats->counts[index], nr_pages);
+	__this_cpu_add(memcg->coldpgs_stats->counts[index], size);
 }
 
 static inline bool reclaim_coldpgs_has_mode(
@@ -664,10 +664,12 @@ static int pageout(struct mem_cgroup *memcg,
 
 		if (use_zswap)
 			reclaim_coldpgs_update_stats(memcg,
-				RECLAIM_COLDPGS_STAT_ANON_OUT_ZSWAP, nr_pages);
+				RECLAIM_COLDPGS_STAT_ANON_OUT_ZSWAP,
+				nr_pages << PAGE_SHIFT);
 		else
 			reclaim_coldpgs_update_stats(memcg,
-				RECLAIM_COLDPGS_STAT_ANON_OUT_SWAP, nr_pages);
+				RECLAIM_COLDPGS_STAT_ANON_OUT_SWAP,
+				nr_pages << PAGE_SHIFT);
 
 		return PAGE_SUCCESS;
 	}
@@ -926,7 +928,8 @@ keep:
 
 	/* Update page cache reclaim statistics */
 	reclaim_coldpgs_update_stats(memcg,
-		RECLAIM_COLDPGS_STAT_PCACHE_OUT_DROP, nr_pagecache_dropped);
+		RECLAIM_COLDPGS_STAT_PCACHE_OUT_DROP,
+		nr_pagecache_dropped << PAGE_SHIFT);
 
 	/* Free folios that are eligible for releasing */
 	my_mem_cgroup_uncharge_list(&free_folios);
@@ -1045,9 +1048,18 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 		for (lru = find_first_bit(&bitmap, BITS_PER_LONG);
 		     lru < NR_LRU_LISTS && nr_reclaimed < filter->size;
 		     lru = find_next_bit(&bitmap, BITS_PER_LONG, (lru + 1))) {
-			nr_reclaimed += reclaim_coldpgs_from_lru(memcg,
-						filter, pgdat, lruvec, lru,
-						filter->size - nr_reclaimed);
+			unsigned long reclaim, nr_page_reclaimed;
+
+			/*
+			 * User specify the size in bytes to break the loop, but
+			 * reclaim_coldpgs_from_lru reclaim the memory at the
+			 * granularity of a page.
+			 */
+			reclaim = (filter->size - nr_reclaimed) >> PAGE_SHIFT;
+			nr_page_reclaimed = reclaim_coldpgs_from_lru(memcg,
+							filter, pgdat, lruvec,
+							lru, reclaim);
+			nr_reclaimed += nr_page_reclaimed << PAGE_SHIFT;
 		}
 	}
 }
@@ -1282,13 +1294,13 @@ static int reclaim_coldpgs_read_stats(struct seq_file *m, void *v)
 	}
 
 	for (i = 0; i < RECLAIM_COLDPGS_STAT_MAX; i++) {
-		seq_printf(m, "%-32s: %-24lu\n",
-			   coldpgs_stats_desc[i], self->counts[i]);
+		seq_printf(m, "%-32s: %20lu kB\n",
+			   coldpgs_stats_desc[i], self->counts[i] >> 10);
 	}
 
 	for (i = 0; i < RECLAIM_COLDPGS_STAT_MAX; i++) {
-		seq_printf(m, "Total %-26s: %-24lu\n",
-			   coldpgs_stats_desc[i], total->counts[i]);
+		seq_printf(m, "Total %-26s: %20lu kB\n",
+			   coldpgs_stats_desc[i], total->counts[i] >> 10);
 	}
 
 	kfree(self);
