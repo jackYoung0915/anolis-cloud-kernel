@@ -220,7 +220,6 @@ static inline void kidled_inc_scan_seq(void)
 
 extern const int kidled_default_buckets[NUM_KIDLED_BUCKETS];
 
-bool kidled_use_hierarchy(void);
 #ifdef CONFIG_MEMCG
 void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
 				  struct mem_cgroup *to,
