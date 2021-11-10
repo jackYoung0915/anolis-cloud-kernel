@@ -982,6 +982,84 @@ void cold_icache_sb(struct super_block *sb,
 }
 #endif
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+static inline bool valid_cold_inode_check(struct inode *inode)
+{
+	assert_spin_locked(&inode->i_lock);
+	if (atomic_read(&inode->i_count))
+		return false;
+	if (inode->i_state & I_REFERENCED)
+		return false;
+	if (inode_has_buffers(inode))
+		return false;
+	if (inode->i_data.nrpages)
+		return false;
+
+	return true;
+}
+
+static __maybe_unused enum lru_status
+cold_inode_lru_isolate_reap(struct list_head *item,
+			    struct list_lru_one *lru,
+			    spinlock_t *lru_lock, void *arg)
+{
+	struct kidled_slab_param *s_param = (struct kidled_slab_param *)arg;
+	unsigned long threshold = s_param->threshold;
+	struct list_head *freeable = s_param->freeable;
+	struct inode *inode;
+	u8 __maybe_unused inode_age;
+
+	inode = container_of(item, struct inode, i_lru);
+	if (!spin_trylock(&inode->i_lock))
+		return LRU_SKIP;
+
+	if (!valid_cold_inode_check(inode))
+		goto out;
+
+	inode_age = kidled_get_slab_age(inode);
+	if (inode_age >= threshold) {
+		inode->i_state |= I_FREEING;
+		list_lru_isolate_move(lru, &inode->i_lru, freeable);
+		this_cpu_dec(nr_unused);
+		spin_unlock(&inode->i_lock);
+		return LRU_REMOVED;
+	}
+
+out:
+	spin_unlock(&inode->i_lock);
+	return LRU_ROTATE;
+}
+
+static inline unsigned long get_inode_size(struct list_head *head)
+{
+	struct inode *inode;
+
+	if (list_empty(head))
+		return 0;
+	inode = list_first_entry(head, struct inode, i_lru);
+	return ksize(inode);
+}
+
+unsigned long shrink_cold_icache(struct super_block *sb,
+				    struct shrink_control *sc)
+{
+	unsigned long nr_reclaimed = 0;
+	LIST_HEAD(dispose);
+	static unsigned long inode_size;
+	struct kidled_slab_param s_param;
+
+	s_param.threshold = sc->threshold;
+	s_param.freeable = &dispose;
+	nr_reclaimed = list_lru_walk_node(&sb->s_inode_lru, sc->nid,
+					  cold_inode_lru_isolate_reap,
+					  &s_param, &sc->nr_to_scan);
+	if (unlikely(!inode_size))
+		inode_size = get_inode_size(&dispose);
+	dispose_list(&dispose);
+	return nr_reclaimed * inode_size;
+}
+#endif
+
 static void __wait_on_freeing_inode(struct inode *inode);
 /*
  * Called with the inode lock held.
