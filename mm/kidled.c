@@ -972,16 +972,6 @@ void kidled_set_slab_age(void *object, unsigned short age)
 	*(slab_age + off) = age;
 }
 
-static inline bool kidled_available_slab(struct kmem_cache *s)
-{
-	if (!strcmp(s->name, "inode_cache") ||
-	    !strcmp(s->name, "ext4_inode_cache") ||
-	    !strcmp(s->name, "dentry"))
-		return true;
-
-	return false;
-}
-
 /*
  * each slab object pointer to an memcg respectively when kmem account enable,
  * slab page can be used by root mem_cgroup and children memcg. slab object

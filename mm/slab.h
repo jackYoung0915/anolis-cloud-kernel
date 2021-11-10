@@ -402,6 +402,22 @@ static inline enum node_stat_item cache_vmstat_idx(struct kmem_cache *s)
 		NR_SLAB_RECLAIMABLE_B : NR_SLAB_UNRECLAIMABLE_B;
 }
 
+#ifdef CONFIG_KIDLED
+static inline bool kidled_available_slab(struct kmem_cache *s)
+{
+	if (!strcmp(s->name, "inode_cache") ||
+	    !strcmp(s->name, "ext4_inode_cache") ||
+	    !strcmp(s->name, "dentry"))
+		return true;
+	return false;
+}
+#else
+static inline bool kidled_available_slab(struct kmem_cache *s)
+{
+	return false;
+}
+#endif
+
 #ifdef CONFIG_SLUB_DEBUG
 #ifdef CONFIG_SLUB_DEBUG_ON
 DECLARE_STATIC_KEY_TRUE(slub_debug_enabled);
@@ -655,8 +671,8 @@ static __always_inline void unaccount_slab(struct slab *slab, int order,
 	if (memcg_kmem_online())
 		memcg_free_slab_cgroups(slab);
 	else {
-		VM_BUG_ON_PAGE(!page_has_slab_age(slab), slab);
-		kidled_free_slab_age(slab);
+		if (page_has_slab_age(slab))
+			kidled_free_slab_age(slab);
 	}
 
 	mod_node_page_state(slab_pgdat(slab), cache_vmstat_idx(s),
