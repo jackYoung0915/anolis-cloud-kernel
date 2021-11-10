@@ -208,6 +208,13 @@ extern char *simple_dname(struct dentry *, char *, int);
 extern void dput_to_list(struct dentry *, struct list_head *);
 extern void shrink_dentry_list(struct list_head *);
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+extern unsigned long shrink_cold_dcache(struct super_block *sb,
+					struct shrink_control *sc);
+extern unsigned long shrink_cold_icache(struct super_block *sb,
+					struct shrink_control *sc);
+#endif
+
 /*
  * pipe.c
  */

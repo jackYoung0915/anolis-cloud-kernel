@@ -104,6 +104,8 @@ sysfs files include:
 
   Bit[0] : Reclaim clean page cache from memory cgroup(s)
   Bit[1] : Reclaim anonymous pages from memory cgroup(s)
+  Bit[2] : Reclaim reclaimable slab objects from memory cgroup(s),
+           currently including dentries, inodes.
 
 * ``/sys/kernel/mm/coldpgs/threshold``
 
@@ -457,3 +459,35 @@ enabled and working properly:
    # cat /proc/swaps
      Filename       Type        Size      Used    Priority
      /dev/nvme1n1   partition   1048572   256	  -2
+
+11) Global scoped slab object reclaim
+    Similar to what we do for global pagecache、anonymous page reclaim.
+    We need to set ``/sys/kernel/mm/coldpgs/threshold`` and specified
+    mode to work.
+
+    # < Run test program to produce a lot of cold slab objects >
+    # cat /sys/fs/cgroup/memory/memory.idle_page_stats | grep slab
+      slab               5824           7280            416            416         112384     3584597744              0              0
+    # echo 0x4 > /sys/kernel/mm/coldpgs/mode
+    # echo 120 > sys/kernel/mm/coldpgs/threshold
+    # cat /sys/fs/cgroup/memory/memory.idle_page_stats
+      pagecache migrate in            :                    0 kB
+      pagecache migrate out           :                    0 kB
+      pagecache dropped               :                    0 kB
+      anon migrate in                 :                    0 kB
+      anon zswap in                   :                    0 kB
+      anon swap in                    :                    0 kB
+      anon migrate out                :                    0 kB
+      anon zswap out                  :                    0 kB
+      anon swap out                   :                    0 kB
+      slab drop                       :              3099108 kB
+      Total pagecache migrate in      :                    0 kB
+      Total pagecache migrate out     :                    0 kB
+      Total pagecache dropped         :                    0 kB
+      Total anon migrate in           :                    0 kB
+      Total anon zswap in             :                    0 kB
+      Total anon swap in              :                    0 kB
+      Total anon migrate out          :                    0 kB
+      Total anon zswap out            :                    0 kB
+      Total anon swap out             :                    0 kB
+      Total slab drop                 :              3099108 kB

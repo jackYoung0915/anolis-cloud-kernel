@@ -234,7 +234,8 @@ struct reclaim_coldpgs_control {
 #define RECLAIM_COLDPGS_STAT_ANON_OUT_MIGRATE	6
 #define RECLAIM_COLDPGS_STAT_ANON_OUT_ZSWAP	7
 #define RECLAIM_COLDPGS_STAT_ANON_OUT_SWAP	8
-#define RECLAIM_COLDPGS_STAT_MAX		9
+#define RECLAIM_COLDPGS_STAT_SLAB_DROP		9
+#define RECLAIM_COLDPGS_STAT_MAX		10
 
 struct reclaim_coldpgs_stats {
 	unsigned long		counts[RECLAIM_COLDPGS_STAT_MAX];
