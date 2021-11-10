@@ -114,6 +114,16 @@ struct idle_page_stats {
 };
 
 /*
+ * we need to pass multiple parameter for coldpgs when reclaiming the
+ * free slab. 'threshold' aims to identify the colder slab objects
+ * which want to reclaim. 'freeable' stores the objects to be freed.
+ */
+struct kidled_slab_param {
+	unsigned int threshold;
+	struct list_head *freeable;
+};
+
+/*
  * Duration is in seconds, it means kidled will take how long to finish
  * one round (just try, no promise). Sequence number will be increased
  * when user updates the sysfs file each time, it can protect readers
