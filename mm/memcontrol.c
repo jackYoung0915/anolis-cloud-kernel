@@ -3226,10 +3226,10 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 	unsigned long memcg_data;
 	void *vec;
 
-#ifdef CONFIG_KIDLED
 	/* extra allocate an special pointer for cold slab */
-	objects += 1;
-#endif
+	if (kidled_available_slab(s))
+		objects += 1;
+
 	gfp &= ~OBJCGS_CLEAR_MASK;
 	vec = kcalloc_node(objects, sizeof(struct obj_cgroup *), gfp,
 			   slab_nid(slab));
