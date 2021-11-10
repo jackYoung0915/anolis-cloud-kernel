@@ -52,6 +52,10 @@ struct shrink_control {
 	 */
 	unsigned long nr_scanned;
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	/* It is only used by coldpgs to shrink the slab */
+	unsigned long threshold;
+#endif
 	/* current memcg being shrunk (for memcg aware shrinkers) */
 	struct mem_cgroup *memcg;
 };
@@ -85,6 +89,10 @@ struct shrinker {
 				       struct shrink_control *sc);
 	unsigned long (*scan_objects)(struct shrinker *,
 				      struct shrink_control *sc);
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	unsigned long (*reap_objects)(struct shrinker *,
+				      struct shrink_control *sc);
+#endif
 
 #ifdef CONFIG_KIDLED
 	unsigned long (*cold_objects)(struct shrinker *,

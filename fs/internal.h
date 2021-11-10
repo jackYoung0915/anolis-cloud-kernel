@@ -217,6 +217,13 @@ extern void cold_icache_sb(struct super_block *sb,
 			   struct shrink_control *sc);
 #endif
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+extern unsigned long shrink_cold_dcache(struct super_block *sb,
+					struct shrink_control *sc);
+extern unsigned long shrink_cold_icache(struct super_block *sb,
+					struct shrink_control *sc);
+#endif
+
 /*
  * pipe.c
  */
