@@ -2917,7 +2917,7 @@ static void x86_pmu_handle_guest_pebs(struct pt_regs *regs,
 	int bit;
 
 	guest_cbs = perf_get_guest_cbs();
-	if (!unlikely(guest_cbs && guest_cbs->is_in_guest()))
+	if (guest_cbs && guest_cbs->state())
 		return;
 
 	if (!x86_pmu.pebs_ept || !x86_pmu.pebs_active ||
@@ -3010,10 +3010,7 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 		handled++;
 
 		guest_cbs = perf_get_guest_cbs();
-		if (unlikely(guest_cbs && guest_cbs->is_in_guest() &&
-			     guest_cbs->handle_intel_pt_intr))
-			guest_cbs->handle_intel_pt_intr();
-		else
+		if (likely(!guest_cbs || !guest_cbs->handle_intel_pt_intr()))
 			intel_pt_interrupt();
 	}
 
