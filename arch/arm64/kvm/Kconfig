@@ -42,6 +42,8 @@ config KVM
 	select TASKSTATS
 	select TASK_DELAY_ACCT
 	select KVM_ARM_HOST_VHE_ONLY if KVM=m
+	select SCHED_INFO
+	select GUEST_PERF_EVENTS if PERF_EVENTS
 	help
 	  Support hosting virtualized guest machines.
 
