@@ -2913,11 +2913,9 @@ static void x86_pmu_handle_guest_pebs(struct pt_regs *regs,
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	u64 guest_pebs_idxs = cpuc->pebs_enabled & ~cpuc->intel_ctrl_host_mask;
 	struct perf_event *event = NULL;
-	struct perf_guest_info_callbacks *guest_cbs;
 	int bit;
 
-	guest_cbs = perf_get_guest_cbs();
-	if (guest_cbs && guest_cbs->state())
+	if (!unlikely(perf_guest_state()))
 		return;
 
 	if (!x86_pmu.pebs_ept || !x86_pmu.pebs_active ||
@@ -2943,7 +2941,6 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 {
 	struct perf_sample_data data;
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
-	struct perf_guest_info_callbacks *guest_cbs;
 	int bit;
 	int handled = 0;
 	u64 intel_ctrl = hybrid(cpuc->pmu, intel_ctrl);
@@ -3008,9 +3005,7 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 	 */
 	if (__test_and_clear_bit(GLOBAL_STATUS_TRACE_TOPAPMI_BIT, (unsigned long *)&status)) {
 		handled++;
-
-		guest_cbs = perf_get_guest_cbs();
-		if (likely(!guest_cbs || !guest_cbs->handle_intel_pt_intr()))
+		if (!perf_guest_handle_intel_pt_intr())
 			intel_pt_interrupt();
 	}
 
