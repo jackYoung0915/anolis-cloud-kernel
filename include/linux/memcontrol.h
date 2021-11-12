@@ -212,6 +212,40 @@ struct mem_cgroup_thresholds {
 	struct mem_cgroup_threshold_ary *spare;
 };
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+struct reclaim_coldpgs_control {
+	struct rw_semaphore	rwsem;
+	unsigned long		threshold;
+	unsigned long		size;
+	unsigned long		flags;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+};
+
+#define RECLAIM_COLDPGS_STAT_PCACHE_IN_MIGRATE	0
+#define RECLAIM_COLDPGS_STAT_PCACHE_OUT_MIGRATE	1
+#define RECLAIM_COLDPGS_STAT_PCACHE_OUT_DROP	2
+#define RECLAIM_COLDPGS_STAT_ANON_IN_MIGRATE	3
+#define RECLAIM_COLDPGS_STAT_ANON_IN_ZSWAP	4
+#define RECLAIM_COLDPGS_STAT_ANON_IN_SWAP	5
+#define RECLAIM_COLDPGS_STAT_ANON_OUT_MIGRATE	6
+#define RECLAIM_COLDPGS_STAT_ANON_OUT_ZSWAP	7
+#define RECLAIM_COLDPGS_STAT_ANON_OUT_SWAP	8
+#define RECLAIM_COLDPGS_STAT_MAX		9
+
+struct reclaim_coldpgs_stats {
+	unsigned long		counts[RECLAIM_COLDPGS_STAT_MAX];
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+};
+#endif /* CONFIG_RECLAIM_COLDPGS */
+
 /*
  * Remember four most recent foreign writebacks with dirty pages in this
  * cgroup.  Inode sharing is expected to be uncommon and, even if we miss
@@ -440,6 +474,11 @@ struct mem_cgroup {
 
 #ifdef CONFIG_ASYNC_FORK
 	unsigned long async_fork;
+#endif
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	struct reclaim_coldpgs_control	coldpgs_control;
+	struct reclaim_coldpgs_stats __percpu *coldpgs_stats;
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -833,6 +872,12 @@ static inline void mem_cgroup_uncharge_list(struct list_head *page_list)
 }
 
 void mem_cgroup_migrate(struct folio *old, struct folio *new);
+
+static inline struct mem_cgroup_per_node *
+mem_cgroup_nodeinfo(struct mem_cgroup *memcg, int nid)
+{
+	return memcg->nodeinfo[nid];
+}
 
 /**
  * mem_cgroup_lruvec - get the lru list vector for a memcg & node

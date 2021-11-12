@@ -6798,6 +6798,13 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	if (!memcg->exstat_cpu)
 		goto fail;
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	init_rwsem(&memcg->coldpgs_control.rwsem);
+	memcg->coldpgs_stats = alloc_percpu(struct reclaim_coldpgs_stats);
+	if (!memcg->coldpgs_stats)
+		goto fail;
+#endif
+
 	for_each_node(node)
 		if (alloc_mem_cgroup_per_node_info(memcg, node))
 			goto fail;
