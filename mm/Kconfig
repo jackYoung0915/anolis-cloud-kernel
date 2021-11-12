@@ -1387,4 +1387,16 @@ config PRE_OOM
 	  This feature is used to ensure that higher priority tasks would not enter the
 	  direct reclaim path when applying for memory allocation.
 
+config RECLAIM_COLDPGS
+	tristate "Reclaim cold pages"
+	depends on MEMCG && KIDLED
+	default m
+	help
+	  This exports the interfaces allowing user application to reclaim
+	  the cold page cache or anonymous pages through them. The module
+	  iterates the pages in the memory cgroup's LRU lists one by one.
+	  The page cache or anonymous page colder than the specified threshold
+	  will be reclaimed so that they can be reused by somebody else, like
+	  newly created cgroups to increase the whole system density.
+
 endmenu
