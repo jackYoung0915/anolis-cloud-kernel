@@ -226,8 +226,6 @@ vm_fault_t kvm_arch_vcpu_fault(struct kvm_vcpu *vcpu, struct vm_fault *vmf)
  */
 void kvm_arch_destroy_vm(struct kvm *kvm)
 {
-	int i;
-
 #ifdef CONFIG_KVM_HISI_VIRT
 	kvm_hisi_destroy_dvmbm(kvm);
 #endif
@@ -236,13 +234,7 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 
 	kvm_vgic_destroy(kvm);
 
-	for (i = 0; i < KVM_MAX_VCPUS; ++i) {
-		if (kvm->vcpus[i]) {
-			kvm_vcpu_destroy(kvm->vcpus[i]);
-			kvm->vcpus[i] = NULL;
-		}
-	}
-	atomic_set(&kvm->online_vcpus, 0);
+	kvm_destroy_vcpus(kvm);
 #ifdef CONFIG_CVM_HOST
 	if (kvm_is_cvm(kvm))
 		kvm_destroy_cvm(kvm);
