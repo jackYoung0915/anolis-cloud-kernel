@@ -10734,6 +10734,11 @@ void call_trace_sched_update_nr_running(struct rq *rq, int count)
         trace_sched_update_nr_running_tp(rq, count);
 }
 
+/* A hook point for hotfix to release reserve memory used for scheduler. */
+void sched_task_release(struct task_struct *p)
+{
+}
+
 #ifdef CONFIG_SCHED_MM_CID
 
 /*
