@@ -2675,4 +2675,5 @@ static inline bool jbd2_proxy_exec_disabled(void)
 {
 	return !static_branch_unlikely(&__jbd2_proxy_exec_enabled);
 }
+extern void sched_task_release(struct task_struct *p);
 #endif
