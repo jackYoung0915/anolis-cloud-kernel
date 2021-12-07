@@ -299,12 +299,57 @@ static void damon_va_update(struct damon_ctx *ctx)
 	}
 }
 
-static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
+static bool damon_pmdp_mknone(pmd_t *pmd, struct mm_walk *walk, unsigned long addr)
+{
+	bool preserve_write;
+	pmd_t entry = *pmd;
+
+	if (is_huge_zero_pmd(entry) || pmd_protnone(entry))
+		return false;
+
+	if (pmd_present(entry)) {
+		preserve_write = pmd_write(entry);
+		entry = pmdp_invalidate(walk->vma, addr, pmd);
+		entry = pmd_modify(entry, PAGE_NONE);
+		if (preserve_write)
+			entry = pmd_mkwrite(entry, walk->vma);
+
+		set_pmd_at(walk->mm, addr, pmd, entry);
+		return true;
+	}
+	return false;
+}
+
+static bool damon_ptep_mknone(pte_t *pte, struct mm_walk *walk, unsigned long addr)
+{
+	pte_t oldpte, ptent;
+	bool preserve_write;
+
+	oldpte = *pte;
+	if (pte_protnone(oldpte))
+		return false;
+
+	if (pte_present(oldpte)) {
+		preserve_write = pte_write(oldpte);
+		oldpte = ptep_modify_prot_start(walk->vma, addr, pte);
+		ptent = pte_modify(oldpte, PAGE_NONE);
+
+		if (preserve_write)
+			ptent = pte_mkwrite(ptent, walk->vma);
+
+		ptep_modify_prot_commit(walk->vma, addr, pte, oldpte, ptent);
+		return true;
+	}
+	return false;
+}
+
+static int damon_va_pmd_entry(pmd_t *pmd, unsigned long addr,
 		unsigned long next, struct mm_walk *walk)
 {
 	pte_t *pte;
 	pmd_t pmde;
 	spinlock_t *ptl;
+	bool result = false;
 
 	if (pmd_trans_huge(pmdp_get(pmd))) {
 		ptl = pmd_lock(walk->mm, pmd);
@@ -317,7 +362,14 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
 
 		if (pmd_trans_huge(pmde)) {
 			damon_pmdp_mkold(pmd, walk->vma, addr);
+			if (nr_online_nodes > 1)
+				result = damon_pmdp_mknone(pmd, walk, addr);
 			spin_unlock(ptl);
+			if (result) {
+				unsigned long haddr = addr & HPAGE_PMD_MASK;
+
+				flush_tlb_range(walk->vma, haddr, haddr + HPAGE_PMD_SIZE);
+			}
 			return 0;
 		}
 		spin_unlock(ptl);
@@ -328,11 +380,16 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	if (!pte_present(ptep_get(pte)))
-		goto out;
+	if (!pte_present(*pte)) {
+		pte_unmap_unlock(pte, ptl);
+		return 0;
+	}
 	damon_ptep_mkold(pte, walk->vma, addr);
-out:
+	if (nr_online_nodes > 1)
+		result = damon_ptep_mknone(pte, walk, addr);
 	pte_unmap_unlock(pte, ptl);
+	if (result)
+		flush_tlb_page(walk->vma, addr);
 	return 0;
 }
 
@@ -389,16 +446,16 @@ out:
 #define damon_mkold_hugetlb_entry NULL
 #endif /* CONFIG_HUGETLB_PAGE */
 
-static const struct mm_walk_ops damon_mkold_ops = {
-	.pmd_entry = damon_mkold_pmd_entry,
+static const struct mm_walk_ops damon_va_ops = {
+	.pmd_entry = damon_va_pmd_entry,
 	.hugetlb_entry = damon_mkold_hugetlb_entry,
 	.walk_lock = PGWALK_RDLOCK,
 };
 
-static void damon_va_mkold(struct mm_struct *mm, unsigned long addr)
+static void damon_va_check(struct mm_struct *mm, unsigned long addr)
 {
 	mmap_read_lock(mm);
-	walk_page_range(mm, addr, addr + 1, &damon_mkold_ops, NULL);
+	walk_page_range(mm, addr, addr + 1, &damon_va_ops, NULL);
 	mmap_read_unlock(mm);
 }
 
@@ -411,7 +468,7 @@ static void __damon_va_prepare_access_check(struct mm_struct *mm,
 {
 	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
 
-	damon_va_mkold(mm, r->sampling_addr);
+	damon_va_check(mm, r->sampling_addr);
 }
 
 static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
