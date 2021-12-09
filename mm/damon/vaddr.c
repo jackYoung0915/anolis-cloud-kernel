@@ -22,14 +22,6 @@
 #define DAMON_MIN_REGION 1
 #endif
 
-/*
- * 't->pid' should be the pointer to the relevant 'struct pid' having reference
- * count.  Caller must put the returned task, unless it is NULL.
- */
-static inline struct task_struct *damon_get_task_struct(struct damon_target *t)
-{
-	return get_pid_task(t->pid, PIDTYPE_PID);
-}
 
 /*
  * Get the mm_struct of the given target
@@ -295,7 +287,9 @@ static void damon_va_update(struct damon_ctx *ctx)
 	damon_for_each_target(t, ctx) {
 		if (damon_va_three_regions(t, three_regions))
 			continue;
+		spin_lock(&t->target_lock);
 		damon_set_regions(t, three_regions, 3);
+		spin_unlock(&t->target_lock);
 	}
 }
 

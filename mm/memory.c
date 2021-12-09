@@ -79,6 +79,7 @@
 #include <linux/zswap.h>
 #include <linux/sched/sysctl.h>
 #include <linux/page_dup.h>
+#include <linux/damon.h>
 
 #include <trace/events/kmem.h>
 
@@ -5956,6 +5957,7 @@ static vm_fault_t do_numa_page(struct vm_fault *vmf)
 	else
 		last_cpupid = folio_last_cpupid(folio);
 	target_nid = numa_migrate_prep(folio, vma, vmf->address, nid, &flags);
+	damon_numa_fault(nid, numa_node_id(), vmf);
 	if (target_nid == NUMA_NO_NODE) {
 		folio_put(folio);
 		goto out_map;
