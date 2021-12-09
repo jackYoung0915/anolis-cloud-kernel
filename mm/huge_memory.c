@@ -40,6 +40,7 @@
 #include <linux/memory-tiers.h>
 #include <linux/compat.h>
 #include <linux/page_dup.h>
+#include <linux/damon.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
@@ -2170,6 +2171,7 @@ vm_fault_t do_huge_pmd_numa_page(struct vm_fault *vmf)
 	if (node_is_toptier(nid))
 		last_cpupid = folio_last_cpupid(folio);
 	target_nid = numa_migrate_prep(folio, vma, haddr, nid, &flags);
+	damon_numa_fault(nid, numa_node_id(), vmf);
 	if (target_nid == NUMA_NO_NODE) {
 		folio_put(folio);
 		goto out_map;
