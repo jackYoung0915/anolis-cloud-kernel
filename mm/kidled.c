@@ -83,6 +83,7 @@ struct kidled_scan_control kidled_scan_control;
 const int kidled_default_buckets[NUM_KIDLED_BUCKETS] = {
 	1, 2, 5, 15, 30, 60, 120, 240 };
 static DECLARE_WAIT_QUEUE_HEAD(kidled_wait);
+static DEFINE_STATIC_KEY_FALSE(kidled_slab_key);
 unsigned long kidled_scan_rounds __read_mostly;
 
 static inline int kidled_get_bucket(int *idle_buckets, int age)
@@ -924,6 +925,31 @@ static int kidled(void *dummy)
 	return 0;
 }
 
+static inline bool kidled_allow_scan_slab(void)
+{
+	struct kidled_scan_control scan_control =
+		kidled_get_current_scan_control();
+
+	if (!scan_control.duration)
+		return false;
+
+	if (!kidled_has_slab_target(&scan_control))
+		return false;
+
+	return true;
+}
+
+static inline void kidled_slab_scan_enabled(void)
+{
+	if (!static_key_enabled(&kidled_slab_key)) {
+		if (kidled_allow_scan_slab())
+			static_branch_enable(&kidled_slab_key);
+	} else {
+		if (!kidled_allow_scan_slab())
+			static_branch_disable(&kidled_slab_key);
+	}
+}
+
 static inline unsigned short *kidled_slab_age(struct slab *slab)
 {
 	return (unsigned short *)((unsigned long)slab->memcg_data & ~MEMCG_DATA_SLAB_AGE);
@@ -950,24 +976,38 @@ static unsigned short *kidled_get_slab_age_array(void *object)
 
 unsigned short kidled_get_slab_age(void *object)
 {
-	unsigned short *slab_age = kidled_get_slab_age_array(object);
-	struct slab *slab = virt_to_slab(object);
-	unsigned int off = obj_to_index(slab->slab_cache, slab, object);
+	unsigned short *slab_age;
+	struct slab *slab;
+	unsigned int off;
 
-	if (unlikely(!slab_age))
+	if (!static_branch_unlikely(&kidled_slab_key))
 		return 0;
+
+	slab_age = kidled_get_slab_age_array(object);
+	if (!slab_age)
+		return 0;
+
+	slab = virt_to_slab(object);
+	off = obj_to_index(slab->slab_cache, slab, object);
 
 	return *(slab_age + off);
 }
 
 void kidled_set_slab_age(void *object, unsigned short age)
 {
-	unsigned short *slab_age = kidled_get_slab_age_array(object);
-	struct slab *slab = virt_to_slab(object);
-	unsigned int off = obj_to_index(slab->slab_cache, slab, object);
+	unsigned short *slab_age;
+	struct slab *slab;
+	unsigned int off;
 
-	if (unlikely(!slab_age))
+	if (!static_branch_unlikely(&kidled_slab_key))
 		return;
+
+	slab_age = kidled_get_slab_age_array(object);
+	if (!slab_age)
+		return;
+
+	slab = virt_to_slab(object);
+	off = obj_to_index(slab->slab_cache, slab, object);
 
 	*(slab_age + off) = age;
 }
@@ -1057,6 +1097,7 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 
 	kidled_set_scan_duration(secs);
 	wake_up_interruptible(&kidled_wait);
+	kidled_slab_scan_enabled();
 	return count;
 }
 
@@ -1079,6 +1120,7 @@ static ssize_t kidled_scan_target_store(struct kobject *kobj,
 		return -EINVAL;
 
 	WRITE_ONCE(kidled_scan_target, val);
+	kidled_slab_scan_enabled();
 	return count;
 }
 
