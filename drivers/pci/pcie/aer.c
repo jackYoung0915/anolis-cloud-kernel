@@ -392,6 +392,10 @@ void pci_aer_init(struct pci_dev *dev)
 	pci_add_ext_cap_save_buffer(dev, PCI_EXT_CAP_ID_ERR, sizeof(u32) * n);
 
 	pci_aer_clear_status(dev);
+
+	/* Enable AER if requested */
+	if (pci_aer_available())
+		pci_enable_pcie_error_reporting(dev);
 }
 
 void pci_aer_exit(struct pci_dev *dev)
