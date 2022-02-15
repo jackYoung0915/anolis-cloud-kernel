@@ -575,32 +575,6 @@ page_required:
 		 */
 		mark_page_accessed(page);
 	}
-	if ((flags & FOLL_MLOCK) && (vma->vm_flags & VM_LOCKED)) {
-		/* Do not mlock pte-mapped THP */
-		if (PageTransCompound(page))
-			goto out;
-
-		/*
-		 * The preliminary mapping check is mainly to avoid the
-		 * pointless overhead of lock_page on the ZERO_PAGE
-		 * which might bounce very badly if there is contention.
-		 *
-		 * If the page is already locked, we don't need to
-		 * handle it now - vmscan will handle it later if and
-		 * when it attempts to reclaim the page.
-		 */
-		if (page->mapping && trylock_page(page)) {
-			lru_add_drain();  /* push cached pages to LRU */
-			/*
-			 * Because we lock page here, and migration is
-			 * blocked by the pte's page reference, and we
-			 * know the page is still mapped, we don't even
-			 * need to check for file-cache page truncation.
-			 */
-			mlock_vma_page(page);
-			unlock_page(page);
-		}
-	}
 out:
 	pte_unmap_unlock(ptep, ptl);
 	return page;
@@ -930,11 +904,6 @@ static int faultin_page(struct vm_area_struct *vma,
 	unsigned int fault_flags = 0;
 	vm_fault_t ret;
 
-	/* mlock all present pages, but do not fault in new pages */
-	if ((*flags & (FOLL_POPULATE | FOLL_MLOCK)) == FOLL_MLOCK)
-		return -ENOENT;
-	if (*flags & FOLL_POPULATE)
-		fault_flags |= FAULT_FLAG_NONZEROPAGE;
 	if (*flags & FOLL_WRITE)
 		fault_flags |= FAULT_FLAG_WRITE;
 	if (*flags & FOLL_REMOTE)
@@ -1177,8 +1146,6 @@ retry:
 			case -ENOMEM:
 			case -EHWPOISON:
 				goto out;
-			case -ENOENT:
-				goto next_page;
 			}
 			BUG();
 		} else if (PTR_ERR(page) == -EEXIST) {
@@ -1477,9 +1444,14 @@ long populate_vma_page_range(struct vm_area_struct *vma,
 	VM_BUG_ON_VMA(end   > vma->vm_end, vma);
 	mmap_assert_locked(mm);
 
-	gup_flags = FOLL_TOUCH | FOLL_POPULATE | FOLL_MLOCK;
+	/*
+	 * Rightly or wrongly, the VM_LOCKONFAULT case has never used
+	 * faultin_page() to break COW, so it has no work to do here.
+	 */
 	if (vma->vm_flags & VM_LOCKONFAULT)
-		gup_flags &= ~FOLL_POPULATE;
+		return nr_pages;
+
+	gup_flags = FOLL_TOUCH;
 	/*
 	 * We want to touch writable mappings with a write fault in order
 	 * to break COW, except for shared mappings because these don't COW
