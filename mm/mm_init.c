@@ -82,31 +82,35 @@ void __init mminit_verify_pageflags_layout(void)
 
 	shift = BITS_PER_LONG;
 	width = shift - SECTIONS_WIDTH - NODES_WIDTH - ZONES_WIDTH
-		- LAST_CPUPID_SHIFT - KASAN_TAG_WIDTH - LRU_GEN_WIDTH - LRU_REFS_WIDTH;
+		- LAST_CPUPID_SHIFT - KASAN_TAG_WIDTH - KIDLED_AGE_SHIFT
+		- LRU_GEN_WIDTH - LRU_REFS_WIDTH;
 	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_widths",
-		"Section %d Node %d Zone %d Lastcpupid %d Kasantag %d Gen %d Tier %d Flags %d\n",
+	       "Section %d Node %d Zone %d Lastcpupid %d Kasantag %d Kidled %d Gen %d Tier %d Flags %d\n",
 		SECTIONS_WIDTH,
 		NODES_WIDTH,
 		ZONES_WIDTH,
 		LAST_CPUPID_WIDTH,
 		KASAN_TAG_WIDTH,
+		KIDLED_AGE_WIDTH,
 		LRU_GEN_WIDTH,
 		LRU_REFS_WIDTH,
 		NR_PAGEFLAGS);
 	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_shifts",
-		"Section %d Node %d Zone %d Lastcpupid %d Kasantag %d\n",
+	       "Section %d Node %d Zone %d Lastcpupid %d Kasantag %d, Kidled %d\n",
 		SECTIONS_SHIFT,
 		NODES_SHIFT,
 		ZONES_SHIFT,
 		LAST_CPUPID_SHIFT,
-		KASAN_TAG_WIDTH);
+		KASAN_TAG_WIDTH,
+		KIDLED_AGE_SHIFT);
 	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_pgshifts",
-		"Section %lu Node %lu Zone %lu Lastcpupid %lu Kasantag %lu\n",
+	       "Section %lu Node %lu Zone %lu Lastcpupid %lu Kasantag %lu, Kidled %lu\n",
 		(unsigned long)SECTIONS_PGSHIFT,
 		(unsigned long)NODES_PGSHIFT,
 		(unsigned long)ZONES_PGSHIFT,
 		(unsigned long)LAST_CPUPID_PGSHIFT,
-		(unsigned long)KASAN_TAG_PGSHIFT);
+		(unsigned long)KASAN_TAG_PGSHIFT,
+		(unsigned long)KIDLED_AGE_PGSHIFT);
 	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_nodezoneid",
 		"Node/Zone ID: %lu -> %lu\n",
 		(unsigned long)(ZONEID_PGOFF + ZONEID_SHIFT),
@@ -122,7 +126,10 @@ void __init mminit_verify_pageflags_layout(void)
 	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_nodeflags",
 		"Last cpupid not in page flags");
 #endif
-
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_kidledflags",
+		       "Kidled age not in page flags");
+#endif
 	if (SECTIONS_WIDTH) {
 		shift -= SECTIONS_WIDTH;
 		BUG_ON(shift != SECTIONS_PGSHIFT);
