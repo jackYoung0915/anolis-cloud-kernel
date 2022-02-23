@@ -494,6 +494,19 @@ static ssize_t state_synced_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(state_synced);
 
+static void device_unbind_cleanup(struct device *dev)
+{
+	devres_release_all(dev);
+	arch_teardown_dma_ops(dev);
+	kfree(dev->dma_range_map);
+	dev->dma_range_map = NULL;
+	dev->driver = NULL;
+	dev_set_drvdata(dev, NULL);
+	if (dev->pm_domain && dev->pm_domain->dismiss)
+		dev->pm_domain->dismiss(dev);
+	pm_runtime_reinit(dev);
+	dev_pm_set_driver_flags(dev, 0);
+}
 
 static int call_driver_probe(struct device *dev, struct device_driver *drv)
 {
@@ -616,16 +629,8 @@ re_probe:
 		else if (drv->remove)
 			drv->remove(dev);
 
-		devres_release_all(dev);
-		arch_teardown_dma_ops(dev);
-		kfree(dev->dma_range_map);
-		dev->dma_range_map = NULL;
 		driver_sysfs_remove(dev);
-		dev->driver = NULL;
-		dev_set_drvdata(dev, NULL);
-		if (dev->pm_domain && dev->pm_domain->dismiss)
-			dev->pm_domain->dismiss(dev);
-		pm_runtime_reinit(dev);
+		device_unbind_cleanup(dev);
 
 		goto re_probe;
 	}
@@ -657,16 +662,7 @@ sysfs_failed:
 		dev->bus->dma_cleanup(dev);
 pinctrl_bind_failed:
 	device_links_no_driver(dev);
-	devres_release_all(dev);
-	arch_teardown_dma_ops(dev);
-	kfree(dev->dma_range_map);
-	dev->dma_range_map = NULL;
-	dev->driver = NULL;
-	dev_set_drvdata(dev, NULL);
-	if (dev->pm_domain && dev->pm_domain->dismiss)
-		dev->pm_domain->dismiss(dev);
-	pm_runtime_reinit(dev);
-	dev_pm_set_driver_flags(dev, 0);
+	device_unbind_cleanup(dev);
 done:
 	return ret;
 }
@@ -1233,21 +1229,12 @@ static void __device_release_driver(struct device *dev, struct device *parent)
 		else if (drv->remove)
 			drv->remove(dev);
 
-		devres_release_all(dev);
-		arch_teardown_dma_ops(dev);
-		kfree(dev->dma_range_map);
-		dev->dma_range_map = NULL;
-		dev->driver = NULL;
-		dev_set_drvdata(dev, NULL);
-		if (dev->pm_domain && dev->pm_domain->dismiss)
-			dev->pm_domain->dismiss(dev);
-		pm_runtime_reinit(dev);
-		dev_pm_set_driver_flags(dev, 0);
-
 		if (dev->bus && dev->bus->dma_cleanup)
 			dev->bus->dma_cleanup(dev);
 
+
 		device_links_driver_cleanup(dev);
+		device_unbind_cleanup(dev);
 
 		klist_remove(&dev->p->knode_driver);
 		device_pm_check_callbacks(dev);
