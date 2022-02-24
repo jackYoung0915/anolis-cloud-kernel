@@ -679,10 +679,10 @@ static int vidxd_migration_state_change(struct vfio_pci_core_device *vfio_vdev,
 		pr_info("%s, __STOPPED !!\n", __func__);
 		vidxd_free_resources(vidxd);
 		break;
-	case VFIO_DEVICE_STATE_RUNNING:
-		pr_info("%s, VFIO_DEVICE_STATE_RUNNING!! old state %x\n",
+	case VFIO_DEVICE_STATE_V1_RUNNING:
+		pr_info("%s, VFIO_DEVICE_STATE_V1_RUNNING!! old state %x\n",
 			__func__, mig_info->device_state);
-		if (mig_info->device_state & VFIO_DEVICE_STATE_RESUMING)
+		if (mig_info->device_state & VFIO_DEVICE_STATE_V1_RESUMING)
 			vidxd_dest_complete_migration(vidxd);
 
 		mutex_lock(&vidxd->mig_submit_lock);
@@ -692,26 +692,26 @@ static int vidxd_migration_state_change(struct vfio_pci_core_device *vfio_vdev,
 		mutex_unlock(&vidxd->mig_submit_lock);
 
 		break;
-	case VFIO_DEVICE_STATE_SAVING | VFIO_DEVICE_STATE_RUNNING:
-		pr_info("%s, VFIO_DEVICE_STATE_SAVING | VFIO_DEVICE_STATE_RUNNING!!\n", __func__);
+	case VFIO_DEVICE_STATE_V1_SAVING | VFIO_DEVICE_STATE_V1_RUNNING:
+		pr_info("%s, VFIO_DEVICE_STATE_V1_SAVING | VFIO_DEVICE_STATE_V1_RUNNING!!\n", __func__);
 
 		break;
-	case VFIO_DEVICE_STATE_SAVING:
-		pr_info("%s, VFIO_DEVICE_STATE_SAVING!!\n", __func__);
+	case VFIO_DEVICE_STATE_V1_SAVING:
+		pr_info("%s, VFIO_DEVICE_STATE_V1_SAVING!!\n", __func__);
 		/* Prepared the state data for migration */
-		if (!(mig_info->device_state & VFIO_DEVICE_STATE_RUNNING))
+		if (!(mig_info->device_state & VFIO_DEVICE_STATE_V1_RUNNING))
 			vidxd_source_prepare_for_migration(vidxd);
 
 		/* Pause the virtual device. The vCPUs are still running.
 		 * This happens just before the VM is paused. The vDEV
 		 * is already in slow path */
-		if (mig_info->device_state & VFIO_DEVICE_STATE_RUNNING)
+		if (mig_info->device_state & VFIO_DEVICE_STATE_V1_RUNNING)
 			vidxd_source_pause_device(vidxd);
 		break;
-	case VFIO_DEVICE_STATE_RESUMING:
+	case VFIO_DEVICE_STATE_V1_RESUMING:
 		/* Prepared the state restore for migration */
 		vidxd_dest_prepare_for_migration(vidxd);
-		pr_info("%s, VFIO_DEVICE_STATE_RESUMING!!\n", __func__);
+		pr_info("%s, VFIO_DEVICE_STATE_V1_RESUMING!!\n", __func__);
 		break;
 	default:
 		pr_info("%s, not handled new device state: 0x%x\n", __func__, new_state);
