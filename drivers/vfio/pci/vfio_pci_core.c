@@ -420,8 +420,8 @@ int vfio_pci_migration_init(struct vfio_pci_core_device *vdev, uint32_t state_si
 
 	mig_info = (struct vfio_device_migration_info *) vdev->mig_pages;
 	ret = vfio_pci_register_dev_region(vdev,
-		VFIO_REGION_TYPE_MIGRATION,
-		VFIO_REGION_SUBTYPE_MIGRATION,
+		VFIO_REGION_TYPE_MIGRATION_DEPRECATED,
+		VFIO_REGION_SUBTYPE_MIGRATION_DEPRECATED,
 		&vfio_pci_mig_regops, size,
 		VFIO_REGION_INFO_FLAG_READ | VFIO_REGION_INFO_FLAG_WRITE,
 		//VFIO_REGION_INFO_FLAG_MMAP,
