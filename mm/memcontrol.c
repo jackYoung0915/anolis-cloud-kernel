@@ -8856,6 +8856,11 @@ static struct cftype memory_files[] = {
 	},
 #endif
 #ifdef CONFIG_KIDLED
+	/*
+	 * This sysfs name was extracted from Michel Lespinasse's patch,
+	 * but the contents have a big difference. See
+	 * Documentation/vm/kidled.rst for more details.
+	 */
 	{
 		.name = "idle_page_stats",
 		.private = KIDLED_HIERARCHY,
