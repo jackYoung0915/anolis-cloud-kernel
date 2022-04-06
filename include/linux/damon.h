@@ -562,6 +562,7 @@ struct damon_ctx {
 	struct completion kdamond_started;
 
 /* public: */
+	int need_flush;
 	struct task_struct *kdamond;
 	struct mutex kdamond_lock;
 

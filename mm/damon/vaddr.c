@@ -14,6 +14,7 @@
 #include <linux/page_idle.h>
 #include <linux/pagewalk.h>
 #include <linux/sched/mm.h>
+#include <linux/mm_inline.h>
 
 #include "ops-common.h"
 
@@ -347,6 +348,7 @@ static bool damon_pmdp_mknone(pmd_t *pmd, struct mm_walk *walk, unsigned long ad
 {
 	bool preserve_write;
 	pmd_t entry = *pmd;
+	int *flush_enalbe = walk->private;
 
 	if (is_huge_zero_pmd(entry) || pmd_protnone(entry))
 		return false;
@@ -359,6 +361,7 @@ static bool damon_pmdp_mknone(pmd_t *pmd, struct mm_walk *walk, unsigned long ad
 			entry = pmd_mkwrite(entry, walk->vma);
 
 		set_pmd_at(walk->mm, addr, pmd, entry);
+		++*flush_enalbe;
 		return true;
 	}
 	return false;
@@ -368,6 +371,7 @@ static bool damon_ptep_mknone(pte_t *pte, struct mm_walk *walk, unsigned long ad
 {
 	pte_t oldpte, ptent;
 	bool preserve_write;
+	int *flush_enalbe = walk->private;
 
 	oldpte = *pte;
 	if (pte_protnone(oldpte))
@@ -382,6 +386,7 @@ static bool damon_ptep_mknone(pte_t *pte, struct mm_walk *walk, unsigned long ad
 			ptent = pte_mkwrite(ptent, walk->vma);
 
 		ptep_modify_prot_commit(walk->vma, addr, pte, oldpte, ptent);
+		++*flush_enalbe;
 		return true;
 	}
 	return false;
@@ -393,7 +398,6 @@ static int damon_va_pmd_entry(pmd_t *pmd, unsigned long addr,
 	pte_t *pte;
 	pmd_t pmde;
 	spinlock_t *ptl;
-	bool result = false;
 
 	if (pmd_trans_huge(pmdp_get(pmd))) {
 		ptl = pmd_lock(walk->mm, pmd);
@@ -408,13 +412,8 @@ static int damon_va_pmd_entry(pmd_t *pmd, unsigned long addr,
 			damon_pmdp_mkold(pmd, walk->vma, addr);
 			if (static_branch_unlikely(&numa_stat_enabled_key) &&
 					nr_online_nodes > 1)
-				result = damon_pmdp_mknone(pmd, walk, addr);
+				damon_pmdp_mknone(pmd, walk, addr);
 			spin_unlock(ptl);
-			if (result) {
-				unsigned long haddr = addr & HPAGE_PMD_MASK;
-
-				flush_tlb_range(walk->vma, haddr, haddr + HPAGE_PMD_SIZE);
-			}
 			return 0;
 		}
 		spin_unlock(ptl);
@@ -432,10 +431,8 @@ static int damon_va_pmd_entry(pmd_t *pmd, unsigned long addr,
 	damon_ptep_mkold(pte, walk->vma, addr);
 	if (static_branch_unlikely(&numa_stat_enabled_key) &&
 			nr_online_nodes > 1)
-		result = damon_ptep_mknone(pte, walk, addr);
+		damon_ptep_mknone(pte, walk, addr);
 	pte_unmap_unlock(pte, ptl);
-	if (result)
-		flush_tlb_page(walk->vma, addr);
 	return 0;
 }
 
@@ -498,10 +495,11 @@ static const struct mm_walk_ops damon_va_ops = {
 	.walk_lock = PGWALK_RDLOCK,
 };
 
-static void damon_va_check(struct mm_struct *mm, unsigned long addr)
+static void damon_va_check(struct damon_ctx *ctx, struct mm_struct *mm,
+			   unsigned long addr)
 {
 	mmap_read_lock(mm);
-	walk_page_range(mm, addr, addr + 1, &damon_va_ops, NULL);
+	walk_page_range(mm, addr, addr + 1, &damon_va_ops, &ctx->need_flush);
 	mmap_read_unlock(mm);
 }
 
@@ -509,12 +507,12 @@ static void damon_va_check(struct mm_struct *mm, unsigned long addr)
  * Functions for the access checking of the regions
  */
 
-static void __damon_va_prepare_access_check(struct mm_struct *mm,
+static void __damon_va_prepare_access_check(struct damon_ctx *ctx, struct mm_struct *mm,
 					struct damon_region *r)
 {
 	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
 
-	damon_va_check(mm, r->sampling_addr);
+	damon_va_check(ctx, mm, r->sampling_addr);
 }
 
 static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
@@ -524,11 +522,33 @@ static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
 	struct damon_region *r;
 
 	damon_for_each_target(t, ctx) {
+		ctx->need_flush = 0;
 		mm = damon_get_mm(t);
 		if (!mm)
 			continue;
+
+		if (static_branch_unlikely(&numa_stat_enabled_key) &&
+		    nr_online_nodes > 1) {
+			inc_tlb_flush_pending(mm);
+			ctx->need_flush = 1;
+		}
+
 		damon_for_each_region(r, t)
-			__damon_va_prepare_access_check(mm, r);
+			__damon_va_prepare_access_check(ctx, mm, r);
+
+		/*
+		 * We have to make sure that in some concurrent scenarios,
+		 * one core is doing numa sampling, but anthor core turns off it,
+		 * in this case, if we still use variable "numa_stat_enabled_key"
+		 * to check if it needs to be flushed, it will cause the flush_tlb_mm()
+		 * not be called.
+		 */
+		if (ctx->need_flush > 1)
+			flush_tlb_mm(mm);
+
+		if (ctx->need_flush)
+			dec_tlb_flush_pending(mm);
+
 		mmput(mm);
 	}
 }
