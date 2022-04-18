@@ -651,6 +651,8 @@ probe_failed:
 	if (dev->bus)
 		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
 					     BUS_NOTIFY_DRIVER_NOT_BOUND, dev);
+	if (dev->bus && dev->bus->dma_cleanup)
+		dev->bus->dma_cleanup(dev);
 pinctrl_bind_failed:
 	device_links_no_driver(dev);
 	devres_release_all(dev);
@@ -1240,6 +1242,9 @@ static void __device_release_driver(struct device *dev, struct device *parent)
 			dev->pm_domain->dismiss(dev);
 		pm_runtime_reinit(dev);
 		dev_pm_set_driver_flags(dev, 0);
+
+		if (dev->bus && dev->bus->dma_cleanup)
+			dev->bus->dma_cleanup(dev);
 
 		device_links_driver_cleanup(dev);
 
