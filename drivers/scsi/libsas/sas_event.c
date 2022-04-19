@@ -50,8 +50,10 @@ void sas_queue_deferred_work(struct sas_ha_struct *ha)
 	list_for_each_entry_safe(sw, _sw, &ha->defer_q, drain_node) {
 		list_del_init(&sw->drain_node);
 		ret = sas_queue_work(ha, sw);
-		if (ret != 1)
+		if (ret != 1) {
+			pm_runtime_put(ha->dev);
 			sas_free_event(to_asd_sas_event(&sw->work));
+		}
 	}
 	spin_unlock_irq(&ha->lock);
 }
@@ -125,16 +127,22 @@ void sas_enable_revalidation(struct sas_ha_struct *ha)
 static void sas_port_event_worker(struct work_struct *work)
 {
 	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+	struct sas_ha_struct *ha = phy->ha;
 
 	sas_port_event_fns[ev->event](work);
+	pm_runtime_put(ha->dev);
 	sas_free_event(ev);
 }
 
 static void sas_phy_event_worker(struct work_struct *work)
 {
 	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+	struct sas_ha_struct *ha = phy->ha;
 
 	sas_phy_event_fns[ev->event](work);
+	pm_runtime_put(ha->dev);
 	sas_free_event(ev);
 }
 
@@ -210,6 +218,8 @@ static inline int __sas_notify_phy_event(struct asd_sas_phy *phy,
 	int ret;
 
 	BUG_ON(event >= PHY_NUM_EVENTS);
+	/* Call pm_runtime_put() with pairs in sas_port_event_worker() */
+	pm_runtime_get_noresume(ha->dev);
 
 	INIT_SAS_EVENT(ev, sas_phy_event_worker, phy, event);
 
@@ -217,8 +227,10 @@ static inline int __sas_notify_phy_event(struct asd_sas_phy *phy,
 		return 0;
 
 	ret = sas_queue_event(event, &ev->work, ha);
-	if (ret != 1)
+	if (ret != 1) {
+		pm_runtime_put(ha->dev);
 		sas_free_event(ev);
+	}
 
 	return ret;
 }
