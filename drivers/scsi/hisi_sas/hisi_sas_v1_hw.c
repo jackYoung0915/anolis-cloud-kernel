@@ -1416,7 +1416,7 @@ static irqreturn_t int_bcast_v1_hw(int irq, void *p)
 	}
 
 	if (!test_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags))
-		sas_notify_port_event(sas_phy, PORTE_BROADCAST_RCVD,
+		sas_notify_port_event_gfp(sas_phy, PORTE_BROADCAST_RCVD,
 				      GFP_ATOMIC);
 
 end:
