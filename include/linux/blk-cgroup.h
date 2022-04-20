@@ -318,17 +318,6 @@ static inline bool bio_issue_as_root_blkg(struct bio *bio)
 }
 
 /**
- * blkcg_parent - get the parent of a blkcg
- * @blkcg: blkcg of interest
- *
- * Return the parent blkcg of @blkcg.  Can be called anytime.
- */
-static inline struct blkcg *blkcg_parent(struct blkcg *blkcg)
-{
-	return css_to_blkcg(blkcg->css.parent);
-}
-
-/**
  * __blkg_lookup - internal version of blkg_lookup()
  * @blkcg: blkcg of interest
  * @q: request_queue of interest
@@ -416,39 +405,8 @@ static inline struct blkcg *cpd_to_blkcg(struct blkcg_policy_data *cpd)
 	return cpd ? cpd->blkcg : NULL;
 }
 
-extern void blkcg_destroy_blkgs(struct blkcg *blkcg);
-
-/**
- * blkcg_pin_online - pin online state
- * @blkcg: blkcg of interest
- *
- * While pinned, a blkcg is kept online.  This is primarily used to
- * impedance-match blkg and cgwb lifetimes so that blkg doesn't go offline
- * while an associated cgwb is still active.
- */
-static inline void blkcg_pin_online(struct blkcg *blkcg)
-{
-	refcount_inc(&blkcg->online_pin);
-}
-
-/**
- * blkcg_unpin_online - unpin online state
- * @blkcg: blkcg of interest
- *
- * This is primarily used to impedance-match blkg and cgwb lifetimes so
- * that blkg doesn't go offline while an associated cgwb is still active.
- * When this count goes to zero, all active cgwbs have finished so the
- * blkcg can continue destruction by calling blkcg_destroy_blkgs().
- */
-static inline void blkcg_unpin_online(struct blkcg *blkcg)
-{
-	do {
-		if (!refcount_dec_and_test(&blkcg->online_pin))
-			break;
-		blkcg_destroy_blkgs(blkcg);
-		blkcg = blkcg_parent(blkcg);
-	} while (blkcg);
-}
+void blkcg_pin_online(struct cgroup_subsys_state *blkcg_css);
+void blkcg_unpin_online(struct cgroup_subsys_state *blkcg_css);
 
 /**
  * blkg_path - format cgroup path of blkg
