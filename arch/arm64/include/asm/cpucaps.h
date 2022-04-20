@@ -70,6 +70,7 @@
 #define ARM64_WORKAROUND_HISILICON_1980005	62
 #define ARM64_HAS_TWED				63
 #define ARM64_HAS_ECV				64
-#define ARM64_NCAPS				65
+#define ARM64_HAS_WFXT				65
+#define ARM64_NCAPS				66
 
 #endif /* __ASM_CPUCAPS_H */
