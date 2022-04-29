@@ -258,6 +258,9 @@ int page_mkclean(struct page *);
  */
 void try_to_munlock(struct page *);
 
+int pfn_mkclean_range(unsigned long pfn, unsigned long nr_pages, pgoff_t pgoff,
+		      struct vm_area_struct *vma);
+
 void remove_migration_ptes(struct page *old, struct page *new, bool locked);
 
 /*
