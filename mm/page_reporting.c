@@ -448,6 +448,10 @@ EXPORT_SYMBOL_GPL(page_reporting_unregister);
 	static struct kobj_attribute _name##_attr = \
 		__ATTR(_name, 0644, _name##_show, _name##_store)
 
+#define REPORTING_ATTR_RO(_name) \
+	static struct kobj_attribute _name##_attr = \
+		__ATTR_RO_MODE(_name, 0644)
+
 static unsigned long get_reported_kbytes(void)
 {
 	struct zone *z;
@@ -465,13 +469,7 @@ static ssize_t reported_kbytes_show(struct kobject *kobj,
 	return sprintf(buf, "%lu\n", get_reported_kbytes());
 }
 
-static ssize_t reported_kbytes_store(struct kobject *kobj,
-		struct kobj_attribute *attr,
-		const char *buf, size_t count)
-{
-	return -EINVAL;
-}
-REPORTING_ATTR(reported_kbytes);
+REPORTING_ATTR_RO(reported_kbytes);
 
 static ssize_t reporting_factor_show(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
