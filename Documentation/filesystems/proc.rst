@@ -940,6 +940,8 @@ varies by architecture and compile options.  The following is from a
     LowFree:          4432 kB
     SwapTotal:           0 kB
     SwapFree:            0 kB
+    Zswap:              1904 kB
+    Zswapped:           7792 kB
     Dirty:             968 kB
     Writeback:           0 kB
     AnonPages:      861800 kB
@@ -1011,6 +1013,10 @@ SwapTotal
 SwapFree
               Memory which has been evicted from RAM, and is temporarily
               on the disk
+Zswap
+              Memory consumed by the zswap backend (compressed size)
+Zswapped
+              Amount of anonymous memory stored in zswap (original size)
 Dirty
               Memory which is waiting to get written back to the disk
 Writeback
