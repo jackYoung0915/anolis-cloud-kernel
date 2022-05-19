@@ -131,6 +131,10 @@ enum vm_event_item { PGPGIN, PGPGOUT, PSWPIN, PSWPOUT,
 #endif
 		ALLOC_REPORTED_PAGE,
 		REPORT_PAGE,
+#ifdef CONFIG_ZSWAP
+		ZSWPIN,
+		ZSWPOUT,
+#endif
 		NR_VM_EVENT_ITEMS,
 };
 

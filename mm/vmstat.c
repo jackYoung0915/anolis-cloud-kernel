@@ -1324,7 +1324,11 @@ const char * const vmstat_text[] = {
 	"prezero_hw_clear_pages",
 #endif
 	"alloc_reported_page",
-	"report_page"
+	"report_page",
+#ifdef CONFIG_ZSWAP
+	"zswpin",
+	"zswpout"
+#endif
 #endif /* CONFIG_VM_EVENT_COUNTERS || CONFIG_MEMCG */
 };
 #endif /* CONFIG_PROC_FS || CONFIG_SYSFS || CONFIG_NUMA || CONFIG_MEMCG */
