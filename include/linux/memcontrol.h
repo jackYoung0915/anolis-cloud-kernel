@@ -40,6 +40,8 @@ enum memcg_stat_item {
 	MEMCG_SWAP = NR_VM_NODE_STAT_ITEMS,
 	MEMCG_SOCK,
 	MEMCG_PERCPU_B,
+	MEMCG_ZSWAP_B,
+	MEMCG_ZSWAPPED,
 	MEMCG_NR_STAT,
 };
 
@@ -340,6 +342,10 @@ struct mem_cgroup {
 
 	/* Range enforcement for interrupt charges */
 	struct work_struct high_work;
+
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	unsigned long zswap_max;
+#endif
 
 	unsigned long soft_limit;
 
@@ -1361,6 +1367,10 @@ static inline struct mem_cgroup *get_mem_cgroup_from_page(struct page *page)
 	return NULL;
 }
 
+static inline void obj_cgroup_put(struct obj_cgroup *objcg)
+{
+}
+
 static inline void mem_cgroup_put(struct mem_cgroup *memcg)
 {
 }
@@ -1925,6 +1935,7 @@ int __memcg_kmem_charge_page(struct page *page, gfp_t gfp, int order);
 void __memcg_kmem_uncharge_page(struct page *page, int order);
 
 struct obj_cgroup *get_obj_cgroup_from_current(void);
+struct obj_cgroup *get_obj_cgroup_from_page(struct page *page);
 
 int obj_cgroup_charge(struct obj_cgroup *objcg, gfp_t gfp, size_t size);
 void obj_cgroup_uncharge(struct obj_cgroup *objcg, size_t size);
@@ -1989,6 +2000,20 @@ static inline int memcg_cache_id(struct mem_cgroup *memcg)
 
 struct mem_cgroup *mem_cgroup_from_obj(void *p);
 
+static inline void count_objcg_event(struct obj_cgroup *objcg,
+				     enum vm_event_item idx)
+{
+	struct mem_cgroup *memcg;
+
+	if (!memcg_kmem_enabled())
+		return;
+
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(objcg);
+	count_memcg_events(memcg, idx, 1);
+	rcu_read_unlock();
+}
+
 #else
 
 static inline int memcg_kmem_charge_page(struct page *page, gfp_t gfp,
@@ -2009,6 +2034,11 @@ static inline int __memcg_kmem_charge_page(struct page *page, gfp_t gfp,
 
 static inline void __memcg_kmem_uncharge_page(struct page *page, int order)
 {
+}
+
+static inline struct obj_cgroup *get_obj_cgroup_from_page(struct page *page)
+{
+	return NULL;
 }
 
 #define for_each_memcg_cache_index(_idx)	\
@@ -2037,7 +2067,31 @@ static inline struct mem_cgroup *mem_cgroup_from_obj(void *p)
        return NULL;
 }
 
+static inline void count_objcg_event(struct obj_cgroup *objcg,
+				     enum vm_event_item idx)
+{
+}
+
 #endif /* CONFIG_MEMCG_KMEM */
+
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+bool obj_cgroup_may_zswap(struct obj_cgroup *objcg);
+void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size);
+void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size);
+#else
+static inline bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
+{
+	return true;
+}
+static inline void obj_cgroup_charge_zswap(struct obj_cgroup *objcg,
+					   size_t size)
+{
+}
+static inline void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg,
+					     size_t size)
+{
+}
+#endif
 
 #if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
 extern void reclaim_coldpgs_stats_mlock_refault(void);
