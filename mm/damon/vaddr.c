@@ -252,10 +252,12 @@ static void __damon_va_init_regions(struct damon_ctx *ctx,
 		sz = DAMON_MIN_REGION;
 
 	/* Set the initial three regions of the target */
+	spin_lock(&t->target_lock);
 	for (i = 0; i < 3; i++) {
 		r = damon_new_region(regions[i].start, regions[i].end);
 		if (!r) {
 			pr_err("%d'th init region creation failed\n", i);
+			spin_unlock(&t->target_lock);
 			return;
 		}
 		damon_add_region(r, t);
@@ -263,6 +265,7 @@ static void __damon_va_init_regions(struct damon_ctx *ctx,
 		nr_pieces = (regions[i].end - regions[i].start) / sz;
 		damon_va_evenly_split_region(t, r, nr_pieces);
 	}
+	spin_unlock(&t->target_lock);
 }
 
 /* Initialize '->regions_list' of every target (task) */
