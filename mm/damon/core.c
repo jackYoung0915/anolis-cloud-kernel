@@ -121,7 +121,7 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
 {
 	struct damon_region *region;
 
-	region = kmem_cache_alloc(damon_region_cache, GFP_KERNEL);
+	region = kmem_cache_alloc(damon_region_cache, GFP_ATOMIC);
 	if (!region)
 		return NULL;
 
