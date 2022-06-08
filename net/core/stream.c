@@ -203,12 +203,12 @@ void sk_stream_kill_queues(struct sock *sk)
 	skb_queue_purge(&sk->sk_error_queue);
 
 	/* Next, the write queue. */
-	WARN_ON(!skb_queue_empty(&sk->sk_write_queue));
+	WARN_ON_ONCE(!skb_queue_empty(&sk->sk_write_queue));
 
 	/* Account for returned memory. */
 	sk_mem_reclaim(sk);
 
-	WARN_ON(sk->sk_wmem_queued);
+	WARN_ON_ONCE(sk->sk_wmem_queued);
 
 	/* It is _impossible_ for the backlog to contain anything
 	 * when we get here.  All user references to this socket
