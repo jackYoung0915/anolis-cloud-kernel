@@ -186,7 +186,9 @@ struct lowcore {
 	__u8	pad_0x1400[0x1500-0x1400];	/* 0x1400 */
 	/* Cryptography-counter designation */
 	__u64	ccd;				/* 0x1500 */
-	__u8	pad_0x1508[0x1800-0x1508];	/* 0x1508 */
+	/* AI-extension counter designation */
+	__u64	aicd;				/* 0x1508 */
+	__u8	pad_0x1510[0x1800-0x1510];	/* 0x1510 */
 
 	/* Transaction abort diagnostic block */
 	__u8	pgm_tdb[256];			/* 0x1800 */
