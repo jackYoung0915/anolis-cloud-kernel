@@ -120,6 +120,14 @@ struct adapt_vma_t {
 	unsigned long vm_hend;
 };
 
+struct collapse_control {
+	/* Num pages scanned per node */
+	u32 node_load[MAX_NUMNODES];
+
+	/* Last target selected in khugepaged_find_target_node() */
+	int last_target_node;
+};
+
 /**
  * struct mm_slot - hash lookup from mm to mm_slot
  * @hash: hash collision list
@@ -1207,9 +1215,12 @@ static void khugepaged_alloc_sleep(void)
 	remove_wait_queue(&khugepaged_wait, &wait);
 }
 
-static int khugepaged_node_load[MAX_NUMNODES];
 
-static bool khugepaged_scan_abort(int nid)
+struct collapse_control khugepaged_collapse_control = {
+	.last_target_node = NUMA_NO_NODE,
+};
+
+static bool khugepaged_scan_abort(int nid, struct collapse_control *cc)
 {
 	int i;
 
@@ -1221,11 +1232,11 @@ static bool khugepaged_scan_abort(int nid)
 		return false;
 
 	/* If there is a count for this node already, it must be acceptable */
-	if (khugepaged_node_load[nid])
+	if (cc->node_load[nid])
 		return false;
 
 	for (i = 0; i < MAX_NUMNODES; i++) {
-		if (!khugepaged_node_load[i])
+		if (!cc->node_load[i])
 			continue;
 		if (node_distance(nid, i) > node_reclaim_distance)
 			return true;
@@ -1240,28 +1251,27 @@ static inline gfp_t alloc_hugepage_khugepaged_gfpmask(void)
 }
 
 #ifdef CONFIG_NUMA
-static int khugepaged_find_target_node(void)
+static int khugepaged_find_target_node(struct collapse_control *cc)
 {
-	static int last_khugepaged_target_node = NUMA_NO_NODE;
 	int nid, target_node = 0, max_value = 0;
 
 	/* find first node with max normal pages hit */
 	for (nid = 0; nid < MAX_NUMNODES; nid++)
-		if (khugepaged_node_load[nid] > max_value) {
-			max_value = khugepaged_node_load[nid];
+		if (cc->node_load[nid] > max_value) {
+			max_value = cc->node_load[nid];
 			target_node = nid;
 		}
 
 	/* do some balance if several nodes have the same hit record */
-	if (target_node <= last_khugepaged_target_node)
-		for (nid = last_khugepaged_target_node + 1; nid < MAX_NUMNODES;
-				nid++)
-			if (max_value == khugepaged_node_load[nid]) {
+	if (target_node <= cc->last_target_node)
+		for (nid = cc->last_target_node + 1; nid < MAX_NUMNODES;
+		     nid++)
+			if (max_value == cc->node_load[nid]) {
 				target_node = nid;
 				break;
 			}
 
-	last_khugepaged_target_node = target_node;
+	cc->last_target_node = target_node;
 	return target_node;
 }
 
@@ -1632,10 +1642,9 @@ out:
 	goto out_up_write;
 }
 
-static int khugepaged_scan_pmd(struct mm_struct *mm,
-			       struct vm_area_struct *vma,
-			       unsigned long address,
-			       struct page **hpage)
+static int khugepaged_scan_pmd(struct mm_struct *mm, struct vm_area_struct *vma,
+			       unsigned long address, struct page **hpage,
+			       struct collapse_control *cc)
 {
 	pmd_t *pmd;
 	pte_t *pte, *_pte;
@@ -1655,7 +1664,7 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 		goto out;
 	}
 
-	memset(khugepaged_node_load, 0, sizeof(khugepaged_node_load));
+	memset(cc->node_load, 0, sizeof(cc->node_load));
 	pte = pte_offset_map_lock(mm, pmd, address, &ptl);
 	for (_address = address, _pte = pte; _pte < pte+HPAGE_PMD_NR;
 	     _pte++, _address += PAGE_SIZE) {
@@ -1722,16 +1731,16 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 
 		/*
 		 * Record which node the original page is from and save this
-		 * information to khugepaged_node_load[].
-		 * Khupaged will allocate hugepage from the node has the max
+		 * information to cc->node_load[].
+		 * Khugepaged will allocate hugepage from the node has the max
 		 * hit record.
 		 */
 		node = page_to_nid(page);
-		if (khugepaged_scan_abort(node)) {
+		if (khugepaged_scan_abort(node, cc)) {
 			result = SCAN_SCAN_ABORT;
 			goto out_unmap;
 		}
-		khugepaged_node_load[node]++;
+		cc->node_load[node]++;
 		if (!PageLRU(page)) {
 			result = SCAN_PAGE_LRU;
 			goto out_unmap;
@@ -1782,7 +1791,7 @@ static int khugepaged_scan_pmd(struct mm_struct *mm,
 out_unmap:
 	pte_unmap_unlock(pte, ptl);
 	if (ret) {
-		node = khugepaged_find_target_node();
+		node = khugepaged_find_target_node(cc);
 		/* collapse_huge_page will return with the mmap_lock released */
 		collapse_huge_page(mm, address, hpage, node,
 				referenced, unmapped);
@@ -2447,8 +2456,9 @@ out:
 	/* TODO: tracepoints */
 }
 
-static void khugepaged_scan_file(struct mm_struct *mm,
-		struct file *file, pgoff_t start, struct page **hpage)
+static void khugepaged_scan_file(struct mm_struct *mm, struct file *file,
+				 pgoff_t start, struct page **hpage,
+				 struct collapse_control *cc)
 {
 	struct page *page = NULL;
 	struct address_space *mapping = file->f_mapping;
@@ -2459,7 +2469,7 @@ static void khugepaged_scan_file(struct mm_struct *mm,
 
 	present = 0;
 	swap = 0;
-	memset(khugepaged_node_load, 0, sizeof(khugepaged_node_load));
+	memset(cc->node_load, 0, sizeof(cc->node_load));
 	rcu_read_lock();
 	xas_for_each(&xas, page, start + HPAGE_PMD_NR - 1) {
 		if (xas_retry(&xas, page))
@@ -2479,11 +2489,11 @@ static void khugepaged_scan_file(struct mm_struct *mm,
 		}
 
 		node = page_to_nid(page);
-		if (khugepaged_scan_abort(node)) {
+		if (khugepaged_scan_abort(node, cc)) {
 			result = SCAN_SCAN_ABORT;
 			break;
 		}
-		khugepaged_node_load[node]++;
+		cc->node_load[node]++;
 
 		if (!PageLRU(page)) {
 			result = SCAN_PAGE_LRU;
@@ -2515,7 +2525,7 @@ static void khugepaged_scan_file(struct mm_struct *mm,
 		if (present < HPAGE_PMD_NR - khugepaged_max_ptes_none) {
 			result = SCAN_EXCEED_NONE_PTE;
 		} else {
-			node = khugepaged_find_target_node();
+			node = khugepaged_find_target_node(cc);
 			collapse_file(mm, file, start, hpage, node);
 		}
 	}
@@ -2523,8 +2533,9 @@ static void khugepaged_scan_file(struct mm_struct *mm,
 	/* TODO: tracepoints */
 }
 #else
-static void khugepaged_scan_file(struct mm_struct *mm,
-		struct file *file, pgoff_t start, struct page **hpage)
+static void khugepaged_scan_file(struct mm_struct *mm, struct file *file,
+				 pgoff_t start, struct page **hpage,
+				 struct collapse_control *cc)
 {
 	BUILD_BUG();
 }
@@ -2536,7 +2547,8 @@ static int khugepaged_collapse_pte_mapped_thps(struct mm_slot *mm_slot)
 #endif
 
 static unsigned int khugepaged_scan_mm_slot(unsigned int pages,
-					    struct page **hpage)
+					    struct page **hpage,
+					    struct collapse_control *cc)
 	__releases(&khugepaged_mm_lock)
 	__acquires(&khugepaged_mm_lock)
 {
@@ -2638,12 +2650,13 @@ skip:
 
 				mmap_read_unlock(mm);
 				ret = 1;
-				khugepaged_scan_file(mm, file, pgoff, hpage);
+				khugepaged_scan_file(mm, file, pgoff, hpage,
+						     cc);
 				fput(file);
 			} else {
 				ret = khugepaged_scan_pmd(mm, vma,
 						khugepaged_scan.address,
-						hpage);
+						hpage, cc);
 			}
 			/* move to next address */
 			khugepaged_scan.address += HPAGE_PMD_SIZE;
@@ -2887,7 +2900,8 @@ static void split_adaptive_hugetext(struct mm_slot *mm_slot, void *sort_buffer,
  * value, the rwxp vmas and executable vmas are packed into mm_slot->adapt_vmas[]
  * and handled here.
  */
-static unsigned int khugepaged_scan_adapt_vma(struct page **hpage)
+static unsigned int khugepaged_scan_adapt_vma(struct page **hpage,
+					      struct collapse_control *cc)
 	__releases(&khugepaged_mm_lock)
 	__acquires(&khugepaged_mm_lock)
 {
@@ -3050,10 +3064,11 @@ static unsigned int khugepaged_scan_adapt_vma(struct page **hpage)
 
 				mmap_read_unlock(mm);
 				ret = 1;
-				khugepaged_scan_file(mm, file, pgoff, hpage);
+				khugepaged_scan_file(mm, file, pgoff, hpage, cc);
 				fput(file);
 			} else {
-				ret = khugepaged_scan_pmd(mm, vma, pair->start, hpage);
+				ret = khugepaged_scan_pmd(mm, vma, pair->start,
+							  hpage, cc);
 			}
 			progress += HPAGE_PMD_NR;
 
@@ -3097,7 +3112,8 @@ breakouterloop_mmap_lock:
 }
 
 static unsigned int khugepaged_scan_exec_vma(unsigned int pages,
-					     struct page **hpage)
+					     struct page **hpage,
+					     struct collapse_control *cc)
 	__releases(&khugepaged_mm_lock)
 	__acquires(&khugepaged_mm_lock)
 {
@@ -3171,12 +3187,12 @@ static unsigned int khugepaged_scan_exec_vma(unsigned int pages,
 
 				mmap_read_unlock(mm);
 				ret = 1;
-				khugepaged_scan_file(mm, file, pgoff, hpage);
+				khugepaged_scan_file(mm, file, pgoff, hpage, cc);
 				fput(file);
 			} else {
 				ret = khugepaged_scan_pmd(mm, vma,
 						khugepaged_scan.ex_addr,
-						hpage);
+						hpage, cc);
 			}
 			/* move to next ex_addr */
 			khugepaged_scan.ex_addr += HPAGE_PMD_SIZE;
@@ -3229,14 +3245,16 @@ static inline int khugepaged_gather_refs_work(struct work_struct *work)
 	return 0;
 }
 
-static inline unsigned int khugepaged_scan_adapt_vma(struct page **hpage)
+static inline unsigned int khugepaged_scan_adapt_vma(struct page **hpage,
+						     struct collapse_control *cc)
 {
 	BUILD_BUG();
 	return 0;
 }
 
 static inline unsigned int khugepaged_scan_exec_vma(unsigned int pages,
-						    struct page **hpage)
+						    struct page **hpage,
+						    struct collapse_control *cc)
 {
 	BUILD_BUG();
 	return 0;
@@ -3255,7 +3273,7 @@ static int khugepaged_wait_event(void)
 		kthread_should_stop();
 }
 
-static void khugepaged_do_scan(void)
+static void khugepaged_do_scan(struct collapse_control *cc)
 {
 	struct page *hpage = NULL;
 	unsigned int progress = 0, pass_through_head = 0;
@@ -3293,7 +3311,7 @@ static void khugepaged_do_scan(void)
 			if (khugepaged_has_work() &&
 			    exec_pass_through_head < 2)
 				progress += khugepaged_scan_exec_vma(
-						pages - progress, &hpage);
+						pages - progress, &hpage, cc);
 			spin_unlock(&khugepaged_mm_lock);
 			continue;
 		}
@@ -3314,7 +3332,7 @@ static void khugepaged_do_scan(void)
 			if (!khugepaged_scan.ex_slot)
 				adapt_pass_through_head++;
 			if (khugepaged_has_work() && adapt_pass_through_head < 2)
-				progress += khugepaged_scan_adapt_vma(&hpage);
+				progress += khugepaged_scan_adapt_vma(&hpage, cc);
 			/* Avoid disturbing exec_vma */
 			if (progress >= pages)
 				khugepaged_scan.ex_slot = NULL;
@@ -3329,7 +3347,7 @@ next:
 		if (khugepaged_has_work() &&
 		    pass_through_head < 2)
 			progress += khugepaged_scan_mm_slot(pages - progress,
-							    &hpage);
+							    &hpage, cc);
 		else
 			progress = pages;
 		spin_unlock(&khugepaged_mm_lock);
@@ -3378,7 +3396,7 @@ static int khugepaged(void *none)
 	set_user_nice(current, MAX_NICE);
 
 	while (!kthread_should_stop()) {
-		khugepaged_do_scan();
+		khugepaged_do_scan(&khugepaged_collapse_control);
 		khugepaged_wait_work();
 	}
 
