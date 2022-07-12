@@ -7,6 +7,8 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/scatterlist.h>
+#include <linux/atomic.h>
+#include <linux/vmstat.h>
 
 #include "page_reporting.h"
 #include "internal.h"
@@ -48,6 +50,7 @@ MODULE_PARM_DESC(page_reporting_order, "Set page reporting order");
 EXPORT_SYMBOL_GPL(page_reporting_order);
 
 static int reporting_factor = 100;
+static atomic64_t nr_reclaim_pages;
 
 #define PAGE_REPORTING_DELAY	(2 * HZ)
 static struct page_reporting_dev_info __rcu *pr_dev_info __read_mostly;
@@ -135,6 +138,9 @@ page_reporting_drain(struct page_reporting_dev_info *prdev,
 		if (PageBuddy(page) && buddy_order(page) == order) {
 			__SetPageReported(page);
 			zone->reported_pages += (1 << order);
+
+			__count_vm_events(REPORT_PAGE, 1 << order);
+			atomic64_add(-(1 << order), &nr_reclaim_pages);
 		}
 	} while ((sg = sg_next(sg)));
 
@@ -217,7 +223,8 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 			sg_set_page(&sgl[*offset], page, page_len, 0);
 
 			nr_pages = (PAGE_REPORTING_CAPACITY - *offset) << order;
-			if (zone->reported_pages + nr_pages >= threshold) {
+			if (zone->reported_pages + nr_pages >= threshold &&
+				atomic64_read(&nr_reclaim_pages) <= 0) {
 				err = 1;
 				break;
 			}
@@ -281,7 +288,7 @@ page_reporting_process_zone(struct page_reporting_dev_info *prdev,
 	int err = 0;
 
 	threshold = zone_managed_pages(zone) * reporting_factor / 100;
-	if (zone->reported_pages >= threshold)
+	if (zone->reported_pages >= threshold && atomic64_read(&nr_reclaim_pages) <= 0)
 		return err;
 
 	/* Generate minimum watermark to be able to guarantee progress */
@@ -506,9 +513,44 @@ out:
 }
 REPORTING_ATTR(reporting_factor);
 
+static ssize_t reclaim_memory_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	long long nr_pages = atomic64_read(&nr_reclaim_pages);
+
+	if (nr_pages < 0)
+		nr_pages = 0;
+	return sprintf(buf, "%lld\n", nr_pages << (PAGE_SHIFT - 10));
+}
+
+static ssize_t reclaim_memory_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	int err;
+	unsigned long long new;
+	struct page *page;
+
+	err = kstrtoull(buf, 10, &new);
+	if (err)
+		return -EINVAL;
+
+	atomic64_set(&nr_reclaim_pages, new >> (PAGE_SHIFT - 10));
+
+	/* Trigger reporting with new larger reporting_factor */
+	smp_mb();
+	page = alloc_pages(__GFP_HIGHMEM | __GFP_NOWARN, page_reporting_order);
+	if (page)
+		__free_pages(page, page_reporting_order);
+
+	return count;
+}
+REPORTING_ATTR(reclaim_memory);
+
 static struct attribute *reporting_attrs[] = {
 	&reported_kbytes_attr.attr,
 	&reporting_factor_attr.attr,
+	&reclaim_memory_attr.attr,
 	NULL,
 };
 
