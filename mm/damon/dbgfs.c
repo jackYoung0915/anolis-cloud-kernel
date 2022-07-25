@@ -640,6 +640,9 @@ static int set_init_regions(struct damon_ctx *c, const char *str, ssize_t len)
 	damon_for_each_target(t, c) {
 		damon_for_each_region_safe(r, next, t)
 			damon_destroy_region(r, t);
+		kfree(t->init_regions);
+		t->init_regions = NULL;
+		t->nr_init_regions = 0;
 	}
 
 	while (pos < len) {
@@ -653,12 +656,37 @@ static int set_init_regions(struct damon_ctx *c, const char *str, ssize_t len)
 		pos += parsed;
 	}
 
+	/* Set damon_target->init_regions */
+	damon_for_each_target(t, c) {
+		unsigned int nr_regions = t->nr_regions;
+		int idx = 0;
+
+		t->nr_init_regions = nr_regions;
+		t->init_regions = kmalloc_array(nr_regions, sizeof(struct damon_addr_range),
+				GFP_KERNEL);
+		if (t->init_regions == NULL)
+			goto fail;
+		damon_for_each_region_safe(r, next, t) {
+			/* TODO: Never happen? */
+			if (idx == nr_regions) {
+				pr_alert("nr_regions overflow, init_regions already full.");
+				break;
+			}
+			t->init_regions[idx].start = r->ar.start;
+			t->init_regions[idx].end = r->ar.end;
+			idx++;
+		}
+	}
+
 	return 0;
 
 fail:
 	damon_for_each_target(t, c) {
 		damon_for_each_region_safe(r, next, t)
 			damon_destroy_region(r, t);
+		kfree(t->init_regions);
+		t->init_regions = NULL;
+		t->nr_init_regions = 0;
 	}
 	return err;
 }
