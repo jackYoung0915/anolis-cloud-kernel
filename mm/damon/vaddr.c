@@ -276,6 +276,45 @@ static void damon_va_init(struct damon_ctx *ctx)
 	}
 }
 
+static void damon_va_apply_init_regions(struct damon_target *t)
+{
+	struct damon_region *r, *next, *prev;
+	unsigned int i = 0;
+
+	/* Remove all regions */
+	damon_for_each_region_safe(r, next, t) {
+		damon_destroy_region(r, t);
+	}
+
+	for (i = 0; i < t->nr_init_regions; i++) {
+		struct damon_addr_range ar = t->init_regions[i];
+
+		r = damon_new_region(ar.start, ar.end);
+		if (!r) {
+			pr_err("allocating memory failed for new region: 0x%lx - 0x%lx\n",
+					ar.start, ar.end);
+			goto fail;
+		}
+		damon_add_region(r, t);
+		if (damon_nr_regions(t) > 1) {
+			prev = damon_prev_region(r);
+			if (prev->ar.end > r->ar.start) {
+				/*
+				 * Never happen! this case had been checked during
+				 * setting init_regions.
+				 */
+				goto fail;
+			}
+		}
+	}
+	return;
+
+fail:
+	damon_for_each_region_safe(r, next, t) {
+		damon_destroy_region(r, t);
+	}
+}
+
 /*
  * Update regions for current memory mappings
  */
@@ -285,6 +324,17 @@ static void damon_va_update(struct damon_ctx *ctx)
 	struct damon_target *t;
 
 	damon_for_each_target(t, ctx) {
+		/*
+		 * If init_regions have been set, updating new target
+		 * according to init_regions.
+		 */
+		if (t->nr_init_regions) {
+			spin_lock(&t->target_lock);
+			damon_va_apply_init_regions(t);
+			spin_unlock(&t->target_lock);
+
+			continue;
+		}
 		if (damon_va_three_regions(t, three_regions))
 			continue;
 		spin_lock(&t->target_lock);
