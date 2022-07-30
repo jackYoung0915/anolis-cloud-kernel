@@ -483,8 +483,11 @@ static inline void memcg_free_slab_cgroups(struct slab *slab, struct kmem_cache 
 {
 	unsigned int objects = objs_per_slab(s, slab);
 
-	if (kidled_available_slab(s))
-		kfree(slab_objcgs(slab)[objects]);
+	if (kidled_available_slab(s)) {
+		/* In case fail to allocate memory for cold slab */
+		if (likely(slab_objcgs(slab)))
+			kfree(slab_objcgs(slab)[objects]);
+	}
 
 	kfree(slab_objcgs(slab));
 	slab->memcg_data = 0;
