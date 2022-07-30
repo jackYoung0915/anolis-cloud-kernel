@@ -972,9 +972,11 @@ static unsigned short *kidled_get_slab_age_array(void *object)
 	if (!kidled_available_slab(slab->slab_cache))
 		goto out;
 
-	if (!cgroup_memory_nokmem)
-		slab_age = (unsigned short *)slab_objcgs(slab)[objects];
-	else
+	if (!cgroup_memory_nokmem) {
+		/* In case fail to allocate memory for cold slab */
+		if (likely(slab_objcgs(slab)))
+			slab_age = (unsigned short *)slab_objcgs(slab)[objects];
+	} else
 		slab_age = kidled_slab_age(slab);
 
 out:
