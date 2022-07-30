@@ -479,8 +479,13 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 void mod_objcg_state(struct obj_cgroup *objcg, struct pglist_data *pgdat,
 		     enum node_stat_item idx, int nr);
 
-static inline void memcg_free_slab_cgroups(struct slab *slab)
+static inline void memcg_free_slab_cgroups(struct slab *slab, struct kmem_cache *s)
 {
+	unsigned int objects = objs_per_slab(s, slab);
+
+	if (kidled_available_slab(s))
+		kfree(slab_objcgs(slab)[objects]);
+
 	kfree(slab_objcgs(slab));
 	slab->memcg_data = 0;
 }
@@ -619,7 +624,7 @@ static inline int memcg_alloc_slab_cgroups(struct slab *slab,
 	return 0;
 }
 
-static inline void memcg_free_slab_cgroups(struct slab *slab)
+static inline void memcg_free_slab_cgroups(struct slab *slab, struct kmem_cache *s)
 {
 }
 
@@ -669,7 +674,7 @@ static __always_inline void unaccount_slab(struct slab *slab, int order,
 					   struct kmem_cache *s)
 {
 	if (!cgroup_memory_nokmem)
-		memcg_free_slab_cgroups(slab);
+		memcg_free_slab_cgroups(slab, s);
 	else {
 		if (page_has_slab_age(slab))
 			kidled_free_slab_age(slab);
