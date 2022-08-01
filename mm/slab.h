@@ -101,7 +101,7 @@ struct slab {
 #endif
 
 	atomic_t __page_refcount;
-#ifdef CONFIG_MEMCG
+#if defined(CONFIG_MEMCG) || defined(CONFIG_KIDLED)
 	unsigned long memcg_data;
 #endif
 };
@@ -416,10 +416,21 @@ static inline bool kidled_available_slab(struct folio *folio, struct kmem_cache 
 		return true;
 	return false;
 }
+
+/* cold slab will need the special condition */
+static inline bool kidled_kmem_enabled(void)
+{
+	return !cgroup_memory_nokmem;
+}
 #else
 static inline bool kidled_available_slab(struct folio *folio, struct kmem_cache *s)
 {
 	return false;
+}
+
+static inline bool kidled_kmem_enabled(void)
+{
+	return memcg_kmem_online();
 }
 #endif
 
@@ -681,7 +692,7 @@ static __always_inline void account_slab(struct slab *slab, int order,
 static __always_inline void unaccount_slab(struct slab *slab, int order,
 					   struct kmem_cache *s)
 {
-	if (!cgroup_memory_nokmem)
+	if (kidled_kmem_enabled())
 		memcg_free_slab_cgroups(slab, s);
 	else {
 		if (page_has_slab_age(slab))

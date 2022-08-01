@@ -143,6 +143,11 @@ extern unsigned long kidled_scan_rounds;
 #define KIDLED_OP_SET_DURATION		(1 << 0)
 #define KIDLED_OP_INC_SEQ		(1 << 1)
 
+#ifdef CONFIG_MEMCG_KMEM
+extern bool cgroup_memory_nokmem;
+#else
+#define cgroup_memory_nokmem 1
+#endif
 extern int kidled_alloc_slab_age(struct slab *slab, struct kmem_cache *s, gfp_t flags);
 extern void kidled_free_slab_age(struct slab *slab);
 extern void kidled_mem_cgroup_account(struct folio *folio,
