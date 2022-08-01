@@ -668,7 +668,7 @@ static __always_inline void account_slab(struct slab *slab, int order,
 static __always_inline void unaccount_slab(struct slab *slab, int order,
 					   struct kmem_cache *s)
 {
-	if (memcg_kmem_online())
+	if (!cgroup_memory_nokmem)
 		memcg_free_slab_cgroups(slab);
 	else {
 		if (page_has_slab_age(slab))

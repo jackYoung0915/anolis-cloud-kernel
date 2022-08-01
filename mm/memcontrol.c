@@ -97,7 +97,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(int_active_memcg);
 static bool cgroup_memory_nosocket __ro_after_init;
 
 /* Kernel memory accounting disabled? */
-static bool cgroup_memory_nokmem __ro_after_init;
+bool cgroup_memory_nokmem __ro_after_init;
 
 #ifdef CONFIG_MEMSLI
 /* Cgroup memory SLI disabled? */
