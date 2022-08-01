@@ -1154,8 +1154,6 @@ void folio_memcg_unlock(struct folio *folio);
 
 void __mod_memcg_state(struct mem_cgroup *memcg, int idx, int val);
 
-extern bool cgroup_memory_nokmem;
-
 /* try to stablize folio_memcg() for all the pages in a memcg */
 static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
 {
