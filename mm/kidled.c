@@ -180,8 +180,11 @@ void kidled_mem_cgroup_account(struct folio *folio,
 	if (type == KIDLE_SLAB) {
 		if (!memcg_kmem_online())
 			memcg = root_mem_cgroup;
-		else
+		else {
 			memcg = mem_cgroup_from_obj(ptr);
+			if (!memcg)
+				return;
+		}
 	} else {
 		folio_memcg_lock(folio);
 		memcg = folio_memcg(folio);
@@ -964,13 +967,17 @@ static unsigned short *kidled_get_slab_age_array(void *object)
 {
 	struct slab *slab = virt_to_slab(object);
 	unsigned int objects = objs_per_slab(slab->slab_cache, slab);
-	unsigned short *slab_age;
+	unsigned short *slab_age = NULL;
 
-	if (memcg_kmem_online())
+	if (!kidled_available_slab(slab->slab_cache))
+		goto out;
+
+	if (!cgroup_memory_nokmem)
 		slab_age = (unsigned short *)slab_objcgs(slab)[objects];
 	else
 		slab_age = kidled_slab_age(slab);
 
+out:
 	return slab_age;
 }
 
@@ -1034,7 +1041,7 @@ int kidled_alloc_slab_age(struct slab *slab, struct kmem_cache *s, gfp_t flags)
 	if (!ver)
 		return -ENOMEM;
 
-	if (memcg_kmem_online()) {
+	if (!cgroup_memory_nokmem) {
 		if (!slab_objcgs(slab)) {
 			ret = memcg_alloc_slab_cgroups(slab, s, flags, true);
 
