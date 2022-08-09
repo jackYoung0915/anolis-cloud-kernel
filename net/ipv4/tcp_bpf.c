@@ -66,7 +66,7 @@ int __tcp_bpf_recvmsg(struct sock *sk, struct sk_psock *psock,
 
 			if (copied == len)
 				break;
-		} while (!sg_is_last(sge));
+		} while ((i != msg_rx->sg.end) && !sg_is_last(sge));
 
 		if (unlikely(peek)) {
 			if (msg_rx == list_last_entry(&psock->ingress_msg,
@@ -77,7 +77,7 @@ int __tcp_bpf_recvmsg(struct sock *sk, struct sk_psock *psock,
 		}
 
 		msg_rx->sg.start = i;
-		if (!sge->length && sg_is_last(sge)) {
+		if (!sge->length && (i == msg_rx->sg.end || sg_is_last(sge))) {
 			list_del(&msg_rx->list);
 			if (msg_rx->skb)
 				consume_skb(msg_rx->skb);
