@@ -125,6 +125,9 @@ static bool check_pte(struct page_vma_mapped_walk *pvmw, unsigned long pte_nr)
 			return false;
 
 		pfn = pte_pfn(ptent);
+
+		if (pvmw->flags & PVMW_ZEROPAGE)
+			return is_zero_pfn(pfn);
 	}
 
 	if ((pfn + pte_nr - 1) < pvmw->pfn)
