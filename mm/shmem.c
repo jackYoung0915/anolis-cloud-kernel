@@ -2577,6 +2577,12 @@ repeat:
 			goto repeat;
 	}
 
+	if (vmf && !mm_forbids_zeropage(vma->vm_mm) &&
+	    !(vma->vm_flags & VM_SHARED)) {
+		folio = page_folio(ZERO_PAGE(0));
+		goto out;
+	}
+
 	folio = shmem_alloc_and_add_folio(vmf, gfp, inode, index, fault_mm, 0);
 	if (IS_ERR(folio)) {
 		error = PTR_ERR(folio);
@@ -2638,6 +2644,15 @@ clear:
 		error = -EINVAL;
 		goto unlock;
 	}
+
+	/*
+	 * If the VMA that fault page belongs to is VM_SHARED, we should unmap all
+	 * zero page mappings to make the MMAP_PRIVATE VMA do page fault again
+	 * to catch page cache.
+	 */
+	if (folio && vmf && (vma->vm_flags & VM_SHARED))
+		try_to_unmap_zeropage(folio, TTU_ZEROPAGE);
+
 out:
 	*foliop = folio;
 	return 0;
@@ -2653,6 +2668,9 @@ unlock:
 		folio_unlock(folio);
 		folio_put(folio);
 	}
+	if (folio && vmf && (vma->vm_flags & VM_SHARED))
+		try_to_unmap_zeropage(folio, TTU_ZEROPAGE);
+
 	return error;
 }
 
