@@ -2578,7 +2578,8 @@ repeat:
 	}
 
 	if (vmf && !mm_forbids_zeropage(vma->vm_mm) &&
-	    !(vma->vm_flags & VM_SHARED)) {
+	    !(vma->vm_flags & VM_SHARED) &&
+	    !(vmf->flags & FAULT_FLAG_NONZEROPAGE)) {
 		folio = page_folio(ZERO_PAGE(0));
 		goto out;
 	}
