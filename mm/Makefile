@@ -143,6 +143,7 @@ obj-$(CONFIG_DUPTEXT) += page_dup.o
 obj-$(CONFIG_ASYNC_FORK) += async_fork.o
 obj-$(CONFIG_PAGECACHE_LIMIT) += pagecache_limit.o
 obj-y += unevictable.o
+obj-y += file_zeropage.o
 obj-$(CONFIG_PGTABLE_BIND) += pgtable_bind.o
 obj-$(CONFIG_PT_RECLAIM) += pt_reclaim.o
 obj-$(CONFIG_PRE_OOM) += pre_oom.o

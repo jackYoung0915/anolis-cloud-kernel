@@ -639,7 +639,7 @@ int folio_referenced(struct folio *, int is_locked,
 
 void try_to_migrate(struct folio *folio, enum ttu_flags flags);
 void try_to_unmap(struct folio *, enum ttu_flags flags);
-void try_to_unmap_zeropage(struct folio *folio, enum ttu_flags flags);
+void try_to_unmap_zero_folio(struct folio *folio, enum ttu_flags flags);
 
 int make_device_exclusive_range(struct mm_struct *mm, unsigned long start,
 				unsigned long end, struct page **pages,
@@ -769,8 +769,8 @@ static inline void try_to_unmap(struct folio *folio, enum ttu_flags flags)
 {
 }
 
-static inline void try_to_unmap_zeropage(struct folio *folio,
-					 enum ttu_flags flags)
+static inline void try_to_unmap_zero_folio(struct folio *folio,
+					   enum ttu_flags flags)
 {
 }
 

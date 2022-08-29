@@ -1944,7 +1944,7 @@ static int folio_not_mapped(struct folio *folio)
  *
  * During rmap_walk, it holds the i_mmap_sem to avoid modify VMA which not expected.
  */
-void try_to_unmap_zeropage(struct folio *folio, enum ttu_flags flags)
+void try_to_unmap_zero_folio(struct folio *folio, enum ttu_flags flags)
 {
 	struct rmap_walk_control rwc = {
 		.rmap_one = try_to_unmap_one,
