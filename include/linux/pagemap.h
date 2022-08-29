@@ -220,6 +220,7 @@ enum mapping_flags {
 	AS_FOLIO_ORDER_BITS = 5,
 	AS_FOLIO_ORDER_MIN = 16,
 	AS_FOLIO_ORDER_MAX = AS_FOLIO_ORDER_MIN + AS_FOLIO_ORDER_BITS,
+	AS_ZERO_FOLIO = 26,	/* Filled file hole with zero page */
 
 	AS_FSDAX_NORMAP = 30,
 };
@@ -481,6 +482,16 @@ static inline bool mapping_large_folio_support(struct address_space *mapping)
 static inline size_t mapping_max_folio_size(const struct address_space *mapping)
 {
 	return PAGE_SIZE << mapping_max_folio_order(mapping);
+}
+
+static inline void mapping_set_zero_folio(struct address_space *mapping)
+{
+	test_and_set_bit(AS_ZERO_FOLIO, &mapping->flags);
+}
+
+static inline bool mapping_zero_folio(struct address_space *mapping)
+{
+	return test_bit(AS_ZERO_FOLIO, &mapping->flags);
 }
 
 static inline int filemap_nr_thps(struct address_space *mapping)
