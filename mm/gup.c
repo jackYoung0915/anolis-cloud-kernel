@@ -892,6 +892,8 @@ static int faultin_page(struct vm_area_struct *vma,
 
 	if (*flags & FOLL_NOFAULT)
 		return -EFAULT;
+	if (*flags & FOLL_MADV_POPULATE)
+		fault_flags |= FAULT_FLAG_NONZEROPAGE;
 	if (*flags & FOLL_WRITE)
 		fault_flags |= FAULT_FLAG_WRITE;
 	if (*flags & FOLL_REMOTE)
