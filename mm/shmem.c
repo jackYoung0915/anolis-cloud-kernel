@@ -41,6 +41,7 @@
 #include <linux/swapfile.h>
 #include <linux/iversion.h>
 #include <linux/zswap.h>
+#include <linux/file_zeropage.h>
 #include "swap.h"
 
 static struct vfsmount *shm_mnt;
@@ -2577,12 +2578,9 @@ repeat:
 			goto repeat;
 	}
 
-	if (vmf && !mm_forbids_zeropage(vma->vm_mm) &&
-	    !(vma->vm_flags & VM_SHARED) &&
-	    !(vmf->flags & FAULT_FLAG_NONZEROPAGE)) {
-		folio = page_folio(ZERO_PAGE(0));
+	folio = alloc_zero_folio(vma, vmf);
+	if (folio)
 		goto out;
-	}
 
 	folio = shmem_alloc_and_add_folio(vmf, gfp, inode, index, fault_mm, 0);
 	if (IS_ERR(folio)) {
@@ -2651,9 +2649,7 @@ clear:
 	 * zero page mappings to make the MMAP_PRIVATE VMA do page fault again
 	 * to catch page cache.
 	 */
-	if (folio && vmf && (vma->vm_flags & VM_SHARED))
-		try_to_unmap_zeropage(folio, TTU_ZEROPAGE);
-
+	unmap_zero_folio(folio, vma, inode->i_mapping);
 out:
 	*foliop = folio;
 	return 0;
@@ -2666,12 +2662,10 @@ unlock:
 		filemap_remove_folio(folio);
 	shmem_recalc_inode(inode, 0, 0);
 	if (folio) {
+		unmap_zero_folio(folio, vma, inode->i_mapping);
 		folio_unlock(folio);
 		folio_put(folio);
 	}
-	if (folio && vmf && (vma->vm_flags & VM_SHARED))
-		try_to_unmap_zeropage(folio, TTU_ZEROPAGE);
-
 	return error;
 }
 
@@ -2779,6 +2773,8 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 	if (folio) {
 		vmf->page = folio_file_page(folio, vmf->pgoff);
 		ret |= VM_FAULT_LOCKED;
+		if (is_zero_page(vmf->page))
+			mapping_set_zero_folio(inode->i_mapping);
 	}
 	return ret;
 }
