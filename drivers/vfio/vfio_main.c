@@ -30,6 +30,7 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/vfio.h>
+#include <linux/pm_runtime.h>
 #include <linux/wait.h>
 #include <linux/sched/signal.h>
 #include <linux/interval_tree.h>
@@ -1718,6 +1719,39 @@ static const struct file_operations vfio_group_fops = {
 	.release	= vfio_group_fops_release,
 };
 
+/*
+ * Wrapper around pm_runtime_resume_and_get().
+ * Return error code on failure or 0 on success.
+ */
+static inline int vfio_device_pm_runtime_get(struct vfio_device *device)
+{
+	struct device *dev = device->dev;
+
+	if (dev->driver && dev->driver->pm) {
+		int ret;
+
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret) {
+			dev_info_ratelimited(dev,
+				"vfio: runtime resume failed %d\n", ret);
+			return -EIO;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Wrapper around pm_runtime_put().
+ */
+static inline void vfio_device_pm_runtime_put(struct vfio_device *device)
+{
+	struct device *dev = device->dev;
+
+	if (dev->driver && dev->driver->pm)
+		pm_runtime_put(dev);
+}
+
 /**
  * VFIO Device fd
  */
@@ -2301,15 +2335,27 @@ static long vfio_device_fops_unl_ioctl(struct file *filep,
 				       unsigned int cmd, unsigned long arg)
 {
 	struct vfio_device *device = filep->private_data;
+	int ret;
+
+	ret = vfio_device_pm_runtime_get(device);
+	if (ret)
+		return ret;
 
 	switch (cmd) {
 	case VFIO_DEVICE_FEATURE:
-		return vfio_ioctl_device_feature(device, (void __user *)arg);
+		ret = vfio_ioctl_device_feature(device, (void __user *)arg);
+		break;
+
 	default:
 		if (unlikely(!device->ops->ioctl))
-			return -EINVAL;
-		return device->ops->ioctl(device, cmd, arg);
+			ret = -EINVAL;
+		else
+			ret = device->ops->ioctl(device, cmd, arg);
+		break;
 	}
+
+	vfio_device_pm_runtime_put(device);
+	return ret;
 }
 
 static ssize_t vfio_device_fops_read(struct file *filep, char __user *buf,
