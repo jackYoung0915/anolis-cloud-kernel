@@ -2658,7 +2658,8 @@ static int io_do_iopoll(struct io_ring_ctx *ctx, unsigned int *nr_events,
 		if (req->opcode == IORING_OP_URING_CMD) {
 			struct io_uring_cmd *ioucmd = &req->uring_cmd;
 
-			ret = req->file->f_op->uring_cmd_iopoll(ioucmd);
+			ret = req->file->f_op->uring_cmd_iopoll(ioucmd, &iob,
+								poll_flags);
 		} else
 			ret = kiocb->ki_filp->f_op->iopoll(kiocb, &iob, poll_flags);
 		if (unlikely(ret < 0))

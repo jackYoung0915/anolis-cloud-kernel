@@ -2006,7 +2006,8 @@ struct file_operations {
 				   loff_t len, unsigned int remap_flags);
 	int (*fadvise)(struct file *, loff_t, loff_t, int);
 	int (*uring_cmd)(struct io_uring_cmd *ioucmd, unsigned int issue_flags);
-	int (*uring_cmd_iopoll)(struct io_uring_cmd *ioucmd);
+	int (*uring_cmd_iopoll)(struct io_uring_cmd *, struct io_comp_batch *,
+				unsigned int poll_flags);
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
