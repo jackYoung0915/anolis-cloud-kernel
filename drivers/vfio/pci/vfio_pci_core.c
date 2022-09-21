@@ -2205,7 +2205,7 @@ static ssize_t vstatus_show(struct device *dev, struct device_attribute *attr, c
 
 	open_count = vdev->open_count;
 
-	vfio_device_put(vdev);
+	vfio_device_put_registration(vdev);
 
 	return sprintf(buf, "%u\n", open_count);
 }
@@ -2350,7 +2350,7 @@ pci_ers_result_t vfio_pci_core_aer_err_detected(struct pci_dev *pdev,
 
 	mutex_unlock(&vdev->igate);
 
-	vfio_device_put(device);
+	vfio_device_put_registration(device);
 
 	return PCI_ERS_RESULT_CAN_RECOVER;
 }
@@ -2399,7 +2399,7 @@ out_del:
 out_unlock:
 	mutex_unlock(&vfio_pci_sriov_pfs_mutex);
 out_put:
-	vfio_device_put(device);
+	vfio_device_put_registration(device);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_sriov_configure);

@@ -686,7 +686,7 @@ static void kvmgt_put_vfio_device(void *vgpu)
 	if (WARN_ON(!vdev->vfio_device))
 		return;
 
-	vfio_device_put(vdev->vfio_device);
+	vfio_device_put_registration(vdev->vfio_device);
 }
 
 static int intel_vgpu_create(struct mdev_device *mdev)
