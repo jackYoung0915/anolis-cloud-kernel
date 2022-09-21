@@ -598,14 +598,14 @@ static struct vfio_group *vfio_group_get_from_dev(struct device *dev)
  * Device objects - create, release, get, put, search
  */
 /* Device reference always implies a group reference */
-void vfio_device_put(struct vfio_device *device)
+void vfio_device_put_registration(struct vfio_device *device)
 {
 	if (refcount_dec_and_test(&device->refcount))
 		complete(&device->comp);
 }
-EXPORT_SYMBOL_GPL(vfio_device_put);
+EXPORT_SYMBOL_GPL(vfio_device_put_registration);
 
-static bool vfio_device_try_get(struct vfio_device *device)
+static bool vfio_device_try_get_registration(struct vfio_device *device)
 {
 	return refcount_inc_not_zero(&device->refcount);
 }
@@ -617,7 +617,8 @@ static struct vfio_device *vfio_group_get_device(struct vfio_group *group,
 
 	mutex_lock(&group->device_lock);
 	list_for_each_entry(device, &group->device_list, group_next) {
-		if (device->dev == dev && vfio_device_try_get(device)) {
+		if (device->dev == dev &&
+		    vfio_device_try_get_registration(device)) {
 			mutex_unlock(&group->device_lock);
 			return device;
 		}
@@ -694,7 +695,7 @@ static int vfio_dev_viable(struct device *dev, void *data)
 
 	device = vfio_group_get_device(group, dev);
 	if (device) {
-		vfio_device_put(device);
+		vfio_device_put_registration(device);
 		return 0;
 	}
 
@@ -711,7 +712,7 @@ static int vfio_group_nb_add_dev(struct vfio_group *group, struct device *dev)
 	/* Do we already know about it?  We shouldn't */
 	device = vfio_group_get_device(group, dev);
 	if (WARN_ON_ONCE(device)) {
-		vfio_device_put(device);
+		vfio_device_put_registration(device);
 		return 0;
 	}
 
@@ -958,7 +959,7 @@ int vfio_register_group_dev(struct vfio_device *device)
 	if (existing_device) {
 		dev_WARN(device->dev, "Device already exists on group %d\n",
 			 iommu_group_id(iommu_group));
-		vfio_device_put(existing_device);
+		vfio_device_put_registration(existing_device);
 		vfio_group_put(group);
 		return -EBUSY;
 	}
@@ -1020,7 +1021,7 @@ static struct vfio_device *vfio_device_get_from_name(struct vfio_group *group,
 			ret = !strcmp(dev_name(it->dev), buf);
 		}
 
-		if (ret && vfio_device_try_get(it)) {
+		if (ret && vfio_device_try_get_registration(it)) {
 			device = it;
 			break;
 		}
@@ -1059,7 +1060,7 @@ void vfio_unregister_group_dev(struct vfio_device *device)
 	}
 	WARN_ON(!unbound);
 
-	vfio_device_put(device);
+	vfio_device_put_registration(device);
 	rc = try_wait_for_completion(&device->comp);
 	while (rc <= 0) {
 		if (device->ops->request)
@@ -1601,7 +1602,7 @@ err_undo_count:
 	mutex_unlock(&device->dev_set->lock);
 	module_put(device->dev->driver->owner);
 err_device_put:
-	vfio_device_put(device);
+	vfio_device_put_registration(device);
 	return ret;
 }
 
@@ -1748,7 +1749,7 @@ static int vfio_device_fops_release(struct inode *inode, struct file *filep)
 
 	vfio_group_try_dissolve_container(device->group);
 
-	vfio_device_put(device);
+	vfio_device_put_registration(device);
 
 	return 0;
 }
