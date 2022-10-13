@@ -203,6 +203,8 @@ enum pageflags {
 	/* Reuse PG_dirty to indicate whether the duplicate page is a master or slave */
 	PG_dup_slave = PG_dirty,
 #endif
+	/* Only valid for buddy pages. Used to trace page that are initialized */
+	PG_inited = PG_reclaim,
 };
 
 #define PAGEFLAGS_MASK		((1UL << NR_PAGEFLAGS) - 1)
@@ -678,6 +680,11 @@ __PAGEFLAG(Kfence, kfence, PF_ANY)
 PAGEFLAG(Dup, dup, PF_HEAD)
 PAGEFLAG(Dup_Slave, dup_slave, PF_HEAD)
 #endif
+
+/*
+ * PageInited() is used to track free pages within the Buddy allocator.
+ */
+__PAGEFLAG(Inited, inited, PF_NO_COMPOUND)
 
 /*
  * On an anonymous page mapped into a user virtual memory area,
@@ -1173,6 +1180,8 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 	 1UL << PG_unevictable	| __PG_MLOCKED	| \
 	 __PG_DUP)
 
+#define __PG_INITED  (1 << PG_inited)
+
 /*
  * Flags checked when a page is prepped for return by the page allocator.
  * Pages being prepped should not have these flags set.  If they are set,
@@ -1182,7 +1191,8 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
  * alloc-free cycle to prevent from reusing the page.
  */
 #define PAGE_FLAGS_CHECK_AT_PREP	\
-	((PAGEFLAGS_MASK & ~__PG_HWPOISON) | LRU_GEN_MASK | LRU_REFS_MASK)
+	((PAGEFLAGS_MASK & ~(__PG_HWPOISON | __PG_INITED)) | \
+	LRU_GEN_MASK | LRU_REFS_MASK)
 
 /*
  * Flags stored in the second page of a compound page.  They may overlap
