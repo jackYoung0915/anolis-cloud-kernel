@@ -11,6 +11,7 @@
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/kidled.h>
+#include <linux/memblock.h>
 #include <uapi/linux/sched/types.h>
 
 /*
@@ -426,9 +427,10 @@ out:
 
 static bool kidled_scan_node(pg_data_t *pgdat,
 			     struct kidled_scan_period scan_period,
-			     bool restart)
+			     unsigned long start_pfn, unsigned long end_pfn)
 {
-	unsigned long pfn, end, node_end;
+	unsigned long pfn = start_pfn;
+	unsigned long node_end = pgdat_end_pfn(pgdat);
 
 #ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
 	if (unlikely(!pgdat->node_folio_age)) {
@@ -444,13 +446,7 @@ static bool kidled_scan_node(pg_data_t *pgdat,
 	}
 #endif /* KIDLED_AGE_NOT_IN_PAGE_FLAGS */
 
-	node_end = pgdat_end_pfn(pgdat);
-	pfn = pgdat->node_start_pfn;
-	if (!restart && pfn < pgdat->node_idle_scan_pfn)
-		pfn = pgdat->node_idle_scan_pfn;
-	end = min(pfn + DIV_ROUND_UP(pgdat->node_spanned_pages,
-				     scan_period.duration), node_end);
-	while (pfn < end) {
+	while (pfn < end_pfn) {
 		/* Restart new scanning when user updates the period */
 		if (unlikely(!kidled_is_scan_period_equal(&scan_period)))
 			break;
@@ -461,6 +457,67 @@ static bool kidled_scan_node(pg_data_t *pgdat,
 
 	pgdat->node_idle_scan_pfn = pfn;
 	return pfn >= node_end;
+}
+
+static bool kidled_scan_nodes(struct kidled_scan_period scan_period,
+			      bool restart)
+{
+	int i, nid;
+	unsigned long start_pfn, end_pfn;
+	bool scan_done = true;
+
+	for_each_online_node(nid) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+		unsigned long pages_to_scan = DIV_ROUND_UP(pgdat->node_present_pages,
+							   scan_period.duration);
+		bool init = !restart;
+
+		if (restart)
+			pgdat->node_idle_scan_pfn = pgdat->node_start_pfn;
+
+		for_each_mem_pfn_range(i, nid, &start_pfn, &end_pfn, NULL) {
+			if (init) {
+				/* Start scanning from the previous range */
+				if (end_pfn < pgdat->node_idle_scan_pfn)
+					continue;
+
+				/*
+				 * There are two cases should been noticed:
+				 *
+				 * 1) end_pfn = node_idle_scan_pfn: only one pfn
+				 * will be scanned, and we must increasing end_pfn
+				 * to avoid 'start_pfn = end_pfn';
+				 *
+				 * 2) start_pfn > node_idle_scan_pfn: this indicates
+				 * node_idle_scan_pfn locates in an invalid range.
+				 * We should update it to next valid range before
+				 * scanning.
+				 */
+				if (end_pfn == pgdat->node_idle_scan_pfn) {
+					end_pfn += 1;
+					start_pfn = pgdat->node_idle_scan_pfn;
+				} else if (start_pfn > pgdat->node_idle_scan_pfn) {
+					pgdat->node_idle_scan_pfn = start_pfn;
+				} else
+					start_pfn = pgdat->node_idle_scan_pfn;
+				init = false;
+			}
+
+			if ((end_pfn - start_pfn) > pages_to_scan)
+				end_pfn = start_pfn + pages_to_scan;
+			scan_done &= kidled_scan_node(pgdat, scan_period,
+						      start_pfn, end_pfn);
+			/*
+			 * That empirical value mainly to ensure that
+			 * sufficient PFNs will be scanned in current
+			 * period.
+			 */
+			if ((end_pfn - start_pfn) >= pages_to_scan / 16)
+				break; /* Let kidled scans next node */
+		}
+	}
+
+	return scan_done;
 }
 
 #ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
@@ -506,18 +563,21 @@ static inline void kidled_reset(bool free)
 		cond_resched();
 	}
 #else
-	for_each_online_pgdat(pgdat) {
-		unsigned long pfn, end_pfn = pgdat->node_start_pfn +
-					     pgdat->node_spanned_pages;
+	int i, nid;
 
-		for (pfn = pgdat->node_start_pfn; pfn < end_pfn; pfn++) {
-			if (!pfn_valid(pfn))
-				continue;
+	for_each_online_node(nid) {
+		unsigned long pfn, start_pfn, end_pfn;
 
-			kidled_set_folio_age(pgdat, pfn, 0);
+		pgdat = NODE_DATA(nid);
+		for_each_mem_pfn_range(i, nid, &start_pfn, &end_pfn, NULL) {
+			for (pfn = start_pfn; pfn <= end_pfn; pfn++) {
+				if (!pfn_valid(pfn))
+					continue;
+				kidled_set_folio_age(pgdat, pfn, 0);
 
-			if (pfn % HPAGE_PMD_NR == 0)
-				cond_resched();
+				if (pfn % HPAGE_PMD_NR == 0)
+					cond_resched();
+			}
 		}
 	}
 #endif /* KIDLED_AGE_NOT_IN_PAGE_FLAGS */
@@ -554,7 +614,6 @@ static int kidled(void *dummy)
 	kidled_reset_scan_period(&scan_period);
 
 	while (!kthread_should_stop()) {
-		pg_data_t *pgdat;
 		u64 start_jiffies, elapsed;
 		bool new, scan_done = true;
 
@@ -570,11 +629,7 @@ static int kidled(void *dummy)
 
 		start_jiffies = jiffies_64;
 		get_online_mems();
-		for_each_online_pgdat(pgdat) {
-			scan_done &= kidled_scan_node(pgdat,
-						      scan_period,
-						      restart);
-		}
+		scan_done = kidled_scan_nodes(scan_period, restart);
 		put_online_mems();
 
 		if (scan_done) {
