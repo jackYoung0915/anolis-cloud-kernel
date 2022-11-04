@@ -838,13 +838,10 @@ void vfio_device_release(struct kref *kref)
 
 	vfio_uninit_group_dev(device);
 
-	/*
-	 * kvfree() cannot be done here due to a life cycle mess in
-	 * vfio-ccw. Before the ccw part is fixed all drivers are
-	 * required to support @release and call vfio_free_device()
-	 * from there.
-	 */
-	device->ops->release(device);
+	if (device->ops->release)
+		device->ops->release(device);
+
+	kvfree(device);
 }
 EXPORT_SYMBOL_GPL(vfio_device_release);
 
@@ -910,17 +907,6 @@ out_uninit:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(vfio_init_device);
-
-/*
- * The helper called by driver @release callback to free the device
- * structure. Drivers which don't have private data to clean can
- * simply use this helper as its @release.
- */
-void vfio_free_device(struct vfio_device *device)
-{
-	kvfree(device);
-}
-EXPORT_SYMBOL_GPL(vfio_free_device);
 
 int vfio_register_group_dev(struct vfio_device *device)
 {
