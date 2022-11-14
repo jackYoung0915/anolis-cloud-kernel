@@ -3485,7 +3485,7 @@ struct obj_cgroup *get_obj_cgroup_from_page(struct page *page)
 	struct obj_cgroup *objcg;
 	struct page *head = compound_head(page);
 
-	if (!memcg_kmem_enabled() || memcg_kmem_bypass())
+	if (!memcg_kmem_enabled())
 		return NULL;
 
 	if (page_has_obj_cgroups(head) && PageSlab(head)) {
