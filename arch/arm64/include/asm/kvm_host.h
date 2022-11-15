@@ -669,4 +669,6 @@ extern unsigned int twedel;
 #define use_twed() (false)
 #endif
 
+extern bool kvm_ncsnp_support;
+
 #endif /* __ARM64_KVM_HOST_H__ */
