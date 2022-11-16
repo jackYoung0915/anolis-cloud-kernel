@@ -365,6 +365,7 @@ static struct test_workload *workloads[] = {
 	&workload__leafloop,
 	&workload__sqrtloop,
 	&workload__brstack,
+	&workload__datasym,
 };
 
 static bool perf_test__matches(const char *desc, int curr, int argc, const char *argv[])
