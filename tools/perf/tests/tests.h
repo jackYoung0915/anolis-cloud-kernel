@@ -166,5 +166,6 @@ DECLARE_WORKLOAD(noploop);
 DECLARE_WORKLOAD(thloop);
 DECLARE_WORKLOAD(leafloop);
 DECLARE_WORKLOAD(sqrtloop);
+DECLARE_WORKLOAD(brstack);
 
 #endif /* TESTS_H */
