@@ -362,6 +362,7 @@ static struct test *tests[] = {
 static struct test_workload *workloads[] = {
 	&workload__noploop,
 	&workload__thloop,
+	&workload__leafloop,
 };
 
 static bool perf_test__matches(const char *desc, int curr, int argc, const char *argv[])
