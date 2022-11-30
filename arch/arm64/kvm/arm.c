@@ -726,6 +726,12 @@ static void check_vcpu_requests(struct kvm_vcpu *vcpu)
 			vgic_v4_load(vcpu);
 			preempt_enable();
 		}
+
+#ifdef CONFIG_KVM_HISI_VIRT
+		if (kvm_check_request(KVM_REQ_RELOAD_DVMBM, vcpu))
+			kvm_hisi_reload_lsudvmbm(vcpu->kvm);
+#endif
+
 	}
 }
 
