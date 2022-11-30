@@ -670,5 +670,6 @@ extern unsigned int twedel;
 #endif
 
 extern bool kvm_ncsnp_support;
+extern bool kvm_dvmbm_support;
 
 #endif /* __ARM64_KVM_HOST_H__ */
