@@ -67,6 +67,9 @@ static bool vgic_present;
 /* Capability of non-cacheable snooping */
 bool kvm_ncsnp_support;
 
+/* Capability of DVMBM */
+bool kvm_dvmbm_support;
+
 static DEFINE_PER_CPU(unsigned char, kvm_arm_hardware_enabled);
 DEFINE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
 
@@ -1883,8 +1886,10 @@ int kvm_arch_init(void *opaque)
 #ifdef CONFIG_KVM_HISI_VIRT
 	probe_hisi_cpu_type();
 	kvm_ncsnp_support = hisi_ncsnp_supported();
+	kvm_dvmbm_support = hisi_dvmbm_supported();
 #endif
 	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
+	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
