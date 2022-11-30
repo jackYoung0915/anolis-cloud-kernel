@@ -340,6 +340,12 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	if (err)
 		return err;
 
+#ifdef CONFIG_KVM_HISI_VIRT
+	err = kvm_hisi_dvmbm_vcpu_init(vcpu);
+	if (err)
+		return err;
+#endif
+
 	return create_hyp_mappings(vcpu, vcpu + 1, PAGE_HYP);
 }
 
@@ -357,6 +363,10 @@ void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu)
 	kvm_pmu_vcpu_destroy(vcpu);
 
 	kvm_arm_vcpu_destroy(vcpu);
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_dvmbm_vcpu_destroy(vcpu);
+#endif
 }
 
 int kvm_cpu_has_pending_timer(struct kvm_vcpu *vcpu)
@@ -429,6 +439,10 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 
 	if (vcpu_has_ptrauth(vcpu))
 		vcpu_ptrauth_disable(vcpu);
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_dvmbm_load(vcpu);
+#endif
 }
 
 void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
@@ -441,6 +455,10 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 	kvm_vcpu_pmu_restore_host(vcpu);
 
 	vcpu->cpu = -1;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_dvmbm_put(vcpu);
+#endif
 }
 
 static void vcpu_power_off(struct kvm_vcpu *vcpu)
