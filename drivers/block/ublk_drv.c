@@ -161,6 +161,7 @@ struct ublk_device {
 
 	struct completion	completion;
 	unsigned int		nr_queues_ready;
+	unsigned int		nr_privileged_daemon;
 
 	/*
 	 * Our ubq->daemon may be killed without any notification, so
@@ -1176,6 +1177,9 @@ static void ublk_mark_io_ready(struct ublk_device *ub, struct ublk_queue *ubq)
 		ubq->ubq_daemon = current;
 		get_task_struct(ubq->ubq_daemon);
 		ub->nr_queues_ready++;
+
+		if (capable(CAP_SYS_ADMIN))
+			ub->nr_privileged_daemon++;
 	}
 	if (ub->nr_queues_ready == ub->dev_info.nr_hw_queues)
 		complete_all(&ub->completion);
@@ -1546,6 +1550,10 @@ static int ublk_ctrl_start_dev(struct io_uring_cmd *cmd)
 		put_disk(disk);
 		goto out_cleanup_queue;
 	}
+
+	/* don't probe partitions if any one ubq daemon is un-trusted */
+	if (ub->nr_privileged_daemon != ub->nr_queues_ready)
+		disk->flags |= GENHD_FL_NO_PART_SCAN;
 
 	get_device(&ub->cdev_dev);
 	add_disk(ub->ub_disk);
@@ -1944,6 +1952,7 @@ static int ublk_ctrl_start_recovery(struct io_uring_cmd *cmd)
 	/* set to NULL, otherwise new ubq_daemon cannot mmap the io_cmd_buf */
 	ub->mm = NULL;
 	ub->nr_queues_ready = 0;
+	ub->nr_privileged_daemon = 0;
 	init_completion(&ub->completion);
 	ret = 0;
  out_unlock:
