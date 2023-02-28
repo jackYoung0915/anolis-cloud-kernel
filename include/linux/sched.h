@@ -590,6 +590,9 @@ struct sched_entity {
 	 */
 	struct sched_avg		avg;
 #endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	unsigned int			ht_ratio;
+#endif
 };
 
 struct sched_rt_entity {
