@@ -187,7 +187,6 @@ struct mem_cgroup_event {
 };
 
 static void mem_cgroup_threshold(struct mem_cgroup *memcg);
-static void mem_cgroup_oom_notify(struct mem_cgroup *memcg);
 
 static int seq_puts_memcg_tunable(struct seq_file *m, unsigned long value);
 static int memory_min_show(struct seq_file *m, void *v);
@@ -5683,7 +5682,7 @@ static int mem_cgroup_oom_notify_cb(struct mem_cgroup *memcg)
 	return 0;
 }
 
-static void mem_cgroup_oom_notify(struct mem_cgroup *memcg)
+void mem_cgroup_oom_notify(struct mem_cgroup *memcg)
 {
 	struct mem_cgroup *iter;
 
