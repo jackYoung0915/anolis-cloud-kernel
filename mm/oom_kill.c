@@ -1021,6 +1021,9 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	struct mem_cgroup *oom_group;
 	static DEFINE_RATELIMIT_STATE(oom_global_rs, DEFAULT_RATELIMIT_INTERVAL,
 					      DEFAULT_RATELIMIT_BURST);
+#ifdef CONFIG_MEMCG
+	struct mem_cgroup *memcg;
+#endif
 
 	/*
 	 * If the task is already exiting, don't alarm the sysadmin or kill
@@ -1042,6 +1045,16 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	else if (!is_memcg_oom(oc) && __ratelimit(&oom_global_rs))
 		dump_global_header(oc, victim);
 
+#ifdef CONFIG_MEMCG
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(victim);
+	if (memcg != NULL && memcg != root_mem_cgroup && !is_memcg_oom(oc)) {
+		css_get(&memcg->css);
+		mem_cgroup_oom_notify(memcg);
+		css_put(&memcg->css);
+	}
+	rcu_read_unlock();
+#endif
 	/*
 	 * Do we need to kill the entire memory cgroup?
 	 * Or even one of the ancestor memory cgroups?
