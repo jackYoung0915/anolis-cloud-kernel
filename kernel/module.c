@@ -4183,7 +4183,11 @@ static int early_mod_check(struct load_info *info, int flags)
 		err = -ENOEXEC;
 	}
 
-	return 0;
+	mutex_lock(&module_mutex);
+	err = module_patient_check_exists(info->mod->name);
+	mutex_unlock(&module_mutex);
+
+	return err;
 }
 
 /* Allocate and load the module: note that size of section 0 is always
