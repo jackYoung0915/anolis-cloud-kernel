@@ -1610,9 +1610,9 @@ static int ublk_ctrl_start_dev(struct ublk_device *ub, struct io_uring_cmd *cmd)
 		disk->flags |= GENHD_FL_NO_PART_SCAN;
 
 	get_device(&ub->cdev_dev);
+	ub->dev_info.state = UBLK_S_DEV_LIVE;
 	add_disk(ub->ub_disk);
 	set_bit(UB_STATE_USED, &ub->state);
-	ub->dev_info.state = UBLK_S_DEV_LIVE;
 out_cleanup_queue:
 	if (ret)
 		blk_cleanup_queue(ub->ub_queue);
