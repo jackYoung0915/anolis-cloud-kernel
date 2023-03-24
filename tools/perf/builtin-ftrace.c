@@ -1219,10 +1219,12 @@ int cmd_ftrace(int argc, const char **argv)
 	if (ret < 0)
 		goto out_delete_evlist;
 
+	/* Make system wide (-a) the default target. */
+	if (!argc && target__none(&ftrace.target))
+		ftrace.target.system_wide = true;
+
 	switch (subcmd) {
 	case PERF_FTRACE_TRACE:
-		if (!argc && target__none(&ftrace.target))
-			ftrace.target.system_wide = true;
 		ret = __cmd_ftrace(&ftrace, argc, argv);
 		break;
 	case PERF_FTRACE_LATENCY:
