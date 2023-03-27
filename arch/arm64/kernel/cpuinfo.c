@@ -10,6 +10,7 @@
 #include <asm/cputype.h>
 #include <asm/cpufeature.h>
 #include <asm/fpsimd.h>
+#include <asm/pv_cpufreq-abi.h>
 
 #include <linux/bitops.h>
 #include <linux/bug.h>
@@ -25,6 +26,8 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/delay.h>
+#include <linux/arm-smccc.h>
+#include <linux/slab.h>
 
 /*
  * In case the boot CPU is hotpluggable, we record its initial state and
@@ -250,6 +253,8 @@ static int c_show(struct seq_file *m, void *v)
 			   id_aa64mmfr2_va_range_bits(cpuinfo->reg_id_aa64mmfr2));
 
 		freq = arch_cpufreq_get_khz(cpu);
+		if (!freq)
+			freq = pv_cpufreq_get();
 		if (freq)
 			seq_printf(m, "CPU MHz\t\t: %u.%03u\n", freq / 1000, freq % 1000);
 		seq_puts(m, "\n");
