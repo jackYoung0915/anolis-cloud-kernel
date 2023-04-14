@@ -35,7 +35,7 @@ static ssize_t rafs_v6_read_chunk(struct super_block *sb,
 			iov_iter_pipe(&titer, READ, to->pipe, size - read);
 
 			ret = vfs_iter_read(mdev.m_fp, &titer, &off, 0);
-			erofs_dbg("pipe ret %ld off %llu size %llu read %ld",
+			pr_debug("pipe ret %ld off %llu size %llu read %ld\n",
 				 ret, off, size, read);
 			if (ret <= 0) {
 				erofs_err(sb, "failed to read blob ret %ld (pipe off %llu size %llu read %ld device_id %u mdev m_deviceid %u m_pa %llu m_fp %p m_fscache %p)",
@@ -53,7 +53,7 @@ static ssize_t rafs_v6_read_chunk(struct super_block *sb,
 			iov_iter_kvec(&titer, READ, to->kvec, 1, size - read);
 
 			ret = vfs_iter_read(mdev.m_fp, &titer, &off, 0);
-			erofs_dbg("kvec ret %ld off %llu size %llu read %ld",
+			pr_debug("kvec ret %ld off %llu size %llu read %ld\n",
 				 ret, off, size, read);
 			if (ret <= 0) {
 				erofs_err(sb, "failed to read blob ret %ld (kvec off %llu size %llu read %ld device_id %u mdev m_deviceid %u m_pa %llu m_fp %p m_fscache %p)",
@@ -73,7 +73,7 @@ static ssize_t rafs_v6_read_chunk(struct super_block *sb,
 			if (iovec.iov_len > size - read)
 				iovec.iov_len = size - read;
 
-			erofs_dbg("read_chunk: off %llu size %llu iov_len %lu blob_index %u",
+			pr_debug("read_chunk: off %llu size %llu iov_len %lu blob_index %u\n",
 				 off, size, iovec.iov_len, device_id);
 
 			/* TODO async */
@@ -125,7 +125,7 @@ static ssize_t rafs_v6_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		}
 		delta = pos - map.m_la;
 		size = min_t(u64, map.m_llen - delta, total);
-		erofs_dbg("inode i_size %llu pa %llu delta %llu size %llu",
+		pr_debug("inode i_size %llu pa %llu delta %llu size %llu\n",
 			 inode->i_size, map.m_pa, delta, size);
 		read = rafs_v6_read_chunk(inode->i_sb, to, map.m_pa + delta,
 					  size, map.m_deviceid);
