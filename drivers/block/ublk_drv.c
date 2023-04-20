@@ -1320,6 +1320,7 @@ static int __ublk_ch_uring_cmd(struct io_uring_cmd *cmd,
 	if (ret)
 		goto out;
 
+	ret = -EINVAL;
 	switch (_IOC_NR(cmd_op)) {
 	case UBLK_IO_FETCH_REQ:
 		/* UBLK_IO_FETCH_REQ is only allowed before queue is setup */
