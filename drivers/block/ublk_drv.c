@@ -41,8 +41,6 @@
 #include <linux/delay.h>
 #include <linux/mm.h>
 #include <asm/page.h>
-#include <linux/task_work.h>
-#include <linux/tracehook.h>
 #include <linux/namei.h>
 #include <uapi/linux/ublk_cmd.h>
 
@@ -63,7 +61,6 @@
 
 struct ublk_rq_data {
 	struct llist_node node;
-	struct callback_head work;
 };
 
 struct ublk_uring_cmd_pdu {
@@ -290,14 +287,6 @@ static int ublk_apply_params(struct ublk_device *ub)
 		ublk_dev_param_discard_apply(ub);
 
 	return 0;
-}
-
-static inline bool ublk_can_use_task_work(const struct ublk_queue *ubq)
-{
-	if (IS_BUILTIN(CONFIG_BLK_DEV_UBLK) &&
-			!(ubq->flags & UBLK_F_URING_CMD_COMP_IN_TASK))
-		return true;
-	return false;
 }
 
 static inline bool ublk_need_get_data(const struct ublk_queue *ubq)
@@ -851,16 +840,6 @@ static void ublk_rq_task_work_cb(struct io_uring_cmd *cmd)
 	ublk_forward_io_cmds(ubq);
 }
 
-static void ublk_rq_task_work_fn(struct callback_head *work)
-{
-	struct ublk_rq_data *data = container_of(work,
-			struct ublk_rq_data, work);
-	struct request *req = blk_mq_rq_from_pdu(data);
-	struct ublk_queue *ubq = req->mq_hctx->driver_data;
-
-	ublk_forward_io_cmds(ubq);
-}
-
 static void ublk_queue_cmd(struct ublk_queue *ubq, struct request *rq)
 {
 	struct ublk_rq_data *data = blk_mq_rq_to_pdu(rq);
@@ -884,10 +863,6 @@ static void ublk_queue_cmd(struct ublk_queue *ubq, struct request *rq)
 	 */
 	if (unlikely(io->flags & UBLK_IO_FLAG_ABORTED)) {
 		ublk_abort_io_cmds(ubq);
-	} else if (ublk_can_use_task_work(ubq)) {
-		if (task_work_add(ubq->ubq_daemon, &data->work,
-					TWA_SIGNAL_NO_IPI))
-			ublk_abort_io_cmds(ubq);
 	} else {
 		struct io_uring_cmd *cmd = io->cmd;
 		struct ublk_uring_cmd_pdu *pdu = ublk_get_uring_cmd_pdu(cmd);
@@ -959,19 +934,9 @@ static int ublk_init_hctx(struct blk_mq_hw_ctx *hctx, void *driver_data,
 	return 0;
 }
 
-static int ublk_init_rq(struct blk_mq_tag_set *set, struct request *req,
-		unsigned int hctx_idx, unsigned int numa_node)
-{
-	struct ublk_rq_data *data = blk_mq_rq_to_pdu(req);
-
-	init_task_work(&data->work, ublk_rq_task_work_fn);
-	return 0;
-}
-
 static const struct blk_mq_ops ublk_mq_ops = {
 	.queue_rq       = ublk_queue_rq,
 	.init_hctx	= ublk_init_hctx,
-	.init_request   = ublk_init_rq,
 	.timeout	= ublk_timeout,
 };
 
@@ -1821,10 +1786,8 @@ static int ublk_ctrl_add_dev(struct io_uring_cmd *cmd)
 	 */
 	ub->dev_info.flags &= UBLK_F_ALL;
 
-	if (!IS_BUILTIN(CONFIG_BLK_DEV_UBLK))
-		ub->dev_info.flags |= UBLK_F_URING_CMD_COMP_IN_TASK;
-
-	ub->dev_info.flags |= UBLK_F_CMD_IOCTL_ENCODE;
+	ub->dev_info.flags |= UBLK_F_CMD_IOCTL_ENCODE |
+		UBLK_F_URING_CMD_COMP_IN_TASK;
 
 	/* We are not ready to support zero copy */
 	ub->dev_info.flags &= ~UBLK_F_SUPPORT_ZERO_COPY;
