@@ -3762,6 +3762,7 @@ out:
 static int shmem_show_options(struct seq_file *seq, struct dentry *root)
 {
 	struct shmem_sb_info *sbinfo = SHMEM_SB(root->d_sb);
+	struct mempolicy *mpol;
 
 	if (sbinfo->max_blocks != shmem_default_max_blocks())
 		seq_printf(seq, ",size=%luk",
@@ -3804,7 +3805,9 @@ static int shmem_show_options(struct seq_file *seq, struct dentry *root)
 	if (sbinfo->huge)
 		seq_printf(seq, ",huge=%s", shmem_format_huge(sbinfo->huge));
 #endif
-	shmem_show_mpol(seq, sbinfo->mpol);
+	mpol = shmem_get_sbmpol(sbinfo);
+	shmem_show_mpol(seq, mpol);
+	mpol_put(mpol);
 	return 0;
 }
 
