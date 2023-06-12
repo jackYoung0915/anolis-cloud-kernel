@@ -2660,6 +2660,17 @@ static int its_probe_baser_psz(struct its_node *its, struct its_baser *baser)
 	return 0;
 }
 
+static bool is_arch_hisi(void)
+{
+	static const struct midr_range hisi_cpus[] = {
+		MIDR_ALL_VERSIONS(MIDR_HISI_HIP09),
+		MIDR_ALL_VERSIONS(MIDR_HISI_HIP12),
+		{}
+	};
+
+	return is_midr_in_range_list(read_cpuid_id(), hisi_cpus);
+}
+
 static int its_alloc_tables(struct its_node *its)
 {
 	u64 shr = GITS_BASER_InnerShareable;
@@ -2712,6 +2723,12 @@ static int its_alloc_tables(struct its_node *its)
 
 			indirect = its_parse_indirect_baser(its, baser, &order,
 							    ITS_MAX_VPEID_BITS);
+			break;
+		case GITS_BASER_TYPE_COLLECTION:
+			if (is_arch_hisi()) {
+				indirect = its_parse_indirect_baser(its, baser, &order,
+								order_base_2(num_possible_cpus()));
+			}
 			break;
 		}
 
