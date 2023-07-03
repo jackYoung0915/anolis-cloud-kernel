@@ -82,7 +82,7 @@ void __init mminit_verify_pageflags_layout(void)
 
 	shift = BITS_PER_LONG;
 	width = shift - SECTIONS_WIDTH - NODES_WIDTH - ZONES_WIDTH
-		- LAST_CPUPID_SHIFT - KASAN_TAG_WIDTH - KIDLED_AGE_SHIFT
+		- LAST_CPUPID_SHIFT - KASAN_TAG_WIDTH - KIDLED_AGE_WIDTH
 		- LRU_GEN_WIDTH - LRU_REFS_WIDTH;
 	mminit_dprintk(MMINIT_TRACE, "pageflags_layout_widths",
 	       "Section %d Node %d Zone %d Lastcpupid %d Kasantag %d Kidled %d Gen %d Tier %d Flags %d\n",
