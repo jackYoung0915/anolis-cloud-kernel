@@ -712,7 +712,8 @@ static int fuse_atomic_open(struct inode *dir, struct dentry *entry,
 	if (err == -ENOSYS) {
 		fc->no_create = 1;
 		goto mknod;
-	}
+	} else if (err == -EEXIST)
+		fuse_invalidate_entry(entry);
 out_dput:
 	dput(res);
 	return err;
@@ -790,6 +791,8 @@ static int create_new_entry(struct fuse_mount *fm, struct fuse_args *args,
 	return 0;
 
  out_put_forget_req:
+	if (err == -EEXIST)
+		fuse_invalidate_entry(entry);
 	kfree(forget);
 	return err;
 }
@@ -910,7 +913,7 @@ static int fuse_unlink(struct inode *dir, struct dentry *entry)
 		fuse_dir_changed(dir);
 		fuse_invalidate_entry_cache(entry);
 		fuse_update_ctime(inode);
-	} else if (err == -EINTR)
+	} else if (err == -EINTR || err == -ENOENT)
 		fuse_invalidate_entry(entry);
 	return err;
 }
@@ -934,7 +937,7 @@ static int fuse_rmdir(struct inode *dir, struct dentry *entry)
 		clear_nlink(d_inode(entry));
 		fuse_dir_changed(dir);
 		fuse_invalidate_entry_cache(entry);
-	} else if (err == -EINTR)
+	} else if (err == -EINTR || err == -ENOENT)
 		fuse_invalidate_entry(entry);
 	return err;
 }
@@ -977,7 +980,7 @@ static int fuse_rename_common(struct inode *olddir, struct dentry *oldent,
 			fuse_invalidate_entry_cache(newent);
 			fuse_update_ctime(d_inode(newent));
 		}
-	} else if (err == -EINTR) {
+	} else if (err == -EINTR || err == -ENOENT) {
 		/* If request was interrupted, DEITY only knows if the
 		   rename actually took place.  If the invalidation
 		   fails (e.g. some process has CWD under the renamed
