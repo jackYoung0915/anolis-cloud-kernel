@@ -1309,6 +1309,9 @@ static int reclaim_coldpgs_read_stats(struct seq_file *m, void *v)
 		 */
 		for (i = 0; i < RECLAIM_COLDPGS_STAT_MAX; i++)
 			total->counts[i] += stats->counts[i];
+
+		/* Avoid taking up CPU too long time. */
+		cond_resched();
 	}
 
 	for (i = 0; i < RECLAIM_COLDPGS_STAT_MAX; i++) {
