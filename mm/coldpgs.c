@@ -934,7 +934,33 @@ keep:
 	/* Free folios that are eligible for releasing */
 	my_mem_cgroup_uncharge_list(&free_folios);
 	my_try_to_unmap_flush();
-	my_free_unref_page_list(&free_folios);
+
+	if (filter->batch) {
+		/* Free folios in batch */
+		LIST_HEAD(batch_free_folios);
+
+		batch = 0;
+
+		while (!list_empty(&free_folios)) {
+			folio = lru_to_folio(&free_folios);
+			list_move(&folio->lru, &batch_free_folios);
+
+			if (++batch >= filter->batch) {
+				my_free_unref_page_list(&batch_free_folios);
+
+				cond_resched();
+				batch = 0;
+				INIT_LIST_HEAD(&batch_free_folios);
+			}
+		}
+
+		/* Don't forget the remaining pages */
+		if (!list_empty(&batch_free_folios))
+			my_free_unref_page_list(&batch_free_folios);
+	} else {
+		/* Free pages in one shot */
+		my_free_unref_page_list(&free_folios);
+	}
 
 	/* Put all pages back to the list */
 	list_splice(&keep_folios, list);
