@@ -131,6 +131,8 @@ static inline void kidled_reset_scan_period(struct kidled_scan_period *p)
 	atomic_set(&p->val, 0);
 }
 
+#define is_kidled_enabled() kidled_get_current_scan_duration()
+
 /*
  * Compare with global kidled_scan_period, return true if equals.
  */
