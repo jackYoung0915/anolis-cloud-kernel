@@ -2635,6 +2635,8 @@ DEFINE_STATIC_KEY_ARRAY_FALSE(lru_gen_caps, NR_LRU_GEN_CAPS);
 #define get_cap(cap)	static_branch_unlikely(&lru_gen_caps[cap])
 #endif
 
+EXPORT_SYMBOL(lru_gen_caps);
+
 static bool should_walk_mmu(void)
 {
 	return arch_has_hw_pte_young() && get_cap(LRU_GEN_MM_WALK);
@@ -5212,6 +5214,12 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 		caps = -1;
 	else if (kstrtouint(buf, 0, &caps))
 		return -EINVAL;
+
+	if (caps && (is_kidled_enabled())) {
+		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs enabled\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	for (i = 0; i < NR_LRU_GEN_CAPS; i++) {
 		bool enabled = caps & BIT(i);
