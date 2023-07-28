@@ -2123,6 +2123,13 @@ void sparse_init(void);
 #define subsection_map_init(_pfn, _nr_pages) do {} while (0)
 #endif /* CONFIG_SPARSEMEM */
 
+/* Indicate coldpgs is enabled or not */
+extern bool coldpgs_enabled;
+static inline bool is_coldpgs_enabled(void)
+{
+	return coldpgs_enabled;
+}
+
 #endif /* !__GENERATING_BOUNDS.H */
 #endif /* !__ASSEMBLY__ */
 #endif /* _LINUX_MMZONE_H */
