@@ -113,7 +113,11 @@ static void (*my_p4d_clear_bad)(p4d_t *);
 #else
 #define my_p4d_clear_bad(p4d) do { } while (0)
 #endif
+#ifndef __PAGETABLE_PUD_FOLDED
 static void (*my_pud_clear_bad)(pud_t *);
+#else
+#define my_pud_clear_bad(p4d) do { } while (0)
+#endif
 static void (*my_pmd_clear_bad)(pmd_t *);
 static pmd_t *(*my_mm_find_pmd)(struct mm_struct *, unsigned long);
 static int (*my_do_swap_page)(struct vm_fault *);
@@ -2137,7 +2141,9 @@ static int __init reclaim_coldpgs_resolve_symbols(void)
 #if CONFIG_PGTABLE_LEVELS > 4
 	reclaim_coldpgs_resolve_symbol(p4d_clear_bad);
 #endif
+#ifndef __PAGETABLE_PUD_FOLDED
 	reclaim_coldpgs_resolve_symbol(pud_clear_bad);
+#endif
 	reclaim_coldpgs_resolve_symbol(pmd_clear_bad);
 	reclaim_coldpgs_resolve_symbol(mm_find_pmd);
 	reclaim_coldpgs_resolve_symbol(do_swap_page);
