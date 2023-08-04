@@ -22,6 +22,10 @@
 static int two = 2;
 static int min_sndbuf = SMC_BUF_MIN_SIZE;
 static int min_rcvbuf = SMC_BUF_MIN_SIZE;
+static int max_sndbuf = INT_MAX / 2;
+static int max_rcvbuf = INT_MAX / 2;
+static const int net_smc_wmem_init = (256 * 1024); /* ANCK: 256K, upstream: 64K */
+static const int net_smc_rmem_init = (256 * 1024);
 static int links_per_lgr_min = SMC_LINKS_ADD_LNK_MIN;
 static int links_per_lgr_max = SMC_LINKS_ADD_LNK_MAX;
 static int conns_per_lgr_min = SMC_CONN_PER_LGR_MIN;
@@ -58,6 +62,7 @@ static struct ctl_table smc_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_sndbuf,
+		.extra2		= &max_sndbuf,
 	},
 	{
 		.procname	= "rmem",
@@ -66,6 +71,7 @@ static struct ctl_table smc_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_rcvbuf,
+		.extra2		= &max_rcvbuf,
 	},
 	{
 		.procname	= "tcp2smc",
@@ -126,8 +132,8 @@ int __net_init smc_sysctl_net_init(struct net *net)
 	net->smc.sysctl_smcr_buf_type = SMCR_MIXED_BUFS;
 	net->smc.sysctl_vendor_exp_options = ~0U;
 	net->smc.sysctl_smcr_testlink_time = SMC_LLC_TESTLINK_DEFAULT_TIME;
-	net->smc.sysctl_wmem = 262144; /* 256 KiB */
-	net->smc.sysctl_rmem = 262144; /* 256 KiB */
+	WRITE_ONCE(net->smc.sysctl_wmem, net_smc_wmem_init);
+	WRITE_ONCE(net->smc.sysctl_rmem, net_smc_rmem_init);
 	net->smc.sysctl_tcp2smc = 0;
 	/* enable handshake limitation by default */
 	net->smc.limit_smc_hs = 1;
