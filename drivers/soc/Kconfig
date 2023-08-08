@@ -24,5 +24,6 @@ source "drivers/soc/xilinx/Kconfig"
 source "drivers/soc/zte/Kconfig"
 source "drivers/soc/kendryte/Kconfig"
 source "drivers/soc/thead/Kconfig"
+source "drivers/soc/hisilicon/Kconfig"
 
 endmenu
