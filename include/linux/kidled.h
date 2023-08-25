@@ -131,8 +131,6 @@ static inline void kidled_reset_scan_period(struct kidled_scan_period *p)
 	atomic_set(&p->val, 0);
 }
 
-#define is_kidled_enabled() kidled_get_current_scan_duration()
-
 /*
  * Compare with global kidled_scan_period, return true if equals.
  */
@@ -238,6 +236,13 @@ static inline void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
 }
 #endif /* CONFIG_MEMCG */
 
+static inline unsigned int kidled_get_current_scan_duration(void)
+{
+	return 0;
+}
+
 #endif /* CONFIG_KIDLED */
+
+#define is_kidled_enabled() kidled_get_current_scan_duration()
 
 #endif /* _LINUX_MM_KIDLED_H */
