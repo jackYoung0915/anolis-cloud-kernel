@@ -468,6 +468,9 @@ void __khugepaged_enter(struct mm_struct *mm)
 void khugepaged_enter_vma(struct vm_area_struct *vma,
 			  unsigned long vm_flags)
 {
+	if (unlikely(!memcg_transhuge_vma_enabled(vma)))
+		return;
+
 	if (!test_bit(MMF_VM_HUGEPAGE, &vma->vm_mm->flags) &&
 	    hugepage_pmd_enabled()) {
 		if (thp_vma_allowable_order(vma, vm_flags, false, false, true,

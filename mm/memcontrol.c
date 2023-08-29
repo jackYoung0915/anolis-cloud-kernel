@@ -5585,6 +5585,47 @@ static int mem_cgroup_allow_pgcache_sync_write(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_PAGECACHE_LIMIT */
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+static int memcg_thp_control_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	unsigned long thp_control = memcg->thp_control;
+
+	seq_printf(m, "0x%lx\n", thp_control);
+	return 0;
+}
+
+static ssize_t memcg_thp_control_write(struct kernfs_open_file *of,
+				       char *buf, size_t count, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned long thp_control;
+	int ret;
+
+	buf = strstrip(buf);
+	ret = kstrtoul(buf, 0, &thp_control);
+	if (ret || thp_control >= (1 << NR_MEMCG_THP_FLAG))
+		return -EINVAL;
+
+	memcg->thp_control = thp_control;
+	return count;
+}
+
+bool memcg_thp_control_test(struct mm_struct *mm, enum memcg_thp_flag flag)
+{
+	struct mem_cgroup *memcg;
+	unsigned long thp_control = 0;
+
+	memcg = get_mem_cgroup_from_mm(mm);
+	if (memcg) {
+		thp_control = memcg->thp_control;
+		css_put(&memcg->css);
+	}
+
+	return test_bit(flag, &thp_control);
+}
+#endif
+
 static struct cftype mem_cgroup_legacy_files[] = {
 	{
 		.name = "usage_in_bytes",
@@ -5783,6 +5824,14 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.name = "pagecache_limit.sync",
 		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
 		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
+	},
+#endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	{
+		.name = "thp_control",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memcg_thp_control_show,
+		.write = memcg_thp_control_write,
 	},
 #endif
 	{ },	/* terminate */
@@ -6052,6 +6101,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_PAGECACHE_LIMIT
 		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
 		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
+#endif
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+		memcg->thp_control = parent->thp_control;
 #endif
 		page_counter_init(&memcg->memory, &parent->memory);
 		page_counter_init(&memcg->swap, &parent->swap);

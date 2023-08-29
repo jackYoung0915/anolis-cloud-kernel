@@ -361,6 +361,7 @@ struct mem_cgroup {
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	struct deferred_split deferred_split_queue;
+	unsigned long thp_control;
 #endif
 
 #ifdef CONFIG_PAGECACHE_LIMIT

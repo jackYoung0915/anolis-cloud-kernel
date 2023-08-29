@@ -117,6 +117,7 @@ Brief summary of control files.
  memory.wmark_scale_factor          the gap between wmark_low and wmark_high,
                   percentage of max limit, default is 50 or 0.5% of max limit.
                   The max value is 1000 or 10% of max limit.
+ memory.thp_control		     set/show thp controls.
 ==================================== ==========================================
 
 1. History
@@ -1043,6 +1044,34 @@ wmark_low if possible.
 2. Teach controller to account for shared-pages
 3. Start reclamation in the background when the limit is
    not yet hit but the usage is getting closer
+
+15. THP Control
+===============
+
+memory.thp_control file is for THP behavior controls. At present, this
+allows administrator to disable anonymous, shmem, file THP, respectively,
+for tasks in this memcg.
+
+Although prohibiting tasks in specific memcg from using THP does not
+prevent fragmentation, but it can reduce THP contention and memory
+waste.
+
+This interface uses bits to operate, and the bit to disable anonymous,
+shmem, file THP is 0, 1, 2, respectively.
+
+For example, to disable anonymous THP:
+
+	# echo 0x1 > /path/to/memcg/memory.thp_control
+
+And to disable shmem and file THP:
+
+	# echo 0x6 > /path/to/memcg/memory.thp_control
+
+And to disable all THP:
+
+	# echo 0x7 > /path/to/memcg/memory.thp_control
+
+Note that this interface is not applicable to root memcg.
 
 Summary
 =======
