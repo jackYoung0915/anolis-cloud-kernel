@@ -3102,7 +3102,8 @@ static void __split_huge_page_tail(struct folio *folio, int tail,
 			 (1L << PG_arch_3) |
 #endif
 			 (1L << PG_dirty) |
-			 LRU_GEN_MASK | LRU_REFS_MASK));
+			 LRU_GEN_MASK | LRU_REFS_MASK |
+			      KIDLED_AGE_OFFSET_MASK));
 
 	/* ->mapping in first and second tail page is replaced by other uses */
 	VM_BUG_ON_PAGE(tail > 2 && page_tail->mapping != TAIL_MAPPING,
