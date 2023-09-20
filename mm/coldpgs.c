@@ -251,17 +251,6 @@ static inline bool reclaim_coldpgs_has_flag(
 	return !!(filter->flags & flag);
 }
 
-static inline int reclaim_coldpgs_memcg_swappiness(struct mem_cgroup *memcg)
-{
-	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return *my_vm_swappiness;
-
-	if (mem_cgroup_disabled() || !memcg->css.parent)
-		return *my_vm_swappiness;
-
-	return memcg->swappiness;
-}
-
 static bool folio_is_exec(struct address_space *mapping,
 			  struct folio *folio)
 {
@@ -373,10 +362,6 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 
 		/* Bail if the anonymous page is being written back */
 		if (folio_test_writeback(folio))
-			return false;
-
-		/* Bail if swapping is disallowed */
-		if (!reclaim_coldpgs_memcg_swappiness(memcg))
 			return false;
 
 		/* Bail if there is no enough swap space */
@@ -1061,11 +1046,9 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	}
 
 	/*
-	 * When the swappiness is zero or no available swap space, the
-	 * swapout won't be issued.
+	 * When no available swap space, the swapout won't be issued.
 	 */
 	if (reclaim_coldpgs_has_mode(filter, RECLAIM_MODE_ANON_OUT) &&
-	    reclaim_coldpgs_memcg_swappiness(memcg) &&
 	    my_mem_cgroup_get_nr_swap_pages(memcg) > 0) {
 		bitmap_set(&bitmap, LRU_INACTIVE_ANON, 1);
 		bitmap_set(&bitmap, LRU_ACTIVE_ANON, 1);
