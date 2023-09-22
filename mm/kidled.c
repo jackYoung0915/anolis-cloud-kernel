@@ -65,6 +65,8 @@
 #define __kidled_ref __ref
 #endif
 
+DEFINE_STATIC_KEY_FALSE(kidled_enabled_key);
+
 struct kidled_scan_period kidled_scan_period;
 /*
  * These bucket values are copied from Michel Lespinasse's patch, they are
@@ -689,6 +691,9 @@ static inline bool kidled_should_run(struct kidled_scan_period *p, bool *new)
 			kidled_reset();
 #endif
 		}
+		if (!scan_period.duration)
+			static_branch_disable(&kidled_enabled_key);
+
 		*p = scan_period;
 		*new = true;
 	} else {
@@ -808,6 +813,13 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 		pr_warn("%s: Failed to enable kidled due to mglru enabled\n", __func__);
 		return -EINVAL;
 	}
+
+	/*
+	 * To avoid situation like lru_gen >= 0 && kidled disabled, disable
+	 * enabled_key after reset.
+	 */
+	if (secs)
+		static_branch_enable(&kidled_enabled_key);
 
 	kidled_set_scan_duration(secs);
 	wake_up_interruptible(&kidled_wait);
