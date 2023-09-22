@@ -8,6 +8,7 @@
 #include <linux/string.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/swapops.h>
+#include <linux/kidled.h>
 
 /**
  * folio_is_file_lru - Should the folio be on a file LRU or anon LRU?
@@ -273,7 +274,7 @@ static inline bool lru_gen_del_folio(struct lruvec *lruvec, struct folio *folio,
 	unsigned long flags;
 	int gen = folio_lru_gen(folio);
 
-	if (gen < 0)
+	if (gen < 0 || is_kidled_enabled())
 		return false;
 
 	VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);

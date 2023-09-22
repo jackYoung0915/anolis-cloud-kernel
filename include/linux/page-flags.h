@@ -1169,13 +1169,15 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 /*
  * Flags checked when a page is freed.  Pages being freed should not have
  * these flags set.  If they are, there is a problem.
+ * To avoid conflict with kidled, we skip to check LRU_GEN_MASK.
+ * FIXME: Revisit this logic. Skipping LRU_GEN_MASK check may have side effects.
  */
 #define PAGE_FLAGS_CHECK_AT_FREE				\
 	(1UL << PG_lru		| 1UL << PG_locked	|	\
 	 1UL << PG_private	| 1UL << PG_private_2	|	\
 	 1UL << PG_writeback	| 1UL << PG_reserved	|	\
 	 1UL << PG_slab		| 1UL << PG_active 	|	\
-	 1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK | \
+	 1UL << PG_unevictable	| __PG_MLOCKED	| \
 	 __PG_DUP)
 
 /*
