@@ -2,6 +2,13 @@
 #
 # Confidential computing related collateral
 #
+
+config TSM_REPORTS
+	select CONFIGFS_FS
+	tristate "TSP report configfs ABI support"
+	help
+	  TSM report configfs ABI support
+
 source "drivers/virt/coco/efi_secret/Kconfig"
 
 source "drivers/virt/coco/csv-guest/Kconfig"
