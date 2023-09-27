@@ -43,6 +43,9 @@ void asm_offsets(void)
 	OFFSET(TASK_TI_PREEMPT_COUNT, task_struct, thread_info.preempt_count);
 	OFFSET(TASK_TI_KERNEL_SP, task_struct, thread_info.kernel_sp);
 	OFFSET(TASK_TI_USER_SP, task_struct, thread_info.user_sp);
+#ifdef CONFIG_SHADOW_CALL_STACK
+	OFFSET(TASK_TI_SCS_SP, task_struct, thread_info.scs_sp);
+#endif
 #ifdef CONFIG_64BIT
 	OFFSET(TASK_TI_A0, task_struct, thread_info.a0);
 	OFFSET(TASK_TI_A1, task_struct, thread_info.a1);

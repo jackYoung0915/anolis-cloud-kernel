@@ -9,6 +9,7 @@
 
 #include <asm/asm.h>
 #include <asm/csr.h>
+#include <asm/scs.h>
 #include <asm/unistd.h>
 #include <asm/page.h>
 #include <asm/thread_info.h>
@@ -166,6 +167,9 @@ SYM_CODE_START(handle_exception)
 	/* Load the global pointer */
 	load_global_pointer
 
+	/* Load the kernel shadow call stack pointer if coming from userspace */
+	scs_load_current_if_task_changed s5
+
 #ifdef CONFIG_RISCV_ISA_V_PREEMPTIVE
 	move a0, sp
 	call riscv_v_context_nesting_start
@@ -216,6 +220,9 @@ SYM_CODE_START_NOALIGN(ret_from_exception)
 	/* Save unwound kernel stack pointer in thread_info */
 	addi s0, sp, PT_SIZE_ON_STACK
 	REG_S s0, TASK_TI_KERNEL_SP(tp)
+
+	/* Save the kernel shadow call stack pointer */
+	scs_save_current
 
 	/*
 	 * Save TP into the scratch register , so we can find the kernel data
@@ -380,6 +387,8 @@ SYM_FUNC_START(__switch_to)
 	csrr  s0, CSR_STATUS
 	REG_S s0, TASK_THREAD_SUM_RA(a3)
 
+	/* Save the kernel shadow call stack pointer */
+	scs_save_current
 	/* Restore context from next->thread */
 	REG_L s0,  TASK_THREAD_SUM_RA(a4)
 	li    s1,  SR_SUM
@@ -401,6 +410,8 @@ SYM_FUNC_START(__switch_to)
 	REG_L s11, TASK_THREAD_S11_RA(a4)
 	/* The offset of thread_info in task_struct is zero. */
 	move tp, a1
+	/* Switch to the next shadow call stack */
+	scs_load_current
 	ret
 SYM_FUNC_END(__switch_to)
 
