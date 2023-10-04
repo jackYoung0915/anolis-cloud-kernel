@@ -975,8 +975,7 @@ void check_unaligned_access(int cpu)
 	void *src;
 	long speed = RISCV_HWPROBE_MISALIGNED_SLOW;
 
-	/* We are already set since the last check */
-	if (per_cpu(misaligned_access_speed, cpu) != RISCV_HWPROBE_MISALIGNED_UNKNOWN)
+	if (check_unaligned_access_emulated(cpu))
 		return;
 
 	page = alloc_pages(GFP_NOWAIT, get_order(MISALIGNED_BUFFER_SIZE));
@@ -1059,6 +1058,7 @@ out:
 static int check_unaligned_access_boot_cpu(void)
 {
 	check_unaligned_access(0);
+	unaligned_emulation_finish();
 	return 0;
 }
 
