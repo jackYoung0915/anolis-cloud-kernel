@@ -128,6 +128,8 @@
  *   nla_len(nla)			length of attribute payload
  *
  * Attribute Payload Access for Basic Types:
+ *   nla_get_uint(nla)			get payload for a uint attribute
+ *   nla_get_sint(nla)			get payload for a sint attribute
  *   nla_get_u8(nla)			get payload for a u8 attribute
  *   nla_get_u16(nla)			get payload for a u16 attribute
  *   nla_get_u32(nla)			get payload for a u32 attribute
@@ -235,6 +237,7 @@ enum nla_policy_validation {
  *                         nested header (or empty); len field is used if
  *                         nested_policy is also used, for the max attr
  *                         number in the nested policy.
+ *    NLA_SINT, NLA_UINT,
  *    NLA_U8, NLA_U16,
  *    NLA_U32, NLA_U64,
  *    NLA_S8, NLA_S16,
@@ -266,12 +269,14 @@ enum nla_policy_validation {
  *                         while an array has the nested attributes at another
  *                         level down and the attribute types directly in the
  *                         nesting don't matter.
+ *    NLA_UINT,
  *    NLA_U8,
  *    NLA_U16,
  *    NLA_U32,
  *    NLA_U64,
  *    NLA_BE16,
  *    NLA_BE32,
+ *    NLA_SINT,
  *    NLA_S8,
  *    NLA_S16,
  *    NLA_S32,
@@ -286,6 +291,7 @@ enum nla_policy_validation {
  *                         or NLA_POLICY_FULL_RANGE_SIGNED() macros instead.
  *                         Use the NLA_POLICY_MIN(), NLA_POLICY_MAX() and
  *                         NLA_POLICY_RANGE() macros.
+ *    NLA_UINT,
  *    NLA_U8,
  *    NLA_U16,
  *    NLA_U32,
@@ -294,6 +300,7 @@ enum nla_policy_validation {
  *                         to a struct netlink_range_validation that indicates
  *                         the min/max values.
  *                         Use NLA_POLICY_FULL_RANGE().
+ *    NLA_SINT,
  *    NLA_S8,
  *    NLA_S16,
  *    NLA_S32,
@@ -1525,6 +1532,22 @@ static inline int nla_put_s64(struct sk_buff *skb, int attrtype, s64 value,
 }
 
 /**
+ * nla_put_sint - Add a variable-size signed int to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_sint(struct sk_buff *skb, int attrtype, s64 value)
+{
+	s64 tmp64 = value;
+	s32 tmp32 = value;
+
+	if (tmp64 == tmp32)
+		return nla_put_s32(skb, attrtype, tmp32);
+	return nla_put(skb, attrtype, sizeof(s64), &tmp64);
+}
+
+/**
  * nla_put_string - Add a string netlink attribute to a socket buffer
  * @skb: socket buffer to add attribute to
  * @attrtype: attribute type
@@ -1680,6 +1703,10 @@ static inline u64 nla_get_u64(const struct nlattr *nla)
 	return tmp;
 }
 
+/**
+ * nla_get_uint - return payload of uint attribute
+ * @nla: uint netlink attribute
+ */
 static inline u64 nla_get_uint(const struct nlattr *nla)
 {
 	if (nla_len(nla) == sizeof(u32))
@@ -1747,6 +1774,17 @@ static inline s64 nla_get_s64(const struct nlattr *nla)
 	nla_memcpy(&tmp, nla, sizeof(tmp));
 
 	return tmp;
+}
+
+/**
+ * nla_get_sint - return payload of uint attribute
+ * @nla: uint netlink attribute
+ */
+static inline s64 nla_get_sint(const struct nlattr *nla)
+{
+	if (nla_len(nla) == sizeof(s32))
+		return nla_get_s32(nla);
+	return nla_get_s64(nla);
 }
 
 /**
