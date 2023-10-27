@@ -1315,6 +1315,9 @@ config DUPTEXT
 
 	  If unsure, say N.
 
+config IOMMU_MM_DATA
+	bool
+
 source "mm/damon/Kconfig"
 
 config ASYNC_FORK
