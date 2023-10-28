@@ -152,6 +152,7 @@ bool dma_pci_p2pdma_supported(struct device *dev);
 int dma_set_mask(struct device *dev, u64 mask);
 int dma_set_coherent_mask(struct device *dev, u64 mask);
 u64 dma_get_required_mask(struct device *dev);
+bool dma_addressing_limited(struct device *dev);
 size_t dma_max_mapping_size(struct device *dev);
 size_t dma_opt_mapping_size(struct device *dev);
 unsigned long dma_get_merge_boundary(struct device *dev);
@@ -254,6 +255,10 @@ static inline int dma_set_coherent_mask(struct device *dev, u64 mask)
 static inline u64 dma_get_required_mask(struct device *dev)
 {
 	return 0;
+}
+static inline bool dma_addressing_limited(struct device *dev)
+{
+	return false;
 }
 static inline size_t dma_max_mapping_size(struct device *dev)
 {
@@ -590,20 +595,6 @@ static inline int dma_coerce_mask_and_coherent(struct device *dev, u64 mask)
 {
 	dev->dma_mask = &dev->coherent_dma_mask;
 	return dma_set_mask_and_coherent(dev, mask);
-}
-
-/**
- * dma_addressing_limited - return if the device is addressing limited
- * @dev:	device to check
- *
- * Return %true if the devices DMA mask is too small to address all memory in
- * the system, else %false.  Lack of addressing bits is the prime reason for
- * bounce buffering, but might not be the only one.
- */
-static inline bool dma_addressing_limited(struct device *dev)
-{
-	return min_not_zero(dma_get_mask(dev), dev->bus_dma_limit) <
-			    dma_get_required_mask(dev);
 }
 
 static inline unsigned int dma_get_max_seg_size(struct device *dev)
