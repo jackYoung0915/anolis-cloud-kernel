@@ -442,7 +442,14 @@ out:
 static const unsigned long cr4_pinned_mask =
 	X86_CR4_SMEP | X86_CR4_SMAP | X86_CR4_UMIP | X86_CR4_FSGSBASE;
 static DEFINE_STATIC_KEY_FALSE_RO(cr_pinning);
+
 static unsigned long cr4_pinned_bits __ro_after_init;
+
+bool cr_pinning_enabled(void)
+{
+	return static_key_enabled(&cr_pinning);
+}
+EXPORT_SYMBOL(cr_pinning_enabled);
 
 void native_write_cr0(unsigned long val)
 {
