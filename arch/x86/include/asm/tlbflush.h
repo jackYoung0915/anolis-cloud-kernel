@@ -18,6 +18,8 @@ void __flush_tlb_all(void);
 #define TLB_FLUSH_ALL	-1UL
 
 void cr4_update_irqsoff(unsigned long set, unsigned long clear);
+bool cr_pinning_enabled(void);
+
 unsigned long cr4_read_shadow(void);
 
 /* Set in this cpu's CR4. */
