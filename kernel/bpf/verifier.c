@@ -9522,8 +9522,7 @@ enum {
  * w - next instruction
  * e - edge
  */
-static int push_insn(int t, int w, int e, struct bpf_verifier_env *env,
-		     bool loop_ok)
+static int push_insn(int t, int w, int e, struct bpf_verifier_env *env)
 {
 	int *insn_stack = env->cfg.insn_stack;
 	int *insn_state = env->cfg.insn_state;
@@ -9553,7 +9552,7 @@ static int push_insn(int t, int w, int e, struct bpf_verifier_env *env,
 		insn_stack[env->cfg.cur_stack++] = w;
 		return KEEP_EXPLORING;
 	} else if ((insn_state[w] & 0xF0) == DISCOVERED) {
-		if (loop_ok && env->bpf_capable)
+		if (env->bpf_capable)
 			return DONE_EXPLORING;
 		verbose_linfo(env, t, "%d: ", t);
 		verbose_linfo(env, w, "%d: ", w);
@@ -9577,7 +9576,7 @@ static int visit_func_call_insn(int t, int insn_cnt,
 	int ret, insn_sz;
 
 	insn_sz = bpf_is_ldimm64(&insns[t]) ? 2 : 1;
-	ret = push_insn(t, t + insn_sz, FALLTHROUGH, env, false);
+	ret = push_insn(t, t + insn_sz, FALLTHROUGH, env);
 	if (ret)
 		return ret;
 
@@ -9585,12 +9584,7 @@ static int visit_func_call_insn(int t, int insn_cnt,
 		init_explored_state(env, t + insn_sz);
 	if (visit_callee) {
 		init_explored_state(env, t);
-		ret = push_insn(t, t + insns[t].imm + 1, BRANCH, env,
-				/* It's ok to allow recursion from CFG point of
-				 * view. __check_func_call() will do the actual
-				 * check.
-				 */
-				bpf_pseudo_func(insns + t));
+		ret = push_insn(t, t + insns[t].imm + 1, BRANCH, env);
 	}
 	return ret;
 }
@@ -9612,7 +9606,7 @@ static int visit_insn(int t, int insn_cnt, struct bpf_verifier_env *env)
 	if (BPF_CLASS(insns[t].code) != BPF_JMP &&
 	    BPF_CLASS(insns[t].code) != BPF_JMP32) {
 		insn_sz = bpf_is_ldimm64(insns + t) ? 2 : 1;
-		return push_insn(t, t + insn_sz, FALLTHROUGH, env, false);
+		return push_insn(t, t + insn_sz, FALLTHROUGH, env);
 	}
 
 	switch (BPF_OP(insns[t].code)) {
@@ -9635,8 +9629,7 @@ static int visit_insn(int t, int insn_cnt, struct bpf_verifier_env *env)
 			return -EINVAL;
 
 		/* unconditional jump with single edge */
-		ret = push_insn(t, t + insns[t].off + 1, FALLTHROUGH, env,
-				true);
+		ret = push_insn(t, t + insns[t].off + 1, FALLTHROUGH, env);
 		if (ret)
 			return ret;
 
@@ -9656,11 +9649,11 @@ static int visit_insn(int t, int insn_cnt, struct bpf_verifier_env *env)
 	default:
 		/* conditional jump with two edges */
 		init_explored_state(env, t);
-		ret = push_insn(t, t + 1, FALLTHROUGH, env, true);
+		ret = push_insn(t, t + 1, FALLTHROUGH, env);
 		if (ret)
 			return ret;
 
-		return push_insn(t, t + insns[t].off + 1, BRANCH, env, true);
+		return push_insn(t, t + insns[t].off + 1, BRANCH, env);
 	}
 }
 
