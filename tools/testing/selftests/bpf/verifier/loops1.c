@@ -65,9 +65,10 @@
 		BPF_JMP_IMM(BPF_JLT, BPF_REG_0, 4, -2),
 		BPF_EXIT_INSN(),
 	},
-	.result = REJECT,
-	.errstr = "back-edge",
-	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.result = ACCEPT,
+	.errstr_unpriv = "back-edge",
+	.result_unpriv = REJECT,
+	.prog_type = BPF_PROG_TYPE_SOCKET_FILTER,
 	.retval = 4,
 },
 {
@@ -123,7 +124,8 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "back-edge",
+	/* verifier limitation in detecting max stack depth */
+	.errstr = "the call stack of 8 frames is too deep !",
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
 },
 {
