@@ -12,6 +12,7 @@
 
 #include <asm/set_memory.h>
 
+#ifdef CONFIG_KFENCE
 static inline bool arch_kfence_init_pool(struct kfence_pool_area *kpa)
 {
 	unsigned long addr = (unsigned long)kpa->addr;
@@ -37,7 +38,6 @@ static inline bool kfence_protect_page(unsigned long addr, bool protect)
 
 static inline bool arch_kfence_free_pool(unsigned long addr) { return false; }
 
-#ifdef CONFIG_KFENCE
 extern bool kfence_early_init;
 static inline bool arm64_kfence_can_set_direct_map(void)
 {
