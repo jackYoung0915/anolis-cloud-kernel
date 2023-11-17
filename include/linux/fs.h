@@ -503,9 +503,9 @@ extern const struct address_space_operations empty_aops;
  * @a_ops: Methods.
  * @flags: Error bits and flags (AS_*).
  * @wb_err: The most recent error which has occurred.
- * @private_lock: For use by the owner of the address_space.
- * @private_list: For use by the owner of the address_space.
- * @private_data: For use by the owner of the address_space.
+ * @i_private_lock: For use by the owner of the address_space.
+ * @i_private_list: For use by the owner of the address_space.
+ * @i_private_data: For use by the owner of the address_space.
  */
 struct address_space {
 	struct inode		*host;
@@ -527,10 +527,10 @@ struct address_space {
 	const struct address_space_operations *a_ops;
 	unsigned long		flags;
 	errseq_t		wb_err;
-	spinlock_t		private_lock;
-	struct list_head	private_list;
+	spinlock_t		i_private_lock;
+	struct list_head	i_private_list;
 	struct rw_semaphore	i_mmap_rwsem;
-	void			*private_data;
+	void *			i_private_data;
 
 	struct fast_reflink_work *fast_reflink_work;
 
