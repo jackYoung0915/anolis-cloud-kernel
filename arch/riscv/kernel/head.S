@@ -161,7 +161,6 @@ secondary_start_sbi:
 	XIP_FIXUP_OFFSET a3
 	add a3, a3, a1
 	REG_L sp, (a3)
-	scs_load_current
 
 .Lsecondary_start_common:
 
@@ -172,6 +171,7 @@ secondary_start_sbi:
 	call relocate_enable_mmu
 #endif
 	call .Lsetup_trap_vector
+	scs_load_current
 	call smp_callin
 #endif /* CONFIG_SMP */
 
