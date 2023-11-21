@@ -2061,11 +2061,8 @@ static int hct_share_init(void)
 	if (!ret) {
 		hct_data.domain = iommu_domain_alloc(&pci_bus_type);
 		if (!hct_data.domain) {
+			pr_err("iommu domain alloc failed\n");
 			misc_deregister(&hct_misc);
-			if (!pci_bus_type.iommu_ops) {
-				pr_err("iommu is disabled\n");
-				return -ENODEV;
-			}
 			return -ENOMEM;
 		}
 		hct_data.prot = IOMMU_READ | IOMMU_WRITE;
