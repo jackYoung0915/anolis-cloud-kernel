@@ -4970,7 +4970,8 @@ err_out_register_ha:
 err_out_free_irq_vectors:
 	pci_free_irq_vectors(pdev);
 err_out_debugfs:
-	debugfs_exit_v3_hw(hisi_hba);
+	if (hisi_sas_debugfs_enable)
+		debugfs_exit_v3_hw(hisi_hba);
 err_out_ha:
 	hisi_sas_free(hisi_hba);
 	scsi_host_put(shost);
@@ -5015,7 +5016,8 @@ static void hisi_sas_v3_remove(struct pci_dev *pdev)
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 	hisi_sas_free(hisi_hba);
-	debugfs_exit_v3_hw(hisi_hba);
+	if (hisi_sas_debugfs_enable)
+		debugfs_exit_v3_hw(hisi_hba);
 	scsi_host_put(shost);
 }
 
