@@ -2133,6 +2133,11 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 	{
+		.procname	= "rich_container_feature_control",
+		.mode		= 0600,
+		.proc_handler	= rich_container_feature_control_handler,
+	},
+	{
 		.procname	= "rich_container_source",
 		.data		= &sysctl_rich_container_source,
 		.maxlen		= sizeof(int),
