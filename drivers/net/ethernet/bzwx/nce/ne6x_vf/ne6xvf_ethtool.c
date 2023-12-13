@@ -671,21 +671,21 @@ static u32 ne6xvf_get_rxfh_indir_size(struct net_device *netdev)
  *
  * Reads the indirection table directly from the hardware. Always returns 0.
  **/
-static int ne6xvf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key, u8 *hfunc)
+static int ne6xvf_get_rxfh(struct net_device *netdev,
+			   struct ethtool_rxfh_param *rxfh)
 {
 	struct ne6xvf_adapter *adapter = netdev_priv(netdev);
 	u16 i;
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
-	if (key)
-		memcpy(key, adapter->rss_info.hash_key, adapter->rss_info.hash_key_size);
+	if (rxfh->key)
+		memcpy(rxfh->key, adapter->rss_info.hash_key, adapter->rss_info.hash_key_size);
 
-	if (indir) {
+	if (rxfh->indir) {
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_info.ind_table_size; i++)
-			indir[i] = (u32)adapter->rss_info.ind_table[i];
+			rxfh->indir[i] = (u32)adapter->rss_info.ind_table[i];
 	}
 
 	return 0;
@@ -694,32 +694,30 @@ static int ne6xvf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key, u8 *h
 /**
  * ne6xvf_set_rxfh - set the Rx flow hash indirection table
  * @netdev: network interface device structure
- * @indir: indirection table
- * @key: hash key
- * @hfunc: hash function
  *
  * Returns -EINVAL if the table specifies an invalid queue ID, otherwise
  * returns 0 after programming the table.
  */
-static int ne6xvf_set_rxfh(struct net_device *netdev, const u32 *indir,
-			   const u8 *key, const u8 hfunc)
+static int ne6xvf_set_rxfh(struct net_device *netdev,
+			   struct ethtool_rxfh_param *rxfh,
+			   struct netlink_ext_ack *extack)
 {
 	struct ne6xvf_adapter *adapter = netdev_priv(netdev);
 	int i;
 
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE && rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	if (!key && !indir)
+	if (!rxfh->key && !rxfh->indir)
 		return 0;
 
-	if (key)
-		memcpy(&adapter->rss_info.hash_key[0], key, adapter->rss_info.hash_key_size);
+	if (rxfh->key)
+		memcpy(&adapter->rss_info.hash_key[0], rxfh->key, adapter->rss_info.hash_key_size);
 
-	if (indir) {
+	if (rxfh->indir) {
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_info.ind_table_size; i++)
-			adapter->rss_info.ind_table[i] = (u8)(indir[i]);
+			adapter->rss_info.ind_table[i] = (u8)(rxfh->indir[i]);
 	}
 
 	adapter->aq_required |= NE6XVF_FLAG_AQ_CONFIGURE_RSS;
