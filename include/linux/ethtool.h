@@ -619,6 +619,8 @@ struct ethtool_mm_stats {
  *	to allocate a new RSS context; on return this field will
  *	contain the ID of the newly allocated context.
  * @rss_delete: Set to non-ZERO to remove the @rss_context context.
+ * @input_xfrm: Defines how the input data is transformed. Valid values are one
+ *	of %RXH_XFRM_*.
  */
 struct ethtool_rxfh_param {
 	u8	hfunc;
@@ -628,6 +630,7 @@ struct ethtool_rxfh_param {
 	u8	*key;
 	u32	rss_context;
 	u8	rss_delete;
+	u8	input_xfrm;
 };
 
 /**
@@ -636,6 +639,8 @@ struct ethtool_rxfh_param {
  *	parameter.
  * @cap_rss_ctx_supported: indicates if the driver supports RSS
  *	contexts.
+ * @cap_rss_sym_xor_supported: indicates if the driver supports symmetric-xor
+ *	RSS.
  * @supported_coalesce_params: supported types of interrupt coalescing.
  * @supported_ring_params: supported ring params.
  * @get_drvinfo: Report driver/device information. Modern drivers no
@@ -815,6 +820,7 @@ struct ethtool_rxfh_param {
 struct ethtool_ops {
 	u32     cap_link_lanes_supported:1;
 	u32     cap_rss_ctx_supported:1;
+	u32	cap_rss_sym_xor_supported:1;
 	u32	supported_coalesce_params;
 	u32	supported_ring_params;
 	void	(*get_drvinfo)(struct net_device *, struct ethtool_drvinfo *);
