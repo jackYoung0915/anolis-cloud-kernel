@@ -985,27 +985,29 @@ static u32 ne6x_get_rss_table_size(struct net_device *netdev)
 	return rss_info->ind_table_size;
 }
 
-static int ne6x_get_rxfh(struct net_device *netdev, u32 *p, u8 *key, u8 *hfunc)
+static int ne6x_get_rxfh(struct net_device *netdev,
+			 struct ethtool_rxfh_param *rxfh)
 {
 	struct ne6x_adapter *adpt = ne6x_netdev_to_adpt(netdev);
 	struct ne6x_rss_info *rss_info = &adpt->rss_info;
 	unsigned int n = rss_info->ind_table_size;
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
-	if (p) {
+	if (rxfh->indir) {
 		while (n--)
-			p[n] = rss_info->ind_table[n];
+			rxfh->indir[n] = rss_info->ind_table[n];
 	}
 
-	if (key)
-		memcpy(key, rss_info->hash_key, ne6x_get_rxfh_key_size(netdev));
+	if (rxfh->key)
+		memcpy(rxfh->key, rss_info->hash_key, ne6x_get_rxfh_key_size(netdev));
 
 	return 0;
 }
 
-static int ne6x_set_rxfh(struct net_device *netdev, const u32 *p, const u8 *key, const u8 hfunc)
+static int ne6x_set_rxfh(struct net_device *netdev,
+			 struct ethtool_rxfh_param *rxfh,
+			 struct netlink_ext_ack *extack)
 {
 	struct ne6x_adapter *adpt = ne6x_netdev_to_adpt(netdev);
 	struct ne6x_rss_info *rss_info = &adpt->rss_info;
@@ -1013,19 +1015,19 @@ static int ne6x_set_rxfh(struct net_device *netdev, const u32 *p, const u8 *key,
 	int status;
 
 	/* We do not allow change in unsupported parameters */
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE && rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
 	/* Fill out the redirection table */
-	if (p) {
+	if (rxfh->indir) {
 		/* Allow at least 2 queues w/ SR-IOV. */
 		for (i = 0; i < rss_info->ind_table_size; i++)
-			rss_info->ind_table[i] = p[i];
+			rss_info->ind_table[i] = rxfh->indir[i];
 	}
 
 	/* Fill out the rss hash key */
-	if (key)
-		memcpy(&rss_info->hash_key[0], key, ne6x_get_rxfh_key_size(netdev));
+	if (rxfh->key)
+		memcpy(&rss_info->hash_key[0], rxfh->key, ne6x_get_rxfh_key_size(netdev));
 
 	status = ne6x_dev_set_rss(adpt, rss_info);
 
