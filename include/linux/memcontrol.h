@@ -468,7 +468,7 @@ struct mem_cgroup {
 	bool pre_oom;
 #endif
 
-#ifdef CONFIG_LRU_GEN
+#ifdef CONFIG_LRU_GEN_WALKS_MMU
 	/* per-memcg mm_struct list */
 	struct lru_gen_mm_list mm_list;
 #endif
