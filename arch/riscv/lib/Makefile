@@ -6,6 +6,7 @@ lib-y			+= memmove.o
 lib-y			+= strcmp.o
 lib-y			+= strlen.o
 lib-y			+= strncmp.o
+lib-y			+= csum.o
 ifeq ($(CONFIG_MMU), y)
 lib-y				+= uaccess.o
 lib-$(CONFIG_RISCV_ISA_V)	+= uaccess_vector.o
