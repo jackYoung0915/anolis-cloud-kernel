@@ -69,6 +69,8 @@ static __always_inline bool riscv_cpu_has_extension_unlikely(int cpu, const unsi
 	return __riscv_isa_extension_available(hart_isa[cpu].isa, ext);
 }
 
+DECLARE_STATIC_KEY_FALSE(fast_misaligned_access_speed_key);
+
 #ifdef CONFIG_RISCV_MISALIGNED
 bool unaligned_ctl_available(void);
 bool check_unaligned_access_emulated(int cpu);
