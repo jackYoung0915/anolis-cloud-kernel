@@ -1521,6 +1521,11 @@ void arm_smmu_make_s1_cd(struct arm_smmu_cd *target,
 		target->data[0] |= cpu_to_le64(CTXDESC_CD_0_TCR_HA |
 					       CTXDESC_CD_0_TCR_HD);
 
+	if (master->smmu->features & ARM_SMMU_FEAT_HD)
+		target->data[0] |= cpu_to_le64(CTXDESC_CD_0_TCR_HD);
+	if (master->smmu->features & ARM_SMMU_FEAT_HA)
+		target->data[0] |= cpu_to_le64(CTXDESC_CD_0_TCR_HA);
+
 	target->data[1] = cpu_to_le64(pgtbl_cfg->arm_lpae_s1_cfg.ttbr &
 				      CTXDESC_CD_1_TTB0_MASK);
 	target->data[3] = cpu_to_le64(pgtbl_cfg->arm_lpae_s1_cfg.mair);
@@ -2686,6 +2691,9 @@ static int arm_smmu_domain_finalise(struct arm_smmu_domain *smmu_domain,
 	default:
 		return -EINVAL;
 	}
+
+	if (smmu->features & ARM_SMMU_FEAT_HD)
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_HD;
 
 	pgtbl_ops = alloc_io_pgtable_ops(fmt, &pgtbl_cfg, smmu_domain);
 	if (!pgtbl_ops)
