@@ -2605,8 +2605,8 @@ phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 }
 EXPORT_SYMBOL_GPL(iommu_iova_to_phys);
 
-static size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
-			   phys_addr_t paddr, size_t size, size_t *count)
+size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
+		    phys_addr_t paddr, size_t size, size_t *count)
 {
 	unsigned int pgsize_idx, pgsize_idx_next;
 	unsigned long pgsizes;
@@ -2660,6 +2660,7 @@ out_set_count:
 	*count = size >> pgsize_idx;
 	return pgsize;
 }
+EXPORT_SYMBOL_GPL(iommu_pgsize);
 
 int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 		phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
