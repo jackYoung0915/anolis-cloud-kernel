@@ -74,6 +74,11 @@ void arm_smmu_make_sva_cd(struct arm_smmu_cd *target,
 		CTXDESC_CD_0_ASET |
 		FIELD_PREP(CTXDESC_CD_0_ASID, asid));
 
+	if (master->smmu->features & ARM_SMMU_FEAT_HD)
+		target->data[0] |= cpu_to_le64(CTXDESC_CD_0_TCR_HD);
+	if (master->smmu->features & ARM_SMMU_FEAT_HA)
+		target->data[0] |= cpu_to_le64(CTXDESC_CD_0_TCR_HA);
+
 	/*
 	 * If no MM is passed then this creates a SVA entry that faults
 	 * everything. arm_smmu_write_cd_entry() can hitlessly go between these
@@ -88,7 +93,7 @@ void arm_smmu_make_sva_cd(struct arm_smmu_cd *target,
 				   ARM_LPAE_TCR_RGN_WBWA) |
 			FIELD_PREP(CTXDESC_CD_0_TCR_ORGN0,
 				   ARM_LPAE_TCR_RGN_WBWA) |
-			FIELD_PREP(CTXDESC_CD_0_TCR_SH0, ARM_LPAE_TCR_SH_IS));
+			FIELD_PREP(CTXDESC_CD_0_TCR_SH0, ARM_LPAE_TCR_SH_IS);
 
 		target->data[1] = cpu_to_le64(virt_to_phys(mm->pgd) &
 					      CTXDESC_CD_1_TTB0_MASK);
