@@ -88,7 +88,8 @@ void arm_smmu_make_sva_cd(struct arm_smmu_cd *target,
 				   ARM_LPAE_TCR_RGN_WBWA) |
 			FIELD_PREP(CTXDESC_CD_0_TCR_ORGN0,
 				   ARM_LPAE_TCR_RGN_WBWA) |
-			FIELD_PREP(CTXDESC_CD_0_TCR_SH0, ARM_LPAE_TCR_SH_IS));
+			FIELD_PREP(CTXDESC_CD_0_TCR_SH0, ARM_LPAE_TCR_SH_IS) |
+			CTXDESC_CD_0_TCR_HA | CTXDESC_CD_0_AA64);
 
 		target->data[1] = cpu_to_le64(virt_to_phys(mm->pgd) &
 					      CTXDESC_CD_1_TTB0_MASK);
