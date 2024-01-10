@@ -90,7 +90,7 @@
 /* Ignore the contiguous bit for block splitting */
 #define ARM_LPAE_PTE_ATTR_HI_MASK	(((arm_lpae_iopte)13) << 51)
 #define ARM_LPAE_PTE_ATTR_MASK		(ARM_LPAE_PTE_ATTR_LO_MASK |	\
-			ARM_LPAE_PATE_ATTR_HI_MASK)
+			ARM_LPAE_PTE_ATTR_HI_MASK)
 /* Software bit for solving coherency races */
 #define ARM_LPAE_PTE_SW_SYNC		(((arm_lpae_iopte)1) << 55)
 
