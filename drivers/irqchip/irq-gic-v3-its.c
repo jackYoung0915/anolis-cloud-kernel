@@ -72,8 +72,10 @@ static LIST_HEAD(rsv_devid_pools);
 static DEFINE_RAW_SPINLOCK(rsv_devid_pools_lock);
 
 /* Do we have usable rsv_devid_pool? Initialized to be true. */
-static bool rsv_devid_pool_cap = true;
+bool rsv_devid_pool_cap = true;
 static u8 rsv_buses_start, rsv_buses_count;
+
+struct irq_domain *vp_irq_domain;
 
 static int __init rsv_buses_start_cfg(char *buf)
 {
@@ -5318,6 +5320,11 @@ static int its_init_domain(struct its_node *its)
 
 	inner_domain->msi_parent_ops = &gic_v3_its_msi_parent_ops;
 	inner_domain->flags |= IRQ_DOMAIN_FLAG_MSI_PARENT;
+
+#ifdef CONFIG_VIRT_PLAT_DEV
+	if (!vp_irq_domain)
+		vp_irq_domain = inner_domain;
+#endif
 
 	return 0;
 }
