@@ -10,6 +10,20 @@
 #include "irq-gic-common.h"
 #include "irq-msi-lib.h"
 
+#ifdef CONFIG_VIRT_PLAT_DEV
+extern struct irq_domain *vp_irq_domain;
+extern bool rsv_devid_pool_cap;
+
+struct irq_domain *vp_get_irq_domain(void)
+{
+	if (!vp_irq_domain)
+		pr_err("virtual platform irqdomain hasn't be initialized!\n");
+
+	return vp_irq_domain;
+}
+EXPORT_SYMBOL_GPL(vp_get_irq_domain);
+#endif
+
 #define ITS_MSI_FLAGS_REQUIRED  (MSI_FLAG_USE_DEF_DOM_OPS |	\
 				 MSI_FLAG_USE_DEF_CHIP_OPS |	\
 				 MSI_FLAG_PCI_MSI_MASK_PARENT)
@@ -133,6 +147,18 @@ static int its_pmsi_prepare(struct irq_domain *domain, struct device *dev,
 	u32 dev_id;
 	int ret;
 
+#ifdef CONFIG_VIRT_PLAT_DEV
+	if (rsv_devid_pool_cap && !dev->of_node && !dev->fwnode) {
+		/*
+		 * virtual platform device doesn't have a DeviceID which
+		 * will be allocated with core ITS's help.
+		 */
+		info->scratchpad[0].ul = -1;
+
+		goto vdev_pmsi_prepare;
+	}
+#endif
+
 	if (dev->of_node)
 		ret = of_pmsi_get_dev_id(domain->parent, dev, &dev_id);
 	else
@@ -142,6 +168,10 @@ static int its_pmsi_prepare(struct irq_domain *domain, struct device *dev,
 
 	/* ITS specific DeviceID, as the core ITS ignores dev. */
 	info->scratchpad[0].ul = dev_id;
+
+#ifdef CONFIG_VIRT_PLAT_DEV
+vdev_pmsi_prepare:
+#endif
 
 	/*
 	 * @domain->msi_domain_info->hwsize contains the size of the device
