@@ -1112,6 +1112,8 @@
 	par;								\
 })
 
+#define SYS_FIELD_VALUE(reg, field, val)	reg##_##field##_##val
+
 #define SYS_FIELD_GET(reg, field, val)		\
 		 FIELD_GET(reg##_##field##_MASK, val)
 
@@ -1119,7 +1121,8 @@
 		 FIELD_PREP(reg##_##field##_MASK, val)
 
 #define SYS_FIELD_PREP_ENUM(reg, field, val)		\
-		 FIELD_PREP(reg##_##field##_MASK, reg##_##field##_##val)
+		 FIELD_PREP(reg##_##field##_MASK,	\
+			    SYS_FIELD_VALUE(reg, field, val))
 
 #endif
 
