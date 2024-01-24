@@ -1970,7 +1970,7 @@ static int get_any_page(struct page *page, unsigned long pfn, int flags)
 		ret = __get_any_page(page, pfn, flags);
 
 	if (ret == 1 && !PageHuge(page) &&
-	    !PageLRU(page) && !__PageMovable(page)) {
+	    !PageLRU(page) && (PageSlab(page) || !__PageMovable(page))) {
 		/*
 		 * Try to free it.
 		 */
