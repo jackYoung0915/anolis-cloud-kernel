@@ -19,6 +19,13 @@
  *                for anonymous memory. For process policy an process counter
  *                is used.
  *
+ * weighted interleave
+ *                Allocate memory interleaved over a set of nodes based on
+ *                a set of weights (per-node), with normal fallback if it
+ *                fails.  Otherwise operates the same as interleave.
+ *                Example: nodeset(0,1) & weights (2,1) - 2 pages allocated
+ *                on node 0 for every 1 page allocated on node 1.
+ *
  * bind           Only allocate memory on a specific set of nodes,
  *                no fallback.
  *                FIXME: memory is allocated starting with the first node
@@ -445,6 +452,10 @@ static const struct mempolicy_operations mpol_ops[MPOL_MAX] = {
 	[MPOL_PREFERRED_MANY] = {
 		.create = mpol_new_nodemask,
 		.rebind = mpol_rebind_preferred,
+	},
+	[MPOL_WEIGHTED_INTERLEAVE] = {
+		.create = mpol_new_nodemask,
+		.rebind = mpol_rebind_nodemask,
 	},
 };
 
@@ -901,8 +912,11 @@ static long do_set_mempolicy(unsigned short mode, unsigned short flags,
 
 	old = current->mempolicy;
 	current->mempolicy = new;
-	if (new && new->mode == MPOL_INTERLEAVE)
+	if (new && (new->mode == MPOL_INTERLEAVE ||
+		    new->mode == MPOL_WEIGHTED_INTERLEAVE)) {
 		current->il_prev = MAX_NUMNODES-1;
+		current->il_weight = 0;
+	}
 	task_unlock(current);
 	mpol_put(old);
 	ret = 0;
@@ -927,6 +941,7 @@ static void get_policy_nodemask(struct mempolicy *p, nodemask_t *nodes)
 	case MPOL_INTERLEAVE:
 	case MPOL_PREFERRED:
 	case MPOL_PREFERRED_MANY:
+	case MPOL_WEIGHTED_INTERLEAVE:
 		*nodes = p->nodes;
 		break;
 	case MPOL_LOCAL:
@@ -1013,6 +1028,13 @@ static long do_get_mempolicy(int *policy, nodemask_t *nmask,
 		} else if (pol == current->mempolicy &&
 				pol->mode == MPOL_INTERLEAVE) {
 			*policy = next_node_in(current->il_prev, pol->nodes);
+		} else if (pol == current->mempolicy &&
+				pol->mode == MPOL_WEIGHTED_INTERLEAVE) {
+			if (current->il_weight)
+				*policy = current->il_prev;
+			else
+				*policy = next_node_in(current->il_prev,
+						       pol->nodes);
 		} else {
 			err = -EINVAL;
 			goto out;
@@ -1934,6 +1956,22 @@ static int policy_node(gfp_t gfp, struct mempolicy *policy, int nd)
 	return nd;
 }
 
+static unsigned int weighted_interleave_nodes(struct mempolicy *policy)
+{
+	unsigned int node = current->il_prev;
+
+	if (!current->il_weight || !node_isset(node, policy->nodes)) {
+		node = next_node_in(node, policy->nodes);
+		/* can only happen if nodemask is being rebound */
+		if (node == MAX_NUMNODES)
+			return node;
+		current->il_prev = node;
+		current->il_weight = get_il_weight(node);
+	}
+	current->il_weight--;
+	return node;
+}
+
 /* Do dynamic interleaving for a process */
 static unsigned interleave_nodes(struct mempolicy *policy)
 {
@@ -1969,6 +2007,9 @@ unsigned int mempolicy_slab_node(void)
 	case MPOL_INTERLEAVE:
 		return interleave_nodes(policy);
 
+	case MPOL_WEIGHTED_INTERLEAVE:
+		return weighted_interleave_nodes(policy);
+
 	case MPOL_BIND:
 	case MPOL_PREFERRED_MANY:
 	{
@@ -1991,6 +2032,45 @@ unsigned int mempolicy_slab_node(void)
 	default:
 		BUG();
 	}
+}
+
+static unsigned int offset_weighted_il_node(struct mempolicy *pol, pgoff_t ilx)
+{
+	nodemask_t nodemask;
+	unsigned int target, nr_nodes;
+	u8 *table;
+	unsigned int weight_total = 0;
+	u8 weight;
+	int nid;
+
+	nr_nodes = read_once_policy_nodemask(pol, &nodemask);
+	if (!nr_nodes)
+		return numa_node_id();
+
+	rcu_read_lock();
+	table = rcu_dereference(iw_table);
+	/* calculate the total weight */
+	for_each_node_mask(nid, nodemask) {
+		/* detect system default usage */
+		weight = table ? table[nid] : 1;
+		weight = weight ? weight : 1;
+		weight_total += weight;
+	}
+
+	/* Calculate the node offset based on totals */
+	target = ilx % weight_total;
+	nid = first_node(nodemask);
+	while (target) {
+		/* detect system default usage */
+		weight = table ? table[nid] : 1;
+		weight = weight ? weight : 1;
+		if (target < weight)
+			break;
+		target -= weight;
+		nid = next_node_in(nid, nodemask);
+	}
+	rcu_read_unlock();
+	return nid;
 }
 
 /*
@@ -2037,6 +2117,28 @@ static inline unsigned interleave_nid(struct mempolicy *pol,
 		return interleave_nodes(pol);
 }
 
+/* Determine a node number for weighted interleave */
+static inline unsigned weighted_interleave_nid(struct mempolicy *pol,
+	struct vm_area_struct *vma, unsigned long addr, int shift)
+{
+if (vma) {
+   unsigned long off;
+
+   /*
+	* for small pages, there is no difference between
+	* shift and PAGE_SHIFT, so the bit-shift is safe.
+	* for huge pages, since vm_pgoff is in units of small
+	* pages, we need to shift off the always 0 bits to get
+	* a useful offset.
+	*/
+   BUG_ON(shift < PAGE_SHIFT);
+   off = vma->vm_pgoff >> (shift - PAGE_SHIFT);
+   off += (addr - vma->vm_start) >> shift;
+   return offset_weighted_il_node(pol, off);
+} else
+   return weighted_interleave_nodes(pol);
+}
+
 #ifdef CONFIG_HUGETLBFS
 /*
  * huge_node(@vma, @addr, @gfp_flags, @mpol)
@@ -2065,6 +2167,9 @@ int huge_node(struct vm_area_struct *vma, unsigned long addr, gfp_t gfp_flags,
 
 	if (unlikely(mode == MPOL_INTERLEAVE)) {
 		nid = interleave_nid(*mpol, vma, addr,
+					huge_page_shift(hstate_vma(vma)));
+	} else if (unlikely(mode == MPOL_WEIGHTED_INTERLEAVE)) {
+		nid = weighted_interleave_nid(*mpol, vma, addr,
 					huge_page_shift(hstate_vma(vma)));
 	} else {
 		nid = policy_node(gfp_flags, *mpol, numa_node_id());
@@ -2104,6 +2209,7 @@ bool init_nodemask_of_mempolicy(nodemask_t *mask)
 	case MPOL_PREFERRED_MANY:
 	case MPOL_BIND:
 	case MPOL_INTERLEAVE:
+	case MPOL_WEIGHTED_INTERLEAVE:
 		*mask = mempolicy->nodes;
 		break;
 
@@ -2225,6 +2331,17 @@ struct folio *vma_alloc_folio(gfp_t gfp, int order, struct vm_area_struct *vma,
 		return page_rmappable_folio(page);
 	}
 
+	if (pol->mode == MPOL_WEIGHTED_INTERLEAVE) {
+		struct page *page;
+		unsigned nid;
+
+		nid = weighted_interleave_nid(pol, vma, addr, PAGE_SHIFT + order);
+		mpol_cond_put(pol);
+		gfp |= __GFP_COMP;
+		page = alloc_page_interleave(gfp, order, nid);
+		return page_rmappable_folio(page);
+	}
+
 	if (pol->mode == MPOL_PREFERRED_MANY) {
 		struct page *page;
 
@@ -2312,6 +2429,8 @@ struct page *alloc_pages(gfp_t gfp, unsigned order)
 	 */
 	if (pol->mode == MPOL_INTERLEAVE)
 		page = alloc_page_interleave(gfp, order, interleave_nodes(pol));
+	else if (pol->mode == MPOL_WEIGHTED_INTERLEAVE)
+		page = alloc_page_interleave(gfp, order, weighted_interleave_nodes(pol));
 	else if (pol->mode == MPOL_PREFERRED_MANY)
 		page = alloc_pages_preferred_many(gfp, order,
 				  policy_node(gfp, pol, numa_node_id()), pol);
@@ -2365,6 +2484,114 @@ static unsigned long alloc_pages_bulk_array_interleave(gfp_t gfp,
 	return total_allocated;
 }
 
+static unsigned long alloc_pages_bulk_array_weighted_interleave(gfp_t gfp,
+		struct mempolicy *pol, unsigned long nr_pages,
+		struct page **page_array)
+{
+	struct task_struct *me = current;
+	unsigned long total_allocated = 0;
+	unsigned long nr_allocated = 0;
+	unsigned long rounds;
+	unsigned long node_pages, delta;
+	u8 *table, *weights, weight;
+	unsigned int weight_total = 0;
+	unsigned long rem_pages = nr_pages;
+	nodemask_t nodes;
+	int nnodes, node;
+	int resume_node = MAX_NUMNODES - 1;
+	u8 resume_weight = 0;
+	int prev_node;
+	int i;
+
+	if (!nr_pages)
+		return 0;
+
+	nnodes = read_once_policy_nodemask(pol, &nodes);
+	if (!nnodes)
+		return 0;
+
+	/* Continue allocating from most recent node and adjust the nr_pages */
+	node = me->il_prev;
+	weight = me->il_weight;
+	if (weight && node_isset(node, nodes)) {
+		node_pages = min(rem_pages, weight);
+		nr_allocated = __alloc_pages_bulk(gfp, node, NULL, node_pages,
+						  NULL, page_array);
+		page_array += nr_allocated;
+		total_allocated += nr_allocated;
+		/* if that's all the pages, no need to interleave */
+		if (rem_pages <= weight) {
+			me->il_weight -= rem_pages;
+			return total_allocated;
+		}
+		/* Otherwise we adjust remaining pages, continue from there */
+		rem_pages -= weight;
+	}
+	/* clear active weight in case of an allocation failure */
+	me->il_weight = 0;
+	prev_node = node;
+
+	/* create a local copy of node weights to operate on outside rcu */
+	weights = kzalloc(nr_node_ids, GFP_KERNEL);
+	if (!weights)
+		return total_allocated;
+
+	rcu_read_lock();
+	table = rcu_dereference(iw_table);
+	if (table)
+		memcpy(weights, table, nr_node_ids);
+	rcu_read_unlock();
+
+	/* calculate total, detect system default usage */
+	for_each_node_mask(node, nodes) {
+		if (!weights[node])
+			weights[node] = 1;
+		weight_total += weights[node];
+	}
+
+	/*
+	 * Calculate rounds/partial rounds to minimize __alloc_pages_bulk calls.
+	 * Track which node weighted interleave should resume from.
+	 *
+	 * if (rounds > 0) and (delta == 0), resume_node will always be
+	 * the node following prev_node and its weight.
+	 */
+	rounds = rem_pages / weight_total;
+	delta = rem_pages % weight_total;
+	resume_node = next_node_in(prev_node, nodes);
+	resume_weight = weights[resume_node];
+	for (i = 0; i < nnodes; i++) {
+		node = next_node_in(prev_node, nodes);
+		weight = weights[node];
+		node_pages = weight * rounds;
+		/* If a delta exists, add this node's portion of the delta */
+		if (delta > weight) {
+			node_pages += weight;
+			delta -= weight;
+		} else if (delta) {
+			/* when delta is depleted, resume from that node */
+			node_pages += delta;
+			resume_node = node;
+			resume_weight = weight - delta;
+			delta = 0;
+		}
+		/* node_pages can be 0 if an allocation fails and rounds == 0 */
+		if (!node_pages)
+			break;
+		nr_allocated = __alloc_pages_bulk(gfp, node, NULL, node_pages,
+						  NULL, page_array);
+		page_array += nr_allocated;
+		total_allocated += nr_allocated;
+		if (total_allocated == nr_pages)
+			break;
+		prev_node = node;
+	}
+	me->il_prev = resume_node;
+	me->il_weight = resume_weight;
+	kfree(weights);
+	return total_allocated;
+}
+
 static unsigned long alloc_pages_bulk_array_preferred_many(gfp_t gfp, int nid,
 		struct mempolicy *pol, unsigned long nr_pages,
 		struct page **page_array)
@@ -2402,6 +2629,10 @@ unsigned long alloc_pages_bulk_array_mempolicy(gfp_t gfp,
 	if (pol->mode == MPOL_INTERLEAVE)
 		return alloc_pages_bulk_array_interleave(gfp, pol,
 							 nr_pages, page_array);
+
+	if (pol->mode == MPOL_WEIGHTED_INTERLEAVE)
+		return alloc_pages_bulk_array_weighted_interleave(
+				  gfp, pol, nr_pages, page_array);
 
 	if (pol->mode == MPOL_PREFERRED_MANY)
 		return alloc_pages_bulk_array_preferred_many(gfp,
@@ -2477,6 +2708,7 @@ bool __mpol_equal(struct mempolicy *a, struct mempolicy *b)
 	case MPOL_INTERLEAVE:
 	case MPOL_PREFERRED:
 	case MPOL_PREFERRED_MANY:
+	case MPOL_WEIGHTED_INTERLEAVE:
 		return !!nodes_equal(a->nodes, b->nodes);
 	case MPOL_LOCAL:
 		return true;
@@ -2615,6 +2847,12 @@ int mpol_misplaced(struct folio *folio, struct vm_area_struct *vma,
 		pgoff = vma->vm_pgoff;
 		pgoff += (addr - vma->vm_start) >> PAGE_SHIFT;
 		polnid = offset_il_node(pol, pgoff);
+		break;
+
+	case MPOL_WEIGHTED_INTERLEAVE:
+		pgoff = vma->vm_pgoff;
+		pgoff += (addr - vma->vm_start) >> PAGE_SHIFT;
+		polnid = offset_weighted_il_node(pol, pgoff);
 		break;
 
 	case MPOL_PREFERRED:
@@ -3000,6 +3238,7 @@ static const char * const policy_modes[] =
 	[MPOL_PREFERRED]  = "prefer",
 	[MPOL_BIND]       = "bind",
 	[MPOL_INTERLEAVE] = "interleave",
+	[MPOL_WEIGHTED_INTERLEAVE] = "weighted interleave",
 	[MPOL_LOCAL]      = "local",
 	[MPOL_PREFERRED_MANY]  = "prefer (many)",
 };
@@ -3060,6 +3299,7 @@ int mpol_parse_str(char *str, struct mempolicy **mpol)
 		}
 		break;
 	case MPOL_INTERLEAVE:
+	case MPOL_WEIGHTED_INTERLEAVE:
 		/*
 		 * Default to online nodes with memory if no nodelist
 		 */
@@ -3174,6 +3414,7 @@ void mpol_to_str(char *buffer, int maxlen, struct mempolicy *pol)
 	case MPOL_PREFERRED_MANY:
 	case MPOL_BIND:
 	case MPOL_INTERLEAVE:
+	case MPOL_WEIGHTED_INTERLEAVE:
 		nodes = pol->nodes;
 		break;
 	default:
