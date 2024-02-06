@@ -969,7 +969,7 @@ static unsigned short *kidled_get_slab_age_array(void *object)
 	unsigned int objects = objs_per_slab(slab->slab_cache, slab);
 	unsigned short *slab_age = NULL;
 
-	if (!kidled_available_slab(slab->slab_cache))
+	if (!kidled_available_slab(slab_folio(slab), slab->slab_cache))
 		goto out;
 
 	if (!cgroup_memory_nokmem) {
@@ -1034,7 +1034,7 @@ int kidled_alloc_slab_age(struct slab *slab, struct kmem_cache *s, gfp_t flags)
 	void *ver;
 	int ret;
 
-	if (!kidled_available_slab(s))
+	if (!kidled_available_slab(slab_folio(slab), s))
 		return 0;
 
 	/* void count the memory to kmem accounting when kmem enable */
