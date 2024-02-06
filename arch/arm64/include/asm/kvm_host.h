@@ -348,6 +348,11 @@ struct kvm_arch {
 	 */
 	struct kvm_protected_vm pkvm;
 
+#ifdef CONFIG_KVM_HISI_VIRT
+	spinlock_t sched_lock;
+	cpumask_var_t sched_cpus;       /* Union of all vcpu's cpus_ptr */
+#endif
+
 	CK_KABI_RESERVE(1)
 };
 
