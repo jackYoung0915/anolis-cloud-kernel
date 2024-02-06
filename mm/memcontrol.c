@@ -3227,7 +3227,7 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 	void *vec;
 
 	/* extra allocate an special pointer for cold slab */
-	if (kidled_available_slab(s))
+	if (kidled_available_slab(slab_folio(slab), s))
 		objects += 1;
 
 	gfp &= ~OBJCGS_CLEAR_MASK;
