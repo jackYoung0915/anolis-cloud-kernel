@@ -49,9 +49,7 @@
 MODULE_IMPORT_NS(KVM);
 #endif
 
-#ifdef CONFIG_KVM_HISI_VIRT
 #include "hisilicon/hisi_virt.h"
-#endif
 
 DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 
@@ -446,6 +444,10 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	if (err)
 		return err;
 
+	err = kvm_sched_affinity_vcpu_init(vcpu);
+	if (err)
+		return err;
+
 	err = kvm_share_hyp(vcpu, vcpu + 1);
 	if (err)
 		kvm_vgic_vcpu_destroy(vcpu);
@@ -464,6 +466,7 @@ void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu)
 	kvm_pmu_vcpu_destroy(vcpu);
 	kvm_vgic_vcpu_destroy(vcpu);
 	kvm_arm_vcpu_destroy(vcpu);
+	kvm_sched_affinity_vcpu_destroy(vcpu);
 }
 
 void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu)
@@ -530,6 +533,8 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	if (!cpumask_test_cpu(cpu, vcpu->kvm->arch.supported_cpus))
 		vcpu_set_on_unsupported_cpu(vcpu);
 
+	kvm_tlbi_dvmbm_vcpu_load(vcpu);
+
 	if (kvm_arm_is_pvsched_enabled(&vcpu->arch))
 		kvm_update_pvsched_preempted(vcpu, 0);
 }
@@ -546,6 +551,8 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 
 	vcpu_clear_on_unsupported_cpu(vcpu);
 	vcpu->cpu = -1;
+
+	kvm_tlbi_dvmbm_vcpu_put(vcpu);
 
 	if (kvm_arm_is_pvsched_enabled(&vcpu->arch))
 		kvm_update_pvsched_preempted(vcpu, 1);
@@ -2716,11 +2723,9 @@ static __init int kvm_arm_init(void)
 		return -ENODEV;
 	}
 
-#ifdef CONFIG_KVM_HISI_VIRT
 	probe_hisi_cpu_type();
 	kvm_ncsnp_support = hisi_ncsnp_supported();
 	kvm_dvmbm_support = hisi_dvmbm_supported();
-#endif
 	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
 	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
 
