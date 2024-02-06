@@ -1430,6 +1430,7 @@ bool kvm_arm_vcpu_stopped(struct kvm_vcpu *vcpu);
 	 get_idreg_field((kvm), id, fld) <= expand_field_sign(id, fld, max))
 
 extern bool kvm_ncsnp_support;
+extern bool kvm_dvmbm_support;
 
 #ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
 struct kvm_pmu_ops {
