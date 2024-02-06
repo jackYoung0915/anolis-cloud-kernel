@@ -28,7 +28,6 @@
 #include <asm/kvm.h>
 #include <asm/kvm_asm.h>
 #include <asm/vncr_mapping.h>
-#include <asm/hisi_cpu_model.h>
 
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
@@ -1429,6 +1428,8 @@ bool kvm_arm_vcpu_stopped(struct kvm_vcpu *vcpu);
 #define kvm_has_feat_range(kvm, id, fld, min, max)			\
 	(get_idreg_field((kvm), id, fld) >= expand_field_sign(id, fld, min) && \
 	 get_idreg_field((kvm), id, fld) <= expand_field_sign(id, fld, max))
+
+extern bool kvm_ncsnp_support;
 
 #ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
 struct kvm_pmu_ops {
