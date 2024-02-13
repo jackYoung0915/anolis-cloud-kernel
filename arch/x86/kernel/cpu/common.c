@@ -77,6 +77,9 @@ EXPORT_SYMBOL(smp_num_siblings);
 DEFINE_STATIC_KEY_FALSE(hygon_lmc_key);
 EXPORT_SYMBOL_GPL(hygon_lmc_key);
 
+unsigned int __max_die_per_package __read_mostly = 1;
+EXPORT_SYMBOL(__max_die_per_package);
+
 static struct ppin_info {
 	int	feature;
 	int	msr_ppin_ctl;
