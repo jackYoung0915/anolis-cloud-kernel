@@ -309,6 +309,12 @@ VFIO_IOWRITE_DECLATION(32)
 VFIO_IOWRITE_DECLATION(64)
 #endif
 
+bool vfio_pci_core_range_intersect_range(loff_t buf_start, size_t buf_cnt,
+					 loff_t reg_start, size_t reg_cnt,
+					 loff_t *buf_offset,
+					 size_t *intersect_count,
+					 size_t *register_offset);
+
 #define VFIO_IOREAD_DECLATION(size) \
 int vfio_pci_core_ioread##size(struct vfio_pci_core_device *vdev,	\
 			bool test_mem, u##size *val, void __iomem *io);
