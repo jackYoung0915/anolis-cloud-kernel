@@ -1157,6 +1157,9 @@ static int de_thread(struct task_struct *tsk)
 		write_unlock_irq(&tasklist_lock);
 		cgroup_threadgroup_change_end(tsk);
 
+		/* tsk becomes thread_group_leader now */
+		css_account_procs_unlocked(tsk, 1);
+
 		release_task(leader);
 	}
 
