@@ -927,7 +927,7 @@ static struct inode *fuse_get_root_inode(struct super_block *sb, unsigned mode)
 	attr.mode = mode;
 	attr.ino = FUSE_ROOT_ID;
 	attr.nlink = 1;
-	return fuse_iget(sb, 1, 0, &attr, 0, 0, 0, 1);
+	return fuse_iget(sb, FUSE_ROOT_ID, 0, &attr, 0, 0, 0, 1);
 }
 
 struct fuse_inode_handle {
