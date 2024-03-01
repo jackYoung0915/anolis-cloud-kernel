@@ -119,8 +119,10 @@ enum __kvm_host_smccc_func {
 
 #ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
 #define this_cpu_ptr_wrapper(sym)	this_cpu_ptr(sym)
+#define this_cpu_ptr_hyp_sym_wrapper(sym)	this_cpu_ptr(sym)
 #else
 #define this_cpu_ptr_wrapper(sym)	this_cpu_ptr(&sym)
+#define this_cpu_ptr_hyp_sym_wrapper(sym)	this_cpu_ptr(&sym)
 #endif
 
 #if defined(__KVM_NVHE_HYPERVISOR__)
