@@ -324,6 +324,7 @@ static int nla_validate_int_range(const struct nla_policy *pt,
 	case NLA_U16:
 	case NLA_U32:
 	case NLA_U64:
+	case NLA_UINT:
 	case NLA_MSECS:
 	case NLA_BINARY:
 	case NLA_BE16:
@@ -333,6 +334,7 @@ static int nla_validate_int_range(const struct nla_policy *pt,
 	case NLA_S16:
 	case NLA_S32:
 	case NLA_S64:
+	case NLA_SINT:
 		return nla_validate_int_range_signed(pt, nla, extack);
 	default:
 		WARN_ON(1);
@@ -358,6 +360,9 @@ static int nla_validate_mask(const struct nla_policy *pt,
 		break;
 	case NLA_U64:
 		value = nla_get_u64(nla);
+		break;
+	case NLA_UINT:
+		value = nla_get_uint(nla);
 		break;
 	case NLA_BE16:
 		value = ntohs(nla_get_be16(nla));
@@ -435,6 +440,15 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 	case NLA_FLAG:
 		if (attrlen > 0)
 			goto out_err;
+		break;
+
+	case NLA_SINT:
+	case NLA_UINT:
+		if (attrlen != sizeof(u32) && attrlen != sizeof(u64)) {
+			NL_SET_ERR_MSG_ATTR_POL(extack, nla, pt,
+						"invalid attribute length");
+			return -EINVAL;
+		}
 		break;
 
 	case NLA_BITFIELD32:
