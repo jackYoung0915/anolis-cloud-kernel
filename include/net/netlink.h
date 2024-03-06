@@ -187,6 +187,8 @@ enum {
 	NLA_REJECT,
 	NLA_BE16,
 	NLA_BE32,
+	NLA_SINT,
+	NLA_UINT,
 	__NLA_TYPE_MAX,
 };
 
@@ -386,9 +388,11 @@ struct nla_policy {
 
 #define __NLA_IS_UINT_TYPE(tp)					\
 	(tp == NLA_U8 || tp == NLA_U16 || tp == NLA_U32 ||	\
-	 tp == NLA_U64 || tp == NLA_BE16 || tp == NLA_BE32)
+	 tp == NLA_U64 || tp == NLA_UINT ||			\
+	 tp == NLA_BE16 || tp == NLA_BE32)
 #define __NLA_IS_SINT_TYPE(tp)						\
-	(tp == NLA_S8 || tp == NLA_S16 || tp == NLA_S32 || tp == NLA_S64)
+	(tp == NLA_S8 || tp == NLA_S16 || tp == NLA_S32 || tp == NLA_S64 || \
+	 tp == NLA_SINT)
 
 #define __NLA_ENSURE(condition) BUILD_BUG_ON_ZERO(!(condition))
 #define NLA_ENSURE_UINT_TYPE(tp)			\
@@ -1674,6 +1678,13 @@ static inline u64 nla_get_u64(const struct nlattr *nla)
 	nla_memcpy(&tmp, nla, sizeof(tmp));
 
 	return tmp;
+}
+
+static inline u64 nla_get_uint(const struct nlattr *nla)
+{
+	if (nla_len(nla) == sizeof(u32))
+		return nla_get_u32(nla);
+	return nla_get_u64(nla);
 }
 
 /**
