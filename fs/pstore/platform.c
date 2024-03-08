@@ -849,7 +849,14 @@ static void pstore_timefunc(struct timer_list *unused)
 
 static int __init pstore_init(void)
 {
-	return pstore_init_fs();
+	int ret;
+
+	ret = pstore_init_fs();
+	if (ret)
+		return ret;
+
+	ret = pstore_init_entry();
+	return ret;
 }
 late_initcall(pstore_init);
 
