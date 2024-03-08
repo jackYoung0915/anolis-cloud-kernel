@@ -47,6 +47,7 @@ extern void	pstore_record_init(struct pstore_record *record,
 
 /* Called during pstore init/exit. */
 int __init	pstore_init_fs(void);
+int __init pstore_init_entry(void);
 void __exit	pstore_exit_fs(void);
 
 #endif
