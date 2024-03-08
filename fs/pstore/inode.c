@@ -6,6 +6,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/kobject.h>
 #include <linux/fs.h>
 #include <linux/fsnotify.h>
 #include <linux/pagemap.h>
@@ -490,6 +491,43 @@ int __init pstore_init_fs(void)
 		sysfs_remove_mount_point(fs_kobj, "pstore");
 
 out:
+	return err;
+}
+
+static ssize_t loaded_backend_show(struct kobject *k,
+				   struct kobj_attribute *attr, char *buf)
+{
+	struct pstore_info_list *entry;
+	char *old, *loaded_backend = NULL;
+
+	mutex_lock(&psback_lock);
+	list_for_each_entry(entry, &psback->list_entry, list)
+		if (!loaded_backend)
+			loaded_backend = kstrdup(entry->psi->name, GFP_KERNEL);
+		else {
+			old = loaded_backend;
+			loaded_backend = kasprintf(GFP_KERNEL, "%s,%s",
+						   old, entry->psi->name);
+			kfree(old);
+		}
+	mutex_unlock(&psback_lock);
+
+	return sprintf(buf, "%s\n", loaded_backend);
+}
+
+static struct kobj_attribute backend_attribute =
+	__ATTR(loaded_backend, 0444, loaded_backend_show, NULL);
+
+int __init pstore_init_entry(void)
+{
+	int err = 0;
+	struct kobject *pstore_kobj;
+
+	pstore_kobj = kset_find_obj(module_kset, "pstore");
+	if (pstore_kobj) {
+		err = sysfs_create_file(pstore_kobj, &backend_attribute.attr);
+		kobject_put(pstore_kobj);
+	}
 	return err;
 }
 
