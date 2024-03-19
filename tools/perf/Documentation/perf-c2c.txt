@@ -21,8 +21,8 @@ you to track down the cacheline contentions.
 
 On Intel, the tool is based on load latency and precise store facility events
 provided by Intel CPUs. On PowerPC, the tool uses random instruction sampling
-with thresholding feature. On AMD, the tool uses IBS op pmu (due to hardware
-limitations, perf c2c is not supported on Zen3 cpus).
+with thresholding feature. On AMD and Hygon, the tool uses IBS op pmu (due to
+hardware limitations, perf c2c is not supported on Zen3 cpus).
 
 These events provide:
   - memory address of the access
@@ -142,7 +142,7 @@ default on Intel:
   cpu/mem-loads,ldlat=30/P
   cpu/mem-stores/P
 
-following on AMD:
+following on AMD and Hygon:
 
   ibs_op//
 
