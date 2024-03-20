@@ -327,8 +327,7 @@ static int set_cap(struct acpi_power_meter_resource *resource,
 	status = acpi_evaluate_integer(resource->acpi_dev->handle, "_SHL",
 				       &args, &data);
 	if (ACPI_FAILURE(status)) {
-		acpi_evaluation_failure_warn(resource->acpi_dev->handle, "_SHL",
-					     status);
+                ACPI_EXCEPTION((AE_INFO, status, "Evaluating _SHL"));
 		return -EINVAL;
 	}
 	resource->cap = cap;
@@ -356,8 +355,7 @@ static int set_avg_interval(struct acpi_power_meter_resource *resource,
 	status = acpi_evaluate_integer(resource->acpi_dev->handle, "_PAI",
 				       &args, &data);
 	if (ACPI_FAILURE(status)) {
-		acpi_evaluation_failure_warn(resource->acpi_dev->handle, "_PAI",
-					     status);
+                ACPI_EXCEPTION((AE_INFO, status, "Evaluating _PAI"));
 		return -EINVAL;
 	}
 	resource->avg_interval = val;
