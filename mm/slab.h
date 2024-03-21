@@ -522,6 +522,8 @@ static int alloc_slab_obj_exts(struct slab *slab, struct kmem_cache *s,
 		objects += 1;
 
 	gfp &= ~OBJCGS_CLEAR_MASK;
+	/* Prevent recursive extension vector allocation */
+	gfp |= __GFP_NO_OBJ_EXT;
 	vec = kcalloc_node(objects, sizeof(struct slabobj_ext), gfp,
 			   slab_nid(slab));
 	if (!vec)

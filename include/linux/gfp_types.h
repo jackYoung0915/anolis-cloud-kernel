@@ -66,9 +66,14 @@ typedef unsigned int __bitwise gfp_t;
 #define ___GFP_NOKFENCE		0
 #endif
 #ifdef CONFIG_PGTABLE_BIND
-#define ___GFP_PGTABLE		0x10000000u
+#define ___GFP_PGTABLE		0x20000000u
 #else
 #define ___GFP_PGTABLE		0
+#endif
+#ifdef CONFIG_SLAB_OBJ_EXT
+#define ___GFP_NO_OBJ_EXT	0x10000000u
+#else
+#define ___GFP_NO_OBJ_EXT	0
 #endif
 /* If the above are modified, __GFP_BITS_SHIFT may need updating */
 
@@ -115,6 +120,8 @@ typedef unsigned int __bitwise gfp_t;
  * %__GFP_PGTABLE indicates the allocation of page table pages.
  *
  * %__GFP_NOKFENCE informs DO NOT try to alloc page from kfence pool.
+ *
+ * %__GFP_NO_OBJ_EXT causes slab allocation to have no object extension.
  */
 #define __GFP_RECLAIMABLE ((__force gfp_t)___GFP_RECLAIMABLE)
 #define __GFP_WRITE	((__force gfp_t)___GFP_WRITE)
@@ -123,6 +130,7 @@ typedef unsigned int __bitwise gfp_t;
 #define __GFP_ACCOUNT	((__force gfp_t)___GFP_ACCOUNT)
 #define __GFP_PGTABLE	((__force gfp_t)___GFP_PGTABLE)
 #define __GFP_NOKFENCE	((__force gfp_t)___GFP_NOKFENCE)
+#define __GFP_NO_OBJ_EXT	((__force gfp_t)___GFP_NO_OBJ_EXT)
 
 /**
  * DOC: Watermark modifiers
@@ -267,7 +275,7 @@ typedef unsigned int __bitwise gfp_t;
 #define __GFP_NOLOCKDEP ((__force gfp_t)___GFP_NOLOCKDEP)
 
 /* Room for N __GFP_FOO bits */
-#define __GFP_BITS_SHIFT (28)
+#define __GFP_BITS_SHIFT (29)
 #define __GFP_BITS_MASK ((__force gfp_t)((1 << __GFP_BITS_SHIFT) - 1))
 
 /**
