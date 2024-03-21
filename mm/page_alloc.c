@@ -58,6 +58,7 @@
 #include <linux/kfence.h>
 #include <linux/cacheinfo.h>
 #include <linux/pre_oom.h>
+#include <linux/pgalloc_tag.h>
 #include <linux/crash_dump.h>
 #include <asm/div64.h>
 #include "internal.h"
@@ -1125,6 +1126,7 @@ __always_inline bool free_pages_prepare(struct page *page,
 			__memcg_kmem_uncharge_page(page, order);
 		reset_page_owner(page, order);
 		page_table_check_free(page, order);
+		pgalloc_tag_sub(page, 1 << order);
 		return false;
 	}
 
@@ -1190,6 +1192,7 @@ __always_inline bool free_pages_prepare(struct page *page,
 	page->flags &= ~PAGE_FLAGS_CHECK_AT_PREP | __PG_KFENCE;
 	reset_page_owner(page, order);
 	page_table_check_free(page, order);
+	pgalloc_tag_sub(page, 1 << order);
 
 	if (!PageHighMem(page)) {
 		debug_check_no_locks_freed(page_address(page),
@@ -1586,6 +1589,7 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 
 	set_page_owner(page, order, gfp_flags);
 	page_table_check_alloc(page, order);
+	pgalloc_tag_add(page, current, 1 << order);
 	for (i = 0; i != 1 << order; ++i) {
 		if (unlikely(PageInited(page + i)))
 			__ClearPageInited(page + i);
