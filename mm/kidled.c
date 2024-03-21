@@ -970,7 +970,7 @@ static inline unsigned short *kidled_slab_age(struct slab *slab)
 
 bool page_has_slab_age(struct slab *slab)
 {
-	return (((unsigned long)slab->obj_exts & MEMCG_DATA_FLAGS_MASK) == MEMCG_DATA_SLAB_AGE);
+	return (((unsigned long)slab->obj_exts & OBJEXTS_FLAGS_MASK) == MEMCG_DATA_SLAB_AGE);
 }
 
 static unsigned short *kidled_get_slab_age_array(void *object)
