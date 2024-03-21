@@ -5,6 +5,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/highmem.h>
+#include <linux/vmalloc.h>
 
 #include "ivpu_drv.h"
 #include "ivpu_hw.h"

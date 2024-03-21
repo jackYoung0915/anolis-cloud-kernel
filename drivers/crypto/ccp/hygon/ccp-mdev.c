@@ -33,6 +33,7 @@
 #include <linux/kfifo.h>
 #include <linux/eventfd.h>
 #include <linux/mem_encrypt.h>
+#include <linux/vmalloc.h>
 
 #include "ccp-mdev.h"
 #include "../ccp-dev.h"

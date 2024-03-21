@@ -21,6 +21,7 @@
 #include <linux/slab.h>
 #include <linux/memblock.h>
 #include <linux/types.h>
+#include <linux/vmalloc.h>
 #include <asm/byteorder.h>
 #include <asm/image.h>
 

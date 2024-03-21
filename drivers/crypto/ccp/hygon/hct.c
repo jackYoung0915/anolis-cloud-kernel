@@ -31,6 +31,7 @@
 #if IS_ENABLED(CONFIG_VFIO_MDEV)
 #include <linux/mdev.h>
 #endif
+#include <linux/vmalloc.h>
 
 /**
  * VERSION_STRING modification instructions:
