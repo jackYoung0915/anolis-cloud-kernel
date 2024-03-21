@@ -965,12 +965,12 @@ static inline void kidled_slab_scan_enabled(void)
 
 static inline unsigned short *kidled_slab_age(struct slab *slab)
 {
-	return (unsigned short *)((unsigned long)slab->memcg_data & ~MEMCG_DATA_SLAB_AGE);
+	return (unsigned short *)((unsigned long)slab->obj_exts & ~MEMCG_DATA_SLAB_AGE);
 }
 
 bool page_has_slab_age(struct slab *slab)
 {
-	return (((unsigned long)slab->memcg_data & MEMCG_DATA_FLAGS_MASK) == MEMCG_DATA_SLAB_AGE);
+	return (((unsigned long)slab->obj_exts & MEMCG_DATA_FLAGS_MASK) == MEMCG_DATA_SLAB_AGE);
 }
 
 static unsigned short *kidled_get_slab_age_array(void *object)
@@ -984,8 +984,8 @@ static unsigned short *kidled_get_slab_age_array(void *object)
 
 	if (!cgroup_memory_nokmem) {
 		/* In case fail to allocate memory for cold slab */
-		if (likely(slab_objcgs(slab)))
-			slab_age = (unsigned short *)slab_objcgs(slab)[objects];
+		if (likely(slab_obj_exts(slab)))
+			slab_age = (unsigned short *)slab_obj_exts(slab)[objects].objcg;
 	} else
 		slab_age = kidled_slab_age(slab);
 
@@ -1037,7 +1037,7 @@ void kidled_set_slab_age(void *object, unsigned short age)
  * age is recorded in slab_age of page when kmem account disable. Otherwise,
  * an special obj_cgroups pointer will store the value.
  */
-#define OBJCGS_CLEAR_MASK   (__GFP_DMA | __GFP_RECLAIMABLE | __GFP_ACCOUNT)
+
 int kidled_alloc_slab_age(struct slab *slab, struct kmem_cache *s, gfp_t flags)
 {
 	unsigned int objects = objs_per_slab(s, slab);
@@ -1054,29 +1054,29 @@ int kidled_alloc_slab_age(struct slab *slab, struct kmem_cache *s, gfp_t flags)
 		return -ENOMEM;
 
 	if (!cgroup_memory_nokmem) {
-		if (!slab_objcgs(slab)) {
-			ret = memcg_alloc_slab_cgroups(slab, s, flags, true);
+		if (!slab_obj_exts(slab)) {
+			ret = alloc_slab_obj_exts(slab, s, flags, true);
 
 			if (!ret)
-				slab_objcgs(slab)[objects] = ver;
+				slab_obj_exts(slab)[objects].objcg = (struct obj_cgroup *)ver;
 			else {
 				kfree(ver);
 				return -ENOMEM;
 			}
 		} else {
-			slab_objcgs(slab)[objects] = ver;
+			slab_obj_exts(slab)[objects].objcg = (struct obj_cgroup *)ver;
 		}
 		return 0;
 	}
 
-	slab->memcg_data = ((unsigned long)ver | MEMCG_DATA_SLAB_AGE);
+	slab->obj_exts = ((unsigned long)ver | MEMCG_DATA_SLAB_AGE);
 	return 0;
 }
 
 void kidled_free_slab_age(struct slab *slab)
 {
 	kfree(kidled_slab_age(slab));
-	slab->memcg_data = 0;
+	slab->obj_exts = 0;
 }
 
 static ssize_t kidled_scan_period_show(struct kobject *kobj,

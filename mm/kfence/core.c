@@ -798,8 +798,8 @@ static void *kfence_guarded_alloc(struct kmem_cache *cache, size_t size, gfp_t g
 	slab = page_slab(page);
 	__SetPageSlab(page);
 	slab->slab_cache = cache;
-#ifdef CONFIG_MEMCG
-	slab->memcg_data = (unsigned long)&meta->objcg | MEMCG_DATA_OBJCGS;
+#ifdef CONFIG_MEMCG_KMEM
+	slab->obj_exts = (unsigned long)&meta->obj_exts | MEMCG_DATA_OBJEXTS;
 #endif
 #if defined(CONFIG_SLUB)
 	slab->objects = 1;
@@ -2616,8 +2616,8 @@ void __kfence_free(void *addr)
 {
 	struct kfence_metadata *meta = addr_to_metadata((unsigned long)addr);
 
-#ifdef CONFIG_MEMCG
-	KFENCE_WARN_ON(meta->objcg);
+#ifdef CONFIG_MEMCG_KMEM
+	KFENCE_WARN_ON(meta->obj_exts.objcg);
 #endif
 	/*
 	 * If the objects of the cache are SLAB_TYPESAFE_BY_RCU, defer freeing
