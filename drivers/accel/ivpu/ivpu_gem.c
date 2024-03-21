@@ -6,6 +6,7 @@
 #include <linux/dma-buf.h>
 #include <linux/highmem.h>
 #include <linux/module.h>
+#include <linux/vmalloc.h>
 #include <linux/set_memory.h>
 #include <linux/xarray.h>
 
