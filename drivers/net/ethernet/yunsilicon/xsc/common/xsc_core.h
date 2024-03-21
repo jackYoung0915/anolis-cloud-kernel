@@ -884,10 +884,6 @@ struct xsc_device_product_info {
 	.vendor = (vend), .device = (dev), \
 	.subdevice = (subdev), .product_name = (name)
 
-#define kvzalloc(size, flags) kzalloc((size), (flags))
-#define kvzalloc_node(size, flags, node) kzalloc_node((size), (flags), (node))
-#define kcalloc_node(n, size, flags, node) kmalloc_node((n) * (size), (flags) | __GFP_ZERO, (node))
-
 static inline bool xsc_fw_is_available(struct xsc_core_device *dev)
 {
 	return dev->cmd.cmd_status == XSC_CMD_STATUS_NORMAL;
