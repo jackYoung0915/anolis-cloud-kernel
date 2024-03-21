@@ -143,6 +143,9 @@ static inline void alloc_tag_sub(union codetag_ref *ref, size_t bytes)
 	ref->ct = NULL;
 }
 
+extern struct alloc_tag *alloc_tag_save(struct alloc_tag *tag);
+extern void alloc_tag_restore(struct alloc_tag *tag, struct alloc_tag *old);
+
 #else /* CONFIG_MEM_ALLOC_PROFILING */
 
 #define DEFINE_ALLOC_TAG(_alloc_tag)
@@ -152,5 +155,24 @@ static inline void alloc_tag_add(union codetag_ref *ref, struct alloc_tag *tag,
 static inline void alloc_tag_sub(union codetag_ref *ref, size_t bytes) {}
 
 #endif /* CONFIG_MEM_ALLOC_PROFILING */
+
+#ifndef CONFIG_MEM_ALLOC_PROFILING
+#define alloc_tag_save(_tag)		NULL
+#define alloc_tag_restore(_tag, _old)	do {} while (0)
+#endif
+
+#define alloc_hooks_tag(_tag, _do_alloc)				\
+({									\
+	struct alloc_tag * __maybe_unused _old = alloc_tag_save(_tag);	\
+	typeof(_do_alloc) _res = _do_alloc;				\
+	alloc_tag_restore(_tag, _old);					\
+	_res;								\
+})
+
+#define alloc_hooks(_do_alloc)						\
+({									\
+	DEFINE_ALLOC_TAG(_alloc_tag);					\
+	alloc_hooks_tag(&_alloc_tag, _do_alloc);			\
+})
 
 #endif /* _LINUX_ALLOC_TAG_H */

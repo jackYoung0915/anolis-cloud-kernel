@@ -1041,7 +1041,7 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 EXPORT_SYMBOL_GPL(filemap_add_folio);
 
 #ifdef CONFIG_NUMA
-struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
+struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order)
 {
 	int n;
 	struct folio *folio;
@@ -1059,12 +1059,12 @@ struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
 		return folio;
 	}
 
-	folio = folio_alloc(gfp, order);
+	folio = folio_alloc_noprof(gfp, order);
 	if (folio)
 		count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
 	return folio;
 }
-EXPORT_SYMBOL(filemap_alloc_folio);
+EXPORT_SYMBOL(filemap_alloc_folio_noprof);
 #endif
 
 /*
