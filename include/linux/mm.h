@@ -4241,4 +4241,7 @@ static inline void fixup_vma(struct vm_area_struct *vma)
 	async_fork_fixup_vma(vma);
 }
 
+void vma_pgtable_walk_begin(struct vm_area_struct *vma);
+void vma_pgtable_walk_end(struct vm_area_struct *vma);
+
 #endif /* _LINUX_MM_H */
