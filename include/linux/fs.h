@@ -179,9 +179,6 @@ typedef int (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 /* File does not contribute to nr_files count */
 #define FMODE_NOACCOUNT		((__force fmode_t)0x20000000)
 
-/* File supports async buffered reads */
-#define FMODE_BUF_RASYNC	((__force fmode_t)0x40000000)
-
 /*
  * Attribute flags.  These should be or-ed together to figure out what
  * has been changed!
@@ -1964,8 +1961,11 @@ struct dir_context {
 struct iov_iter;
 struct io_uring_cmd;
 
+typedef unsigned int __bitwise fop_flags_t;
+
 struct file_operations {
 	struct module *owner;
+	fop_flags_t fop_flags;
 	loff_t (*llseek) (struct file *, loff_t, int);
 	ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);
 	ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);
@@ -2014,6 +2014,11 @@ struct file_operations {
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
 } __randomize_layout;
+
+/* Supports async buffered reads */
+#define FOP_BUFFER_RASYNC	((__force fop_flags_t)(1 << 0))
+/* Supports synchronous page faults for mappings */
+#define FOP_MMAP_SYNC		((__force fop_flags_t)(1 << 2))
 
 struct inode_operations {
 	struct dentry * (*lookup) (struct inode *,struct dentry *, unsigned int);

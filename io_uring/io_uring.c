@@ -3648,7 +3648,8 @@ static bool io_rw_should_retry(struct io_kiocb *req)
 	 * just use poll if we can, and don't attempt if the fs doesn't
 	 * support callback based unlocks
 	 */
-	if (file_can_poll(req->file) || !(req->file->f_mode & FMODE_BUF_RASYNC))
+	if (file_can_poll(req->file) ||
+	    !(req->file->f_op->fop_flags & FOP_BUFFER_RASYNC))
 		return false;
 
 	wait->wait.func = io_async_buf_func;

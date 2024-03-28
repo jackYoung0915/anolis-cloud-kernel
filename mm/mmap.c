@@ -1553,6 +1553,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 			return -EOVERFLOW;
 
 		flags_mask = LEGACY_MAP_MASK | file->f_op->mmap_supported_flags;
+		if (file->f_op->fop_flags & FOP_MMAP_SYNC)
+			flags_mask |= MAP_SYNC;
 
 		switch (flags & MAP_TYPE) {
 		case MAP_SHARED:
