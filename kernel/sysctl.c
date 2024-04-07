@@ -2144,7 +2144,7 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0600,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
+		.extra2		= SYSCTL_TWO,
 	},
 	{
 		.procname       = "rich_container_cpuinfo_source",
