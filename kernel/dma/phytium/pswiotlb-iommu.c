@@ -768,7 +768,7 @@ dma_addr_t pswiotlb_iommu_dma_map_page(struct device *dev, struct page *page,
 		}
 
 		aligned_size = iova_align(iovad, size);
-		phys = swiotlb_tbl_map_single(dev, phys, size, aligned_size,
+		phys = swiotlb_tbl_map_single(dev, phys, size,
 					      iova_mask(iovad), dir, attrs);
 
 		if (phys == DMA_MAPPING_ERROR)
