@@ -59,8 +59,8 @@ static int __split_vmemmap_huge_pmd(pmd_t *pmd, unsigned long start)
 	pmd_t __pmd;
 	int i;
 	unsigned long addr = start;
-	struct page *page = pmd_page(*pmd);
 	pte_t *pgtable = pte_alloc_one_kernel(&init_mm);
+	unsigned long pfn = pmd_pfn(*pmd);
 
 	if (!pgtable)
 		return -ENOMEM;
@@ -71,7 +71,7 @@ static int __split_vmemmap_huge_pmd(pmd_t *pmd, unsigned long start)
 		pte_t entry, *pte;
 		pgprot_t pgprot = PAGE_KERNEL;
 
-		entry = mk_pte(page + i, pgprot);
+		entry = pfn_pte(pfn + i, pgprot);
 		pte = pte_offset_kernel(&__pmd, addr);
 		set_pte_at(&init_mm, addr, pte, entry);
 	}
@@ -114,7 +114,7 @@ static void vmemmap_pte_range(pmd_t *pmd, unsigned long addr,
 	 * The reuse_page is found 'first' in table walk before we start
 	 * remapping (which is calling @walk->remap_pte).
 	 */
-	if (!walk->reuse_page) {
+	if (!virtio_is_use_memmap(walk->reuse_addr) && !walk->reuse_page) {
 		walk->reuse_page = pte_page(*pte);
 		/*
 		 * Because the reuse address is part of the range that we are
@@ -288,22 +288,44 @@ static void vmemmap_restore_pte(pte_t *pte, unsigned long addr,
 {
 	pgprot_t pgprot = PAGE_KERNEL;
 	struct page *page;
-	void *to;
+	void *to, *src;
+	unsigned long pfn;
+	pte_t entry;
 
-	BUG_ON(pte_page(*pte) != walk->reuse_page);
+	if (!virtio_is_use_memmap(walk->reuse_addr))
+		BUG_ON(pte_page(*pte) != walk->reuse_page);
 
 	page = list_first_entry(walk->vmemmap_pages, struct page, lru);
 	list_del(&page->lru);
 	to = page_to_virt(page);
-	copy_page(to, (void *)walk->reuse_addr);
-	reset_struct_pages(to);
+	if (!virtio_is_use_memmap(walk->reuse_addr)) {
+		copy_page(to, (void *)walk->reuse_addr);
+		reset_struct_pages(to);
+		entry = mk_pte(page, pgprot);
+	} else {
+		if (virtio_memmap_restore(walk->reuse_addr)) {
+			pfn = __pa(to) >> PAGE_SHIFT;
+			entry = pfn_pte(pfn, pgprot);
+		} else {
+			if (virtio_memmap_copy(walk->reuse_addr)) {
+				pfn = pte_pfn(*pte);
+				src = __va(__pfn_to_phys(pfn));
+
+				copy_page(to, src);
+				list_add_tail(&page->lru, walk->vmemmap_pages);
+				return;
+			}
+			/* trigger an warnning when walk in here now */
+			WARN_ON(1);
+		}
+	}
 
 	/*
 	 * Makes sure that preceding stores to the page contents become visible
 	 * before the set_pte_at() write.
 	 */
 	smp_wmb();
-	set_pte_at(&init_mm, addr, pte, mk_pte(page, pgprot));
+	set_pte_at(&init_mm, addr, pte, entry);
 }
 
 /**
@@ -404,7 +426,7 @@ out:
  * Return: %0 on success, negative error code otherwise.
  */
 int vmemmap_remap_alloc(unsigned long start, unsigned long end,
-			unsigned long reuse, gfp_t gfp_mask)
+			unsigned long reuse, gfp_t gfp_mask, struct list_head *altmap_pages)
 {
 	LIST_HEAD(vmemmap_pages);
 	struct vmemmap_remap_walk walk = {
@@ -414,17 +436,26 @@ int vmemmap_remap_alloc(unsigned long start, unsigned long end,
 	};
 
 	/* See the comment in the vmemmap_remap_free(). */
-	BUG_ON(start - reuse != PAGE_SIZE);
+	if (!virtio_is_use_memmap(reuse))
+		BUG_ON(start - reuse != PAGE_SIZE);
 
-	if (alloc_vmemmap_page_list(start, end, gfp_mask, &vmemmap_pages))
+	if (virtio_is_use_memmap(reuse))
+		walk.vmemmap_pages = altmap_pages;
+
+	if (list_empty(walk.vmemmap_pages) && alloc_vmemmap_page_list(start,
+			end, gfp_mask, walk.vmemmap_pages))
 		return -ENOMEM;
 
 	mmap_read_lock(&init_mm);
-	vmemmap_remap_range(reuse, end, &walk);
+	if (virtio_is_use_memmap(reuse))
+		vmemmap_remap_range(start, end, &walk);
+	else
+		vmemmap_remap_range(reuse, end, &walk);
 	mmap_read_unlock(&init_mm);
 
 	return 0;
 }
+EXPORT_SYMBOL(vmemmap_remap_alloc);
 #endif /* CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP */
 
 /*
