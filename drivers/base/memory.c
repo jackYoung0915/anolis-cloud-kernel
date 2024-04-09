@@ -593,6 +593,21 @@ struct memory_block *find_memory_block(struct mem_section *section)
 	return find_memory_block_by_id(block_id);
 }
 
+unsigned long get_memory_block_vmemmap_pages(unsigned long block_id)
+{
+	struct memory_block *mem = find_memory_block_by_id(block_id);
+	unsigned long nr_vmemmap_size;
+
+	if (!mem || !mem->nr_vmemmap_pages)
+		return 0;
+
+	nr_vmemmap_size = mem->nr_vmemmap_pages << PAGE_SHIFT;
+	put_device(&mem->dev);
+
+	return nr_vmemmap_size;
+}
+EXPORT_SYMBOL(get_memory_block_vmemmap_pages);
+
 static struct attribute *memory_memblk_attrs[] = {
 	&dev_attr_phys_index.attr,
 	&dev_attr_state.attr,

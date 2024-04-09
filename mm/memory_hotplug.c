@@ -1498,6 +1498,7 @@ struct zone *test_pages_in_a_zone(unsigned long start_pfn,
 	struct zone *zone = NULL;
 	struct page *page;
 	int i;
+
 	for (pfn = start_pfn, sec_end_pfn = SECTION_ALIGN_UP(start_pfn + 1);
 	     pfn < end_pfn;
 	     pfn = sec_end_pfn, sec_end_pfn += PAGES_PER_SECTION) {
@@ -2171,8 +2172,10 @@ static int try_offline_memory_block(struct memory_block *mem, void *arg)
 	 * Default is MMOP_OFFLINE - change it only if offlining succeeded,
 	 * so try_reonline_memory_block() can do the right thing.
 	 */
-	if (!rc)
+	if (!rc) {
 		**online_types = online_type;
+		mem->nr_vmemmap_pages = 0;
+	}
 
 	(*online_types)++;
 	/* Ignore if already offline. */
