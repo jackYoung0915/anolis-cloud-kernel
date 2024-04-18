@@ -1383,35 +1383,43 @@ int sev_guest_df_flush(int *error)
 }
 EXPORT_SYMBOL_GPL(sev_guest_df_flush);
 
+
+/*
+ * __csv_ring_buffer_queue_init will allocate memory for command queue
+ * and status queue. If error occurs, this function will return directly,
+ * the caller must free the memories allocated for queues.
+ *
+ * Function csv_ring_buffer_queue_free() can be used to handling error
+ * return by this function and cleanup ring buffer queues when exiting
+ * from RING BUFFER mode.
+ *
+ * Return -ENOMEM if fail to allocate memory for queues, otherwise 0
+ */
 static int __csv_ring_buffer_queue_init(struct csv_ringbuffer_queue *ring_buffer)
 {
-	int ret = 0;
 	void *cmd_ptr_buffer = NULL;
 	void *stat_val_buffer = NULL;
 
-	memset((void *)ring_buffer, 0, sizeof(struct csv_ringbuffer_queue));
+	/* If reach here, the command and status queues must be NULL */
+	WARN_ON(ring_buffer->cmd_ptr.data ||
+		ring_buffer->stat_val.data);
 
 	cmd_ptr_buffer = kzalloc(CSV_RING_BUFFER_LEN, GFP_KERNEL);
 	if (!cmd_ptr_buffer)
 		return -ENOMEM;
 
+	/* the command queue will points to @cmd_ptr_buffer */
 	csv_queue_init(&ring_buffer->cmd_ptr, cmd_ptr_buffer,
 		       CSV_RING_BUFFER_SIZE, CSV_RING_BUFFER_ESIZE);
 
 	stat_val_buffer = kzalloc(CSV_RING_BUFFER_LEN, GFP_KERNEL);
-	if (!stat_val_buffer) {
-		ret = -ENOMEM;
-		goto free_cmdptr;
-	}
+	if (!stat_val_buffer)
+		return -ENOMEM;
 
+	/* the status queue will points to @stat_val_buffer */
 	csv_queue_init(&ring_buffer->stat_val, stat_val_buffer,
 		       CSV_RING_BUFFER_SIZE, CSV_RING_BUFFER_ESIZE);
 	return 0;
-
-free_cmdptr:
-	kfree(cmd_ptr_buffer);
-
-	return ret;
 }
 
 int csv_fill_cmd_queue(int prio, int cmd, void *data, uint16_t flags)
@@ -1482,10 +1490,14 @@ int csv_ring_buffer_queue_init(void)
 	for (i = CSV_COMMAND_PRIORITY_HIGH; i < CSV_COMMAND_PRIORITY_NUM; i++) {
 		ret = __csv_ring_buffer_queue_init(&sev->ring_buffer[i]);
 		if (ret)
-			return ret;
+			goto e_free;
 	}
 
 	return 0;
+
+e_free:
+	csv_ring_buffer_queue_free();
+	return ret;
 }
 EXPORT_SYMBOL_GPL(csv_ring_buffer_queue_init);
 
@@ -1504,11 +1516,19 @@ int csv_ring_buffer_queue_free(void)
 	for (i = 0; i < CSV_COMMAND_PRIORITY_NUM; i++) {
 		ring_buffer = &sev->ring_buffer[i];
 
+		/*
+		 * If command queue is not NULL, it must points to memory
+		 * that allocated in __csv_ring_buffer_queue_init().
+		 */
 		if (ring_buffer->cmd_ptr.data) {
 			kfree((void *)ring_buffer->cmd_ptr.data);
 			ring_buffer->cmd_ptr.data = 0;
 		}
 
+		/*
+		 * If status queue is not NULL, it must points to memory
+		 * that allocated in __csv_ring_buffer_queue_init().
+		 */
 		if (ring_buffer->stat_val.data) {
 			kfree((void *)ring_buffer->stat_val.data);
 			ring_buffer->stat_val.data = 0;
