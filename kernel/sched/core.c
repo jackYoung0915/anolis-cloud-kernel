@@ -165,6 +165,45 @@ unsigned int sysctl_sched_acpu_enabled;
 unsigned int sysctl_sched_cfs_bw_burst_onset_percent;
 #endif
 
+#ifdef CONFIG_GROUP_BALANCER
+DEFINE_STATIC_KEY_FALSE(__group_balancer_enabled);
+unsigned int sysctl_sched_group_balancer_enabled;
+
+static void group_balancer_enable(void)
+{
+	static_branch_enable(&__group_balancer_enabled);
+}
+
+static void group_balancer_disable(void)
+{
+	static_branch_disable(&__group_balancer_enabled);
+}
+
+int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
+					void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret;
+	unsigned int old, new;
+
+	if (!write) {
+		ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+		return ret;
+	}
+
+	old = sysctl_sched_group_balancer_enabled;
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	new = sysctl_sched_group_balancer_enabled;
+	if (!ret && (old != new)) {
+		if (new)
+			group_balancer_enable();
+		else
+			group_balancer_disable();
+	}
+
+	return ret;
+}
+#endif
+
 #ifdef CONFIG_SCHED_CORE
 
 DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);

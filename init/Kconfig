@@ -1023,6 +1023,15 @@ config CFS_BANDWIDTH
 	  restriction.
 	  See Documentation/scheduler/sched-bwc.rst for more information.
 
+config GROUP_BALANCER
+	bool "Group balancing for SCHED_OTHER"
+	depends on FAIR_GROUP_SCHED && SMP && CFS_BANDWIDTH
+	default n
+	help
+	  This feature schedule task groups as a whole to achieve better
+	  locality. It use a soft cpu bind method which offer a dynamic
+	  way to restrict allowed CPUS for tasks in the same cgroup.
+
 config RT_GROUP_SCHED
 	bool "Group scheduling for SCHED_RR/FIFO"
 	depends on CGROUP_SCHED
