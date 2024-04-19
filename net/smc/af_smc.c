@@ -4035,6 +4035,8 @@ int smc_inet_init_sock(struct sock *sk)
 	/* init common smc sock */
 	smc_sock_init(sk, sock_net(sk));
 
+	tcp_sk(sk)->is_smc = 1;
+
 	/* IPPROTO_SMC does not exist in network, we MUST
 	 * reset it to IPPROTO_TCP before connect.
 	 */
