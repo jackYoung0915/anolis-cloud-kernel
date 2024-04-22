@@ -1231,6 +1231,11 @@ xfs_file_remap_range(
 		src->i_reflink_opt_ip = dest;
 		dest->i_reflink_opt_ip = src;
 		mutex_unlock(&mp->m_reflink_opt_lock);
+
+		if (!xfs_has_rmapbt(mp)) {
+			set_bit(AS_FSDAX_NORMAP, &VFS_I(src)->i_mapping->flags);
+			set_bit(AS_FSDAX_NORMAP, &VFS_I(dest)->i_mapping->flags);
+		}
 	}
 
 out_unlock:
