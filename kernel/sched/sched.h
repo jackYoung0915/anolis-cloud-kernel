@@ -540,6 +540,12 @@ struct task_group {
 	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
 #endif
 
+#ifdef CONFIG_GROUP_BALANCER
+	cpumask_t		soft_cpus_allowed;
+	int			specs_percent;
+	bool			group_balancer;
+#endif
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -4166,8 +4172,24 @@ void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx);
 
 #include "ext.h"
 
+#ifdef CONFIG_GROUP_BALANCER
+extern bool group_balancer_enabled(void);
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
+{
+	if (group_balancer_enabled()) {
+		struct task_group *tg = task_group(p);
+
+		cpumask_and(&p->cpus_allowed_alt, p->cpus_ptr,
+			    &tg->soft_cpus_allowed);
+		if (!cpumask_empty(&p->cpus_allowed_alt))
+			return &p->cpus_allowed_alt;
+	}
+	return p->cpus_ptr;
+}
+#else
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
 	return p->cpus_ptr;
 }
+#endif
 #endif /* _KERNEL_SCHED_SCHED_H */

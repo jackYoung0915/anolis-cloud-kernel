@@ -168,6 +168,7 @@ unsigned int sysctl_sched_cfs_bw_burst_onset_percent;
 #ifdef CONFIG_GROUP_BALANCER
 DEFINE_STATIC_KEY_FALSE(__group_balancer_enabled);
 unsigned int sysctl_sched_group_balancer_enabled;
+DEFINE_RWLOCK(group_balancer_lock);
 
 static void group_balancer_enable(void)
 {
@@ -177,6 +178,11 @@ static void group_balancer_enable(void)
 static void group_balancer_disable(void)
 {
 	static_branch_disable(&__group_balancer_enabled);
+}
+
+bool group_balancer_enabled(void)
+{
+	return static_branch_unlikely(&__group_balancer_enabled);
 }
 
 int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
@@ -202,6 +208,43 @@ int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
 
 	return ret;
 }
+
+static int tg_set_specs_percent_down(struct task_group *tg, void *data)
+{
+	int *sp = data;
+
+	if (tg->group_balancer &&
+	    tg->cfs_bandwidth.quota == RUNTIME_INF)
+		tg->specs_percent = *sp;
+
+	return 0;
+}
+
+static void tg_set_specs_percent(struct task_group *tg, u64 period, u64 quota)
+{
+	int sp;
+
+	if (!group_balancer_enabled())
+		return;
+	read_lock(&group_balancer_lock);
+	if (quota < 0) {
+		if (tg->group_balancer)
+			tg->specs_percent = -1;
+	} else if ((u64)quota <= U64_MAX / NSEC_PER_USEC) {
+		sp = quota * 100 / period;
+		/* Considering the limited accuracy. */
+		if (unlikely(!sp))
+			sp = 1;
+		if (tg->group_balancer)
+			tg->specs_percent = sp;
+		else
+			walk_tg_tree_from(tg, tg_set_specs_percent_down,
+					  tg_nop, &sp);
+	}
+	read_unlock(&group_balancer_lock);
+}
+#else
+static inline void tg_set_specs_percent(struct task_group *tg, u64 period, u64 quota) { }
 #endif
 
 #ifdef CONFIG_SCHED_CORE
@@ -8515,7 +8558,11 @@ void __init sched_init(void)
 
 #endif /* CONFIG_RT_GROUP_SCHED */
 	}
-
+#ifdef CONFIG_GROUP_BALANCER
+	cpumask_copy(&root_task_group.soft_cpus_allowed, cpu_online_mask);
+	root_task_group.specs_percent = -1;
+	root_task_group.group_balancer = 0;
+#endif
 	init_rt_bandwidth(&def_rt_bandwidth, global_rt_period(), global_rt_runtime());
 
 #ifdef CONFIG_SMP
@@ -8992,6 +9039,11 @@ struct task_group *sched_create_group(struct task_group *parent)
 
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 	tg->ht_ratio = 100;
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+	cpumask_copy(&tg->soft_cpus_allowed, &parent->soft_cpus_allowed);
+	tg->specs_percent = -1;
+	tg->group_balancer = 0;
 #endif
 	return tg;
 
@@ -9547,6 +9599,11 @@ static int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 	if (runtime_enabled && !runtime_was_enabled)
 		cfs_bandwidth_usage_inc();
 
+	/*
+	 * It's ok if we don't hold cfs_b->lock here, because if quota/period
+	 * changed, tg_set_specs_percent() will be called again.
+	 */
+	tg_set_specs_percent(tg, period, quota);
 	scoped_guard (raw_spinlock_irq, &cfs_b->lock) {
 		cfs_b->period = ns_to_ktime(period);
 		cfs_b->quota = quota;
@@ -9989,6 +10046,145 @@ static u64 cpu_ht_ratio_read(struct cgroup_subsys_state *css,
 }
 #endif
 
+#ifdef CONFIG_GROUP_BALANCER
+static int cpu_soft_cpus_show(struct seq_file *sf, void *v)
+{
+	struct task_group *tg = css_tg(seq_css(sf));
+
+	seq_printf(sf, "%*pbl\n", cpumask_pr_args(&tg->soft_cpus_allowed));
+
+	return 0;
+}
+
+static ssize_t cpu_soft_cpus_write(struct kernfs_open_file *of,
+				   char *buf, size_t nbytes, loff_t off)
+{
+	struct task_group *tg = css_tg(of_css(of));
+	cpumask_t tmp_soft_cpus_allowed;
+	cpumask_t *tg_soft_cpus_allowed;
+	int retval;
+
+	if (tg == &root_task_group)
+		return -EACCES;
+
+	if (!*buf) {
+		cpumask_clear(&tmp_soft_cpus_allowed);
+	} else {
+		retval = cpulist_parse(buf, &tmp_soft_cpus_allowed);
+		if (retval < 0)
+			return retval;
+	}
+
+	if (!cpumask_subset(&tmp_soft_cpus_allowed, cpu_online_mask))
+		return -EINVAL;
+
+	if (cpumask_empty(&tmp_soft_cpus_allowed))
+		return -ENOSPC;
+
+	tg_soft_cpus_allowed = &tg->soft_cpus_allowed;
+	if (!cpumask_equal(tg_soft_cpus_allowed, &tmp_soft_cpus_allowed))
+		cpumask_copy(tg_soft_cpus_allowed, &tmp_soft_cpus_allowed);
+	return 0;
+}
+
+static u64 cpu_group_balancer_read_u64(struct cgroup_subsys_state *css,
+				       struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->group_balancer;
+}
+
+static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
+{
+	if (tg->group_balancer)
+		return -EINVAL;
+	return 0;
+}
+
+/*
+ * There is only one task group allowed to enable group balancer in the path from
+ * root_task_group to a certion leaf task group.
+ */
+static int validate_group_balancer(struct task_group *tg)
+{
+	int retval = 0;
+
+	rcu_read_lock();
+	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
+				   tg_nop, NULL);
+	if (retval)
+		goto out;
+
+	for (; tg != &root_task_group; tg = tg->parent) {
+		if (tg->group_balancer) {
+			retval = -EINVAL;
+			break;
+		}
+	}
+out:
+	rcu_read_unlock();
+	return retval;
+}
+
+static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
+					struct cftype *cftype, u64 new)
+{
+	struct task_group *tg = css_tg(css);
+	bool old;
+	int retval = 0;
+
+	if (!group_balancer_enabled())
+		return -EPERM;
+
+	if (tg == &root_task_group || task_group_is_autogroup(tg))
+		return -EACCES;
+
+	if (new > 1)
+		return -EINVAL;
+
+	write_lock(&group_balancer_lock);
+	old = tg->group_balancer;
+
+	if (old == new)
+		goto out;
+
+	if (new) {
+		struct task_group *trail_tg = tg;
+		struct cfs_bandwidth *cfs_b;
+		int specs;
+
+		retval = validate_group_balancer(tg);
+		if (retval)
+			goto out;
+		/*
+		 * If one of his ancestor(or himself) has limited quota, take
+		 * the specs of the ancstor(or himself) as his.
+		 */
+		while (trail_tg != &root_task_group) {
+			cfs_b = &trail_tg->cfs_bandwidth;
+			raw_spin_lock_irq(&cfs_b->lock);
+			if (cfs_b->quota != RUNTIME_INF) {
+				specs = cfs_b->quota * 100 / cfs_b->period;
+				if (unlikely(!specs))
+					specs = 1;
+				tg->specs_percent = specs;
+				raw_spin_unlock_irq(&cfs_b->lock);
+				break;
+			}
+			raw_spin_unlock_irq(&cfs_b->lock);
+			trail_tg = trail_tg->parent;
+		}
+	} else {
+		tg->specs_percent = -1;
+	}
+	tg->group_balancer = new;
+out:
+	write_unlock(&group_balancer_lock);
+	return retval;
+}
+#endif
+
 static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
 	{
@@ -10069,6 +10265,22 @@ static struct cftype cpu_legacy_files[] = {
 		.name = "ht_ratio",
 		.read_u64 = cpu_ht_ratio_read,
 		.write_u64 = cpu_ht_ratio_write,
+	},
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+	{
+		.name = "soft_cpus",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_soft_cpus_show,
+		.write = cpu_soft_cpus_write,
+		.max_write_len = (100U + 6 * 1024),
+	},
+	{
+		.name = "group_balancer",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_group_balancer_read_u64,
+		.write_u64 = cpu_group_balancer_write_u64,
+		.max_write_len = 1,
 	},
 #endif
 	{ }	/* Terminate */
@@ -10633,6 +10845,22 @@ static struct cftype cpu_files[] = {
 		.private = SCHED_LAT_IOBLOCK,
 		.write_u64 = sched_lat_stat_write,
 		.seq_show = sched_lat_stat_show
+	},
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+	{
+		.name = "soft_cpus",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_soft_cpus_show,
+		.write = cpu_soft_cpus_write,
+		.max_write_len = (100U + 6 * 1024),
+	},
+	{
+		.name = "group_balancer",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_group_balancer_read_u64,
+		.write_u64 = cpu_group_balancer_write_u64,
+		.max_write_len = 1,
 	},
 #endif
 	{ }	/* terminate */
