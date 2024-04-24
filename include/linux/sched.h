@@ -1632,6 +1632,9 @@ struct task_struct {
 	unsigned long wait_moment;
 	bool				proxy_exec;
 
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask			cpus_allowed_alt;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
