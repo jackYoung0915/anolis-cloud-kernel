@@ -43,6 +43,7 @@
 #include <linux/sizes.h>
 #include <asm/tlb.h>
 #include <asm/alternative.h>
+#include <asm/set_memory.h>
 
 /*
  * We need to be able to catch inadvertent references to memstart_addr
@@ -630,6 +631,8 @@ void __init mem_init(void)
 		swiotlb_init(1);
 	else
 		swiotlb_force = SWIOTLB_NO_FORCE;
+
+	swiotlb_cvm_update_mem_attributes();
 
 	set_max_mapnr(max_pfn - PHYS_PFN_OFFSET);
 
