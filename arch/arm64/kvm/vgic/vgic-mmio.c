@@ -226,6 +226,7 @@ int vgic_uaccess_write_cenable(struct kvm_vcpu *vcpu,
 	return 0;
 }
 
+#define VIRTUAL_SGI_PENDING_OFFSET	0x3F0
 static unsigned long __read_pending(struct kvm_vcpu *vcpu,
 				    gpa_t addr, unsigned int len,
 				    bool is_user)
@@ -233,6 +234,7 @@ static unsigned long __read_pending(struct kvm_vcpu *vcpu,
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
 	u32 value = 0;
 	int i;
+	struct its_vpe *vpe = &vcpu->arch.vgic_cpu.vgic_v3.its_vpe;
 
 	/* Loop over all IRQs affected by this read */
 	for (i = 0; i < len * 8; i++) {
@@ -252,6 +254,21 @@ static unsigned long __read_pending(struct kvm_vcpu *vcpu,
 		raw_spin_lock_irqsave(&irq->irq_lock, flags);
 		if (irq->hw && vgic_irq_is_sgi(irq->intid)) {
 			int err;
+
+			if (irq->hw && vgic_irq_is_sgi(irq->intid) &&
+			    (kvm_vgic_global_state.flags &
+			     FLAGS_WORKAROUND_HIP09_ERRATUM_162200806)) {
+				void *va;
+				u8 *ptr;
+				int mask;
+				bool is_pending;
+
+				mask = BIT(irq->intid % BITS_PER_BYTE);
+				va = page_address(vpe->vpt_page);
+				ptr = va + VIRTUAL_SGI_PENDING_OFFSET +
+				      irq->intid / BITS_PER_BYTE;
+				is_pending = *ptr & mask;
+			}
 
 			val = false;
 			err = irq_get_irqchip_state(irq->host_irq,
