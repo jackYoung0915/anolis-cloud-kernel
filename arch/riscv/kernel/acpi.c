@@ -15,7 +15,9 @@
 
 #include <linux/acpi.h>
 #include <linux/io.h>
+#include <linux/of_fdt.h>
 #include <linux/pci.h>
+#include <linux/serial_core.h>
 #include <linux/efi.h>
 
 int acpi_noirq = 1;		/* skip ACPI IRQ initialization */
@@ -130,7 +132,7 @@ void __init acpi_boot_table_init(void)
 	if (param_acpi_off ||
 	    (!param_acpi_on && !param_acpi_force &&
 	     efi.acpi20 == EFI_INVALID_TABLE_ADDR))
-		return;
+		goto done;
 
 	/*
 	 * ACPI is disabled at this point. Enable it in order to parse
@@ -149,6 +151,14 @@ void __init acpi_boot_table_init(void)
 		pr_err("Failed to init ACPI tables\n");
 		if (!param_acpi_force)
 			disable_acpi();
+	}
+
+done:
+	if (acpi_disabled) {
+		if (earlycon_acpi_spcr_enable)
+			early_init_dt_scan_chosen_stdout();
+	} else {
+		acpi_parse_spcr(earlycon_acpi_spcr_enable, true);
 	}
 }
 
