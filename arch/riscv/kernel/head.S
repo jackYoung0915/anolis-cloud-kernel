@@ -170,8 +170,19 @@ secondary_start_sbi:
 	call relocate_enable_mmu
 #endif
 	call setup_trap_vector
-	tail smp_callin
+	call smp_callin
 #endif /* CONFIG_SMP */
+
+.align 2
+.Lsecondary_park:
+	/*
+	 * Park this hart if we:
+	 *  - have too many harts on CONFIG_RISCV_BOOT_SPINWAIT
+	 *  - receive an early trap, before setup_trap_vector finished
+	 *  - fail in smp_callin(), as a successful one wouldn't return
+	 */
+	wfi
+	j .Lsecondary_park
 
 .align 2
 setup_trap_vector:
@@ -185,12 +196,6 @@ setup_trap_vector:
 	 */
 	csrw CSR_SCRATCH, zero
 	ret
-
-.align 2
-.Lsecondary_park:
-	/* We lack SMP support or have too many harts, so park this hart */
-	wfi
-	j .Lsecondary_park
 
 END(_start)
 
