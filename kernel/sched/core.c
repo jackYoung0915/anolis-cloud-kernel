@@ -172,12 +172,14 @@ DEFINE_RWLOCK(group_balancer_lock);
 
 static void group_balancer_enable(void)
 {
+	sched_init_group_balancer_sched_domains();
 	static_branch_enable(&__group_balancer_enabled);
 }
 
 static void group_balancer_disable(void)
 {
 	static_branch_disable(&__group_balancer_enabled);
+	sched_clear_group_balancer_sched_domains();
 }
 
 bool group_balancer_enabled(void)
@@ -201,6 +203,11 @@ int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
 	new = sysctl_sched_group_balancer_enabled;
 	if (!ret && (old != new)) {
 		if (new)
+			/*
+			 * Even if failed to build group balancer sched domains,
+			 * group balancer should be enabled, so that we can use
+			 * the cpu.soft_cpus interface.
+			 */
 			group_balancer_enable();
 		else
 			group_balancer_disable();
@@ -8649,6 +8656,9 @@ void __init sched_init(void)
 		rq->core_sibidle_start_task = 0;
 
 		rq->core_cookie = 0UL;
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+		rq->gb_sd = NULL;
 #endif
 		zalloc_cpumask_var_node(&rq->scratch_mask, GFP_KERNEL, cpu_to_node(i));
 	}
