@@ -167,6 +167,10 @@
 #define REQ1_ECC_AFFINE_CONVERT		0x00200000
 #define REQ1_ECC_FUNCTION_SHIFT		18
 
+/***** HYGON CCP SM4 GCM related defines *****/
+#define HGGON_CCP_SM4GCM_IV_LEN 12
+#define HGGON_CCP_SM4GCM_TAG_LEN 16
+
 /****** REQ4 Related Values ******/
 #define REQ4_KSB_SHIFT			18
 #define REQ4_MEMTYPE_SHIFT		16
@@ -344,6 +348,7 @@ struct ccp_cmd_queue {
 	unsigned long total_sm3_ops;
 	unsigned long total_sm4_ops;
 	unsigned long total_sm4_ctr_ops;
+	unsigned long total_sm4_gcm_ops;
 } ____cacheline_aligned;
 
 struct ccp_device {
@@ -563,6 +568,12 @@ struct ccp_sm4_ctr_op {
 	u32 step;
 };
 
+struct ccp_sm4_gcm_op {
+	enum ccp_sm4_action action;
+	enum ccp_sm4_aead_mode mode;
+	u32 size;
+};
+
 struct ccp_op {
 	struct ccp_cmd_queue *cmd_q;
 
@@ -590,6 +601,7 @@ struct ccp_op {
 		struct ccp_sm3_op sm3;
 		struct ccp_sm4_op sm4;
 		struct ccp_sm4_ctr_op sm4_ctr;
+		struct ccp_sm4_gcm_op sm4_gcm;
 	} u;
 };
 
@@ -702,6 +714,7 @@ struct ccp_actions {
 	int (*sm3)(struct ccp_op *op);
 	int (*sm4)(struct ccp_op *op);
 	int (*sm4_ctr)(struct ccp_op *op);
+	int (*sm4_gcm)(struct ccp_op *op);
 	int (*run_cmd)(struct ccp_op *op);
 	u32 (*sballoc)(struct ccp_cmd_queue *, unsigned int);
 	void (*sbfree)(struct ccp_cmd_queue *, unsigned int, unsigned int);
