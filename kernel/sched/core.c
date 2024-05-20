@@ -8556,6 +8556,8 @@ void __init sched_init(void)
 	root_task_group.specs_ratio = -1;
 	root_task_group.group_balancer = 0;
 	root_task_group.soft_cpus_version = 0;
+	root_task_group.gb_sd = NULL;
+	root_task_group.prev_gb_sd = NULL;
 #endif
 	init_rt_bandwidth(&def_rt_bandwidth, global_rt_period(), global_rt_runtime());
 
@@ -9052,6 +9054,8 @@ struct task_group *sched_create_group(struct task_group *parent)
 	}
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
+	tg->gb_sd = NULL;
+	tg->prev_gb_sd = NULL;
 #endif
 	return tg;
 
@@ -10076,10 +10080,10 @@ static ssize_t cpu_soft_cpus_write(struct kernfs_open_file *of,
 		return -EACCES;
 
 	/*
-	 * If any ancestor of tg has already enabled group_balancer,
+	 * If any ancestor of tg(or itself) has already enabled group_balancer,
 	 * it's not allowed to edit its soft_cpus_allowed.
 	 */
-	if (tg->soft_cpus_allowed_ptr != &tg->soft_cpus_allowed)
+	if (tg->soft_cpus_allowed_ptr != &tg->soft_cpus_allowed || tg->group_balancer)
 		return -EACCES;
 
 	if (!*buf) {
@@ -10099,9 +10103,7 @@ static ssize_t cpu_soft_cpus_write(struct kernfs_open_file *of,
 	tg_soft_cpus_allowed = &tg->soft_cpus_allowed;
 	if (!cpumask_equal(tg_soft_cpus_allowed, &tmp_soft_cpus_allowed)) {
 		cpumask_copy(tg_soft_cpus_allowed, &tmp_soft_cpus_allowed);
-		tg->soft_cpus_version++;
-		if (unlikely(tg->soft_cpus_version < 0))
-			tg->soft_cpus_version = 0;
+		tg_inc_soft_cpus_version(tg);
 	}
 
 	return nbytes;
@@ -10147,22 +10149,6 @@ out:
 	return retval;
 }
 
-static int tg_set_soft_cpus_down(struct task_group *tg, void *data)
-{
-	struct task_group *ancestor = (struct task_group *)data;
-
-	tg->soft_cpus_allowed_ptr = &ancestor->soft_cpus_allowed;
-
-	return 0;
-}
-
-static int tg_unset_soft_cpus_down(struct task_group *tg, void *data)
-{
-	tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
-
-	return 0;
-}
-
 static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 					struct cftype *cftype, u64 new)
 {
@@ -10189,9 +10175,16 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 		retval = validate_group_balancer(tg);
 		if (retval)
 			goto out;
-		walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, (void *)tg);
+		retval = attach_tg_to_group_balancer_sched_domain(tg);
+		if (retval)
+			goto out;
 	} else {
-		walk_tg_tree_from(tg, tg_unset_soft_cpus_down, tg_nop, NULL);
+		/*
+		 * As gb_sd may be freed by user, set tg->prev_gb_sd NULL to prevent
+		 * use after free.
+		 */
+		tg->prev_gb_sd = NULL;
+		detach_tg_from_group_balancer_sched_domain(tg);
 	}
 	tg->group_balancer = new;
 out:
