@@ -19,6 +19,10 @@ struct group_balancer_sched_domain {
 	char						*topology_name;
 	unsigned int					span_weight;
 	unsigned int					nr_children;
+	/* If free_tg_specs is less than zero, the gb_sd is overloaded. */
+	int						free_tg_specs;
+	raw_spinlock_t					lock;
+	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
 	unsigned long					span[];
 };
@@ -518,6 +522,9 @@ static inline struct group_balancer_sched_domain
 	INIT_LIST_HEAD(&new->topology_level_sibling);
 	INIT_LIST_HEAD(&new->size_level_sibling);
 
+	raw_spin_lock_init(&new->lock);
+	new->task_groups = RB_ROOT;
+
 	return new;
 remove_kn:
 	kernfs_remove(kn);
@@ -540,6 +547,7 @@ static void add_to_tree(struct group_balancer_sched_domain *gb_sd,
 		parent->nr_children++;
 	}
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
+	gb_sd->free_tg_specs = 100 * gb_sd->span_weight;
 	add_to_size_level(gb_sd);
 
 	if (!gb_sd->nr_children) {
@@ -550,13 +558,56 @@ static void add_to_tree(struct group_balancer_sched_domain *gb_sd,
 	}
 }
 
+#define __node_2_task_group(n) rb_entry((n), struct task_group, gb_node)
+
+static inline bool tg_specs_less(struct rb_node *a, const struct rb_node *b)
+{
+	struct task_group *tg_a = __node_2_task_group(a);
+	struct task_group *tg_b = __node_2_task_group(b);
+	int specs_a = tg_a->specs_ratio;
+	int specs_b = tg_b->specs_ratio;
+
+	return specs_a < specs_b;
+}
+
+static int tg_set_soft_cpus_down(struct task_group *tg, void *data)
+{
+	tg->soft_cpus_allowed_ptr = (struct cpumask *)data;
+	tg_inc_soft_cpus_version(tg);
+
+	return 0;
+}
+
+static int tg_unset_soft_cpus_down(struct task_group *tg, void *data)
+{
+	tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+	tg_inc_soft_cpus_version(tg);
+
+	return 0;
+}
+
 static void free_group_balancer_sched_domain(struct group_balancer_sched_domain *gb_sd)
 {
 	int cpu;
 	struct rq *rq;
+	struct task_group *tg;
+	struct group_balancer_sched_domain *parent = gb_sd->parent;
+	struct rb_node *node;
+	struct rb_root *root = &gb_sd->task_groups;
 
-	if (gb_sd->parent)
-		gb_sd->parent->nr_children--;
+	if (parent) {
+		parent->nr_children--;
+		/* Move the task_groups to parent. */
+		while (!RB_EMPTY_ROOT(root)) {
+			node = root->rb_node;
+			tg = __node_2_task_group(node);
+			rb_erase(node, root);
+			tg->gb_sd = parent;
+			tg->prev_gb_sd = parent;
+			rb_add(node, &parent->task_groups, tg_specs_less);
+			walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, gb_sd_span(parent));
+		}
+	}
 
 	list_del(&gb_sd->sibling);
 	list_del(&gb_sd->topology_level_sibling);
@@ -1132,3 +1183,149 @@ static void __exit sched_exit_group_balancer_kernfs(void)
 }
 
 __exitcall(sched_exit_group_balancer_kernfs);
+
+static struct group_balancer_sched_domain *select_idle_gb_sd(int specs,
+							struct group_balancer_sched_domain *prev)
+{
+	struct group_balancer_sched_domain *gb_sd, *parent, *child;
+
+	if (specs == -1 || specs > group_balancer_root_domain->span_weight * 100)
+		return group_balancer_root_domain;
+
+	gb_sd = prev;
+	while (gb_sd) {
+		/* Try to find the first gb_sd that satisfied the specs. */
+		if (gb_sd->free_tg_specs >= specs)
+			break;
+		/*
+		 * In order to ensure the affinity as much as possible, we only consider
+		 * ancestors.
+		 */
+		gb_sd = parent;
+	}
+
+	if (!gb_sd)
+		gb_sd = group_balancer_root_domain;
+
+	while (gb_sd) {
+		struct group_balancer_sched_domain *max_free_child = NULL;
+		int max_free_specs = INT_MIN;
+		struct group_balancer_sched_domain *max_unsatisfied_free_child = NULL;
+		int max_unsatisfied_free_specs = INT_MIN;
+
+		for_each_gb_sd_child(child, gb_sd) {
+			if (child->span_weight * 100 >= specs &&
+			    child->free_tg_specs > max_free_specs) {
+				max_free_child = child;
+				max_free_specs = child->free_tg_specs;
+			} else if (child->span_weight * 100 < specs &&
+				   child->free_tg_specs > max_unsatisfied_free_specs) {
+				max_unsatisfied_free_child = child;
+				max_unsatisfied_free_specs = child->free_tg_specs;
+			}
+		}
+		if (!max_free_child)
+			break;
+		/*
+		 * Consider the following case:
+		 * gb_sd->span_weight = 6, and gb_sd has two children whose weight are 2 and 4,
+		 * and there is a task group with specs 300 selected the child with weight 4
+		 * before, and there's another task group with specs 300 needs to select a sched
+		 * domain.
+		 * In this case, it's unreasonable to select the child with weight 4 for both task
+		 * groups. So we select gb_sd to workaround.
+		 * When compare the free specs of two group balancer sched domain, we'd better to
+		 * compare the proportion of the free specs to the span weight, because the free
+		 * specs cannot fully represent the degree of idleness if the span weight is
+		 * different.
+		 */
+		if (max_free_specs < specs &&
+		    max_free_specs / max_free_child->span_weight <
+		    max_unsatisfied_free_specs / max_unsatisfied_free_child->span_weight)
+			break;
+		gb_sd = max_free_child;
+	}
+
+	return gb_sd;
+}
+
+/*
+ * When we attach/detach a task group to/from a domain, we hold the read lock
+ * group_balancer_sched_domain_lock first, and then hold gb_sd->lock.
+ * When we free a domain, we need to move task groups from domain to its parent, we
+ * hold the write lock group_balancer_sched_domain_lock.
+ * When we balance two domains, we hold the read lock group_balancer_sched_domain_lock
+ * first, and then hold the locks of these two domains.
+ * So that there will be no race.
+ * TODO: Optimize the lock when we move task groups when balance.
+ */
+void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
+					   struct group_balancer_sched_domain *gb_sd)
+{
+	int specs = tg->specs_ratio;
+	struct group_balancer_sched_domain *parent;
+
+	tg->gb_sd = gb_sd;
+	raw_spin_lock(&gb_sd->lock);
+	rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
+	raw_spin_unlock(&gb_sd->lock);
+
+	if (specs != -1) {
+		for (parent = gb_sd; parent; parent = parent->parent) {
+			raw_spin_lock(&parent->lock);
+			parent->free_tg_specs -= specs;
+			raw_spin_unlock(&parent->lock);
+		}
+	}
+	walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, gb_sd_span(gb_sd));
+}
+
+void remove_tg_from_group_balancer_sched_domain(struct task_group *tg)
+{
+	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
+	int specs = tg->specs_ratio;
+
+	tg->gb_sd = NULL;
+	raw_spin_lock(&gb_sd->lock);
+	rb_erase(&tg->gb_node, &gb_sd->task_groups);
+	raw_spin_unlock(&gb_sd->lock);
+	if (specs != -1) {
+		for (; gb_sd; gb_sd = gb_sd->parent) {
+			raw_spin_lock(&gb_sd->lock);
+			gb_sd->free_tg_specs += specs;
+			raw_spin_unlock(&gb_sd->lock);
+		}
+	}
+
+	walk_tg_tree_from(tg, tg_unset_soft_cpus_down, tg_nop, NULL);
+}
+
+int attach_tg_to_group_balancer_sched_domain(struct task_group *tg)
+{
+	struct group_balancer_sched_domain *gb_sd;
+	int ret = 0;
+
+	read_lock(&group_balancer_sched_domain_lock);
+	gb_sd = select_idle_gb_sd(tg->specs_ratio, tg->prev_gb_sd);
+	if (!gb_sd) {
+		ret = -ESRCH;
+		goto out;
+	}
+	add_tg_to_group_balancer_sched_domain(tg, gb_sd);
+out:
+	tg->prev_gb_sd = gb_sd;
+	read_unlock(&group_balancer_sched_domain_lock);
+	return ret;
+}
+
+void detach_tg_from_group_balancer_sched_domain(struct task_group *tg)
+{
+	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
+
+	if (!gb_sd)
+		return;
+
+	read_lock(&group_balancer_sched_domain_lock);
+	remove_tg_from_group_balancer_sched_domain(tg);
+	read_unlock(&group_balancer_sched_domain_lock);
+}
