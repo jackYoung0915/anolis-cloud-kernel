@@ -1634,6 +1634,7 @@ struct task_struct {
 
 #ifdef CONFIG_GROUP_BALANCER
 	struct cpumask			cpus_allowed_alt;
+	int				soft_cpus_version;
 #endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
