@@ -584,7 +584,7 @@ static int alloc_slab_obj_exts(struct slab *slab, struct kmem_cache *s,
 #ifdef CONFIG_MEMCG
 	new_exts |= MEMCG_DATA_OBJEXTS;
 #endif
-	old_exts = slab->obj_exts;
+	old_exts = READ_ONCE(slab->obj_exts);
 
 #ifdef CONFIG_MEMCG
 	/*
@@ -606,7 +606,8 @@ static int alloc_slab_obj_exts(struct slab *slab, struct kmem_cache *s,
 		 * be simply assigned.
 		 */
 		slab->obj_exts = new_exts;
-	} else if (cmpxchg(&slab->obj_exts, old_exts, new_exts) != old_exts) {
+	} else if ((old_exts & ~OBJEXTS_FLAGS_MASK) ||
+		   cmpxchg(&slab->obj_exts, old_exts, new_exts) != old_exts) {
 		/*
 		 * If the slab is already in use, somebody can allocate and
 		 * assign slabobj_exts in parallel. In this case the existing
