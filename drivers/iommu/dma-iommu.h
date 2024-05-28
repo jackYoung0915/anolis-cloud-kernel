@@ -28,6 +28,8 @@ struct iova_domain *iommu_get_iova_domain(struct iommu_domain *domain);
 
 extern bool iommu_dma_forcedac;
 
+int iova_reserve_domain_addr(struct iommu_domain *domain, dma_addr_t start, dma_addr_t end);
+
 #else /* CONFIG_IOMMU_DMA */
 
 static inline void iommu_setup_dma_ops(struct device *dev,
@@ -69,6 +71,12 @@ static inline struct iova_domain *iommu_get_iova_domain(struct iommu_domain *dom
 	return NULL;
 }
 #endif
+
+static inline int iova_reserve_domain_addr(struct iommu_domain *domain, dma_addr_t start,
+					   dma_addr_t end)
+{
+	return -EINVAL;
+}
 
 #endif	/* CONFIG_IOMMU_DMA */
 #endif	/* __DMA_IOMMU_H */
