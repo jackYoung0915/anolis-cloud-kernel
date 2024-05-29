@@ -8653,7 +8653,8 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 	if (kvm_x86_ops.get_cpl(vcpu) != 0 &&
 			!(nr == KVM_HC_VM_ATTESTATION
 			  || nr == KVM_HC_PSP_OP_OBSOLETE
-			  || nr == KVM_HC_PSP_COPY_FORWARD_OP)) {
+			  || nr == KVM_HC_PSP_COPY_FORWARD_OP
+			  || nr == KVM_HC_PSP_FORWARD_OP)) {
 		ret = -KVM_EPERM;
 		goto out;
 	}
@@ -8719,6 +8720,7 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 		break;
 	case KVM_HC_PSP_OP_OBSOLETE:
 	case KVM_HC_PSP_COPY_FORWARD_OP:
+	case KVM_HC_PSP_FORWARD_OP:
 		ret = -KVM_ENOSYS;
 		if (kvm_x86_ops.arch_hypercall)
 			ret = kvm_x86_ops.arch_hypercall(vcpu->kvm, nr, a0, a1, a2, a3);
