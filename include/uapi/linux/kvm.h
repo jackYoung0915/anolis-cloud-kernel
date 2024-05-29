@@ -1383,12 +1383,13 @@ struct id_registers {
 #define KVM_CAP_ARM_TMM 300  /* FIXME: Large number to prevent conflicts */
 #define MAX_NUMA_NODE 8
 #define MAX_CPU_BIT_MAP 4
+#define MAX_NUMA_BIT_MAP 2
 
 struct kvm_numa_node {
 	__u64 numa_id;
 	__u64 ipa_start;
 	__u64 ipa_size;
-	__u64 host_numa_node;
+	__u64 host_numa_nodes[MAX_NUMA_BIT_MAP];
 	__u64 cpu_id[MAX_CPU_BIT_MAP];
 };
 
