@@ -2746,6 +2746,7 @@ static bool virtnet_send_command_reply(struct virtnet_info *vi, u8 class, u8 cmd
 {
 	struct scatterlist *sgs[5], hdr, stat;
 	u32 out_num = 0, tmp, in_num = 0;
+	bool ok;
 	int ret;
 
 	/* Caller should know better */
@@ -2791,8 +2792,9 @@ static bool virtnet_send_command_reply(struct virtnet_info *vi, u8 class, u8 cmd
 	}
 
 unlock:
+	ok = vi->ctrl->status == VIRTIO_NET_OK;
 	mutex_unlock(&vi->cvq_lock);
-	return vi->ctrl->status == VIRTIO_NET_OK;
+	return ok;
 }
 
 static bool virtnet_send_command(struct virtnet_info *vi, u8 class, u8 cmd,
