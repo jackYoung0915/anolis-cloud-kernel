@@ -10102,7 +10102,7 @@ static ssize_t cpu_soft_cpus_write(struct kernfs_open_file *of,
 			tg->soft_cpus_version = 0;
 	}
 
-	return 0;
+	return nbytes;
 }
 
 static u64 cpu_group_balancer_read_u64(struct cgroup_subsys_state *css,
@@ -10298,7 +10298,6 @@ static struct cftype cpu_legacy_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_u64 = cpu_group_balancer_read_u64,
 		.write_u64 = cpu_group_balancer_write_u64,
-		.max_write_len = 1,
 	},
 #endif
 	{ }	/* Terminate */
@@ -10878,7 +10877,6 @@ static struct cftype cpu_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_u64 = cpu_group_balancer_read_u64,
 		.write_u64 = cpu_group_balancer_write_u64,
-		.max_write_len = 1,
 	},
 #endif
 	{ }	/* terminate */
