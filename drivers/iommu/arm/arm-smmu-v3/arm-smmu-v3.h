@@ -163,6 +163,8 @@
 #define ARM_SMMU_PRIQ_IRQ_CFG1		0xd8
 #define ARM_SMMU_PRIQ_IRQ_CFG2		0xdc
 
+#define ARM_SMMU_USER_CFG1		0xe04
+
 #define ARM_SMMU_REG_SZ			0xe00
 
 /* Common MSI config fields */
@@ -628,6 +630,7 @@ struct arm_smmu_device {
 #define ARM_SMMU_OPT_PAGE0_REGS_ONLY	(1 << 1)
 #define ARM_SMMU_OPT_MSIPOLL		(1 << 2)
 #define ARM_SMMU_OPT_SYNC_MAP		(1 << 3)
+#define ARM_SMMU_OPT_SYNC_BATCH		(1 << 4)
 	u32				options;
 
 	struct arm_smmu_cmdq		cmdq;
