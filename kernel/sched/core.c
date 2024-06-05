@@ -8462,6 +8462,9 @@ void __init sched_init_smp(void)
 	sched_init_domains(cpu_active_mask);
 	mutex_unlock(&sched_domains_mutex);
 
+#ifdef CONFIG_GROUP_BALANCER
+	cpumask_copy(&root_task_group.soft_cpus_allowed, cpu_online_mask);
+#endif
 	/* Move init over to a non-isolated CPU */
 	if (set_cpus_allowed_ptr(current, housekeeping_cpumask(HK_TYPE_DOMAIN)) < 0)
 		BUG();
@@ -8566,7 +8569,6 @@ void __init sched_init(void)
 #endif /* CONFIG_RT_GROUP_SCHED */
 	}
 #ifdef CONFIG_GROUP_BALANCER
-	cpumask_copy(&root_task_group.soft_cpus_allowed, cpu_online_mask);
 	root_task_group.specs_percent = -1;
 	root_task_group.group_balancer = 0;
 	root_task_group.soft_cpus_version = 0;
