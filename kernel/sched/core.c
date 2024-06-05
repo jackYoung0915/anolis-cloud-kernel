@@ -208,43 +208,6 @@ int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
 
 	return ret;
 }
-
-static int tg_set_specs_percent_down(struct task_group *tg, void *data)
-{
-	int *sp = data;
-
-	if (tg->group_balancer &&
-	    tg->cfs_bandwidth.quota == RUNTIME_INF)
-		tg->specs_percent = *sp;
-
-	return 0;
-}
-
-static void tg_set_specs_percent(struct task_group *tg, u64 period, u64 quota)
-{
-	int sp;
-
-	if (!group_balancer_enabled())
-		return;
-	read_lock(&group_balancer_lock);
-	if (quota < 0) {
-		if (tg->group_balancer)
-			tg->specs_percent = -1;
-	} else if ((u64)quota <= U64_MAX / NSEC_PER_USEC) {
-		sp = quota * 100 / period;
-		/* Considering the limited accuracy. */
-		if (unlikely(!sp))
-			sp = 1;
-		if (tg->group_balancer)
-			tg->specs_percent = sp;
-		else
-			walk_tg_tree_from(tg, tg_set_specs_percent_down,
-					  tg_nop, &sp);
-	}
-	read_unlock(&group_balancer_lock);
-}
-#else
-static inline void tg_set_specs_percent(struct task_group *tg, u64 period, u64 quota) { }
 #endif
 
 #ifdef CONFIG_SCHED_CORE
@@ -8569,7 +8532,7 @@ void __init sched_init(void)
 #endif /* CONFIG_RT_GROUP_SCHED */
 	}
 #ifdef CONFIG_GROUP_BALANCER
-	root_task_group.specs_percent = -1;
+	root_task_group.specs_ratio = -1;
 	root_task_group.group_balancer = 0;
 	root_task_group.soft_cpus_version = 0;
 #endif
@@ -9052,7 +9015,6 @@ struct task_group *sched_create_group(struct task_group *parent)
 #endif
 #ifdef CONFIG_GROUP_BALANCER
 	cpumask_copy(&tg->soft_cpus_allowed, &parent->soft_cpus_allowed);
-	tg->specs_percent = -1;
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 #endif
@@ -9614,11 +9576,6 @@ static int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 	if (runtime_enabled && !runtime_was_enabled)
 		cfs_bandwidth_usage_inc();
 
-	/*
-	 * It's ok if we don't hold cfs_b->lock here, because if quota/period
-	 * changed, tg_set_specs_percent() will be called again.
-	 */
-	tg_set_specs_percent(tg, period, quota);
 	scoped_guard (raw_spinlock_irq, &cfs_b->lock) {
 		cfs_b->period = ns_to_ktime(period);
 		cfs_b->quota = quota;
@@ -9894,6 +9851,7 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 		}
 	}
 	cfs_b->hierarchical_quota = quota;
+	tg_set_specs_ratio(tg, quota);
 
 	return 0;
 }
@@ -10170,38 +10128,22 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 		goto out;
 
 	if (new) {
-		struct task_group *trail_tg = tg;
-		struct cfs_bandwidth *cfs_b;
-		int specs;
-
 		retval = validate_group_balancer(tg);
 		if (retval)
 			goto out;
-		/*
-		 * If one of his ancestor(or himself) has limited quota, take
-		 * the specs of the ancstor(or himself) as his.
-		 */
-		while (trail_tg != &root_task_group) {
-			cfs_b = &trail_tg->cfs_bandwidth;
-			raw_spin_lock_irq(&cfs_b->lock);
-			if (cfs_b->quota != RUNTIME_INF) {
-				specs = cfs_b->quota * 100 / cfs_b->period;
-				if (unlikely(!specs))
-					specs = 1;
-				tg->specs_percent = specs;
-				raw_spin_unlock_irq(&cfs_b->lock);
-				break;
-			}
-			raw_spin_unlock_irq(&cfs_b->lock);
-			trail_tg = trail_tg->parent;
-		}
-	} else {
-		tg->specs_percent = -1;
 	}
 	tg->group_balancer = new;
 out:
 	write_unlock(&group_balancer_lock);
 	return retval;
+}
+
+static s64 cpu_specs_ratio_read_s64(struct cgroup_subsys_state *css,
+				    struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->specs_ratio;
 }
 #endif
 
@@ -10300,6 +10242,11 @@ static struct cftype cpu_legacy_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_u64 = cpu_group_balancer_read_u64,
 		.write_u64 = cpu_group_balancer_write_u64,
+	},
+	{
+		.name = "specs_ratio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_specs_ratio_read_s64,
 	},
 #endif
 	{ }	/* Terminate */
@@ -10879,6 +10826,11 @@ static struct cftype cpu_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_u64 = cpu_group_balancer_read_u64,
 		.write_u64 = cpu_group_balancer_write_u64,
+	},
+	{
+		.name = "specs_ratio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_specs_ratio_read_s64,
 	},
 #endif
 	{ }	/* terminate */
