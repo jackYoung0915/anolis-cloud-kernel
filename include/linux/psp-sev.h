@@ -675,6 +675,11 @@ struct kvm_vpsp {
 	int (*read_guest)(struct kvm *kvm, gpa_t gpa, void *data, unsigned long len);
 };
 
+#define PSP_2MB_MASK		(2*1024*1024 - 1)
+#define TKM_CMD_ID_MIN		0x120
+#define TKM_CMD_ID_MAX		0x12f
+#define TKM_PSP_CMDID		TKM_CMD_ID_MIN
+#define TKM_PSP_CMDID_OFFSET	0x128
 #define PSP_VID_MASK            0xff
 #define PSP_VID_SHIFT           56
 #define PUT_PSP_VID(hpa, vid)   ((__u64)(hpa) | ((__u64)(PSP_VID_MASK & vid) << PSP_VID_SHIFT))
@@ -822,8 +827,8 @@ int vpsp_get_vid(uint32_t *vid, pid_t pid);
 
 int vpsp_get_default_vid_permission(void);
 
-int kvm_pv_psp_op(struct kvm_vpsp *vpsp, int cmd, gpa_t data_gpa, gpa_t psp_ret_gpa,
-		gpa_t table_gpa);
+int kvm_pv_psp_copy_forward_op(struct kvm_vpsp *vpsp, int cmd, gpa_t data_gpa, gpa_t psp_ret_gpa);
+
 #else	/* !CONFIG_CRYPTO_DEV_SP_PSP */
 
 static inline int psp_do_cmd(int cmd, void *data, int *psp_ret) { return -ENODEV; }
@@ -874,6 +879,10 @@ vpsp_get_default_vid_permission(void) { return -ENODEV; }
 static inline int
 kvm_pv_psp_op(struct kvm_vpsp *vpsp, int cmd, gpa_t data_gpa,
 		gpa_t psp_ret_gpa, gpa_t table_gpa) { return -ENODEV; }
+static inline int
+kvm_pv_psp_copy_forward_op(struct kvm_vpsp *vpsp, int cmd, gpa_t data_gpa,
+			gpa_t psp_ret_gpa) { return -ENODEV; }
+
 #endif	/* CONFIG_CRYPTO_DEV_SP_PSP */
 
 #endif	/* __PSP_SEV_H__ */
