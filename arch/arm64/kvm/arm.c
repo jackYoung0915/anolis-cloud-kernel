@@ -1916,11 +1916,10 @@ int kvm_arch_init(void *opaque)
 #ifdef CONFIG_KVM_HISI_VIRT
 	probe_hisi_cpu_type();
 	kvm_dvmbm_support = hisi_dvmbm_supported();
-#endif
-	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
-
 	if (kvm_dvmbm_support)
 		kvm_get_pg_cfg();
+#endif
+	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
