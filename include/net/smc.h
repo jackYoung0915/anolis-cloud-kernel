@@ -301,7 +301,6 @@ struct smc_sock {				/* smc sock container */
 	struct request_sock	*tail_1;
 	struct request_sock	*reqsk;
 	unsigned int	queued_cnt;
-	int     smc_sk_sndbuf;
 	void			(*clcsk_state_change)(struct sock *sk);
 						/* original stat_change fct. */
 	void			(*clcsk_data_ready)(struct sock *sk);

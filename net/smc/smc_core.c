@@ -2486,13 +2486,23 @@ static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
 	struct rw_semaphore *lock;	/* lock buffer list */
 	bool is_dgraded = false;
 
-	if (is_rmb)
-		/* use socket recv buffer size (w/o overhead) as start value */
-		bufsize = smc->sk.sk_rcvbuf;
-	else
-		/* only inet sock will set smc_sk_sndbuf, for smc sock it is zero */
-		bufsize = smc->smc_sk_sndbuf ?: smc->sk.sk_sndbuf;
-
+	if (smc_sock_is_inet_sock(&smc->sk)) {
+		if (is_rmb)
+			bufsize = smc->sk.sk_userlocks & SOCK_RCVBUF_LOCK ?
+				smc->sk.sk_rcvbuf :
+				READ_ONCE(sock_net(&smc->sk)->smc.sysctl_rmem);
+		else
+			bufsize = smc->sk.sk_userlocks & SOCK_SNDBUF_LOCK ?
+				smc->sk.sk_sndbuf :
+				READ_ONCE(sock_net(&smc->sk)->smc.sysctl_wmem);
+	} else {
+		if (is_rmb)
+			/* use socket recv buffer size (w/o overhead) as start value */
+			bufsize = smc->sk.sk_rcvbuf;
+		else
+			/* use socket send buffer size (w/o overhead) as start value */
+			bufsize = smc->sk.sk_sndbuf;
+	}
 	for (bufsize_comp = smc_compress_bufsize(bufsize, is_smcd, is_rmb);
 	     bufsize_comp >= 0; bufsize_comp--) {
 		if (is_rmb) {

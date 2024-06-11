@@ -479,8 +479,6 @@ static void smc_sock_init_passive(struct sock *par, struct sock *sk)
 
 	smc_sock_init_common(sk);
 	smc_sk(sk)->listen_smc = parent;
-	/* restore the smc_sk_sndbuf before handshake */
-	smc_sk(sk)->smc_sk_sndbuf = READ_ONCE(sock_net(sk)->smc.sysctl_wmem);
 
 	smc_sock_clone_negotiator_ops(par, sk);
 
@@ -503,8 +501,10 @@ static void smc_sock_init(struct sock *sk, struct net *net)
 	INIT_WORK(&smc->tcp_listen_work, smc_tcp_listen_work);
 	INIT_LIST_HEAD(&smc->accept_q);
 	spin_lock_init(&smc->accept_q_lock);
-	WRITE_ONCE(sk->sk_sndbuf, READ_ONCE(net->smc.sysctl_wmem));
-	WRITE_ONCE(sk->sk_rcvbuf, READ_ONCE(net->smc.sysctl_rmem));
+	if (!smc_sock_is_inet_sock(sk)) {
+		WRITE_ONCE(sk->sk_sndbuf, READ_ONCE(net->smc.sysctl_wmem));
+		WRITE_ONCE(sk->sk_rcvbuf, READ_ONCE(net->smc.sysctl_rmem));
+	}
 	smc->limit_smc_hs = net->smc.limit_smc_hs;
 	smc_sock_assign_negotiator_ops(smc, "anolis");
 
@@ -575,6 +575,11 @@ out:
 	return rc;
 }
 
+#define SK_FLAGS_CLC_TO_SMC ((1UL << SOCK_URGINLINE) | \
+			     (1UL << SOCK_KEEPOPEN) | \
+			     (1UL << SOCK_LINGER) | \
+			     (1UL << SOCK_DBG))
+
 /* copy only relevant settings and flags of SOL_SOCKET level from smc to
  * clc socket (since smc is not called for these options from net/core)
  */
@@ -610,8 +615,11 @@ static void smc_copy_sock_settings(struct sock *nsk, struct sock *osk,
 				   unsigned long mask)
 {
 	/* no need for inet smc */
-	if (smc_sock_is_inet_sock(nsk))
+	if ((mask == SK_FLAGS_SMC_TO_CLC && smc_sock_is_inet_sock(osk)) ||
+	    (mask == SK_FLAGS_CLC_TO_SMC && smc_sock_is_inet_sock(nsk))) {
+		/* fallback to clc, should restore sock bufsize to tcp */
 		return;
+	}
 
 	/* options we don't get control via setsockopt for */
 	nsk->sk_type = osk->sk_type;
@@ -634,10 +642,6 @@ static void smc_copy_sock_settings_to_clc(struct smc_sock *smc)
 	smc_copy_sock_settings(smc->clcsock->sk, &smc->sk, SK_FLAGS_SMC_TO_CLC);
 }
 
-#define SK_FLAGS_CLC_TO_SMC ((1UL << SOCK_URGINLINE) | \
-			     (1UL << SOCK_KEEPOPEN) | \
-			     (1UL << SOCK_LINGER) | \
-			     (1UL << SOCK_DBG))
 /* copy only settings and flags relevant for smc from clc to smc socket */
 static void smc_copy_sock_settings_to_smc(struct smc_sock *smc)
 {
@@ -1923,8 +1927,6 @@ static int smc_connect(struct socket *sock, struct sockaddr *addr,
 				smc_clcsock_replace_cb(&sk->sk_state_change,
 						       smc_inet_sock_state_change,
 						       &smc->clcsk_state_change);
-			/* restore the smc_sk_sndbuf before connect */
-			smc->smc_sk_sndbuf = READ_ONCE(sk->sk_sndbuf);
 		} else if (!tcp_sk(sk)->syn_smc && !smc->use_fallback) {
 			smc_switch_to_fallback(smc, /* active fallback */ SMC_CLC_DECL_ACTIVE);
 		}
