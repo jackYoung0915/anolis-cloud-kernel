@@ -94,6 +94,14 @@ static inline int range_is_allowed(unsigned long pfn, unsigned long size)
 }
 #endif
 
+static bool devmem_readonly;
+static int __init devmem_enable_readonly(char *val)
+{
+	devmem_readonly = true;
+	return 0;
+}
+early_param("devmem.enable_readonly", devmem_enable_readonly);
+
 #ifndef unxlate_dev_mem_ptr
 #define unxlate_dev_mem_ptr unxlate_dev_mem_ptr
 void __weak unxlate_dev_mem_ptr(phys_addr_t phys, void *addr)
@@ -212,6 +220,9 @@ static ssize_t write_mem(struct file *file, const char __user *buf,
 
 	if (!valid_phys_addr_range(p, count))
 		return -EFAULT;
+
+	if (devmem_readonly)
+		return -EPERM;
 
 	written = 0;
 
@@ -374,6 +385,11 @@ static int mmap_mem(struct file *file, struct vm_area_struct *vma)
 {
 	size_t size = vma->vm_end - vma->vm_start;
 	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
+
+	if (devmem_readonly) {
+		vma->vm_flags &= ~(VM_WRITE | VM_SHARED);
+		vma_set_page_prot(vma);
+	}
 
 	/* Does it even fit in phys_addr_t? */
 	if (offset >> PAGE_SHIFT != vma->vm_pgoff)
