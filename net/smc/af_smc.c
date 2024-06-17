@@ -4715,6 +4715,10 @@ static void smc_inet_sock_data_ready(struct sock *sk)
 			queue_work(smc_tcp_ls_wq, &smc->tcp_listen_work);
 	} else {
 		write_lock_bh(&sk->sk_callback_lock);
+		if (!smc->clcsk_data_ready) {
+			write_unlock_bh(&sk->sk_callback_lock);
+			return;
+		}
 		sk->sk_data_ready = smc->clcsk_data_ready;
 		write_unlock_bh(&sk->sk_callback_lock);
 		smc->clcsk_data_ready(sk);
