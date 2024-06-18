@@ -8166,6 +8166,8 @@ int sched_cpu_activate(unsigned int cpu)
 		cpuset_cpu_active();
 	}
 
+	scx_rq_activate(rq);
+
 	/*
 	 * Put the rq online, if not already. This happens:
 	 *
@@ -8214,6 +8216,8 @@ int sched_cpu_deactivate(unsigned int cpu)
 	synchronize_rcu();
 
 	sched_set_rq_offline(rq, cpu);
+
+	scx_rq_deactivate(rq);
 
 	/*
 	 * When going down, decrement the number of cores with SMT present.
