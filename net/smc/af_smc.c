@@ -180,6 +180,9 @@ static bool smc_hs_congested(const struct sock *sk)
 	if (workqueue_congested(WORK_CPU_UNBOUND, smc_hs_wq))
 		return true;
 
+	if (smc_net_mem_exceeded((struct smc_sock *)smc))
+		return true;
+
 	return false;
 }
 
@@ -1593,6 +1596,10 @@ static int __smc_connect(struct smc_sock *smc)
 	/* IPSec connections opt out of SMC optimizations */
 	if (using_ipsec(smc))
 		return smc_connect_decline_fallback(smc, SMC_CLC_DECL_IPSEC,
+						    version);
+
+	if (smc_net_mem_exceeded(smc))
+		return smc_connect_decline_fallback(smc, SMC_CLC_DECL_MEM,
 						    version);
 
 	ini = kzalloc(sizeof(*ini), GFP_KERNEL);
