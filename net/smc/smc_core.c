@@ -42,6 +42,9 @@
 
 #define SMC_RTOKEN_UNINITIALIZED	-1
 
+long sysctl_global_mem[3] __read_mostly;
+atomic_long_t smc_global_memory_allocated;	/* global smcr memory allocated */
+
 struct smc_lgr_list smc_lgr_list = {	/* established link groups */
 	.lock = __SPIN_LOCK_UNLOCKED(smc_lgr_list.lock),
 	.list = LIST_HEAD_INIT(smc_lgr_list.list),
@@ -1340,6 +1343,7 @@ static void smc_buf_unuse(struct smc_connection *conn,
 			  struct smc_link_group *lgr)
 {
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
 	bool is_smcd = lgr->is_smcd;
 	int bufsize;
 
@@ -1351,6 +1355,7 @@ static void smc_buf_unuse(struct smc_connection *conn,
 			WRITE_ONCE(conn->sndbuf_desc->used, 0);
 		}
 		SMC_STAT_RMB_SIZE(smc, is_smcd, false, false, bufsize);
+		smc_net_mem_allocated_sub(net, conn->sndbuf_desc->len);
 	}
 	if (conn->rmb_desc) {
 		bufsize = conn->rmb_desc->len;
@@ -1362,6 +1367,7 @@ static void smc_buf_unuse(struct smc_connection *conn,
 			WRITE_ONCE(conn->rmb_desc->used, 0);
 		}
 		SMC_STAT_RMB_SIZE(smc, is_smcd, true, false, bufsize);
+		smc_net_mem_allocated_sub(net, conn->rmb_desc->len);
 	}
 }
 
@@ -1522,6 +1528,7 @@ static void smcr_buf_free(struct smc_link_group *lgr, bool is_rmb,
 		__free_pages(buf_desc->pages, buf_desc->order);
 	else if (buf_desc->is_vm && buf_desc->cpu_addr)
 		vfree(buf_desc->cpu_addr);
+	smc_global_mem_allocated_sub(buf_desc->len);
 	kfree(buf_desc);
 }
 
@@ -1535,6 +1542,7 @@ static void smcd_buf_free(struct smc_link_group *lgr, bool is_dmb,
 	} else {
 		kfree(buf_desc->cpu_addr);
 	}
+	smc_global_mem_allocated_sub(buf_desc->len);
 	kfree(buf_desc);
 }
 
@@ -2549,15 +2557,9 @@ static struct smc_buf_desc *smcd_new_buf_create(struct smc_link_group *lgr,
 	return buf_desc;
 }
 
-static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
+int smc_get_bufsize(struct smc_sock *smc, bool is_rmb)
 {
-	struct smc_buf_desc *buf_desc = ERR_PTR(-ENOMEM);
-	struct smc_connection *conn = &smc->conn;
-	struct smc_link_group *lgr = conn->lgr;
-	struct list_head *buf_list;
-	int bufsize, bufsize_comp;
-	struct rw_semaphore *lock;	/* lock buffer list */
-	bool is_dgraded = false;
+	int bufsize;
 
 	if (is_rmb)
 		/* use socket recv buffer size (w/o overhead) as start value */
@@ -2566,6 +2568,21 @@ static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
 		/* use socket send buffer size (w/o overhead) as start value */
 		bufsize = smc->sk.sk_sndbuf;
 
+	return bufsize;
+}
+
+static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
+{
+	struct smc_buf_desc *buf_desc = ERR_PTR(-ENOMEM);
+	struct smc_connection *conn = &smc->conn;
+	struct smc_link_group *lgr = conn->lgr;
+	struct net *net = sock_net(&smc->sk);
+	struct list_head *buf_list;
+	int bufsize, bufsize_comp;
+	struct rw_semaphore *lock;	/* lock buffer list */
+	bool is_dgraded = false;
+
+	bufsize = smc_get_bufsize(smc, is_rmb);
 	for (bufsize_comp = smc_compress_bufsize(bufsize, is_smcd, is_rmb);
 	     bufsize_comp >= 0; bufsize_comp--) {
 		if (is_rmb) {
@@ -2583,6 +2600,7 @@ static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
 			buf_desc->is_dma_need_sync = 0;
 			SMC_STAT_RMB_SIZE(smc, is_smcd, is_rmb, true, bufsize);
 			SMC_STAT_BUF_REUSE(smc, is_smcd, is_rmb);
+			smc_net_mem_allocated_add(net, buf_desc->len);
 			break; /* found reusable slot */
 		}
 
@@ -2603,6 +2621,8 @@ static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
 
 		SMC_STAT_RMB_ALLOC(smc, is_smcd, is_rmb);
 		SMC_STAT_RMB_SIZE(smc, is_smcd, is_rmb, true, bufsize);
+		smc_net_mem_allocated_add(net, buf_desc->len);
+		smc_global_mem_allocated_add(buf_desc->len);
 		buf_desc->used = 1;
 		down_write(lock);
 		smc_lgr_buf_list_add(lgr, is_rmb, buf_list, buf_desc);
