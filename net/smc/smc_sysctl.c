@@ -33,6 +33,16 @@ static int conns_per_lgr_max = SMC_CONN_PER_LGR_MAX;
 static unsigned int autosplit_size_min = SZ_32K;
 static unsigned int autosplit_size_max = SZ_512M; /* max size of snd/recv buffer */
 
+static int proc_global_mem(struct ctl_table *ctl,
+			   int write, void *buffer,
+			   size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table tbl = { .maxlen = sizeof(sysctl_global_mem) };
+
+	tbl.data = &sysctl_global_mem;
+	return proc_doulongvec_minmax(&tbl, write, buffer, lenp, ppos);
+}
+
 static struct ctl_table smc_table[] = {
 	{
 		.procname       = "autocorking_size",
@@ -125,6 +135,19 @@ static struct ctl_table smc_table[] = {
 		.extra1     = SYSCTL_ZERO,
 		.extra2     = SYSCTL_ONE,
 	},
+	{
+		.procname	= "mem",
+		.data		= &init_net.smc.sysctl_mem,
+		.maxlen		= sizeof(init_net.smc.sysctl_mem),
+		.mode		= 0644,
+		.proc_handler	= proc_doulongvec_minmax,
+	},
+	{
+		.procname	= "global_mem",
+		.maxlen		= sizeof(sysctl_global_mem),
+		.mode		= 0644,
+		.proc_handler	= proc_global_mem,
+	},
 	{  }
 };
 
@@ -140,8 +163,17 @@ int __net_init smc_sysctl_net_init(struct net *net)
 		if (!table)
 			goto err_alloc;
 
-		for (i = 0; i < ARRAY_SIZE(smc_table) - 1; i++)
-			table[i].data += (void *)net - (void *)&init_net;
+		for (i = 0; i < ARRAY_SIZE(smc_table) - 1; i++) {
+			if (table[i].data) {
+				/* Calcute current net data. */
+				table[i].data += (void *)net - (void *)&init_net;
+			} else {
+				/* Enties without data are global and read-only,
+				 * handle in their own proc handle.
+				 */
+				table[i].mode &= ~0222;
+			}
+		}
 	}
 
 	net->smc.smc_hdr = register_net_sysctl(net, "net/smc", table);
@@ -160,6 +192,7 @@ int __net_init smc_sysctl_net_init(struct net *net)
 	net->smc.sysctl_max_links_per_lgr = SMC_LINKS_PER_LGR_MAX_PREFER;
 	net->smc.sysctl_max_conns_per_lgr = SMC_CONN_PER_LGR_PREFER;
 	net->smc.sysctl_autosplit_size = SZ_128K;
+	smc_mem_init(net);
 	return 0;
 
 err_reg:
