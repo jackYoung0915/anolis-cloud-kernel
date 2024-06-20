@@ -3249,7 +3249,7 @@ int vmemmap_remap_alloc(unsigned long start, unsigned long end,
 static inline int vmemmap_remap_alloc(unsigned long start, unsigned long end, unsigned long reuse,
 				      gfp_t gfp_mask, struct list_head *pages)
 {
-       return -EINVAL;
+	return -EINVAL;
 }
 #endif
 
