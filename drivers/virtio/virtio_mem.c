@@ -892,13 +892,13 @@ static void virtio_mem_sbm_notify_going_offline(struct virtio_mem *vm,
 }
 
 static void virtio_mem_sbm_notify_cancel_offline(struct virtio_mem *vm,
-						 unsigned long mb_id)
+						 unsigned long mb_id, unsigned long nr_sb)
 {
 	const unsigned long nr_pages = PFN_DOWN(vm->sbm.sb_size);
 	unsigned long pfn;
 	int sb_id;
 
-	for (sb_id = 0; sb_id < vm->sbm.sbs_per_mb; sb_id++) {
+	for (sb_id = nr_sb; sb_id < vm->sbm.sbs_per_mb; sb_id++) {
 		if (virtio_mem_sbm_test_sb_plugged(vm, mb_id, sb_id, 1))
 			continue;
 		pfn = PFN_DOWN(virtio_mem_mb_id_to_phys(mb_id) +
@@ -1049,7 +1049,8 @@ static int virtio_mem_memory_notifier_cb(struct notifier_block *nb,
 		if (!vm->hotplug_active)
 			break;
 		if (vm->in_sbm)
-			virtio_mem_sbm_notify_cancel_offline(vm, id);
+			virtio_mem_sbm_notify_cancel_offline(vm, id,
+							     nr_vmemmap_size / vm->sbm.sb_size);
 		else
 			virtio_mem_bbm_notify_cancel_offline(vm, id,
 							     mhp->start_pfn,
@@ -1152,8 +1153,6 @@ static void virtio_mem_fake_online(unsigned long pfn, unsigned long nr_pages)
  */
 static int virtio_mem_fake_offline(unsigned long pfn, unsigned long nr_pages, bool map)
 {
-	const bool is_movable = page_zonenum(pfn_to_page(pfn)) ==
-				ZONE_MOVABLE;
 	int rc, retry_count;
 
 	/*
@@ -1161,7 +1160,7 @@ static int virtio_mem_fake_offline(unsigned long pfn, unsigned long nr_pages, bo
 	 * the range of vmemmap pages will remap to new page to keep the
 	 * page information for offline_pages.
 	 */
-	if (is_movable && map)
+	if (map)
 		return 0;
 
 	/*
@@ -1177,7 +1176,7 @@ static int virtio_mem_fake_offline(unsigned long pfn, unsigned long nr_pages, bo
 		if (rc == -ENOMEM)
 			/* whoops, out of memory */
 			return rc;
-		else if (rc && !is_movable)
+		else if (rc && page_zonenum(pfn_to_page(pfn)) != ZONE_MOVABLE)
 			break;
 		else if (rc)
 			continue;
@@ -2040,8 +2039,10 @@ static int virtio_mem_sbm_unplug_any_sb_online(struct virtio_mem *vm,
 	}
 
 	/* unplug the vmemmap of the whole memblock if it exists. */
-	if (map)
+	if (map) {
 		virtio_mem_sbm_unplug_sb_online(vm, mb_id, sb_id + 1, count_vmemmap, map);
+		*nb_sb -= count_vmemmap;
+	}
 
 unplugged:
 	/*
