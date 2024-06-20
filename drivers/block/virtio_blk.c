@@ -907,9 +907,22 @@ static void virtblk_uring_task_cb(struct io_uring_cmd *ioucmd)
 static void virtblk_uring_cmd_end_io(struct request *req, blk_status_t err)
 {
 	struct io_uring_cmd *ioucmd = req->end_io_data;
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	/* extract bio before reusing the same field for request */
+	struct bio *bio = pdu->bio;
 	void *cookie = READ_ONCE(ioucmd->cookie);
 
-	io_uring_cmd_complete_in_task(ioucmd, virtblk_uring_task_cb);
+	pdu->req = req;
+	req->bio = bio;
+
+	/*
+	 * For iopoll, complete it directly.
+	 * Otherwise, move the completion to task work.
+	 */
+	if (cookie != NULL && blk_rq_is_poll(req))
+		virtblk_uring_task_cb(ioucmd);
+	else
+		io_uring_cmd_complete_in_task(ioucmd, virtblk_uring_task_cb);
 }
 
 static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
@@ -953,9 +966,11 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		rq_flags = REQ_NOWAIT;
 		blk_flags = BLK_MQ_REQ_NOWAIT;
 	}
+	if (issue_flags & IO_URING_F_IOPOLL)
+		rq_flags |= REQ_POLLED;
 
 	rq_flags |= (type & VIRTIO_BLK_T_OUT) ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN;
-
+retry:
 	req = blk_mq_alloc_request(q, rq_flags, blk_flags);
 	if (IS_ERR(req))
 		return PTR_ERR(req);
@@ -976,6 +991,18 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		/* user should ensure passthrough command have data */
 		blk_mq_free_request(req);
 		return -EINVAL;
+	}
+
+	if ((issue_flags & IO_URING_F_IOPOLL) && (rq_flags & REQ_POLLED)) {
+		if (unlikely(!req->bio)) {
+			/* we can't poll this, so alloc regular req instead */
+			blk_mq_free_request(req);
+			rq_flags &= ~REQ_POLLED;
+			goto retry;
+		} else {
+			WRITE_ONCE(ioucmd->cookie, req);
+			req->bio->bi_opf |= REQ_POLLED;
+		}
 	}
 
 	/* to free bio on completion, as req->bio will be null at that time */
@@ -1018,6 +1045,22 @@ static int virtblk_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue
 	return virtblk_uring_cmd(vblk, ioucmd, issue_flags);
 }
 
+int virtblk_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
+				 struct io_comp_batch *iob, unsigned int poll_flags)
+{
+	struct request *req;
+	int ret = 0;
+	struct virtio_blk *vblk;
+	struct request_queue *q;
+
+	req = READ_ONCE(ioucmd->cookie);
+	vblk = container_of(file_inode(ioucmd->file)->i_cdev,
+			struct virtio_blk, cdev);
+	q = vblk->disk->queue;
+	if (test_bit(QUEUE_FLAG_POLL, &q->queue_flags))
+		ret = bio_poll(req->bio, iob, poll_flags);
+	return ret;
+}
 
 static int virtblk_chr_open(struct inode *inode, struct file *file)
 {
@@ -1035,6 +1078,7 @@ static const struct file_operations virtblk_chr_fops = {
 	.open		= virtblk_chr_open,
 	.release	= virtblk_chr_release,
 	.uring_cmd	= virtblk_chr_uring_cmd,
+	.uring_cmd_iopoll = virtblk_chr_uring_cmd_iopoll,
 };
 
 static void virtblk_cdev_rel(struct device *dev)
