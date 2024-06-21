@@ -239,6 +239,7 @@ struct mdev_state {
 	struct list_head next;
 	struct vfio_device_info dev_info;
 	unsigned long ref;
+	unsigned long used;
 	struct eventfd_ctx *trigger[MCCP_DEV_QUEUE_MAX];
 	u8 efd_start;
 	u8 efd_count;
@@ -991,6 +992,7 @@ static int hct_open_device(struct mdev_device *mdev)
 	hct_data.mdev_ref++;
 	mutex_unlock(&hct_data.lock);
 
+	mdev_state->used = 1;
 	return 0;
 }
 
@@ -1005,6 +1007,7 @@ static void hct_close_device(struct mdev_device *mdev)
 	for (i = 0; i < mdev_state->efd_count; i++)
 		eventfd_ctx_put(mdev_state->trigger[i]);
 	mdev_state->efd_count = 0;
+	mdev_state->used = 0;
 
 	mutex_lock(&hct_data.lock);
 	hct_data.mdev_ref--;
@@ -1120,14 +1123,35 @@ exit:
 	return sprintf(buf, "\n");
 }
 
+static ssize_t use_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	struct mdev_state *mdev_state;
+	ssize_t size;
+
+	if (mdev_from_dev(dev)) {
+		mdev_state = mdev_get_drvdata(mdev_from_dev(dev));
+		if (!mdev_state)
+			goto exit;
+
+		size = sprintf(buf, "%lu", mdev_state->used);
+		return size;
+	}
+
+exit:
+	return sprintf(buf, "\n");
+}
+
 static DEVICE_ATTR_RO(address);
 static DEVICE_ATTR_RO(id);
 static DEVICE_ATTR_RO(idx);
+static DEVICE_ATTR_RO(use);
 
 static struct attribute *mdev_dev_attrs[] = {
 	&dev_attr_address.attr,
 	&dev_attr_id.attr,
 	&dev_attr_idx.attr,
+	&dev_attr_use.attr,
 	NULL,
 };
 
