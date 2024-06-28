@@ -39,6 +39,8 @@ unsigned int rdt_mon_features;
 
 #define CF(cf)	((unsigned long)(1048576 * (cf) + 0.5))
 
+static int snc_nodes_per_l3_cache = 1;
+
 /*
  * The correction factor table is documented in Documentation/x86/resctrl.rst.
  * If rmid > rmid threshold, MBM total and local values should be multiplied
@@ -159,7 +161,7 @@ static u64 mbm_overflow_count(u64 prev_msr, u64 cur_msr, unsigned int width)
 
 struct __rmid_read_arg
 {
-	u32 rmid;
+	u32 prmid;
 	enum resctrl_event_id eventid;
 	struct rdt_hw_resource *hw_res;
 	struct rdt_hw_mon_domain *hw_dom;
@@ -173,9 +175,9 @@ static int ___rmid_read(struct __rmid_read_arg *arg)
 	enum resctrl_event_id eventid = arg->eventid;
 	u64 prev_msr, msr_val, chunks;
 	struct arch_mbm_state *am;
-	u32 rmid = arg->rmid;
+	u32 prmid = arg->prmid;
 
-	am = get_arch_mbm_state(arg->hw_dom, rmid, eventid);
+	am = get_arch_mbm_state(arg->hw_dom, prmid, eventid);
 	if (am)
 		prev_msr = atomic64_read(&am->prev_msr);
 
@@ -187,7 +189,7 @@ static int ___rmid_read(struct __rmid_read_arg *arg)
 	 * IA32_QM_CTR.Error (bit 63) and IA32_QM_CTR.Unavailable (bit 62)
 	 * are error bits.
 	 */
-	wrmsr(MSR_IA32_QM_EVTSEL, eventid, rmid);
+	wrmsr(MSR_IA32_QM_EVTSEL, eventid, prmid);
 	rdmsrl(MSR_IA32_QM_CTR, msr_val);
 
 	if (msr_val & RMID_VAL_ERROR)
@@ -203,7 +205,7 @@ static int ___rmid_read(struct __rmid_read_arg *arg)
 			return -EINTR;
 
 		chunks = atomic64_add_return(chunks, &am->chunks);
-		chunks = get_corrected_mbm_count(rmid, chunks);
+		chunks = get_corrected_mbm_count(prmid, chunks);
 	} else {
 		chunks = msr_val;
 	}
@@ -213,7 +215,43 @@ static int ___rmid_read(struct __rmid_read_arg *arg)
 	return 0;
 }
 
-static void __rmid_read(void *_arg)
+/*
+ * When Sub-NUMA Cluster (SNC) mode is not enabled (as indicated by
+ * "snc_nodes_per_l3_cache == 1") no translation of the RMID value is
+ * needed. The physical RMID is the same as the logical RMID.
+ *
+ * On a platform with SNC mode enabled, Linux enables RMID sharing mode
+ * via MSR 0xCA0 (see the "RMID Sharing Mode" section in the "Intel
+ * Resource Director Technology Architecture Specification" for a full
+ * description of RMID sharing mode).
+ *
+ * In RMID sharing mode there are fewer "logical RMID" values available
+ * to accumulate data ("physical RMIDs" are divided evenly between SNC
+ * nodes that share an L3 cache). Linux creates an rdt_mon_domain for
+ * each SNC node.
+ *
+ * The value loaded into IA32_PQR_ASSOC is the "logical RMID".
+ *
+ * Data is collected independently on each SNC node and can be retrieved
+ * using the "physical RMID" value computed by this function and loaded
+ * into IA32_QM_EVTSEL. @cpu can be any CPU in the SNC node.
+ *
+ * The scope of the IA32_QM_EVTSEL and IA32_QM_CTR MSRs is at the L3
+ * cache.  So a "physical RMID" may be read from any CPU that shares
+ * the L3 cache with the desired SNC node, not just from a CPU in
+ * the specific SNC node.
+ */
+static int logical_rmid_to_physical_rmid(int cpu, int lrmid)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+
+	if (snc_nodes_per_l3_cache == 1)
+		return lrmid;
+
+	return lrmid + (cpu_to_node(cpu) % snc_nodes_per_l3_cache) * r->mon.num_rmid;
+}
+
+static void __rmid_read_phys(void *_arg)
 {
 	struct __rmid_read_arg *arg = _arg;
 
@@ -228,20 +266,21 @@ int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_mon_domain *d,
 {
 	struct __rmid_read_arg arg;
 	int err = -EIO;
+	int cpu = cpumask_any(&d->hdr.cpu_mask);
 
-	arg.rmid = rmid;
+	arg.prmid = logical_rmid_to_physical_rmid(cpu, rmid);
 	arg.eventid = eventid;
 	arg.hw_res = resctrl_to_arch_res(r);
 	arg.hw_dom = resctrl_to_arch_mon_dom(d);
 
 	preempt_disable();
 	if (cpumask_test_cpu(smp_processor_id(), &d->hdr.cpu_mask)) {
-		__rmid_read(&arg);
+		__rmid_read_phys(&arg);
 		preempt_enable();
 		err = 0;
 	} else if (!irqs_disabled()) {
 		preempt_enable();
-		err = smp_call_function_any(&d->hdr.cpu_mask, __rmid_read, &arg,
+		err = smp_call_function_any(&d->hdr.cpu_mask, __rmid_read_phys, &arg,
 					    true);
 	} else {
 		preempt_enable();
@@ -264,8 +303,8 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	u32 eax, ebx, ecx, edx;
 
 	resctrl_rmid_realloc_limit = boot_cpu_data.x86_cache_size * 1024;
-	hw_res->mon_scale = boot_cpu_data.x86_cache_occ_scale;
-	r->mon.num_rmid = boot_cpu_data.x86_cache_max_rmid + 1;
+	hw_res->mon_scale = boot_cpu_data.x86_cache_occ_scale / snc_nodes_per_l3_cache;
+	r->mon.num_rmid = (boot_cpu_data.x86_cache_max_rmid + 1) / snc_nodes_per_l3_cache;
 	hw_res->mbm_width = MBM_CNTR_WIDTH_BASE;
 
 	if (mbm_offset > 0 && mbm_offset <= MBM_CNTR_WIDTH_OFFSET_MAX)
