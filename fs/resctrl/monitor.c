@@ -292,46 +292,82 @@ void free_rmid(u32 closid, u32 rmid)
 static int __mon_event_count(u32 closid, u32 rmid, struct rmid_read *rr)
 {
 	u32 idx = resctrl_arch_rmid_idx_encode(closid, rmid);
+	int cpu = smp_processor_id();
+	struct rdt_mon_domain *d;
 	struct mbm_state *m;
+	int err, ret;
 	u64 tval = 0;
 
 	if (rr->first)
 		resctrl_arch_reset_rmid(rr->r, rr->d, closid, rmid, rr->evtid);
 
-	rr->err = resctrl_arch_rmid_read(rr->r, rr->d, closid, rmid, rr->evtid,
-					 &tval, rr->arch_mon_ctx);
-	if (rr->err)
-		return rr->err;
+	if (rr->d) {
+		/* Reading a single domain, must be on a CPU in that domain. */
+		if (!cpumask_test_cpu(cpu, &rr->d->hdr.cpu_mask))
+			return -EINVAL;
+		rr->err = resctrl_arch_rmid_read(rr->r, rr->d, closid, rmid,
+						 rr->evtid, &tval, rr->arch_mon_ctx);
+		if (rr->err)
+			return rr->err;
 
-	switch (rr->evtid) {
-	case QOS_L3_OCCUP_EVENT_ID:
+		switch (rr->evtid) {
+		case QOS_L3_OCCUP_EVENT_ID:
+			rr->val += tval;
+			return 0;
+		case QOS_MC_MBM_BPS_EVENT_ID:
+			rr->val += tval;
+			return 0;
+		case QOS_L3_MBM_TOTAL_EVENT_ID:
+			m = &rr->d->mbm_total[idx];
+			break;
+		case QOS_L3_MBM_LOCAL_EVENT_ID:
+			m = &rr->d->mbm_local[idx];
+			break;
+		default:
+			/*
+			 * Code would never reach here because an invalid
+			 * event id would fail in resctrl_arch_rmid_read().
+			 */
+			return -EINVAL;
+		}
+
+		if (rr->first) {
+			memset(m, 0, sizeof(struct mbm_state));
+			return 0;
+		}
+
 		rr->val += tval;
+
 		return 0;
-	case QOS_MC_MBM_BPS_EVENT_ID:
-		rr->val += tval;
-		return 0;
-	case QOS_L3_MBM_TOTAL_EVENT_ID:
-		m = &rr->d->mbm_total[idx];
-		break;
-	case QOS_L3_MBM_LOCAL_EVENT_ID:
-		m = &rr->d->mbm_local[idx];
-		break;
-	default:
-		/*
-		 * Code would never reach here because an invalid
-		 * event id would fail in resctrl_arch_rmid_read().
-		 */
+	}
+
+	/* Summing domains that share a cache, must be on a CPU for that cache. */
+	if (!cpumask_test_cpu(cpu, &rr->ci->shared_cpu_map))
 		return -EINVAL;
+
+	/*
+	 * Legacy files must report the sum of an event across all
+	 * domains that share the same L3 cache instance.
+	 * Report success if a read from any domain succeeds, -EINVAL
+	 * (translated to "Unavailable" for user space) if reading from
+	 * all domains fail for any reason.
+	 */
+	ret = -EINVAL;
+	list_for_each_entry(d, &rr->r->mon_domains, hdr.list) {
+		if (d->ci->id != rr->ci->id)
+			continue;
+		err = resctrl_arch_rmid_read(rr->r, d, closid, rmid,
+					     rr->evtid, &tval, rr->arch_mon_ctx);
+		if (!err) {
+			rr->val += tval;
+			ret = 0;
+		}
 	}
 
-	if (rr->first) {
-		memset(m, 0, sizeof(struct mbm_state));
-		return 0;
-	}
+	if (ret)
+		rr->err = ret;
 
-	rr->val += tval;
-
-	return 0;
+	return ret;
 }
 
 /*
