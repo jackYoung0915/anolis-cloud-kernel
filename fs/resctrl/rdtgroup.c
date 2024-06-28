@@ -825,7 +825,7 @@ static void rdtgroup_mbm_cntr_reset(struct rdt_resource *r)
 
 	mbm_cntrs_init(r);
 
-	list_for_each_entry(dom, &r->domains, hdr.list)
+	list_for_each_entry(dom, &r->ctrl_domains, hdr.list)
 		bitmap_zero(dom->mbm_cntr_map, r->mon.num_mbm_cntrs);
 
 	/* Reset the cntr_id's for all the monitor groups */
@@ -935,7 +935,7 @@ static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
 
 		seq_printf(s, "%s//", rdtg->kn->name);
 
-		list_for_each_entry(dom, &r->domains, hdr.list)
+		list_for_each_entry(dom, &r->mon_domains, hdr.list)
 			seq_printf(s, "%d=%s;", dom->hdr.id,
 				   rdtgroup_mon_state_to_str(rdtg, dom, str));
 		seq_putc(s, '\n');
@@ -944,7 +944,7 @@ static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
 				    mon.crdtgrp_list) {
 			seq_printf(s, "%s/%s/", rdtg->kn->name, crg->kn->name);
 
-			list_for_each_entry(dom, &r->domains, hdr.list)
+			list_for_each_entry(dom, &r->mon_domains, hdr.list)
 				seq_printf(s, "%d=%s;", dom->hdr.id,
 					   rdtgroup_mon_state_to_str(crg, dom, str));
 			seq_putc(s, '\n');
@@ -1120,7 +1120,7 @@ next:
 	}
 
 	/* Verify if the dom_id is valid */
-	list_for_each_entry(d, &r->domains, hdr.list) {
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
 		if (d->hdr.id == dom_id) {
 			found = 1;
 			break;
@@ -1442,7 +1442,7 @@ static int rdt_bit_usage_show(struct kernfs_open_file *of,
 	mutex_lock(&rdtgroup_mutex);
 	hw_shareable = r->cache.shareable_bits;
 	rcu_read_lock();
-	list_for_each_entry_rcu(dom, &r->domains, hdr.list) {
+	list_for_each_entry_rcu(dom, &r->ctrl_domains, hdr.list) {
 		if (sep)
 			seq_putc(seq, ';');
 		sw_shareable = 0;
@@ -1764,7 +1764,7 @@ static bool rdtgroup_mode_test_exclusive(struct rdtgroup *rdtgrp)
 		if (r->rid == RDT_RESOURCE_MBA || r->rid == RDT_RESOURCE_SMBA)
 			continue;
 		has_cache = true;
-		list_for_each_entry(d, &r->domains, hdr.list) {
+		list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 			ctrl = resctrl_arch_get_config(r, d, closid,
 						       s->conf_type);
 			if (rdtgroup_cbm_overlaps(s, d, ctrl, closid, false)) {
@@ -1877,11 +1877,11 @@ unsigned int rdtgroup_cbm_to_size(struct rdt_resource *r,
 	struct cacheinfo *ci;
 	int num_b;
 
-	if (WARN_ON_ONCE(r->scope != RESCTRL_L2_CACHE && r->scope != RESCTRL_L3_CACHE))
+	if (WARN_ON_ONCE(r->ctrl_scope != RESCTRL_L2_CACHE && r->ctrl_scope != RESCTRL_L3_CACHE))
 		return size;
 
 	num_b = bitmap_weight(&cbm, r->cache.cbm_len);
-	ci = get_cpu_cacheinfo_level(cpumask_any(&d->hdr.cpu_mask), r->scope);
+	ci = get_cpu_cacheinfo_level(cpumask_any(&d->hdr.cpu_mask), r->ctrl_scope);
 	if (ci)
 		size = ci->size / r->cache.cbm_len * num_b;
 
@@ -1938,7 +1938,7 @@ static int rdtgroup_size_show(struct kernfs_open_file *of,
 		type = schema->conf_type;
 		sep = false;
 		seq_printf(s, "%*s:", max_name_width, schema->name);
-		list_for_each_entry(d, &r->domains, hdr.list) {
+		list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 			if (sep)
 				seq_putc(s, ';');
 			if (rdtgrp->mode == RDT_MODE_PSEUDO_LOCKSETUP) {
@@ -1976,7 +1976,7 @@ static int mbm_config_show(struct seq_file *s, struct rdt_resource *r, u32 evtid
 
 	mutex_lock(&rdtgroup_mutex);
 
-	list_for_each_entry(dom, &r->domains, hdr.list) {
+	list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 		if (sep)
 			seq_puts(s, ";");
 
@@ -2043,7 +2043,7 @@ static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
 	list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
 		struct rdtgroup *crg;
 
-		list_for_each_entry(dom, &r->domains, hdr.list) {
+		list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 			if (d == dom && resctrl_mbm_event_assigned(rdtg, dom, evtid)) {
 				ret = rdtgroup_assign_cntr(rdtg, evtid);
 				if (ret)
@@ -2052,7 +2052,7 @@ static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
 		}
 
 		list_for_each_entry(crg, &rdtg->mon.crdtgrp_list, mon.crdtgrp_list) {
-			list_for_each_entry(dom, &r->domains, hdr.list) {
+			list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 				if (d == dom && resctrl_mbm_event_assigned(crg, dom, evtid)) {
 					ret = rdtgroup_assign_cntr(crg, evtid);
 					if (ret)
@@ -2091,7 +2091,7 @@ next:
 		return -EINVAL;
 	}
 
-	list_for_each_entry(d, &r->domains, hdr.list) {
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
 		if (d->hdr.id == dom_id) {
 			ret = resctrl_arch_mbm_config_write_domain(r, d, evtid, val);
 			if (ret) {
@@ -2208,7 +2208,7 @@ int rdtgroup_assign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 	if (rdtgroup_alloc_cntr(rdtgrp, index))
 		return -EINVAL;
 
-	list_for_each_entry(d, &r->domains, hdr.list) {
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
 		resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
 					 rdtgrp->mon.cntr_id[index],
 					 rdtgrp->closid, true);
@@ -2326,7 +2326,7 @@ static int rdtgroup_mbm_cntr_test(struct rdt_resource *r, u32 cntr_id)
 {
 	struct rdt_domain *d;
 
-	list_for_each_entry(d, &r->domains, hdr.list)
+	list_for_each_entry(d, &r->mon_domains, hdr.list)
 		if (test_bit(cntr_id, d->mbm_cntr_map))
 			return 1;
 
@@ -2359,7 +2359,7 @@ int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 		return -EINVAL;
 
 	if (rdtgrp->mon.cntr_id[index] != MON_CNTR_UNSET) {
-		list_for_each_entry(d, &r->domains, hdr.list) {
+		list_for_each_entry(d, &r->mon_domains, hdr.list) {
 			resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
 						 rdtgrp->mon.cntr_id[index],
 						 rdtgrp->closid, false);
@@ -2887,7 +2887,7 @@ static int mba_sc_allocate(struct rdt_resource *r)
 	struct rdt_domain *d;
 	int ret = -EINVAL;
 
-	list_for_each_entry(d, &r->domains, hdr.list) {
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 		ret = mba_sc_domain_allocate(r, d);
 		if (ret)
 			break;
@@ -2909,7 +2909,7 @@ static void mba_sc_destroy(struct rdt_resource *r)
 
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(d, &r->domains, hdr.list)
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list)
 		mba_sc_domain_destroy(r, d);
 }
 
@@ -3147,15 +3147,8 @@ static int schemata_list_create(void)
 static void schemata_list_destroy(void)
 {
 	struct resctrl_schema *s, *tmp;
-	struct rdt_domain *dom;
 
 	list_for_each_entry_safe(s, tmp, &resctrl_schema_all, list) {
-		/*
-		 * Clear staged_config on each domain before schemata list is
-		 * destroyed.
-		 */
-		list_for_each_entry(dom, &s->res->domains, hdr.list)
-			memset(dom->staged_config, 0, sizeof(dom->staged_config));
 		list_del(&s->list);
 		kfree(s);
 	}
@@ -3271,7 +3264,7 @@ static int rdt_get_tree(struct fs_context *fc)
 		resctrl_mounted = true;
 
 	if (resctrl_is_mbm_enabled()) {
-		list_for_each_entry(dom, &l3->domains, hdr.list)
+		list_for_each_entry(dom, &l3->mon_domains, hdr.list)
 			mbm_setup_overflow_handler(dom, MBM_OVERFLOW_INTERVAL, -1);
 	}
 
@@ -3647,7 +3640,7 @@ static int mkdir_mondata_subdir_alldom(struct kernfs_node *parent_kn,
 	/* Walking r->domains, ensure it can't race with cpuhp */
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(dom, &r->domains, hdr.list) {
+	list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 		ret = mkdir_mondata_subdir(parent_kn, dom, r, prgrp);
 		if (ret)
 			return ret;
@@ -3834,7 +3827,7 @@ static int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
 	struct rdt_domain *d;
 	int ret;
 
-	list_for_each_entry(d, &s->res->domains, hdr.list) {
+	list_for_each_entry(d, &s->res->ctrl_domains, hdr.list) {
 		ret = __init_one_rdt_domain(d, s, closid);
 		if (ret < 0)
 			return ret;
@@ -3849,7 +3842,7 @@ static void rdtgroup_init_mba(struct rdt_resource *r, u32 closid)
 	struct resctrl_staged_config *cfg;
 	struct rdt_domain *d;
 
-	list_for_each_entry(d, &r->domains, hdr.list) {
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 		if (is_mba_sc(r)) {
 			d->mbps_val[closid] = MBA_MAX_MBPS;
 			continue;
@@ -4372,12 +4365,9 @@ static void domain_destroy_mon_state(struct rdt_domain *d)
 	kfree(d->mbm_local);
 }
 
-static void _resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d)
+static void _resctrl_offline_mon_domain(struct rdt_resource *r, struct rdt_domain *d)
 {
 	lockdep_assert_held(&rdtgroup_mutex);
-
-	if (supports_mba_mbps() && r->rid == RDT_RESOURCE_MBA)
-		mba_sc_domain_destroy(r, d);
 
 	if (!r->mon_capable)
 		return;
@@ -4407,10 +4397,18 @@ static void _resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d
 	domain_destroy_mon_state(d);
 }
 
-void resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d)
+void resctrl_offline_ctrl_domain(struct rdt_resource *r, struct rdt_domain *d)
 {
 	mutex_lock(&rdtgroup_mutex);
-	_resctrl_offline_domain(r, d);
+	if (supports_mba_mbps() && r->rid == RDT_RESOURCE_MBA)
+		mba_sc_domain_destroy(r, d);
+	mutex_unlock(&rdtgroup_mutex);
+}
+
+void resctrl_offline_mon_domain(struct rdt_resource *r, struct rdt_domain *d)
+{
+	mutex_lock(&rdtgroup_mutex);
+	_resctrl_offline_mon_domain(r, d);
 	mutex_unlock(&rdtgroup_mutex);
 }
 
@@ -4454,15 +4452,11 @@ static int domain_setup_mon_state(struct rdt_resource *r, struct rdt_domain *d)
 	return 0;
 }
 
-static int _resctrl_online_domain(struct rdt_resource *r, struct rdt_domain *d)
+static int _resctrl_online_mon_domain(struct rdt_resource *r, struct rdt_domain *d)
 {
 	int err;
 
 	lockdep_assert_held(&rdtgroup_mutex);
-
-	if (is_mba_sc(r))
-		/* RDT_RESOURCE_MBA is never mon_capable */
-		return mba_sc_domain_allocate(r, d);
 
 	if (!r->mon_capable)
 		return 0;
@@ -4485,12 +4479,26 @@ static int _resctrl_online_domain(struct rdt_resource *r, struct rdt_domain *d)
 	return 0;
 }
 
-int resctrl_online_domain(struct rdt_resource *r, struct rdt_domain *d)
+int resctrl_online_ctrl_domain(struct rdt_resource *r, struct rdt_domain *d)
 {
 	int err;
 
 	mutex_lock(&rdtgroup_mutex);
-	err = _resctrl_online_domain(r, d);
+	if (supports_mba_mbps() && r->rid == RDT_RESOURCE_MBA) {
+		/* RDT_RESOURCE_MBA is never mon_capable */
+		err =  mba_sc_domain_allocate(r, d);
+	}
+	mutex_unlock(&rdtgroup_mutex);
+
+	return err;
+}
+
+int resctrl_online_mon_domain(struct rdt_resource *r, struct rdt_domain *d)
+{
+	int err;
+
+	mutex_lock(&rdtgroup_mutex);
+	err = _resctrl_online_mon_domain(r, d);
 	mutex_unlock(&rdtgroup_mutex);
 
 	return err;
@@ -4531,7 +4539,7 @@ void resctrl_offline_cpu(unsigned int cpu)
 		}
 	}
 
-	d = resctrl_get_domain_from_cpu(cpu, l3);
+	d = resctrl_get_mon_domain_from_cpu(cpu, l3);
 	if (d) {
 		if (resctrl_is_mbm_enabled() && cpu == d->mbm_work_cpu) {
 			cancel_delayed_work(&d->mbm_over);

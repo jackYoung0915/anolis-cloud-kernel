@@ -671,7 +671,7 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 		bool has_csu = cache_has_usable_csu(class);
 		bool has_mbwu = class_has_usable_mbwu(class);
 
-		r->scope = class->level;
+		r->ctrl_scope = class->level;
 
 		/* TODO: Scaling is not yet supported */
 		r->cache.cbm_len = class->props.cpbm_wd;
@@ -775,9 +775,10 @@ int mpam_resctrl_setup(void)
 	wait_event(wait_cacheinfo_ready, cacheinfo_ready);
 
 	cpus_read_lock();
+	// TODO: add ctrl part pls
 	for (i = 0; i < RDT_NUM_RESOURCES; i++) {
 		res = &mpam_resctrl_exports[i];
-		INIT_LIST_HEAD(&res->resctrl_res.domains);
+		INIT_LIST_HEAD(&res->resctrl_res.mon_domains);
 		INIT_LIST_HEAD(&res->resctrl_res.mon.evt_list);
 		res->resctrl_res.rid = i;
 	}
@@ -961,7 +962,7 @@ int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid)
 	lockdep_assert_cpus_held();
 	lockdep_assert_irqs_enabled();
 
-	list_for_each_entry(d, &r->domains, hdr.list) {
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 		for (t = 0; t < CDP_NUM_TYPES; t++) {
 			cfg = &d->staged_config[t];
 			if (!cfg->have_new_ctrl)
@@ -1033,7 +1034,7 @@ mpam_resctrl_alloc_domain(unsigned int cpu, struct mpam_resctrl_res *res)
 	cpumask_set_cpu(cpu, &dom->resctrl_dom.hdr.cpu_mask);
 
 	/* TODO: this list should be sorted */
-	list_add_tail(&dom->resctrl_dom.hdr.list, &res->resctrl_res.domains);
+	list_add_tail(&dom->resctrl_dom.hdr.list, &res->resctrl_res.ctrl_domains);
 
 	return dom;
 }
@@ -1047,7 +1048,7 @@ mpam_get_domain_from_cpu(int cpu, struct mpam_resctrl_res *res)
 
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(d, &res->resctrl_res.domains, hdr.list) {
+	list_for_each_entry(d, &res->resctrl_res.mon_domains, hdr.list) {
 		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
 
 		if (cpumask_test_cpu(cpu, &dom->comp->affinity))
@@ -1057,17 +1058,21 @@ mpam_get_domain_from_cpu(int cpu, struct mpam_resctrl_res *res)
 	return NULL;
 }
 
-struct rdt_domain *resctrl_arch_find_domain(struct rdt_resource *r, int id)
+struct rdt_domain_hdr *resctrl_arch_find_domain(struct list_head *h, int id)
 {
-	struct rdt_domain *d;
-	struct mpam_resctrl_dom *dom;
+	struct rdt_domain_hdr *d;
+	struct list_head *l;
 
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(d, &r->domains, hdr.list) {
-		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
-		if (dom->comp->comp_id == id)
-			return &dom->resctrl_dom;
+	// TODO: Init struct rdt_domain_hdr with mpam_resctrl_dom->comp->comp_id
+	list_for_each(l, h) {
+		d = list_entry(l, struct rdt_domain_hdr, list);
+		if (id == d->id)
+			return d;
+		/* Stop searching when finding id's position in sorted list. */
+		if (id < d->id)
+			break;
 	}
 
 	return NULL;
@@ -1094,7 +1099,10 @@ int mpam_resctrl_online_cpu(unsigned int cpu)
 		dom = mpam_resctrl_alloc_domain(cpu, res);
 		if (IS_ERR(dom))
 			return PTR_ERR(dom);
-		err = resctrl_online_domain(&res->resctrl_res, &dom->resctrl_dom);
+		err = resctrl_online_ctrl_domain(&res->resctrl_res, &dom->resctrl_dom);
+		if (err)
+			return err;
+		err = resctrl_online_mon_domain(&res->resctrl_res, &dom->resctrl_dom);
 		if (err)
 			return err;
 	}
@@ -1117,7 +1125,7 @@ int mpam_resctrl_offline_cpu(unsigned int cpu)
 		if (!res->class)
 			continue;	// dummy resource
 
-		d = resctrl_get_domain_from_cpu(cpu, &res->resctrl_res);
+		d = resctrl_get_mon_domain_from_cpu(cpu, &res->resctrl_res);
 		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
 
 		/* The last one standing was ahead of us... */
@@ -1129,7 +1137,8 @@ int mpam_resctrl_offline_cpu(unsigned int cpu)
 		if (!cpumask_empty(&d->hdr.cpu_mask))
 			continue;
 
-		resctrl_offline_domain(&res->resctrl_res, &dom->resctrl_dom);
+		// TODO: need to deal with resctrl_offline_ctrl_domain
+		resctrl_offline_mon_domain(&res->resctrl_res, &dom->resctrl_dom);
 		list_del(&d->hdr.list);
 		kfree(dom);
 	}
