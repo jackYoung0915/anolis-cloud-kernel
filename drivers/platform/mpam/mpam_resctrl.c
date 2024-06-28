@@ -961,7 +961,7 @@ int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid)
 	lockdep_assert_cpus_held();
 	lockdep_assert_irqs_enabled();
 
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->domains, hdr.list) {
 		for (t = 0; t < CDP_NUM_TYPES; t++) {
 			cfg = &d->staged_config[t];
 			if (!cfg->have_new_ctrl)
@@ -1028,12 +1028,12 @@ mpam_resctrl_alloc_domain(unsigned int cpu, struct mpam_resctrl_res *res)
 		return ERR_PTR(-ENOMEM);
 
 	dom->comp = comp;
-	INIT_LIST_HEAD(&dom->resctrl_dom.list);
-	dom->resctrl_dom.id = comp->comp_id;
-	cpumask_set_cpu(cpu, &dom->resctrl_dom.cpu_mask);
+	INIT_LIST_HEAD(&dom->resctrl_dom.hdr.list);
+	dom->resctrl_dom.hdr.id = comp->comp_id;
+	cpumask_set_cpu(cpu, &dom->resctrl_dom.hdr.cpu_mask);
 
 	/* TODO: this list should be sorted */
-	list_add_tail(&dom->resctrl_dom.list, &res->resctrl_res.domains);
+	list_add_tail(&dom->resctrl_dom.hdr.list, &res->resctrl_res.domains);
 
 	return dom;
 }
@@ -1047,7 +1047,7 @@ mpam_get_domain_from_cpu(int cpu, struct mpam_resctrl_res *res)
 
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(d, &res->resctrl_res.domains, list) {
+	list_for_each_entry(d, &res->resctrl_res.domains, hdr.list) {
 		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
 
 		if (cpumask_test_cpu(cpu, &dom->comp->affinity))
@@ -1064,7 +1064,7 @@ struct rdt_domain *resctrl_arch_find_domain(struct rdt_resource *r, int id)
 
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->domains, hdr.list) {
 		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
 		if (dom->comp->comp_id == id)
 			return &dom->resctrl_dom;
@@ -1087,7 +1087,7 @@ int mpam_resctrl_online_cpu(unsigned int cpu)
 
 		dom = mpam_get_domain_from_cpu(cpu, res);
 		if (dom) {
-			cpumask_set_cpu(cpu, &dom->resctrl_dom.cpu_mask);
+			cpumask_set_cpu(cpu, &dom->resctrl_dom.hdr.cpu_mask);
 			continue;
 		}
 
@@ -1124,13 +1124,13 @@ int mpam_resctrl_offline_cpu(unsigned int cpu)
 		if (WARN_ON_ONCE(!d))
 			continue;
 
-		cpumask_clear_cpu(cpu, &d->cpu_mask);
+		cpumask_clear_cpu(cpu, &d->hdr.cpu_mask);
 
-		if (!cpumask_empty(&d->cpu_mask))
+		if (!cpumask_empty(&d->hdr.cpu_mask))
 			continue;
 
 		resctrl_offline_domain(&res->resctrl_res, &dom->resctrl_dom);
-		list_del(&d->list);
+		list_del(&d->hdr.list);
 		kfree(dom);
 	}
 

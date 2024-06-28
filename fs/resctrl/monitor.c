@@ -246,7 +246,7 @@ static void add_rmid_to_limbo(struct rmid_entry *entry)
 		return;
 
 	entry->busy = 0;
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->domains, hdr.list) {
 		err = resctrl_arch_rmid_read(r, d, entry->closid, entry->rmid,
 					     QOS_L3_OCCUP_EVENT_ID, &val,
 					     arch_mon_ctx);
@@ -605,9 +605,9 @@ void cqm_setup_limbo_handler(struct rdt_domain *dom, unsigned long delay_ms,
 	int cpu;
 
 	if (exclude_cpu == -1)
-		cpu = cpumask_any(&dom->cpu_mask);
+		cpu = cpumask_any(&dom->hdr.cpu_mask);
 	else
-		cpu = cpumask_any_but(&dom->cpu_mask, exclude_cpu);
+		cpu = cpumask_any_but(&dom->hdr.cpu_mask, exclude_cpu);
 
 	dom->cqm_work_cpu = cpu;
 
@@ -663,9 +663,9 @@ void mbm_setup_overflow_handler(struct rdt_domain *dom, unsigned long delay_ms,
 		return;
 
 	if (exclude_cpu == -1)
-		cpu = cpumask_any(&dom->cpu_mask);
+		cpu = cpumask_any(&dom->hdr.cpu_mask);
 	else
-		cpu = cpumask_any_but(&dom->cpu_mask, exclude_cpu);
+		cpu = cpumask_any_but(&dom->hdr.cpu_mask, exclude_cpu);
 
 	dom->mbm_work_cpu = cpu;
 
