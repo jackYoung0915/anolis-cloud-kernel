@@ -276,7 +276,7 @@ void resctrl_arch_mon_ctx_free(struct rdt_resource *r, int evtid, int ctx)
 	}
 }
 
-int resctrl_arch_rmid_read(struct rdt_resource	*r, struct rdt_domain *d,
+int resctrl_arch_rmid_read(struct rdt_resource	*r, struct rdt_mon_domain *d,
 			   u32 closid, u32 rmid, enum resctrl_event_id eventid,
 			   u64 *val, int arch_mon_ctx)
 {
@@ -286,7 +286,7 @@ int resctrl_arch_rmid_read(struct rdt_resource	*r, struct rdt_domain *d,
 	struct mpam_resctrl_dom *dom;
 	enum mpam_device_features type;
 
-	dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+	dom = container_of(d, struct mpam_resctrl_dom, resctrl_mon_dom);
 
 	switch (eventid) {
 	case QOS_L3_OCCUP_EVENT_ID:
@@ -329,7 +329,7 @@ int resctrl_arch_rmid_read(struct rdt_resource	*r, struct rdt_domain *d,
 	return err;
 }
 
-void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
+void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_mon_domain *d,
 			     u32 closid, u32 rmid, enum resctrl_event_id eventid)
 {
 	struct mon_cfg cfg;
@@ -342,7 +342,7 @@ void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
 	cfg.match_pmg = true;
 	cfg.pmg = rmid;
 
-	dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+	dom = container_of(d, struct mpam_resctrl_dom, resctrl_mon_dom);
 
 	if (cdp_enabled) {
 		cfg.partid = closid << 1;
@@ -827,7 +827,7 @@ void mpam_resctrl_exit(void)
 	resctrl_exit();
 }
 
-u32 resctrl_arch_get_config(struct rdt_resource *r, struct rdt_domain *d,
+u32 resctrl_arch_get_config(struct rdt_resource *r, struct rdt_ctrl_domain *d,
 			    u32 closid, enum resctrl_conf_type type)
 {
 	u32 partid;
@@ -843,7 +843,7 @@ u32 resctrl_arch_get_config(struct rdt_resource *r, struct rdt_domain *d,
 		return r->default_ctrl;
 
 	res = container_of(r, struct mpam_resctrl_res, resctrl_res);
-	dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+	dom = container_of(d, struct mpam_resctrl_dom, resctrl_ctrl_dom);
 	cprops = &res->class->props;
 
 	if (mpam_resctrl_hide_cdp(r->rid))
@@ -888,7 +888,7 @@ u32 resctrl_arch_get_config(struct rdt_resource *r, struct rdt_domain *d,
 	}
 }
 
-int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_domain *d,
+int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_ctrl_domain *d,
 			    u32 closid, enum resctrl_conf_type t, u32 cfg_val)
 {
 	int err;
@@ -904,7 +904,7 @@ int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_domain *d,
 	/* NOTE: don't check the CPU as mpam_apply_config() doesn't care,
 	 * and resctrl_arch_update_domains() depends on this. */
 	res = container_of(r, struct mpam_resctrl_res, resctrl_res);
-	dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+	dom = container_of(d, struct mpam_resctrl_dom, resctrl_ctrl_dom);
 	cprops = &res->class->props;
 
 	partid = resctrl_get_config_index(closid, t);
@@ -955,7 +955,7 @@ int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_domain *d,
 int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid)
 {
 	int err = 0;
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 	enum resctrl_conf_type t;
 	struct resctrl_staged_config *cfg;
 
@@ -1029,27 +1029,28 @@ mpam_resctrl_alloc_domain(unsigned int cpu, struct mpam_resctrl_res *res)
 		return ERR_PTR(-ENOMEM);
 
 	dom->comp = comp;
-	INIT_LIST_HEAD(&dom->resctrl_dom.hdr.list);
-	dom->resctrl_dom.hdr.id = comp->comp_id;
-	cpumask_set_cpu(cpu, &dom->resctrl_dom.hdr.cpu_mask);
+	INIT_LIST_HEAD(&dom->resctrl_ctrl_dom.hdr.list);
+	dom->resctrl_ctrl_dom.hdr.id = comp->comp_id;
+	cpumask_set_cpu(cpu, &dom->resctrl_ctrl_dom.hdr.cpu_mask);
 
 	/* TODO: this list should be sorted */
-	list_add_tail(&dom->resctrl_dom.hdr.list, &res->resctrl_res.ctrl_domains);
+	list_add_tail(&dom->resctrl_ctrl_dom.hdr.list, &res->resctrl_res.ctrl_domains);
 
 	return dom;
 }
 
 /* Like resctrl_get_domain_from_cpu(), but for offline CPUs */
+// TODO: add ctrl part pls
 static struct mpam_resctrl_dom *
 mpam_get_domain_from_cpu(int cpu, struct mpam_resctrl_res *res)
 {
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	struct mpam_resctrl_dom *dom;
 
 	lockdep_assert_cpus_held();
 
 	list_for_each_entry(d, &res->resctrl_res.mon_domains, hdr.list) {
-		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+		dom = container_of(d, struct mpam_resctrl_dom, resctrl_mon_dom);
 
 		if (cpumask_test_cpu(cpu, &dom->comp->affinity))
 			return dom;
@@ -1092,17 +1093,18 @@ int mpam_resctrl_online_cpu(unsigned int cpu)
 
 		dom = mpam_get_domain_from_cpu(cpu, res);
 		if (dom) {
-			cpumask_set_cpu(cpu, &dom->resctrl_dom.hdr.cpu_mask);
+			cpumask_set_cpu(cpu, &dom->resctrl_mon_dom.hdr.cpu_mask);
 			continue;
 		}
 
 		dom = mpam_resctrl_alloc_domain(cpu, res);
 		if (IS_ERR(dom))
 			return PTR_ERR(dom);
-		err = resctrl_online_ctrl_domain(&res->resctrl_res, &dom->resctrl_dom);
+
+		err = resctrl_online_ctrl_domain(&res->resctrl_res, &dom->resctrl_ctrl_dom);
 		if (err)
 			return err;
-		err = resctrl_online_mon_domain(&res->resctrl_res, &dom->resctrl_dom);
+		err = resctrl_online_mon_domain(&res->resctrl_res, &dom->resctrl_mon_dom);
 		if (err)
 			return err;
 	}
@@ -1113,7 +1115,7 @@ int mpam_resctrl_online_cpu(unsigned int cpu)
 int mpam_resctrl_offline_cpu(unsigned int cpu)
 {
 	int i;
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	struct mpam_resctrl_res *res;
 	struct mpam_resctrl_dom *dom;
 
@@ -1126,7 +1128,7 @@ int mpam_resctrl_offline_cpu(unsigned int cpu)
 			continue;	// dummy resource
 
 		d = resctrl_get_mon_domain_from_cpu(cpu, &res->resctrl_res);
-		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+		dom = container_of(d, struct mpam_resctrl_dom, resctrl_mon_dom);
 
 		/* The last one standing was ahead of us... */
 		if (WARN_ON_ONCE(!d))
@@ -1138,7 +1140,7 @@ int mpam_resctrl_offline_cpu(unsigned int cpu)
 			continue;
 
 		// TODO: need to deal with resctrl_offline_ctrl_domain
-		resctrl_offline_mon_domain(&res->resctrl_res, &dom->resctrl_dom);
+		resctrl_offline_mon_domain(&res->resctrl_res, &dom->resctrl_mon_dom);
 		list_del(&d->hdr.list);
 		kfree(dom);
 	}

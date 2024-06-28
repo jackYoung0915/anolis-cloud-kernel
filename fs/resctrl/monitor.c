@@ -95,7 +95,7 @@ static inline struct rmid_entry *__rmid_entry(u32 idx)
  * decrement the count. If the busy count gets to zero on an RMID, we
  * free the RMID
  */
-void __check_limbo(struct rdt_domain *d, bool force_free)
+void __check_limbo(struct rdt_mon_domain *d, bool force_free)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	u32 idx_limit = resctrl_arch_system_num_rmid_idx();
@@ -142,7 +142,7 @@ void __check_limbo(struct rdt_domain *d, bool force_free)
 	resctrl_arch_mon_ctx_free(r, QOS_L3_OCCUP_EVENT_ID, arch_mon_ctx);
 }
 
-bool has_busy_rmid(struct rdt_resource *r, struct rdt_domain *d)
+bool has_busy_rmid(struct rdt_resource *r, struct rdt_mon_domain *d)
 {
 	u32 idx_limit = resctrl_arch_system_num_rmid_idx();
 
@@ -230,7 +230,7 @@ int alloc_rmid(u32 closid)
 static void add_rmid_to_limbo(struct rmid_entry *entry)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	int arch_mon_ctx;
 	u64 val = 0;
 	u32 idx;
@@ -441,13 +441,13 @@ int mon_event_count(void *info)
  * throttle MSRs already have low percentage values.  To avoid
  * unnecessarily restricting such rdtgroups, we also increase the bandwidth.
  */
-static void update_mba_bw(struct rdtgroup *rgrp, struct rdt_domain *dom_mbm)
+static void update_mba_bw(struct rdtgroup *rgrp, struct rdt_mon_domain *dom_mbm)
 {
 	u32 closid, rmid, cur_msr_val, new_msr_val;
 	struct mbm_state *pmbm_data, *cmbm_data;
 	u32 cur_bw, delta_bw, user_bw, idx;
+	struct rdt_ctrl_domain *dom_mba;
 	struct rdt_resource *r_mba;
-	struct rdt_domain *dom_mba;
 	struct list_head *head;
 	struct rdtgroup *entry;
 
@@ -526,7 +526,7 @@ static void update_mba_bw(struct rdtgroup *rgrp, struct rdt_domain *dom_mbm)
 	}
 }
 
-static void mbm_update(struct rdt_resource *r, struct rdt_domain *d,
+static void mbm_update(struct rdt_resource *r, struct rdt_mon_domain *d,
 			u32 closid, u32 rmid)
 {
 	struct rmid_read rr;
@@ -579,12 +579,12 @@ void cqm_handle_limbo(struct work_struct *work)
 	unsigned long delay = msecs_to_jiffies(CQM_LIMBOCHECK_INTERVAL);
 	int cpu = smp_processor_id();
 	struct rdt_resource *r;
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 
 	mutex_lock(&rdtgroup_mutex);
 
 	r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	d = container_of(work, struct rdt_domain, cqm_limbo.work);
+	d = container_of(work, struct rdt_mon_domain, cqm_limbo.work);
 
 	__check_limbo(d, false);
 
@@ -598,7 +598,7 @@ void cqm_handle_limbo(struct work_struct *work)
  * Schedule the limbo handler to run for this domain in @delay_ms.
  * If @exclude_cpu is not -1, pick any other cpu.
  */
-void cqm_setup_limbo_handler(struct rdt_domain *dom, unsigned long delay_ms,
+void cqm_setup_limbo_handler(struct rdt_mon_domain *dom, unsigned long delay_ms,
 			     int exclude_cpu)
 {
 	unsigned long delay = msecs_to_jiffies(delay_ms);
@@ -619,10 +619,10 @@ void mbm_handle_overflow(struct work_struct *work)
 {
 	unsigned long delay = msecs_to_jiffies(MBM_OVERFLOW_INTERVAL);
 	struct rdtgroup *prgrp, *crgrp;
+	struct rdt_mon_domain *d;
 	int cpu = smp_processor_id();
 	struct list_head *head;
 	struct rdt_resource *r;
-	struct rdt_domain *d;
 
 	mutex_lock(&rdtgroup_mutex);
 
@@ -630,7 +630,7 @@ void mbm_handle_overflow(struct work_struct *work)
 		goto out_unlock;
 
 	r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	d = container_of(work, struct rdt_domain, mbm_over.work);
+	d = container_of(work, struct rdt_mon_domain, mbm_over.work);
 
 	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
 		mbm_update(r, d, prgrp->closid, prgrp->mon.rmid);
@@ -653,7 +653,7 @@ out_unlock:
  * Schedule the overflow handler to run for this domain in @delay_ms.
  * If @exclude_cpu is not -1, pick any other cpu.
  */
-void mbm_setup_overflow_handler(struct rdt_domain *dom, unsigned long delay_ms,
+void mbm_setup_overflow_handler(struct rdt_mon_domain *dom, unsigned long delay_ms,
 				int exclude_cpu)
 {
 	unsigned long delay = msecs_to_jiffies(delay_ms);

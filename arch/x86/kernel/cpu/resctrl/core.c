@@ -51,12 +51,12 @@ bool rdt_alloc_capable;
 bool rdt_bmec_capable;
 
 static void
-mba_wrmsr_intel(struct rdt_domain *d, struct msr_param *m,
+mba_wrmsr_intel(struct rdt_ctrl_domain *d, struct msr_param *m,
 		struct rdt_resource *r);
 static void
-cat_wrmsr(struct rdt_domain *d, struct msr_param *m, struct rdt_resource *r);
+cat_wrmsr(struct rdt_ctrl_domain *d, struct msr_param *m, struct rdt_resource *r);
 static void
-mba_wrmsr_amd(struct rdt_domain *d, struct msr_param *m,
+mba_wrmsr_amd(struct rdt_ctrl_domain *d, struct msr_param *m,
 	      struct rdt_resource *r);
 
 #define ctrl_domain_init(id) LIST_HEAD_INIT(rdt_resources_all[id].r_resctrl.ctrl_domains)
@@ -302,10 +302,10 @@ bool resctrl_arch_get_cdp_enabled(enum resctrl_res_level l)
 }
 
 static void
-mba_wrmsr_amd(struct rdt_domain *d, struct msr_param *m, struct rdt_resource *r)
+mba_wrmsr_amd(struct rdt_ctrl_domain *d, struct msr_param *m, struct rdt_resource *r)
 {
 	unsigned int i;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_ctrl_domain *hw_dom = resctrl_to_arch_ctrl_dom(m->dom);
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 
 	for (i = m->low; i < m->high; i++)
@@ -327,11 +327,11 @@ static u32 delay_bw_map(unsigned long bw, struct rdt_resource *r)
 }
 
 static void
-mba_wrmsr_intel(struct rdt_domain *d, struct msr_param *m,
+mba_wrmsr_intel(struct rdt_ctrl_domain *d, struct msr_param *m,
 		struct rdt_resource *r)
 {
 	unsigned int i;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_ctrl_domain *hw_dom = resctrl_to_arch_ctrl_dom(m->dom);
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 
 	/*  Write the delay values for mba. */
@@ -340,10 +340,10 @@ mba_wrmsr_intel(struct rdt_domain *d, struct msr_param *m,
 }
 
 static void
-cat_wrmsr(struct rdt_domain *d, struct msr_param *m, struct rdt_resource *r)
+cat_wrmsr(struct rdt_ctrl_domain *d, struct msr_param *m, struct rdt_resource *r)
 {
 	unsigned int i;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_ctrl_domain *hw_dom = resctrl_to_arch_ctrl_dom(m->dom);
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 
 	for (i = m->low; i < m->high; i++)
@@ -361,7 +361,7 @@ void rdt_ctrl_update(void *arg)
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(m->res);
 	struct rdt_resource *r = m->res;
 	int cpu = smp_processor_id();
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 
 	d = resctrl_get_ctrl_domain_from_cpu(cpu, r);
 	if (d) {
@@ -421,18 +421,23 @@ static void setup_default_ctrlval(struct rdt_resource *r, u32 *dc)
 		*dc = r->default_ctrl;
 }
 
-static void domain_free(struct rdt_hw_domain *hw_dom)
+static void ctrl_domain_free(struct rdt_hw_ctrl_domain *hw_dom)
 {
-	kfree(hw_dom->arch_mbm_total);
-	kfree(hw_dom->arch_mbm_local);
 	kfree(hw_dom->ctrl_val);
 	kfree(hw_dom);
 }
 
-static int domain_setup_ctrlval(struct rdt_resource *r, struct rdt_domain *d)
+static void mon_domain_free(struct rdt_hw_mon_domain *hw_dom)
 {
+	kfree(hw_dom->arch_mbm_total);
+	kfree(hw_dom->arch_mbm_local);
+	kfree(hw_dom);
+}
+
+static int domain_setup_ctrlval(struct rdt_resource *r, struct rdt_ctrl_domain *d)
+{
+	struct rdt_hw_ctrl_domain *hw_dom = resctrl_to_arch_ctrl_dom(d);
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
 	struct msr_param m;
 	u32 *dc;
 
@@ -455,7 +460,7 @@ static int domain_setup_ctrlval(struct rdt_resource *r, struct rdt_domain *d)
  * @num_rmid:	The size of the MBM counter array
  * @hw_dom:	The domain that owns the allocated arrays
  */
-static int arch_domain_mbm_alloc(u32 num_rmid, struct rdt_hw_domain *hw_dom)
+static int arch_domain_mbm_alloc(u32 num_rmid, struct rdt_hw_mon_domain *hw_dom)
 {
 	size_t tsize;
 
@@ -494,10 +499,10 @@ static int get_domain_id_from_scope(int cpu, enum resctrl_scope scope)
 static void domain_add_cpu_ctrl(int cpu, struct rdt_resource *r)
 {
 	int id = get_domain_id_from_scope(cpu, r->ctrl_scope);
+	struct rdt_hw_ctrl_domain *hw_dom;
 	struct list_head *add_pos = NULL;
-	struct rdt_hw_domain *hw_dom;
 	struct rdt_domain_hdr *hdr;
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 	int err;
 
 	lockdep_assert_held(&domain_list_lock);
@@ -512,7 +517,7 @@ static void domain_add_cpu_ctrl(int cpu, struct rdt_resource *r)
 	if (hdr) {
 		if (WARN_ON_ONCE(hdr->type != RESCTRL_CTRL_DOMAIN))
 			return;
-		d = container_of(hdr, struct rdt_domain, hdr);
+		d = container_of(hdr, struct rdt_ctrl_domain, hdr);
 
 		cpumask_set_cpu(cpu, &d->hdr.cpu_mask);
 		if (r->cache.arch_has_per_cpu_cfg)
@@ -533,7 +538,7 @@ static void domain_add_cpu_ctrl(int cpu, struct rdt_resource *r)
 	rdt_domain_reconfigure_cdp(r);
 
 	if (domain_setup_ctrlval(r, d)) {
-		domain_free(hw_dom);
+		ctrl_domain_free(hw_dom);
 		return;
 	}
 
@@ -543,7 +548,7 @@ static void domain_add_cpu_ctrl(int cpu, struct rdt_resource *r)
 	if (err) {
 		list_del_rcu(&d->hdr.list);
 		synchronize_rcu();
-		domain_free(hw_dom);
+		ctrl_domain_free(hw_dom);
 	}
 }
 
@@ -551,9 +556,9 @@ static void domain_add_cpu_mon(int cpu, struct rdt_resource *r)
 {
 	int id = get_domain_id_from_scope(cpu, r->mon_scope);
 	struct list_head *add_pos = NULL;
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_mon_domain *hw_dom;
 	struct rdt_domain_hdr *hdr;
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	int err;
 
 	lockdep_assert_held(&domain_list_lock);
@@ -568,7 +573,7 @@ static void domain_add_cpu_mon(int cpu, struct rdt_resource *r)
 	if (hdr) {
 		if (WARN_ON_ONCE(hdr->type != RESCTRL_MON_DOMAIN))
 			return;
-		d = container_of(hdr, struct rdt_domain, hdr);
+		d = container_of(hdr, struct rdt_mon_domain, hdr);
 
 		cpumask_set_cpu(cpu, &d->hdr.cpu_mask);
 		return;
@@ -584,7 +589,7 @@ static void domain_add_cpu_mon(int cpu, struct rdt_resource *r)
 	cpumask_set_cpu(cpu, &d->hdr.cpu_mask);
 
 	if (arch_domain_mbm_alloc(r->mon.num_rmid, hw_dom)) {
-		domain_free(hw_dom);
+		mon_domain_free(hw_dom);
 		return;
 	}
 
@@ -597,7 +602,7 @@ static void domain_add_cpu_mon(int cpu, struct rdt_resource *r)
 	if (err) {
 		list_del_rcu(&d->hdr.list);
 		synchronize_rcu();
-		domain_free(hw_dom);
+		mon_domain_free(hw_dom);
 	}
 }
 
@@ -612,9 +617,9 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 static void domain_remove_cpu_ctrl(int cpu, struct rdt_resource *r)
 {
 	int id = get_domain_id_from_scope(cpu, r->ctrl_scope);
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_ctrl_domain *hw_dom;
 	struct rdt_domain_hdr *hdr;
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 
 	if (id < 0) {
 		pr_warn_once("Can't find control domain id for CPU:%d scope:%d for resource %s\n",
@@ -632,8 +637,8 @@ static void domain_remove_cpu_ctrl(int cpu, struct rdt_resource *r)
 	if (WARN_ON_ONCE(hdr->type != RESCTRL_CTRL_DOMAIN))
 		return;
 
-	d = container_of(hdr, struct rdt_domain, hdr);
-	hw_dom = resctrl_to_arch_dom(d);
+	d = container_of(hdr, struct rdt_ctrl_domain, hdr);
+	hw_dom = resctrl_to_arch_ctrl_dom(d);
 
 	cpumask_clear_cpu(cpu, &d->hdr.cpu_mask);
 	if (cpumask_empty(&d->hdr.cpu_mask)) {
@@ -642,12 +647,12 @@ static void domain_remove_cpu_ctrl(int cpu, struct rdt_resource *r)
 		synchronize_rcu();
 
 		/*
-		 * rdt_domain "d" is going to be freed below, so clear
+		 * rdt_ctrl_domain "d" is going to be freed below, so clear
 		 * its pointer from pseudo_lock_region struct.
 		 */
 		if (d->plr)
 			d->plr->d = NULL;
-		domain_free(hw_dom);
+		ctrl_domain_free(hw_dom);
 
 		return;
 	}
@@ -656,9 +661,9 @@ static void domain_remove_cpu_ctrl(int cpu, struct rdt_resource *r)
 static void domain_remove_cpu_mon(int cpu, struct rdt_resource *r)
 {
 	int id = get_domain_id_from_scope(cpu, r->mon_scope);
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_mon_domain *hw_dom;
 	struct rdt_domain_hdr *hdr;
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 
 	lockdep_assert_held(&domain_list_lock);
 
@@ -678,15 +683,15 @@ static void domain_remove_cpu_mon(int cpu, struct rdt_resource *r)
 	if (WARN_ON_ONCE(hdr->type != RESCTRL_MON_DOMAIN))
 		return;
 
-	d = container_of(hdr, struct rdt_domain, hdr);
-	hw_dom = resctrl_to_arch_dom(d);
+	d = container_of(hdr, struct rdt_mon_domain, hdr);
+	hw_dom = resctrl_to_arch_mon_dom(d);
 
 	cpumask_clear_cpu(cpu, &d->hdr.cpu_mask);
 	if (cpumask_empty(&d->hdr.cpu_mask)) {
 		resctrl_offline_mon_domain(r, d);
 		list_del_rcu(&d->hdr.list);
 		synchronize_rcu();
-		domain_free(hw_dom);
+		mon_domain_free(hw_dom);
 
 		return;
 	}

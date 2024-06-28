@@ -100,7 +100,7 @@ static inline u64 get_corrected_mbm_count(u32 rmid, unsigned long val)
 	return val;
 }
 
-static struct arch_mbm_state *get_arch_mbm_state(struct rdt_hw_domain *hw_dom,
+static struct arch_mbm_state *get_arch_mbm_state(struct rdt_hw_mon_domain *hw_dom,
 						 u32 rmid,
 						 enum resctrl_event_id eventid)
 {
@@ -120,11 +120,11 @@ static struct arch_mbm_state *get_arch_mbm_state(struct rdt_hw_domain *hw_dom,
 	return NULL;
 }
 
-void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
+void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_mon_domain *d,
 			     u32 closid, u32 rmid,
 			     enum resctrl_event_id eventid)
 {
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
 	struct arch_mbm_state *am;
 
 	am = get_arch_mbm_state(hw_dom, rmid, eventid);
@@ -136,9 +136,9 @@ void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
  * Assumes that hardware counters are also reset and thus that there is
  * no need to record initial non-zero counts.
  */
-void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d)
+void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_mon_domain *d)
 {
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
 
 	if (resctrl_arch_is_mbm_total_enabled())
 		memset(hw_dom->arch_mbm_total, 0,
@@ -162,7 +162,7 @@ struct __rmid_read_arg
 	u32 rmid;
 	enum resctrl_event_id eventid;
 	struct rdt_hw_resource *hw_res;
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_mon_domain *hw_dom;
 
 	int err;
 	u64 val;
@@ -222,7 +222,7 @@ static void __rmid_read(void *_arg)
 	} while (arg->err && arg->err == -EINTR);
 }
 
-int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
+int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_mon_domain *d,
 			   u32 closid, u32 rmid, enum resctrl_event_id eventid,
 			   u64 *val, int ignored)
 {
@@ -232,7 +232,7 @@ int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
 	arg.rmid = rmid;
 	arg.eventid = eventid;
 	arg.hw_res = resctrl_to_arch_res(r);
-	arg.hw_dom = resctrl_to_arch_dom(d);
+	arg.hw_dom = resctrl_to_arch_mon_dom(d);
 
 	preempt_disable();
 	if (cpumask_test_cpu(smp_processor_id(), &d->hdr.cpu_mask)) {
@@ -322,7 +322,7 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	return 0;
 }
 
-void resctrl_mbm_evt_config_init(struct rdt_hw_domain *hw_dom)
+void resctrl_mbm_evt_config_init(struct rdt_hw_mon_domain *hw_dom)
 {
 	unsigned int index;
 	u64 msrval;

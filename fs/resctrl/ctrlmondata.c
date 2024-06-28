@@ -28,7 +28,7 @@ struct rdt_parse_data {
 
 typedef int (ctrlval_parser_t)(struct rdt_parse_data *data,
 			       struct resctrl_schema *s,
-			       struct rdt_domain *d);
+			       struct rdt_ctrl_domain *d);
 
 /*
  * Check whether MBA bandwidth percentage value is correct. The value is
@@ -67,7 +67,7 @@ static bool bw_validate(char *buf, unsigned long *data, struct rdt_resource *r)
 }
 
 static int parse_bw(struct rdt_parse_data *data, struct resctrl_schema *s,
-		    struct rdt_domain *d)
+		    struct rdt_ctrl_domain *d)
 {
 	struct resctrl_staged_config *cfg;
 	u32 closid = data->rdtgrp->closid;
@@ -147,7 +147,7 @@ static bool cbm_validate(char *buf, u32 *data, struct rdt_resource *r)
  * resource type.
  */
 static int parse_cbm(struct rdt_parse_data *data, struct resctrl_schema *s,
-		     struct rdt_domain *d)
+		     struct rdt_ctrl_domain *d)
 {
 	struct rdtgroup *rdtgrp = data->rdtgrp;
 	struct resctrl_staged_config *cfg;
@@ -226,8 +226,8 @@ static int parse_line(char *line, struct resctrl_schema *s,
 	struct resctrl_staged_config *cfg;
 	struct rdt_resource *r = s->res;
 	struct rdt_parse_data data;
+	struct rdt_ctrl_domain *d;
 	char *dom = NULL, *id;
-	struct rdt_domain *d;
 	unsigned long dom_id;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -297,7 +297,7 @@ ssize_t rdtgroup_schemata_write(struct kernfs_open_file *of,
 {
 	struct resctrl_schema *s;
 	struct rdtgroup *rdtgrp;
-	struct rdt_domain *dom;
+	struct rdt_ctrl_domain *dom;
 	struct rdt_resource *r;
 	char *tok, *resname;
 	int ret = 0;
@@ -379,7 +379,7 @@ out:
 static void show_doms(struct seq_file *s, struct resctrl_schema *schema, int closid)
 {
 	struct rdt_resource *r = schema->res;
-	struct rdt_domain *dom;
+	struct rdt_ctrl_domain *dom;
 	bool sep = false;
 	u32 ctrl_val;
 
@@ -444,7 +444,7 @@ int rdtgroup_schemata_show(struct kernfs_open_file *of,
 }
 
 void mon_event_read(struct rmid_read *rr, struct rdt_resource *r,
-		    struct rdt_domain *d, struct rdtgroup *rdtgrp,
+		    struct rdt_mon_domain *d, struct rdtgroup *rdtgrp,
 		    int evtid, int first)
 {
 	/* When picking a cpu from cpu_mask, ensure it can't race with cpuhp */
@@ -468,11 +468,11 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 {
 	struct kernfs_open_file *of = m->private;
 	struct rdt_domain_hdr *hdr;
+	struct rdt_mon_domain *d;
 	u32 resid, evtid, domid;
 	struct rdtgroup *rdtgrp;
 	struct rdt_resource *r;
 	union mon_data_bits md;
-	struct rdt_domain *d;
 	struct rmid_read rr;
 	int ret = 0, index;
 
@@ -493,7 +493,7 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 		ret = -ENOENT;
 		goto out;
 	}
-	d = container_of(hdr, struct rdt_domain, hdr);
+	d = container_of(hdr, struct rdt_mon_domain, hdr);
 
 	if (resctrl_arch_get_abmc_enabled() && evtid != QOS_L3_OCCUP_EVENT_ID) {
 		index = mon_event_config_index_get(evtid);
