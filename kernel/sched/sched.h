@@ -4214,6 +4214,6 @@ static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
 	return p->cpus_ptr;
 }
-static void tg_set_specs_ratio(struct task_group *tg, u64 quota) { }
+static inline void tg_set_specs_ratio(struct task_group *tg, u64 quota) { }
 #endif
 #endif /* _KERNEL_SCHED_SCHED_H */
