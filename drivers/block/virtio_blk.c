@@ -17,6 +17,9 @@
 #include <linux/numa.h>
 #include <uapi/linux/virtio_ring.h>
 #include <linux/cdev.h>
+#include <linux/io_uring.h>
+#include <linux/types.h>
+#include <linux/uio.h>
 
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
@@ -51,6 +54,11 @@ static dev_t vd_chr_devt;
 static struct class *vd_chr_class;
 
 static struct workqueue_struct *virtblk_wq;
+
+struct virtblk_uring_cmd_pdu {
+	struct request *req;
+	struct bio *bio;
+};
 
 struct virtio_blk_vq {
 	struct virtqueue *vq;
@@ -104,6 +112,15 @@ struct virtblk_req {
 	struct sg_table sg_table;
 	struct scatterlist sg[];
 };
+
+#define virtblk_bio_set_disk(bio, disk)			\
+do {							\
+	if ((bio)->bi_disk != disk)			\
+		bio_clear_flag(bio, BIO_BPS_THROTTLED);	\
+	(bio)->bi_disk = disk;				\
+	(bio)->bi_partno = 0;				\
+	bio_associate_blkg(bio);			\
+} while (0)
 
 static inline blk_status_t virtblk_result(struct virtblk_req *vbr)
 {
@@ -237,9 +254,6 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 	u32 type;
 	u64 sector = 0;
 
-	/* Set fields for all request types */
-	vbr->out_hdr.ioprio = cpu_to_virtio32(vdev, req_get_ioprio(req));
-
 	switch (req_op(req)) {
 	case REQ_OP_READ:
 		type = VIRTIO_BLK_T_IN;
@@ -260,7 +274,11 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 		unmap = !(req->cmd_flags & REQ_NOUNMAP);
 		break;
 	case REQ_OP_DRV_IN:
-		/* Out header already filled in, nothing to do */
+	case REQ_OP_DRV_OUT:
+		/* Out header already filled in, nothing to do
+		 * Attention, currently not support DISCARD and
+		 * WRITE_ZEROES for VIRTBLK_PASSTHROUGH.
+		 */
 		return 0;
 	default:
 		WARN_ON_ONCE(1);
@@ -269,6 +287,7 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 
 	vbr->out_hdr.type = cpu_to_virtio32(vdev, type);
 	vbr->out_hdr.sector = cpu_to_virtio64(vdev, sector);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vdev, req_get_ioprio(req));
 
 	if (type == VIRTIO_BLK_T_DISCARD || type == VIRTIO_BLK_T_WRITE_ZEROES) {
 		if (virtblk_setup_discard_write_zeroes(req, unmap))
@@ -402,6 +421,7 @@ static int virtblk_get_id(struct gendisk *disk, char *id_str)
 
 	vbr = blk_mq_rq_to_pdu(req);
 	vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, VIRTIO_BLK_T_GET_ID);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, req_get_ioprio(req));
 	vbr->out_hdr.sector = 0;
 
 	err = blk_rq_map_kern(q, req, id_str, VIRTIO_BLK_ID_BYTES, GFP_KERNEL);
@@ -865,6 +885,139 @@ static const struct blk_mq_ops virtio_mq_ops = {
 	.poll		= virtblk_poll,
 };
 
+static inline struct virtblk_uring_cmd_pdu *virtblk_uring_cmd_pdu(
+		struct io_uring_cmd *ioucmd)
+{
+	return io_uring_cmd_to_pdu(ioucmd, struct virtblk_uring_cmd_pdu);
+}
+
+static void virtblk_uring_task_cb(struct io_uring_cmd *ioucmd)
+{
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	struct virtblk_req *vbr = blk_mq_rq_to_pdu(pdu->req);
+
+	if (pdu->bio)
+		blk_rq_unmap_user(pdu->bio);
+	blk_mq_free_request(pdu->req);
+
+	/* currently result has no use, it should be zero as cqe->res */
+	io_uring_cmd_done(ioucmd, virtblk_result(vbr), 0);
+}
+
+static void virtblk_uring_cmd_end_io(struct request *req, blk_status_t err)
+{
+	struct io_uring_cmd *ioucmd = req->end_io_data;
+	void *cookie = READ_ONCE(ioucmd->cookie);
+
+	io_uring_cmd_complete_in_task(ioucmd, virtblk_uring_task_cb);
+}
+
+static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
+		unsigned int bufflen, bool vec)
+{
+	struct request_queue *q = req->q;
+
+	if (!vec)
+		return blk_rq_map_user(q, req, NULL, (void __user *)ubuffer,
+				       bufflen, GFP_KERNEL);
+
+	return blk_rq_map_user_io(req, NULL, (void __user *)ubuffer, bufflen,
+			GFP_KERNEL, true, 0, false, rq_data_dir(req));
+}
+
+static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
+		struct io_uring_cmd *ioucmd, unsigned int issue_flags, bool vec)
+{
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	const struct virtblk_uring_cmd *cmd = ioucmd->cmd;
+	struct request_queue *q = vblk->disk->queue;
+	struct virtblk_req *vbr;
+	struct request *req;
+	unsigned int rq_flags = 0;
+	blk_mq_req_flags_t blk_flags = 0;
+	u32 type;
+	uintptr_t data;
+	unsigned long data_len, flag;
+	int ret;
+
+	type = READ_ONCE(cmd->type);
+	flag = READ_ONCE(cmd->flag);
+	data = READ_ONCE(cmd->data);
+	data_len = READ_ONCE(cmd->data_len);
+
+	/* Only support OUT and IN for uring_cmd currently */
+	if ((type != VIRTIO_BLK_T_OUT) && (type != VIRTIO_BLK_T_IN))
+		return -EOPNOTSUPP;
+
+	if (issue_flags & IO_URING_F_NONBLOCK) {
+		rq_flags = REQ_NOWAIT;
+		blk_flags = BLK_MQ_REQ_NOWAIT;
+	}
+
+	rq_flags |= (type & VIRTIO_BLK_T_OUT) ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN;
+
+	req = blk_mq_alloc_request(q, rq_flags, blk_flags);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	req->rq_flags |= RQF_DONTPREP;
+	vbr = blk_mq_rq_to_pdu(req);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, READ_ONCE(cmd->ioprio));
+	vbr->out_hdr.sector = cpu_to_virtio64(vblk->vdev, READ_ONCE(cmd->sector));
+	vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, type);
+
+	if (data && data_len) {
+		ret = virtblk_map_user_request(req, data, data_len, vec);
+		if (ret) {
+			blk_mq_free_request(req);
+			return ret;
+		}
+	} else {
+		/* user should ensure passthrough command have data */
+		blk_mq_free_request(req);
+		return -EINVAL;
+	}
+
+	/* to free bio on completion, as req->bio will be null at that time */
+	pdu->bio = req->bio;
+	req->end_io_data = ioucmd;
+	virtblk_bio_set_disk(req->bio, vblk->disk);
+
+	blk_execute_rq_nowait(NULL, req, 0, virtblk_uring_cmd_end_io);
+	return -EIOCBQUEUED;
+}
+
+static int virtblk_uring_cmd(struct virtio_blk *vblk, struct io_uring_cmd *ioucmd,
+			     unsigned int issue_flags)
+{
+	int ret;
+
+	/* currently we need 128 bytes sqe and 16 bytes cqe */
+	if ((issue_flags & IO_URING_F_SQE128) != IO_URING_F_SQE128)
+		return -EOPNOTSUPP;
+
+	switch (ioucmd->cmd_op) {
+	case VIRTBLK_URING_CMD_IO:
+		ret = virtblk_uring_cmd_io(vblk, ioucmd, issue_flags, false);
+		break;
+	case VIRTBLK_URING_CMD_IO_VEC:
+		ret = virtblk_uring_cmd_io(vblk, ioucmd, issue_flags, true);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+
+	return ret;
+}
+
+static int virtblk_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
+{
+	struct virtio_blk *vblk = container_of(file_inode(ioucmd->file)->i_cdev,
+			struct virtio_blk, cdev);
+
+	return virtblk_uring_cmd(vblk, ioucmd, issue_flags);
+}
+
 
 static int virtblk_chr_open(struct inode *inode, struct file *file)
 {
@@ -881,6 +1034,7 @@ static const struct file_operations virtblk_chr_fops = {
 	.owner		= THIS_MODULE,
 	.open		= virtblk_chr_open,
 	.release	= virtblk_chr_release,
+	.uring_cmd	= virtblk_chr_uring_cmd,
 };
 
 static void virtblk_cdev_rel(struct device *dev)
