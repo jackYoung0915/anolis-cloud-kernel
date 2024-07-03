@@ -210,10 +210,6 @@ static void pagevec_lru_move_fn(struct pagevec *pvec,
 	for (i = 0; i < pagevec_count(pvec); i++) {
 		struct page *page = pvec->pages[i];
 
-		/* block memcg migration during page moving between lru */
-		if (!TestClearPageLRU(page))
-			continue;
-
 		lruvec = relock_page_lruvec_irqsave(page, lruvec, &flags);
 		(*move_fn)(page, lruvec);
 
@@ -257,11 +253,16 @@ static bool pagevec_add_and_need_flush(struct pagevec *pvec, struct page *page)
 void rotate_reclaimable_page(struct page *page)
 {
 	if (!PageLocked(page) && !PageDirty(page) &&
-	    !PageUnevictable(page) && PageLRU(page)) {
+	    !PageUnevictable(page)) {
 		struct pagevec *pvec;
 		unsigned long flags;
 
 		get_page(page);
+		if (!TestClearPageLRU(page)) {
+			put_page(page);
+			return;
+		}
+
 		local_lock_irqsave(&lru_rotate.lock, flags);
 		pvec = this_cpu_ptr(&lru_rotate.pvec);
 		if (pagevec_add_and_need_flush(pvec, page))
@@ -349,12 +350,18 @@ static bool need_activate_page_drain(int cpu)
 void activate_page(struct page *page)
 {
 	page = compound_head(page);
-	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
+	if (!PageActive(page) && !PageUnevictable(page)) {
 		struct pagevec *pvec;
 
 		local_lock(&lru_pvecs.lock);
 		pvec = this_cpu_ptr(&lru_pvecs.activate_page);
 		get_page(page);
+		if (!TestClearPageLRU(page)) {
+			put_page(page);
+			local_unlock(&lru_pvecs.lock);
+			return;
+		}
+
 		if (pagevec_add_and_need_flush(pvec, page))
 			pagevec_lru_move_fn(pvec, __activate_page);
 		local_unlock(&lru_pvecs.lock);
@@ -707,6 +714,11 @@ void deactivate_file_page(struct page *page)
 	if (likely(get_page_unless_zero(page))) {
 		struct pagevec *pvec;
 
+		if (!TestClearPageLRU(page)) {
+			put_page(page);
+			return;
+		}
+
 		local_lock(&lru_pvecs.lock);
 		pvec = this_cpu_ptr(&lru_pvecs.lru_deactivate_file);
 
@@ -726,13 +738,19 @@ void deactivate_file_page(struct page *page)
  */
 void deactivate_page(struct page *page)
 {
-	if (PageLRU(page) && !PageUnevictable(page) &&
+	if (!PageUnevictable(page) &&
 	    (PageActive(page) || lru_gen_enabled())) {
 		struct pagevec *pvec;
 
 		local_lock(&lru_pvecs.lock);
 		pvec = this_cpu_ptr(&lru_pvecs.lru_deactivate);
 		get_page(page);
+		if (!TestClearPageLRU(page)) {
+			put_page(page);
+			local_unlock(&lru_pvecs.lock);
+			return;
+		}
+
 		if (pagevec_add_and_need_flush(pvec, page))
 			pagevec_lru_move_fn(pvec, lru_deactivate_fn);
 		local_unlock(&lru_pvecs.lock);
@@ -748,13 +766,19 @@ void deactivate_page(struct page *page)
  */
 void mark_page_lazyfree(struct page *page)
 {
-	if (PageLRU(page) && PageAnon(page) && PageSwapBacked(page) &&
+	if (PageAnon(page) && PageSwapBacked(page) &&
 	    !PageSwapCache(page) && !PageUnevictable(page)) {
 		struct pagevec *pvec;
 
 		local_lock(&lru_pvecs.lock);
 		pvec = this_cpu_ptr(&lru_pvecs.lru_lazyfree);
 		get_page(page);
+		if (!TestClearPageLRU(page)) {
+			put_page(page);
+			local_unlock(&lru_pvecs.lock);
+			return;
+		}
+
 		if (pagevec_add_and_need_flush(pvec, page))
 			pagevec_lru_move_fn(pvec, lru_lazyfree_fn);
 		local_unlock(&lru_pvecs.lock);
