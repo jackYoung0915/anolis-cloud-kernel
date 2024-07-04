@@ -266,11 +266,6 @@ static int sunway_cpufreq_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static int sunway_cpufreq_exit(struct cpufreq_policy *policy)
-{
-	return 0;
-}
-
 static struct freq_attr *sunway_table_attr[] = {
 	&cpufreq_freq_attr_scaling_available_freqs, NULL,
 };
@@ -282,7 +277,6 @@ static struct cpufreq_driver sunway_cpufreq_driver = {
 	.verify = cpufreq_generic_frequency_table_verify,
 	.target_index = sunway_cpufreq_target,
 	.get = sunway_cpufreq_get,
-	.exit = sunway_cpufreq_exit,
 	.attr = sunway_table_attr,
 };
 
