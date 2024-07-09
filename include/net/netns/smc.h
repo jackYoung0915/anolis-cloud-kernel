@@ -27,6 +27,7 @@ struct netns_smc {
 	int				sysctl_rmem;
 	int				sysctl_max_links_per_lgr;
 	int				sysctl_max_conns_per_lgr;
+	unsigned int			sysctl_autosplit_size;
 
 	atomic_t			iwarp_cnt;
 	struct socket			*rsvd_sock[SMC_IWARP_RSVD_PORTS_NUM];

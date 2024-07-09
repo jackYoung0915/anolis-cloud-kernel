@@ -29,6 +29,8 @@ static int links_per_lgr_min = SMC_LINKS_ADD_LNK_MIN;
 static int links_per_lgr_max = SMC_LINKS_ADD_LNK_MAX;
 static int conns_per_lgr_min = SMC_CONN_PER_LGR_MIN;
 static int conns_per_lgr_max = SMC_CONN_PER_LGR_MAX;
+static unsigned int autosplit_size_min = SZ_32K;
+static unsigned int autosplit_size_max = SZ_512M; /* max size of snd/recv buffer */
 
 static struct ctl_table smc_table[] = {
 	{
@@ -97,6 +99,15 @@ static struct ctl_table smc_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_douintvec,
 	},
+	{
+		.procname	= "autosplit_size",
+		.data		= &init_net.smc.sysctl_autosplit_size,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= &autosplit_size_min,
+		.extra2		= &autosplit_size_max,
+	},
 	{  }
 };
 
@@ -129,6 +140,7 @@ int __net_init smc_sysctl_net_init(struct net *net)
 	net->smc.sysctl_rmem = 262144; /* 256 KiB */
 	net->smc.sysctl_max_links_per_lgr = SMC_LINKS_PER_LGR_MAX_PREFER;
 	net->smc.sysctl_max_conns_per_lgr = SMC_CONN_PER_LGR_PREFER;
+	net->smc.sysctl_autosplit_size = SZ_128K;
 	return 0;
 
 err_reg:

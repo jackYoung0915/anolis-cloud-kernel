@@ -85,3 +85,13 @@ experiment_vendor_options - UNSIGNED INTEGER
 	Notice that it is experimental and may be removed in the future.
 
 	Default: 0xFFFFFFFF
+
+autosplit_size - INTEGER
+	Setting SMC autosplit size. Autosplit is used to split sending data into
+	several segments when application sending data and the data size is larger
+	than autosplit size. Autosplit helps performing pipeline sending and pipeline
+	receiving for better latency performance when sending/receiving large size
+	data.
+	Autosplit_size ranges from 32KiB to 512MiB.
+
+	Default: 128KiB
