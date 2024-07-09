@@ -176,6 +176,21 @@ static bool smc_tx_should_cork(struct smc_sock *smc, struct msghdr *msg)
 	return false;
 }
 
+static inline bool smc_tx_should_split(struct smc_sock *smc, size_t *len)
+{
+	size_t split_size = sock_net(&smc->sk)->smc.sysctl_autosplit_size;
+
+	/* only split when len >= sysctl_autosplit_size * 1.3,
+	 * in case of a following tiny size xmit.
+	 */
+	if (*len >= (split_size * 4 / 3)) {
+		*len = split_size;
+		return true;
+	}
+
+	return false;
+}
+
 /* sndbuf producer: main API called by socket layer.
  * called under sock lock.
  */
@@ -186,6 +201,7 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 	struct smc_connection *conn = &smc->conn;
 	union smc_host_cursor prep;
 	struct sock *sk = &smc->sk;
+	bool is_split = false;
 	char *sndbuf_base;
 	int tx_cnt_prep;
 	int writespace;
@@ -239,6 +255,7 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 		writespace = atomic_read(&conn->sndbuf_space);
 		/* not more than what user space asked for */
 		copylen = min_t(size_t, send_remaining, writespace);
+		is_split = smc_tx_should_split(smc, &copylen);
 		/* determine start of sndbuf */
 		sndbuf_base = conn->sndbuf_desc->cpu_addr;
 		smc_curs_copy(&prep, &conn->tx_curs_prep, conn);
@@ -285,7 +302,7 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 		/* If we need to cork, do nothing and wait for the next
 		 * sendmsg() call or push on tx completion
 		 */
-		if (!smc_tx_should_cork(smc, msg))
+		if (is_split || !smc_tx_should_cork(smc, msg))
 			smc_tx_sndbuf_nonempty(conn);
 
 		trace_smc_tx_sendmsg(smc, copylen);
