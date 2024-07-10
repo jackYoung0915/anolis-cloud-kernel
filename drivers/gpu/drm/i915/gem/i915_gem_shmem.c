@@ -488,7 +488,7 @@ shmem_pwrite(struct drm_i915_gem_object *obj,
 		kunmap_atomic(vaddr);
 
 		err = aops->write_end(obj->base.filp, mapping, offset, len,
-				      len - unwritten, page, data);
+				      len - unwritten, page_folio(page), data);
 		if (err < 0)
 			return err;
 
@@ -682,7 +682,7 @@ i915_gem_object_create_shmem_from_data(struct drm_i915_private *dev_priv,
 		kunmap(page);
 
 		err = aops->write_end(file, file->f_mapping, offset, len, len,
-				      page, pgdata);
+				      page_folio(page), pgdata);
 		if (err < 0)
 			goto fail;
 
