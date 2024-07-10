@@ -1304,7 +1304,7 @@ static int ext4_write_end(struct file *file,
 		return ext4_write_inline_data_end(inode, pos, len, copied,
 						  folio);
 
-	copied = block_write_end(file, mapping, pos, len, copied, page, fsdata);
+	copied = block_write_end(file, mapping, pos, len, copied, folio, fsdata);
 	/*
 	 * it's important to update i_size while still holding folio lock:
 	 * page writeout could otherwise come in and zero beyond i_size.
@@ -3016,7 +3016,7 @@ static int ext4_da_do_write_end(struct address_space *mapping,
 	 * flag, which all that's needed to trigger page writeback.
 	 */
 	copied = block_write_end(NULL, mapping, pos, len, copied,
-			&folio->page, NULL);
+			folio, NULL);
 	new_i_size = pos + copied;
 
 	/*
