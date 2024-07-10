@@ -3012,16 +3012,7 @@ LUA_LSM_INT_DEFINE3(ib_endport_manage_subnet, void *, sec,
  * ib_alloc_security
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(ib_alloc_security, void **, sec)
-{
-	*newib(L) = sec ? *sec : NULL;
-}
-
-/**
- * ib_free_security
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(ib_free_security, void *, sec)
+LUA_LSM_INT_DEFINE1(ib_alloc_security, void *, sec)
 {
 	*newib(L) = sec;
 }
