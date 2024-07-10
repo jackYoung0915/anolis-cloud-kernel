@@ -152,9 +152,8 @@ error:
  */
 int afs_write_end(struct file *file, struct address_space *mapping,
 		  loff_t pos, unsigned len, unsigned copied,
-		  struct page *subpage, void *fsdata)
+		  struct folio *folio, void *fsdata)
 {
-	struct folio *folio = page_folio(subpage);
 	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 	unsigned long priv;
 	unsigned int f, from = offset_in_folio(folio, pos);

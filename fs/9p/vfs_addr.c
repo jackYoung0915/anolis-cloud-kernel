@@ -296,10 +296,9 @@ static int v9fs_write_begin(struct file *filp, struct address_space *mapping,
 
 static int v9fs_write_end(struct file *filp, struct address_space *mapping,
 			  loff_t pos, unsigned int len, unsigned int copied,
-			  struct page *subpage, void *fsdata)
+			  struct folio *folio, void *fsdata)
 {
 	loff_t last_pos = pos + copied;
-	struct folio *folio = page_folio(subpage);
 	struct inode *inode = mapping->host;
 
 	p9_debug(P9_DEBUG_VFS, "filp %p, mapping %p\n", filp, mapping);
