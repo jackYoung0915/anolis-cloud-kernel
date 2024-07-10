@@ -256,7 +256,7 @@ xfile_pwrite(
 		memcpy(p, buf, len);
 		kunmap_local(kaddr);
 
-		ret = aops->write_end(NULL, mapping, pos, len, len, page,
+		ret = aops->write_end(NULL, mapping, pos, len, len, page_folio(page),
 				fsdata);
 		if (ret < 0) {
 			error = ret;
@@ -407,7 +407,7 @@ xfile_put_page(
 
 	pflags = memalloc_nofs_save();
 	ret = aops->write_end(NULL, mapping, xfpage->pos, PAGE_SIZE, PAGE_SIZE,
-			xfpage->page, xfpage->fsdata);
+			page_folio(xfpage->page), xfpage->fsdata);
 	memalloc_nofs_restore(pflags);
 	memset(xfpage, 0, sizeof(struct xfile_page));
 
