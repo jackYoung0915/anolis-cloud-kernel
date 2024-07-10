@@ -2883,16 +2883,7 @@ LUA_LSM_VOID_DEFINE2(req_classify_flow, const struct request_sock *, req,
  * tun_dev_alloc_security
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(tun_dev_alloc_security, void **, security)
-{
-	*newtundev(L) = security ? *security : NULL;
-}
-
-/**
- * tun_dev_free_security
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(tun_dev_free_security, void *, security)
+LUA_LSM_INT_DEFINE1(tun_dev_alloc_security, void *, security)
 {
 	*newtundev(L) = security;
 }
