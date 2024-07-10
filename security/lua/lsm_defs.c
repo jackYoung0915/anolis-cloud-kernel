@@ -3373,15 +3373,6 @@ LUA_LSM_INT_DEFINE1(perf_event_alloc, struct perf_event *, event)
 }
 
 /**
- * perf_event_free
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(perf_event_free, struct perf_event *, event)
-{
-	*newperfevent(L) = event;
-}
-
-/**
  * perf_event_read
  * Default: 0
  */
