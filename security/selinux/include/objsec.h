@@ -206,4 +206,9 @@ static inline struct sk_security_struct *selinux_sock(const struct sock *sock)
 	return sock->sk_security + selinux_blob_sizes.lbs_sock;
 }
 
+static inline struct tun_security_struct *selinux_tun_dev(void *security)
+{
+	return security + selinux_blob_sizes.lbs_tun_dev;
+}
+
 #endif /* _SELINUX_OBJSEC_H_ */
