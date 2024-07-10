@@ -3173,15 +3173,6 @@ LUA_LSM_INT_DEFINE3(key_alloc, struct key *, key, const struct cred *, cred,
 }
 
 /**
- * key_free
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(key_free, struct key *, key)
-{
-	*newkey(L) = key;
-}
-
-/**
  * TODO: key_permission
  * Default: 0
  */
