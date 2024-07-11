@@ -437,7 +437,7 @@ int ext2_inode_by_name(struct inode *dir, const struct qstr *child, ino_t *ino)
 
 static int ext2_prepare_chunk(struct page *page, loff_t pos, unsigned len)
 {
-	return __block_write_begin(page, pos, len, ext2_get_block);
+	return __block_write_begin(page_folio(page), pos, len, ext2_get_block);
 }
 
 

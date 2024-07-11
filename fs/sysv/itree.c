@@ -466,7 +466,7 @@ static int sysv_read_folio(struct file *file, struct folio *folio)
 
 int sysv_prepare_chunk(struct page *page, loff_t pos, unsigned len)
 {
-	return __block_write_begin(page, pos, len, get_block);
+	return __block_write_begin(page_folio(page), pos, len, get_block);
 }
 
 static void sysv_write_failed(struct address_space *mapping, loff_t to)
