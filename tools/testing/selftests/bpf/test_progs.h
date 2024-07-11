@@ -129,6 +129,12 @@ extern int test__join_cgroup(const char *path);
 #define CHECK_ATTR(condition, tag, format...) \
 	_CHECK(condition, tag, tattr.duration, format)
 
+#define ASSERT_FAIL(fmt, args...) ({					\
+	static int duration = 0;					\
+	CHECK(false, "", fmt"\n", ##args);				\
+	false;								\
+})
+
 #define ASSERT_TRUE(actual, name) ({					\
 	static int duration = 0;					\
 	bool ___ok = (actual);						\
