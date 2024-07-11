@@ -83,7 +83,7 @@ static int nilfs_prepare_chunk(struct page *page, unsigned int from,
 {
 	loff_t pos = page_offset(page) + from;
 
-	return __block_write_begin(page, pos, to - from, nilfs_get_block);
+	return __block_write_begin(page_folio(page), pos, to - from, nilfs_get_block);
 }
 
 static void nilfs_commit_chunk(struct page *page,
