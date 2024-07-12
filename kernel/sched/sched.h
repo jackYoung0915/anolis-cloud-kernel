@@ -4191,29 +4191,15 @@ static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 	return p->cpus_ptr;
 }
 
-static inline void tg_set_specs_ratio(struct task_group *tg, u64 quota)
-{
-	u64 specs_ratio;
-
-	if (quota == RUNTIME_INF) {
-		tg->specs_ratio = -1;
-		return;
-	}
-
-	specs_ratio = quota / ((1 << BW_SHIFT) / 100);
-
-	/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
-	tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
-}
-
 extern int sched_init_group_balancer_sched_domains(const struct cpumask *cpu_map);
 extern void sched_clear_group_balancer_sched_domains(void);
 extern void sched_init_group_balancer(void);
+extern void tg_set_specs_ratio(struct task_group *tg);
 #else
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
 	return p->cpus_ptr;
 }
-static inline void tg_set_specs_ratio(struct task_group *tg, u64 quota) { }
+static inline void tg_set_specs_ratio(struct task_group *tg) { }
 #endif
 #endif /* _KERNEL_SCHED_SCHED_H */

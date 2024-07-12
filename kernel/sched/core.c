@@ -9863,7 +9863,7 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 		}
 	}
 	cfs_b->hierarchical_quota = quota;
-	tg_set_specs_ratio(tg, quota);
+	tg_set_specs_ratio(tg);
 
 	return 0;
 }
