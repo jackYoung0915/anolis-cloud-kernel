@@ -13356,6 +13356,24 @@ void free_fair_sched_group(struct task_group *tg)
 	kfree(tg->se);
 }
 
+#ifdef CONFIG_GROUP_BALANCER
+void tg_set_specs_ratio(struct task_group *tg)
+{
+	u64 quota = tg_cfs_bandwidth(tg)->hierarchical_quota;
+	u64 specs_ratio;
+
+	if (quota == RUNTIME_INF) {
+		tg->specs_ratio = -1;
+		return;
+	}
+
+	specs_ratio = quota / ((1 << BW_SHIFT) / 100);
+
+	/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
+	tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
+}
+#endif
+
 int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 {
 	struct sched_entity *se;
@@ -13372,7 +13390,7 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 	tg->shares = NICE_0_LOAD;
 
 	init_cfs_bandwidth(tg_cfs_bandwidth(tg), tg_cfs_bandwidth(parent));
-	tg_set_specs_ratio(tg, tg_cfs_bandwidth(tg)->hierarchical_quota);
+	tg_set_specs_ratio(tg);
 
 	for_each_possible_cpu(i) {
 		cfs_rq = kzalloc_node(sizeof(struct cfs_rq),
