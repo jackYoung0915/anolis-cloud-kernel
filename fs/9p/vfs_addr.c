@@ -274,7 +274,7 @@ v9fs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 
 static int v9fs_write_begin(struct file *filp, struct address_space *mapping,
 			    loff_t pos, unsigned int len,
-			    struct page **subpagep, void **fsdata)
+			    struct folio **foliop, void **fsdata)
 {
 	int retval;
 	struct folio *folio;
@@ -290,7 +290,7 @@ static int v9fs_write_begin(struct file *filp, struct address_space *mapping,
 	if (retval < 0)
 		return retval;
 
-	*subpagep = &folio->page;
+	*foliop = folio;
 	return retval;
 }
 
