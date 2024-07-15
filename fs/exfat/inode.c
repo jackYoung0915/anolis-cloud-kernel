@@ -362,12 +362,11 @@ static void exfat_write_failed(struct address_space *mapping, loff_t to)
 
 static int exfat_write_begin(struct file *file, struct address_space *mapping,
 		loff_t pos, unsigned int len,
-		struct page **pagep, void **fsdata)
+		struct folio **foliop, void **fsdata)
 {
 	int ret;
 
-	*pagep = NULL;
-	ret = cont_write_begin(file, mapping, pos, len, pagep, fsdata,
+	ret = cont_write_begin(file, mapping, pos, len, foliop, fsdata,
 			       exfat_get_block,
 			       &EXFAT_I(mapping->host)->i_size_ondisk);
 

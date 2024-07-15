@@ -211,6 +211,7 @@ xfile_pwrite(
 	struct address_space	*mapping = inode->i_mapping;
 	const struct address_space_operations *aops = mapping->a_ops;
 	struct page		*page = NULL;
+	struct folio		*folio = NULL;
 	ssize_t			written = 0;
 	unsigned int		pflags;
 	int			error = 0;
@@ -237,7 +238,7 @@ xfile_pwrite(
 		 * shmem doesn't support fs freeze, but lockdep doesn't know
 		 * that and will trip over that.
 		 */
-		error = aops->write_begin(NULL, mapping, pos, len, &page,
+		error = aops->write_begin(NULL, mapping, pos, len, &folio,
 				&fsdata);
 		if (error)
 			break;
@@ -247,6 +248,7 @@ xfile_pwrite(
 		 * the dcache flush.  If the page is not uptodate, zero it
 		 * before writing data.
 		 */
+		page = &folio->page;
 		kaddr = kmap_local_page(page);
 		if (!PageUptodate(page)) {
 			memset(kaddr, 0, PAGE_SIZE);
@@ -256,7 +258,7 @@ xfile_pwrite(
 		memcpy(p, buf, len);
 		kunmap_local(kaddr);
 
-		ret = aops->write_end(NULL, mapping, pos, len, len, page_folio(page),
+		ret = aops->write_end(NULL, mapping, pos, len, len, folio,
 				fsdata);
 		if (ret < 0) {
 			error = ret;
@@ -326,6 +328,7 @@ xfile_get_page(
 	struct address_space	*mapping = inode->i_mapping;
 	const struct address_space_operations *aops = mapping->a_ops;
 	struct page		*page = NULL;
+	struct folio		*folio;
 	void			*fsdata = NULL;
 	loff_t			key = round_down(pos, PAGE_SIZE);
 	unsigned int		pflags;
@@ -346,7 +349,8 @@ xfile_get_page(
 	 * doesn't support fs freeze, but lockdep doesn't know that and will
 	 * trip over that.
 	 */
-	error = aops->write_begin(NULL, mapping, key, PAGE_SIZE, &page,
+	folio = page_folio(page);
+	error = aops->write_begin(NULL, mapping, key, PAGE_SIZE, &folio,
 			&fsdata);
 	if (error)
 		goto out_pflags;

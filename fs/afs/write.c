@@ -67,7 +67,7 @@ static int afs_flush_conflicting_write(struct address_space *mapping,
  */
 int afs_write_begin(struct file *file, struct address_space *mapping,
 		    loff_t pos, unsigned len,
-		    struct page **_page, void **fsdata)
+		    struct folio **foliop, void **fsdata)
 {
 	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 	struct folio *folio;
@@ -116,7 +116,7 @@ try_again:
 			goto flush_conflicting_write;
 	}
 
-	*_page = folio_file_page(folio, pos / PAGE_SIZE);
+	*foliop = folio;
 	_leave(" = 0");
 	return 0;
 
