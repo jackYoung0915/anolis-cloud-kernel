@@ -198,7 +198,8 @@ static struct virtqueue *vp_setup_vq(struct virtio_device *vdev, unsigned index,
 				     void (*callback)(struct virtqueue *vq),
 				     const char *name,
 				     bool ctx,
-				     u16 msix_vec)
+				     u16 msix_vec,
+				     struct virtio_pci_vq_info **p_info)
 {
 	struct virtio_pci_device *vp_dev = to_vp_device(vdev);
 	struct virtio_pci_vq_info *info = kmalloc(sizeof *info, GFP_KERNEL);
@@ -226,7 +227,7 @@ static struct virtqueue *vp_setup_vq(struct virtio_device *vdev, unsigned index,
 		INIT_LIST_HEAD(&info->node);
 	}
 
-	vp_dev->vqs[index] = info;
+	*p_info = info;
 	return vq;
 
 out_info:
@@ -321,7 +322,8 @@ static struct virtqueue *
 vp_find_one_vq_msix(struct virtio_device *vdev, int queue_idx,
 		    vq_callback_t *callback, const char *name, bool ctx,
 		    bool slow_path, int *allocated_vectors,
-		    enum vp_vq_vector_policy vector_policy)
+		    enum vp_vq_vector_policy vector_policy,
+		    struct virtio_pci_vq_info **p_info)
 {
 	struct virtio_pci_device *vp_dev = to_vp_device(vdev);
 	struct virtqueue *vq;
@@ -340,7 +342,8 @@ vp_find_one_vq_msix(struct virtio_device *vdev, int queue_idx,
 	else
 		msix_vec = VP_MSIX_VQ_VECTOR;
 
-	vq = vp_setup_vq(vdev, queue_idx, callback, name, ctx, msix_vec);
+	vq = vp_setup_vq(vdev, queue_idx, callback, name, ctx, msix_vec,
+			 p_info);
 
 	if (IS_ERR(vq))
 		return vq;
@@ -404,7 +407,7 @@ static int vp_find_vqs_msix(struct virtio_device *vdev, unsigned nvqs,
 		}
 
 		vqs[i] = vp_find_one_vq_msix(vdev, queue_idx++, callbacks[i], names[i],
-						ctx ? ctx[i] : false, false, &allocated_vectors, vector_policy);
+						ctx ? ctx[i] : false, false, &allocated_vectors, vector_policy, &vp_dev->vqs[i]);
 		if (IS_ERR(vqs[i])) {
 			err = PTR_ERR(vqs[i]);
 			goto error_find;
@@ -442,7 +445,7 @@ static int vp_find_vqs_intx(struct virtio_device *vdev, unsigned nvqs,
 		}
 		vqs[i] = vp_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
 				     ctx ? ctx[i] : false,
-				     VIRTIO_MSI_NO_VECTOR);
+				     VIRTIO_MSI_NO_VECTOR, &vp_dev->vqs[i]);
 		if (IS_ERR(vqs[i])) {
 			err = PTR_ERR(vqs[i]);
 			goto out_del_vqs;
