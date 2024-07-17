@@ -177,6 +177,13 @@ enum nvme_quirks {
 	 * Align dma pool segment size to 512 bytes
 	 */
 	NVME_QUIRK_DMAPOOL_ALIGN_512		= (1 << 22),
+
+	/*
+	 * In terms of security, certain NVMe controllers deactivate the NVMe
+	 * namespace after initialization, requiring it to be reactivated
+	 * once the reset is completed.
+	 */
+	NVME_QUIRK_ACTIVATE_NS			= (1 << 19),
 };
 
 /*
