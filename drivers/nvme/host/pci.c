@@ -28,6 +28,7 @@
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <linux/sed-opal.h>
 #include <linux/pci-p2pdma.h>
+#include <linux/crc32c.h>
 
 #include "trace.h"
 #include "nvme.h"
@@ -112,6 +113,18 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
 static void nvme_delete_io_queues(struct nvme_dev *dev);
 static void nvme_update_attrs(struct nvme_dev *dev);
 
+enum nvme_activation_check_mode {
+	NVME_ACTIVATION_CHECK_MODE_CRC32 = 1 << 0,
+};
+
+struct nvme_activation_info {
+	/*
+	 * The kernel does not care the details of activation,
+	 * only care its size.
+	 */
+	u8	rsvd[4096];
+};
+
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */
@@ -160,6 +173,11 @@ struct nvme_dev {
 	unsigned int nr_allocated_queues;
 	unsigned int nr_write_queues;
 	unsigned int nr_poll_queues;
+
+	struct nvme_activation_info activation_info;
+	u32 activation_check_crc32;
+	int activation_result;
+	u64 activation_count;
 };
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
@@ -2156,6 +2174,36 @@ static ssize_t hmb_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RW(hmb);
 
+static ssize_t activation_info_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct nvme_dev *ndev = to_nvme_dev(dev_get_drvdata(dev));
+	struct nvme_ctrl *ctrl = &ndev->ctrl;
+
+	if (ctrl->quirks & NVME_QUIRK_ACTIVATE_NS &&
+	    count == sizeof(struct nvme_activation_info)) {
+		memcpy(&ndev->activation_info, buf, count);
+		ndev->activation_check_crc32 = crc32c(0,
+				&ndev->activation_info, count);
+		return count;
+	}
+	dev_warn(dev, "activation set fail, count:%lu, activate ns quirk:%lu\n",
+		 count, ctrl->quirks & NVME_QUIRK_ACTIVATE_NS);
+	return -EINVAL;
+}
+static DEVICE_ATTR_WO(activation_info);
+
+static ssize_t activation_status_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct nvme_dev *ndev = to_nvme_dev(dev_get_drvdata(dev));
+
+	return sysfs_emit(buf, "activation_result:0x%.4x\nactivation_count:%llu\n",
+			  ndev->activation_result, ndev->activation_count);
+}
+static DEVICE_ATTR_RO(activation_status);
+
 static umode_t nvme_pci_attrs_are_visible(struct kobject *kobj,
 		struct attribute *a, int n)
 {
@@ -2172,6 +2220,11 @@ static umode_t nvme_pci_attrs_are_visible(struct kobject *kobj,
 	if (a == &dev_attr_hmb.attr && !ctrl->hmpre)
 		return 0;
 
+	if (a == &dev_attr_activation_info.attr ||
+	    a == &dev_attr_activation_status.attr) {
+		if (!(ctrl->quirks & NVME_QUIRK_ACTIVATE_NS))
+			return 0;
+	}
 	return a->mode;
 }
 
@@ -2180,6 +2233,8 @@ static struct attribute *nvme_pci_attrs[] = {
 	&dev_attr_cmbloc.attr,
 	&dev_attr_cmbsz.attr,
 	&dev_attr_hmb.attr,
+	&dev_attr_activation_info.attr,
+	&dev_attr_activation_status.attr,
 	NULL,
 };
 
@@ -2736,6 +2791,33 @@ static void nvme_pci_free_ctrl(struct nvme_ctrl *ctrl)
 	kfree(dev);
 }
 
+static void nvme_activate_ns(struct nvme_dev *ndev)
+{
+	struct nvme_ctrl *ctrl = &ndev->ctrl;
+	struct nvme_command c = {0};
+	int ret;
+
+	if (!(ctrl->quirks & NVME_QUIRK_ACTIVATE_NS))
+		return;
+
+	if (!ndev->activation_check_crc32)
+		return;
+
+	dev_info(ctrl->device, "activate ns start\n");
+	c.features.opcode = nvme_admin_set_features;
+	c.features.fid = cpu_to_le32(NVME_FEAT_VENDOR_ACTIVATE_NS);
+	c.features.dword11 = cpu_to_le32(NVME_ACTIVATION_CHECK_MODE_CRC32);
+	c.features.dword12 = cpu_to_le32(ndev->activation_check_crc32);
+
+	ret = __nvme_submit_sync_cmd(ndev->ctrl.admin_q, &c, NULL,
+			&ndev->activation_info, sizeof(struct nvme_activation_info),
+			NVME_QID_ANY, 0, 0);
+
+	ndev->activation_result = ret;
+	ndev->activation_count++;
+	dev_info(ctrl->device, "activate ns result:0x%.4x\n", ret);
+}
+
 static void nvme_reset_work(struct work_struct *work)
 {
 	struct nvme_dev *dev =
@@ -2785,6 +2867,8 @@ static void nvme_reset_work(struct work_struct *work)
 	result = nvme_setup_host_mem(dev);
 	if (result < 0)
 		goto out;
+
+	nvme_activate_ns(dev);
 
 	result = nvme_setup_io_queues(dev);
 	if (result)
