@@ -94,48 +94,52 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 		 * regardless of the kernel's configuration, as no other checks, besides
 		 * presence in the hart_isa bitmap, are made.
 		 */
+		EXT_KEY(ZAAMO);
+		EXT_KEY(ZABHA);
+		EXT_KEY(ZACAS);
+		EXT_KEY(ZALRSC);
+		EXT_KEY(ZAWRS);
 		EXT_KEY(ZBA);
 		EXT_KEY(ZBB);
-		EXT_KEY(ZBS);
-		EXT_KEY(ZICBOZ);
 		EXT_KEY(ZBC);
 		EXT_KEY(ZBKB);
 		EXT_KEY(ZBKC);
 		EXT_KEY(ZBKX);
+		EXT_KEY(ZBS);
+		EXT_KEY(ZCA);
+		EXT_KEY(ZCB);
+		EXT_KEY(ZCMOP);
+		EXT_KEY(ZICBOZ);
+		EXT_KEY(ZICNTR);
+		EXT_KEY(ZICOND);
+		EXT_KEY(ZIHINTNTL);
+		EXT_KEY(ZIHINTPAUSE);
+		EXT_KEY(ZIHPM);
+		EXT_KEY(ZIMOP);
 		EXT_KEY(ZKND);
 		EXT_KEY(ZKNE);
 		EXT_KEY(ZKNH);
 		EXT_KEY(ZKSED);
 		EXT_KEY(ZKSH);
 		EXT_KEY(ZKT);
-		EXT_KEY(ZIHINTNTL);
 		EXT_KEY(ZTSO);
-		EXT_KEY(ZACAS);
-		EXT_KEY(ZICOND);
-		EXT_KEY(ZIHINTPAUSE);
-		EXT_KEY(ZIMOP);
-		EXT_KEY(ZCA);
-		EXT_KEY(ZCB);
-		EXT_KEY(ZCMOP);
-		EXT_KEY(ZAWRS);
-		EXT_KEY(ZICNTR);
-		EXT_KEY(ZIHPM);
-		EXT_KEY(ZAAMO);
-		EXT_KEY(ZALRSC);
-		EXT_KEY(ZABHA);
 
 		/*
 		 * All the following extensions must depend on the kernel
 		 * support of V.
 		 */
 		if (has_vector()) {
-			EXT_KEY(ZVE32X);
-			EXT_KEY(ZVE32F);
-			EXT_KEY(ZVE64X);
-			EXT_KEY(ZVE64F);
-			EXT_KEY(ZVE64D);
 			EXT_KEY(ZVBB);
 			EXT_KEY(ZVBC);
+			EXT_KEY(ZVE32F);
+			EXT_KEY(ZVE32X);
+			EXT_KEY(ZVE64D);
+			EXT_KEY(ZVE64F);
+			EXT_KEY(ZVE64X);
+			EXT_KEY(ZVFBFMIN);
+			EXT_KEY(ZVFBFWMA);
+			EXT_KEY(ZVFH);
+			EXT_KEY(ZVFHMIN);
 			EXT_KEY(ZVKB);
 			EXT_KEY(ZVKG);
 			EXT_KEY(ZVKNED);
@@ -144,19 +148,15 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 			EXT_KEY(ZVKSED);
 			EXT_KEY(ZVKSH);
 			EXT_KEY(ZVKT);
-			EXT_KEY(ZVFH);
-			EXT_KEY(ZVFHMIN);
-			EXT_KEY(ZVFBFMIN);
-			EXT_KEY(ZVFBFWMA);
 		}
 
 		if (has_fpu()) {
-			EXT_KEY(ZFH);
-			EXT_KEY(ZFHMIN);
-			EXT_KEY(ZFA);
 			EXT_KEY(ZCD);
 			EXT_KEY(ZCF);
+			EXT_KEY(ZFA);
 			EXT_KEY(ZFBFMIN);
+			EXT_KEY(ZFH);
+			EXT_KEY(ZFHMIN);
 		}
 
 		if (IS_ENABLED(CONFIG_RISCV_ISA_SUPM))
