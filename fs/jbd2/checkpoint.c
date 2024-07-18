@@ -134,8 +134,11 @@ __releases(&journal->j_state_lock)
 				mutex_lock(&journal->j_checkpoint_mutex);
 				finish_wait(&journal->j_wait_done_checkpoint, &wait);
 				jbd_debug(1, "wake up checkpoint thread.\n");
-			} else if (jbd2_cleanup_journal_tail(journal) == 0) {
-				/* We were able to recover space; yay! */
+			} else if (jbd2_cleanup_journal_tail(journal) <= 0) {
+				/*
+				 * We were able to recover space or the
+				 * journal was aborted due to an error.
+				 */
 				;
 			} else if (has_transaction) {
 				/*
