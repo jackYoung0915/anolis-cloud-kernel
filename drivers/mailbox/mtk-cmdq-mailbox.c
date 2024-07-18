@@ -588,7 +588,6 @@ static int cmdq_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, cmdq);
 	WARN_ON(clk_prepare(cmdq->clock) < 0);
-
 	cmdq_init(cmdq);
 
 	return 0;
