@@ -574,6 +574,7 @@ struct bpf_insn_access_aux {
 		};
 	};
 	struct bpf_verifier_log *log; /* for verbose logs */
+	bool is_retval; /* is accessing function return value ? */
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
