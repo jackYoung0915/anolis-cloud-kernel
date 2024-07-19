@@ -6090,9 +6090,13 @@ static int set_timer_callback_state(struct bpf_verifier_env *env,
 	return 0;
 }
 
-static bool retval_range_within(struct bpf_retval_range range, const struct bpf_reg_state *reg)
+static bool retval_range_within(struct bpf_retval_range range, const struct bpf_reg_state *reg,
+		bool return_32bit)
 {
-	return range.minval <= reg->smin_value && reg->smax_value <= range.maxval;
+	if (return_32bit)
+		return range.minval <= reg->s32_min_value && reg->s32_max_value <= range.maxval;
+	else
+		return range.minval <= reg->smin_value && reg->smax_value <= range.maxval;
 }
 
 static int prepare_func_exit(struct bpf_verifier_env *env, int *insn_idx)
@@ -6122,8 +6126,8 @@ static int prepare_func_exit(struct bpf_verifier_env *env, int *insn_idx)
 			return -EACCES;
 		}
 
-		/* enforce R0 return value range */
-		if (!retval_range_within(callee->callback_ret_range, r0)) {
+		/* enforce R0 return value range, and bpf_callback_t returns 64bit */
+		if (!retval_range_within(callee->callback_ret_range, r0, false)) {
 			verbose_invalid_scalar(env, r0, callee->callback_ret_range,
 					"callback return", "R0");
 			return -EINVAL;
@@ -9398,6 +9402,7 @@ static int check_return_code(struct bpf_verifier_env *env)
 	int err;
 	struct bpf_func_state *frame = env->cur_state->frame[0];
 	const bool is_subprog = frame->subprogno;
+	bool return_32bit = false;
 
 	/* LSM and struct_ops func-ptr's return type could be "void" */
 	if (!is_subprog &&
@@ -9431,7 +9436,7 @@ static int check_return_code(struct bpf_verifier_env *env)
 			return -EINVAL;
 		}
 
-		if (!retval_range_within(const_0, reg)) {
+		if (!retval_range_within(const_0, reg, return_32bit)) {
 			verbose_invalid_scalar(env, reg, const_0, "async callback", "R0");
 			return -EINVAL;
 		}
@@ -9501,6 +9506,7 @@ static int check_return_code(struct bpf_verifier_env *env)
 			/* no restricted range, any return value is allowed */
 			if (range.minval == S32_MIN && range.maxval == S32_MAX)
 				return 0;
+			return_32bit = true;
 		}
 		break;
 	case BPF_PROG_TYPE_EXT:
@@ -9517,7 +9523,7 @@ static int check_return_code(struct bpf_verifier_env *env)
 		return -EINVAL;
 	}
 
-	if (!retval_range_within(range, reg)) {
+	if (!retval_range_within(range, reg, return_32bit)) {
 		verbose_invalid_scalar(env, reg, range, "program exit", "R0");
 		return -EINVAL;
 	}
