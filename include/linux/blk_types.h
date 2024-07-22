@@ -459,6 +459,9 @@ enum req_flag_bits {
 	/* for driver use */
 	__REQ_DRV,
 	__REQ_SWAP,		/* swapping request. */
+
+	__REQ_BIDIR,
+
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -483,6 +486,7 @@ enum req_flag_bits {
 
 #define REQ_DRV			(1ULL << __REQ_DRV)
 #define REQ_SWAP		(1ULL << __REQ_SWAP)
+#define REQ_BIDIR		(1ULL << __REQ_BIDIR)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
@@ -514,6 +518,11 @@ static inline void bio_set_op_attrs(struct bio *bio, unsigned op,
 static inline bool op_is_write(unsigned int op)
 {
 	return (op & 1);
+}
+
+static inline bool op_is_bidirectional(unsigned int op)
+{
+	return op & REQ_BIDIR;
 }
 
 /*
