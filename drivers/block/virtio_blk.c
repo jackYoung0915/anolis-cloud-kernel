@@ -16,6 +16,7 @@
 #include <linux/blk-mq-virtio.h>
 #include <linux/numa.h>
 #include <uapi/linux/virtio_ring.h>
+#include <linux/cdev.h>
 
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
@@ -23,6 +24,7 @@
 
 /* The maximum number of sg elements that fit into a virtqueue */
 #define VIRTIO_BLK_MAX_SG_ELEMS 32768
+#define VIRTBLK_MINORS		(1U << MINORBITS)
 
 #ifdef CONFIG_ARCH_NO_SG_CHAIN
 #define VIRTIO_BLK_INLINE_SG_CNT	0
@@ -43,6 +45,10 @@ MODULE_PARM_DESC(poll_queues, "The number of dedicated virtqueues for polling I/
 
 static int major;
 static DEFINE_IDA(vd_index_ida);
+
+static DEFINE_IDA(vd_chr_minor_ida);
+static dev_t vd_chr_devt;
+static struct class *vd_chr_class;
 
 static struct workqueue_struct *virtblk_wq;
 
@@ -87,6 +93,9 @@ struct virtio_blk {
 	int num_vqs;
 	int io_queues[HCTX_MAX_TYPES];
 	struct virtio_blk_vq *vqs;
+
+	struct cdev cdev;
+	struct device cdev_device;
 };
 
 struct virtblk_req {
@@ -420,9 +429,8 @@ static void virtblk_put(struct virtio_blk *vblk)
 	}
 }
 
-static int virtblk_open(struct block_device *bd, fmode_t mode)
+static int virtblk_device_open(struct virtio_blk *vblk)
 {
-	struct virtio_blk *vblk = bd->bd_disk->private_data;
 	int ret = 0;
 
 	mutex_lock(&vblk->vdev_mutex);
@@ -436,11 +444,19 @@ static int virtblk_open(struct block_device *bd, fmode_t mode)
 	return ret;
 }
 
+static void virtblk_device_release(struct virtio_blk *vblk)
+{
+	virtblk_put(vblk);
+}
+
+static int virtblk_open(struct block_device *bdev, fmode_t mode)
+{
+	return virtblk_device_open(bdev->bd_disk->private_data);
+}
+
 static void virtblk_release(struct gendisk *disk, fmode_t mode)
 {
-	struct virtio_blk *vblk = disk->private_data;
-
-	virtblk_put(vblk);
+	virtblk_device_release(disk->private_data);
 }
 
 /* We provide getgeo only to please some old bootloader/partitioning tools */
@@ -849,6 +865,67 @@ static const struct blk_mq_ops virtio_mq_ops = {
 	.poll		= virtblk_poll,
 };
 
+
+static int virtblk_chr_open(struct inode *inode, struct file *file)
+{
+	return virtblk_device_open(container_of(inode->i_cdev, struct virtio_blk, cdev));
+}
+
+static int virtblk_chr_release(struct inode *inode, struct file *file)
+{
+	virtblk_device_release(container_of(inode->i_cdev, struct virtio_blk, cdev));
+	return 0;
+}
+
+static const struct file_operations virtblk_chr_fops = {
+	.owner		= THIS_MODULE,
+	.open		= virtblk_chr_open,
+	.release	= virtblk_chr_release,
+};
+
+static void virtblk_cdev_rel(struct device *dev)
+{
+	ida_free(&vd_chr_minor_ida, MINOR(dev->devt));
+}
+
+static void virtblk_cdev_del(struct cdev *cdev, struct device *cdev_device)
+{
+	cdev_device_del(cdev, cdev_device);
+	put_device(cdev_device);
+}
+
+static int virtblk_cdev_add(struct virtio_blk *vblk)
+{
+	struct cdev *cdev = &vblk->cdev;
+	struct device *cdev_device = &vblk->cdev_device;
+	int minor, ret;
+
+	minor = ida_alloc(&vd_chr_minor_ida, GFP_KERNEL);
+	if (minor < 0)
+		return minor;
+
+	device_initialize(cdev_device);
+	cdev_device->parent = &vblk->vdev->dev;
+	cdev_device->devt = MKDEV(MAJOR(vd_chr_devt), minor);
+	cdev_device->class = vd_chr_class;
+	cdev_device->release = virtblk_cdev_rel;
+
+	ret = dev_set_name(cdev_device, "%sc0", vblk->disk->disk_name);
+	if (ret)
+		goto fail;
+
+	cdev_init(cdev, &virtblk_chr_fops);
+	cdev->owner = THIS_MODULE;
+	ret = cdev_device_add(cdev, cdev_device);
+	if (ret)
+		goto fail;
+
+	return 0;
+fail:
+	put_device(cdev_device);
+	return ret;
+}
+
 static unsigned int virtblk_queue_depth;
 module_param_named(queue_depth, virtblk_queue_depth, uint, 0444);
 
@@ -887,7 +964,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	/* Prevent integer overflows and honor max vq size */
 	sg_elems = min_t(u32, sg_elems, VIRTIO_BLK_MAX_SG_ELEMS - 2);
 
-	vdev->priv = vblk = kmalloc(sizeof(*vblk), GFP_KERNEL);
+	vdev->priv = vblk = kzalloc(sizeof(*vblk), GFP_KERNEL);
 	if (!vblk) {
 		err = -ENOMEM;
 		goto out_free_index;
@@ -1062,6 +1139,8 @@ static int virtblk_probe(struct virtio_device *vdev)
 	virtio_device_ready(vdev);
 
 	device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups);
+	WARN_ON(virtblk_cdev_add(vblk));
+
 	return 0;
 
 out_free_tags:
@@ -1085,6 +1164,8 @@ static void virtblk_remove(struct virtio_device *vdev)
 
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
+
+	virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
 
 	del_gendisk(vblk->disk);
 	blk_cleanup_queue(vblk->disk->queue);
@@ -1194,11 +1275,27 @@ static int __init init(void)
 		goto out_destroy_workqueue;
 	}
 
+	error = alloc_chrdev_region(&vd_chr_devt, 0, VIRTBLK_MINORS,
+				"vblk-generic");
+	if (error < 0)
+		goto out_unregister_blkdev;
+
+	vd_chr_class = class_create(THIS_MODULE, "vblk-generic");
+	if (IS_ERR(vd_chr_class)) {
+		error = PTR_ERR(vd_chr_class);
+		goto out_unregister_chardev;
+	}
+
 	error = register_virtio_driver(&virtio_blk);
 	if (error)
-		goto out_unregister_blkdev;
+		goto out_destroy_class;
+
 	return 0;
 
+out_destroy_class:
+	class_destroy(vd_chr_class);
+out_unregister_chardev:
+	unregister_chrdev_region(vd_chr_devt, VIRTBLK_MINORS);
 out_unregister_blkdev:
 	unregister_blkdev(major, "virtblk");
 out_destroy_workqueue:
@@ -1209,6 +1306,8 @@ out_destroy_workqueue:
 static void __exit fini(void)
 {
 	unregister_virtio_driver(&virtio_blk);
+	class_destroy(vd_chr_class);
+	unregister_chrdev_region(vd_chr_devt, VIRTBLK_MINORS);
 	unregister_blkdev(major, "virtblk");
 	destroy_workqueue(virtblk_wq);
 }
