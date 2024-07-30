@@ -486,15 +486,16 @@ static int hisi_spi_probe(struct platform_device *pdev)
 	if (ret)
 		master->num_chipselect = DEFAULT_NUM_CS;
 
-	master->use_gpio_descriptors = true;
-	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_LOOP;
-	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
-	master->bus_num = pdev->id;
-	master->setup = hisi_spi_setup;
-	master->cleanup = hisi_spi_cleanup;
-	master->transfer_one = hisi_spi_transfer_one;
-	master->handle_err = hisi_spi_handle_err;
-	master->dev.fwnode = dev->fwnode;
+	host->use_gpio_descriptors = true;
+	host->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_LOOP;
+	host->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
+	host->bus_num = pdev->id;
+	host->setup = hisi_spi_setup;
+	host->cleanup = hisi_spi_cleanup;
+	host->transfer_one = hisi_spi_transfer_one;
+	host->handle_err = hisi_spi_handle_err;
+	host->dev.fwnode = dev->fwnode;
+	host->min_speed_hz = DIV_ROUND_UP(host->max_speed_hz, CLK_DIV_MAX);
 
 	hisi_spi_hw_init(hs);
 
