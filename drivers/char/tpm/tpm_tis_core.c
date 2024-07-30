@@ -988,7 +988,6 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 	priv->phy_ops = phy_ops;
 	priv->locality_count = 0;
 	mutex_init(&priv->locality_count_mutex);
-	INIT_WORK(&priv->free_irq_work, tpm_tis_free_irq_func);
 
 	dev_set_drvdata(&chip->dev, priv);
 
