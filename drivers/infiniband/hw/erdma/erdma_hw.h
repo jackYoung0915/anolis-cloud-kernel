@@ -203,11 +203,17 @@ struct erdma_cmdq_set_retrans_num_req {
 	u32 retrans_num;
 };
 
-#define ERDMA_CMDQ_SET_EXT_ATTR_DACK_COUNT_MASK BIT(0)
-struct erdma_cmdq_set_ext_attr_req {
-	u64 hdr;
+#define ERDMA_EXT_ATTR_DACK_COUNT_MASK BIT(0)
+#define ERDMA_EXT_ATTR_LEGACY_MODE_MASK BIT(2)
+struct erdma_ext_attr {
 	u32 attr_mask;
 	u8 dack_count;
+	u8 enable;
+};
+
+struct erdma_cmdq_set_ext_attr_req {
+	u64 hdr;
+	struct erdma_ext_attr attr;
 };
 
 /* create_cq cfg0 */

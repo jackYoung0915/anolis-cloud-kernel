@@ -64,6 +64,7 @@ enum erdma_config_type {
 	ERDMA_CONFIG_TYPE_DISCARD0,
 	ERDMA_CONFIG_TYPE_RETRANS_NUM,
 	ERDMA_CONFIG_TYPE_DACK_COUNT,
+	ERDMA_CONFIG_TYPE_LEGACY_MODE,
 	ERDMA_CONFIG_MAX
 };
 
@@ -299,12 +300,6 @@ struct erdma_ioctl_outbuf {
 struct erdma_ioctl_msg {
 	struct erdma_ioctl_inbuf in;
 	struct erdma_ioctl_outbuf out;
-};
-
-#define ERDMA_EXT_ATTR_DACK_COUNT_MASK BIT(0)
-struct erdma_ext_attr {
-	u32 attr_mask;
-	u8 dack_count;
 };
 
 /* 定义幻数 */

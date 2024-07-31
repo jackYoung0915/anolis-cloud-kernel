@@ -37,7 +37,6 @@ int erdma_req_notify_cq(struct ib_cq *ibcq, enum ib_cq_notify_flags flags)
 	unsigned long irq_flags;
 	int ret = 0;
 
-
 	spin_lock_irqsave(&cq->kern_cq.lock, irq_flags);
 
 	if ((flags & IB_CQ_REPORT_MISSED_EVENTS) && get_next_valid_cqe(cq)) {
@@ -195,7 +194,6 @@ int erdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 	struct erdma_cq *cq = to_ecq(ibcq);
 	unsigned long flags;
 	int npolled, ret;
-
 
 	spin_lock_irqsave(&cq->kern_cq.lock, flags);
 

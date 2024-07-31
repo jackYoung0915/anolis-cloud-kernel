@@ -27,7 +27,6 @@ int erdma_create_ah(struct ib_ah *ibah,
 		    struct rdma_ah_init_attr *init_attr,
 		    struct ib_udata *udata);
 
-
 int erdma_destroy_ah(struct ib_ah *ibah, u32 flags);
 
 #endif

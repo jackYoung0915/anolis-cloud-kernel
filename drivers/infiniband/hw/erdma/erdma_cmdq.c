@@ -6,6 +6,14 @@
 
 #include "erdma.h"
 
+static void init_cmdq_cq_dbrec(struct erdma_cmdq *cmdq)
+{
+	u64 db_data = FIELD_PREP(ERDMA_CQDB_CMDSN_MASK, 0x3) |
+		      FIELD_PREP(ERDMA_CQDB_IDX_MASK, 0xFF);
+
+	*cmdq->cq.db_record = db_data;
+}
+
 static void arm_cmdq_cq(struct erdma_cmdq *cmdq)
 {
 	struct erdma_dev *dev = container_of(cmdq, struct erdma_dev, cmdq);
@@ -151,6 +159,8 @@ static int erdma_cmdq_cq_init(struct erdma_dev *dev)
 	cq->db_record = (u64 *)(cq->qbuf + buf_size);
 
 	atomic64_set(&cq->armed_num, 0);
+
+	init_cmdq_cq_dbrec(cmdq);
 
 	erdma_reg_write32(dev, ERDMA_REGS_CMDQ_CQ_ADDR_H_REG,
 			  upper_32_bits(cq->qbuf_dma_addr));
