@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+
+/* Authors: Cheng Xu <chengyou@linux.alibaba.com> */
+/*          Kai Shen <kaishen@linux.alibaba.com> */
+/* Copyright (c) 2020-2022, Alibaba Group. */
 
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
@@ -10,14 +14,31 @@
 
 #include "erdma_verbs.h"
 
+#include <linux/netdevice.h>
+#include <net/netns/generic.h>
+
+struct erdma_net {
+	struct list_head erdma_list;
+	struct socket *rsvd_sock[16];
+};
+
+static unsigned int erdma_net_id;
+
 bool compat_mode;
 module_param(compat_mode, bool, 0444);
 MODULE_PARM_DESC(compat_mode, "compat mode support");
+
+bool legacy_mode;
+module_param(legacy_mode, bool, 0444);
+MODULE_PARM_DESC(legacy_mode, "legacy mode support");
 
 u16 reserve_ports_base = 0x7790;
 module_param(reserve_ports_base, ushort, 0444);
 MODULE_PARM_DESC(reserve_ports_base, "ports reserved in RoCE mode");
 
+bool use_zeronet;
+module_param(use_zeronet, bool, 0444);
+MODULE_PARM_DESC(use_zeronet, "can use zeronet");
 
 int erdma_create_ah(struct ib_ah *ibah,
 		    struct rdma_ah_init_attr *init_attr,
@@ -25,7 +46,6 @@ int erdma_create_ah(struct ib_ah *ibah,
 {
 	return -EOPNOTSUPP;
 }
-
 
 int erdma_destroy_ah(struct ib_ah *ibah, u32 flags)
 {
@@ -140,15 +160,13 @@ int erdma_handle_compat_attr(struct erdma_qp *qp, struct ib_qp_attr *attr,
 	return 0;
 }
 
-struct socket *rsvd_sock[16];
-
-static int erdma_port_init(void)
+static int erdma_port_init(struct net *net, struct socket **rsvd_sock)
 {
 	struct sockaddr_in laddr;
 	int ret = 0, i, j;
 
 	for (i = 0; i < 16; i++) {
-		ret = __sock_create(current->nsproxy->net_ns, AF_INET,
+		ret = __sock_create(net, AF_INET,
 				    SOCK_STREAM, IPPROTO_TCP, &rsvd_sock[i], 1);
 		if (ret < 0)
 			goto err_out;
@@ -166,13 +184,15 @@ static int erdma_port_init(void)
 	return 0;
 
 err_out:
-	for (j = 0; j < i; j++)
+	for (j = 0; j < i; j++) {
 		sock_release(rsvd_sock[j]);
+		rsvd_sock[j] = NULL;
+	}
 
 	return ret;
 }
 
-static void erdma_port_release(void)
+static void erdma_port_release(struct socket **rsvd_sock)
 {
 	int i;
 
@@ -180,8 +200,37 @@ static void erdma_port_release(void)
 		return;
 
 	for (i = 0; i < 16; i++)
-		sock_release(rsvd_sock[i]);
+		if (rsvd_sock[i])
+			sock_release(rsvd_sock[i]);
 }
+
+static __net_init int erdma_init_net(struct net *net)
+{
+	struct erdma_net *node = net_generic(net, erdma_net_id);
+
+	return erdma_port_init(net, node->rsvd_sock);
+}
+
+static void __net_exit erdma_exit_batch_net(struct list_head *net_list)
+{
+	struct net *net;
+	LIST_HEAD(list);
+
+	rtnl_lock();
+	list_for_each_entry(net, net_list, exit_list) {
+		struct erdma_net *node = net_generic(net, erdma_net_id);
+
+		erdma_port_release(node->rsvd_sock);
+	}
+	rtnl_unlock();
+}
+
+static struct pernet_operations erdma_net_ops = {
+	.init = erdma_init_net,
+	.exit_batch = erdma_exit_batch_net,
+	.id   = &erdma_net_id,
+	.size = sizeof(struct erdma_net),
+};
 
 int erdma_compat_init(void)
 {
@@ -190,8 +239,7 @@ int erdma_compat_init(void)
 	if (!compat_mode)
 		return 0;
 
-
-	ret = erdma_port_init();
+	ret = register_pernet_subsys(&erdma_net_ops);
 
 	return ret;
 }
@@ -201,6 +249,6 @@ void erdma_compat_exit(void)
 	if (!compat_mode)
 		return;
 
-	erdma_port_release();
+	unregister_pernet_subsys(&erdma_net_ops);
 
 }

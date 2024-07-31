@@ -611,7 +611,6 @@ int erdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *send_wr,
 	if (!send_wr)
 		return -EINVAL;
 
-
 	spin_lock_irqsave(&qp->kern_qp.sq_lock, flags);
 	sq_pi = qp->kern_qp.sq_pi;
 
@@ -682,7 +681,6 @@ int erdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *recv_wr,
 	struct erdma_qp *qp = to_eqp(ibqp);
 	unsigned long flags;
 	int ret = 0;
-
 
 	spin_lock_irqsave(&qp->kern_qp.rq_lock, flags);
 

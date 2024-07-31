@@ -151,6 +151,7 @@ static void erdma_put_work(struct erdma_cm_work *work)
 static void erdma_cep_set_inuse(struct erdma_cep *cep)
 {
 	unsigned long flags;
+
 	ibdev_dbg(&cep->dev->ibdev, " (CEP 0x%p): use %d\n", cep, cep->in_use);
 
 	spin_lock_irqsave(&cep->lock, flags);
@@ -1454,8 +1455,7 @@ int erdma_create_listen(struct iw_cm_id *id, int backlog)
 
 	if (addr_family == AF_INET) {
 		struct sockaddr_in *laddr = &to_sockaddr_in(id->local_addr);
-
-		if (ipv4_is_zeronet(laddr->sin_addr.s_addr))
+		if (ipv4_is_zeronet(laddr->sin_addr.s_addr) && use_zeronet)
 			s->sk->sk_bound_dev_if = dev->netdev->ifindex;
 		ret = s->ops->bind(s, (struct sockaddr *)laddr,
 			   sizeof(struct sockaddr_in));

@@ -50,7 +50,7 @@ int erdma_query_ext_attr(struct erdma_dev *dev, void *out)
 		sizeof(struct erdma_cmdq_query_ext_attr_resp));
 }
 
-static int erdma_set_ext_attr(struct erdma_dev *dev, struct erdma_ext_attr *attr)
+int erdma_set_ext_attr(struct erdma_dev *dev, struct erdma_ext_attr *attr)
 {
 	struct erdma_cmdq_set_ext_attr_req req;
 	int ret;
@@ -58,10 +58,7 @@ static int erdma_set_ext_attr(struct erdma_dev *dev, struct erdma_ext_attr *attr
 	erdma_cmdq_build_reqhdr(&req.hdr, CMDQ_SUBMOD_COMMON,
 				CMDQ_OPCODE_SET_EXT_ATTR);
 
-	if (attr->attr_mask & ERDMA_EXT_ATTR_DACK_COUNT_MASK)
-		req.dack_count = attr->dack_count;
-
-	req.attr_mask = attr->attr_mask;
+	memcpy(&req.attr, attr, sizeof(*attr));
 
 	ret = erdma_post_cmd_wait(&dev->cmdq, &req, sizeof(req), NULL, NULL);
 
@@ -77,6 +74,16 @@ int erdma_set_dack_count(struct erdma_dev *dev, u32 value)
 
 	attr.attr_mask = ERDMA_EXT_ATTR_DACK_COUNT_MASK;
 	attr.dack_count = (u8)value;
+
+	return erdma_set_ext_attr(dev, &attr);
+}
+
+int erdma_enable_legacy_mode(struct erdma_dev *dev, u32 value)
+{
+	struct erdma_ext_attr attr;
+
+	attr.attr_mask = ERDMA_EXT_ATTR_LEGACY_MODE_MASK;
+	attr.enable = value != 0 ? 1 : 0;
 
 	return erdma_set_ext_attr(dev, &attr);
 }
