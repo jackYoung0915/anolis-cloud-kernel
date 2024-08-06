@@ -421,3 +421,53 @@ void resctrl_arch_reset_resources(void)
 	for_each_capable_rdt_resource(r)
 		reset_all_ctrls(r);
 }
+
+u32 resctrl_arch_event_config_get(void *dom, enum resctrl_event_id eventid)
+{
+	struct rdt_domain *d = dom;
+	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+
+	switch (eventid) {
+	case QOS_L3_OCCUP_EVENT_ID:
+	case QOS_MC_MBM_BPS_EVENT_ID:
+		break;
+	case QOS_L3_MBM_TOTAL_EVENT_ID:
+		return hw_dom->mbm_total_cfg;
+	case QOS_L3_MBM_LOCAL_EVENT_ID:
+		return hw_dom->mbm_local_cfg;
+	}
+
+	/* Never expect to get here */
+	WARN_ON_ONCE(1);
+
+	return INVALID_CONFIG_VALUE;
+}
+
+void resctrl_arch_event_config_set(void *info)
+{
+	struct resctrl_mon_config_info *mon_info = info;
+	struct rdt_hw_domain *hw_dom;
+	unsigned int index;
+
+	index = mon_event_config_index_get(mon_info->evtid);
+	if (index == INVALID_CONFIG_INDEX)
+		return;
+
+	wrmsr(MSR_IA32_EVT_CFG_BASE + index, mon_info->mon_config, 0);
+
+	hw_dom = resctrl_to_arch_dom(mon_info->d);
+
+	switch (mon_info->evtid) {
+	case QOS_L3_OCCUP_EVENT_ID:
+	case QOS_MC_MBM_BPS_EVENT_ID:
+		break;
+	case QOS_L3_MBM_TOTAL_EVENT_ID:
+		hw_dom->mbm_total_cfg = mon_info->mon_config;
+		break;
+	case QOS_L3_MBM_LOCAL_EVENT_ID:
+		hw_dom->mbm_local_cfg =  mon_info->mon_config;
+		break;
+	}
+
+	mon_info->err = 0;
+}

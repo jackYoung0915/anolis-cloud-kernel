@@ -307,8 +307,6 @@ struct rdt_domain *resctrl_arch_find_domain(struct rdt_resource *r, int id);
 int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid);
 
 bool resctrl_arch_is_evt_configurable(enum resctrl_event_id evt);
-void resctrl_arch_mon_event_config_write(void *info);
-void resctrl_arch_mon_event_config_read(void *info);
 
 /* For use by arch code to remap resctrl's smaller CDP CLOSID range */
 static inline u32 resctrl_get_config_index(u32 closid,
