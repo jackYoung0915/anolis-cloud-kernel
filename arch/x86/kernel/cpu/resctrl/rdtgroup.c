@@ -391,6 +391,14 @@ void resctrl_arch_mbm_cntr_assign_disable(void)
 	}
 }
 
+bool resctrl_arch_get_mbm_cntr_assign_enable(void)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
+
+	return hw_res->mbm_cntr_assign_enabled;
+}
+
 static void rdtgroup_abmc_cfg(void *info)
 {
 	u64 *msrval = info;
