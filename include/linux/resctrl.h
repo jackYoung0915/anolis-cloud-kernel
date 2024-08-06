@@ -180,11 +180,20 @@ struct resctrl_membw {
 };
 
 /**
+ * struct resctrl_mon - Monitoring related data
+ * @num_rmid:		Number of RMIDs available
+ * @evt_list:		List of monitoring events
+ */
+struct resctrl_mon {
+	int			num_rmid;
+	struct list_head	evt_list;
+};
+
+/**
  * struct rdt_resource - attributes of a resctrl resource
  * @rid:		The index of the resource
  * @alloc_capable:	Is allocation available on this machine
  * @mon_capable:	Is monitor feature available on this machine
- * @num_rmid:		Number of RMIDs available
  * @cache_level:	Which cache level defines scope of this resource
  * @cache:		Cache allocation related data
  * @membw:		If the component has bandwidth controls, their properties.
@@ -193,7 +202,6 @@ struct resctrl_membw {
  * @data_width:		Character width of data when displaying
  * @default_ctrl:	Specifies default cache cbm or memory B/W percent.
  * @format_str:		Per resource format string to show domain value
- * @evt_list:		List of monitoring events
  * @fflags:		flags to choose base and info files
  * @mbm_cfg_mask:	Bandwidth sources that can be tracked when Bandwidth
  *			Monitoring Event Configuration (BMEC) is supported.
@@ -203,16 +211,15 @@ struct rdt_resource {
 	int			rid;
 	bool			alloc_capable;
 	bool			mon_capable;
-	int			num_rmid;
 	int			cache_level;
 	struct resctrl_cache	cache;
 	struct resctrl_membw	membw;
+	struct resctrl_mon mon;
 	struct list_head	domains;
 	char			*name;
 	int			data_width;
 	u32			default_ctrl;
 	const char		*format_str;
-	struct list_head	evt_list;
 	unsigned long		fflags;
 	unsigned int		mbm_cfg_mask;
 	bool			cdp_capable;
