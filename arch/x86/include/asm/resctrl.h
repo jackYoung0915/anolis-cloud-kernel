@@ -219,6 +219,9 @@ static inline void resctrl_arch_mon_ctx_free(struct rdt_resource *r, int evtid,
 int resctrl_arch_mbm_cntr_assign_enable(void);
 void resctrl_arch_mbm_cntr_assign_disable(void);
 
+void resctrl_arch_event_config_set(void *info);
+u32 resctrl_arch_event_config_get(void *d, enum resctrl_event_id eventid);
+
 u64 resctrl_arch_get_prefetch_disable_bits(void);
 int resctrl_arch_pseudo_lock_fn(void *_plr);
 int resctrl_arch_measure_cycles_lat_fn(void *_plr);

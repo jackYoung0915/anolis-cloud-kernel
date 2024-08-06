@@ -741,16 +741,18 @@ bool resctrl_arch_is_evt_configurable(enum resctrl_event_id evt)
 	}
 }
 
-void resctrl_arch_mon_event_config_read(void *info)
+u32 resctrl_arch_event_config_get(void *info, enum resctrl_event_id eventid)
 {
 	struct mpam_resctrl_dom *dom;
 	struct resctrl_mon_config_info *mon_info = info;
 
 	dom = container_of(mon_info->d, struct mpam_resctrl_dom, resctrl_dom);
 	mon_info->mon_config = dom->mbm_local_evt_cfg & MAX_EVT_CONFIG_BITS;
+
+	return mon_info->mon_config;
 }
 
-void resctrl_arch_mon_event_config_write(void *info)
+void resctrl_arch_event_config_set(void *info)
 {
 	struct mpam_resctrl_dom *dom;
 	struct resctrl_mon_config_info *mon_info = info;
