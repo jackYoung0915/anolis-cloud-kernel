@@ -875,7 +875,7 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 		 * For mpam, each control group has its own pmg/rmid
 		 * space.
 		 */
-		r->num_rmid = 1;
+		r->mon.num_rmid = 1;
 	}
 
 	return 0;
@@ -893,7 +893,7 @@ int mpam_resctrl_setup(void)
 	for (i = 0; i < RDT_NUM_RESOURCES; i++) {
 		res = &mpam_resctrl_exports[i];
 		INIT_LIST_HEAD(&res->resctrl_res.domains);
-		INIT_LIST_HEAD(&res->resctrl_res.evt_list);
+		INIT_LIST_HEAD(&res->resctrl_res.mon.evt_list);
 		res->resctrl_res.rid = i;
 	}
 
