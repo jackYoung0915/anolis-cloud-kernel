@@ -336,6 +336,68 @@ int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level l, bool hwdrc_mb)
 	return 0;
 }
 
+/*
+ * Update L3_QOS_EXT_CFG MSR on all the CPUs associated with the resource.
+ */
+static void resctrl_abmc_set_one_amd(void *arg)
+{
+	bool *enable = arg;
+
+	if (*enable)
+		msr_set_bit(MSR_IA32_L3_QOS_EXT_CFG, ABMC_ENABLE_BIT);
+	else
+		msr_clear_bit(MSR_IA32_L3_QOS_EXT_CFG, ABMC_ENABLE_BIT);
+}
+
+static void _resctrl_abmc_enable(struct rdt_resource *r, bool enable)
+{
+	struct rdt_domain *d;
+
+	/*
+	 * Hardware counters will reset after switching the monitor mode.
+	 * Reset the architectural state so that reading of hardware
+	 * counter is not considered as an overflow in the next update.
+	 */
+	list_for_each_entry(d, &r->domains, list) {
+		on_each_cpu_mask(&d->cpu_mask,
+				 resctrl_abmc_set_one_amd, &enable, 1);
+		resctrl_arch_reset_rmid_all(r, d);
+	}
+}
+
+bool resctrl_arch_get_abmc_enabled(void)
+{
+	return rdt_resources_all[RDT_RESOURCE_L3].mbm_cntr_assign_enabled;
+}
+
+int resctrl_arch_mbm_cntr_assign_enable(void)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	if (r->mon.mbm_cntr_assignable && !hw_res->mbm_cntr_assign_enabled) {
+		_resctrl_abmc_enable(r, true);
+		hw_res->mbm_cntr_assign_enabled = true;
+	}
+
+	return 0;
+}
+
+void resctrl_arch_mbm_cntr_assign_disable(void)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	if (hw_res->mbm_cntr_assign_enabled) {
+		_resctrl_abmc_enable(r, false);
+		hw_res->mbm_cntr_assign_enabled = false;
+	}
+}
+
 static int reset_all_ctrls(struct rdt_resource *r)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
