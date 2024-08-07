@@ -1349,6 +1349,9 @@ config DUPTEXT
 config IOMMU_MM_DATA
 	bool
 
+config NUMA_MEMBLKS
+	bool
+
 menuconfig BPF_MM
 	bool "BPF-based Memory Management (EXPERIMENTAL)"
 	depends on BPF_SYSCALL
