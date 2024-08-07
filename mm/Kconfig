@@ -1352,6 +1352,14 @@ config IOMMU_MM_DATA
 config NUMA_MEMBLKS
 	bool
 
+config NUMA_EMU
+	bool "NUMA emulation"
+	depends on NUMA_MEMBLKS
+	help
+	  Enable NUMA emulation. A flat machine will be split
+	  into virtual nodes when booted with "numa=fake=N", where N is the
+	  number of nodes. This is only useful for debugging.
+
 menuconfig BPF_MM
 	bool "BPF-based Memory Management (EXPERIMENTAL)"
 	depends on BPF_SYSCALL
