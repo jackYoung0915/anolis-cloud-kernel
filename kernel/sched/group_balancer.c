@@ -105,6 +105,9 @@ const struct cpumask *cpu_llc_mask(int cpu)
 {
 	struct sched_domain *llc = rcu_dereference(per_cpu(sd_llc, cpu));
 
+	if (!llc)
+		return cpumask_of(cpu);
+
 	return (const struct cpumask *)to_cpumask(llc->span);
 }
 
