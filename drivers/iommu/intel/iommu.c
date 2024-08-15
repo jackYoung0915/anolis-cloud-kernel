@@ -1956,6 +1956,7 @@ static void domain_context_clear_one(struct device_domain_info *info, u8 bus, u8
 {
 	struct intel_iommu *iommu = info->iommu;
 	struct context_entry *context;
+	u16 did;
 
 	spin_lock(&iommu->lock);
 	context = iommu_context_addr(iommu, bus, devfn, 0);
@@ -1964,10 +1965,11 @@ static void domain_context_clear_one(struct device_domain_info *info, u8 bus, u8
 		return;
 	}
 
+	did = context_domain_id(context);
 	context_clear_entry(context);
 	__iommu_flush_cache(iommu, context, sizeof(*context));
 	spin_unlock(&iommu->lock);
-	intel_context_flush_present(info, context, true);
+	intel_context_flush_present(info, context, did, true);
 }
 
 static int domain_setup_first_level(struct intel_iommu *iommu,
@@ -4322,6 +4324,7 @@ static int context_flip_pri(struct device_domain_info *info, bool enable)
 	struct intel_iommu *iommu = info->iommu;
 	u8 bus = info->bus, devfn = info->devfn;
 	struct context_entry *context;
+	u16 did;
 
 	spin_lock(&iommu->lock);
 	if (context_copied(iommu, bus, devfn)) {
@@ -4334,6 +4337,7 @@ static int context_flip_pri(struct device_domain_info *info, bool enable)
 		spin_unlock(&iommu->lock);
 		return -ENODEV;
 	}
+	did = context_domain_id(context);
 
 	if (enable)
 		context_set_sm_pre(context);
@@ -4342,7 +4346,7 @@ static int context_flip_pri(struct device_domain_info *info, bool enable)
 
 	if (!ecap_coherent(iommu->ecap))
 		clflush_cache_range(context, sizeof(*context));
-	intel_context_flush_present(info, context, true);
+	intel_context_flush_present(info, context, did, true);
 	spin_unlock(&iommu->lock);
 
 	return 0;
