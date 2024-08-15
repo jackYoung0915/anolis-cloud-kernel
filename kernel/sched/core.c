@@ -8435,7 +8435,9 @@ void __init sched_init_smp(void)
 
 #ifdef CONFIG_GROUP_BALANCER
 	cpumask_copy(&root_task_group.soft_cpus_allowed, cpu_online_mask);
+	root_task_group.soft_cpus_allowed_ptr = &root_task_group.soft_cpus_allowed;
 #endif
+
 	/* Move init over to a non-isolated CPU */
 	if (set_cpus_allowed_ptr(current, housekeeping_cpumask(HK_TYPE_DOMAIN)) < 0)
 		BUG();
@@ -9026,6 +9028,17 @@ struct task_group *sched_create_group(struct task_group *parent)
 #endif
 #ifdef CONFIG_GROUP_BALANCER
 	cpumask_copy(&tg->soft_cpus_allowed, &parent->soft_cpus_allowed);
+	if (group_balancer_enabled()) {
+		read_lock(&group_balancer_lock);
+		if (parent->soft_cpus_allowed_ptr != &parent->soft_cpus_allowed ||
+		    parent->group_balancer)
+			tg->soft_cpus_allowed_ptr = parent->soft_cpus_allowed_ptr;
+		else
+			tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+		read_unlock(&group_balancer_lock);
+	} else {
+		tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+	}
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 #endif
@@ -10035,7 +10048,7 @@ static int cpu_soft_cpus_show(struct seq_file *sf, void *v)
 {
 	struct task_group *tg = css_tg(seq_css(sf));
 
-	seq_printf(sf, "%*pbl\n", cpumask_pr_args(&tg->soft_cpus_allowed));
+	seq_printf(sf, "%*pbl\n", cpumask_pr_args(tg->soft_cpus_allowed_ptr));
 
 	return 0;
 }
@@ -10049,6 +10062,13 @@ static ssize_t cpu_soft_cpus_write(struct kernfs_open_file *of,
 	int retval;
 
 	if (tg == &root_task_group)
+		return -EACCES;
+
+	/*
+	 * If any ancestor of tg has already enabled group_balancer,
+	 * it's not allowed to edit its soft_cpus_allowed.
+	 */
+	if (tg->soft_cpus_allowed_ptr != &tg->soft_cpus_allowed)
 		return -EACCES;
 
 	if (!*buf) {
@@ -10116,6 +10136,22 @@ out:
 	return retval;
 }
 
+static int tg_set_soft_cpus_down(struct task_group *tg, void *data)
+{
+	struct task_group *ancestor = (struct task_group *)data;
+
+	tg->soft_cpus_allowed_ptr = &ancestor->soft_cpus_allowed;
+
+	return 0;
+}
+
+static int tg_unset_soft_cpus_down(struct task_group *tg, void *data)
+{
+	tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+
+	return 0;
+}
+
 static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 					struct cftype *cftype, u64 new)
 {
@@ -10142,6 +10178,9 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 		retval = validate_group_balancer(tg);
 		if (retval)
 			goto out;
+		walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, (void *)tg);
+	} else {
+		walk_tg_tree_from(tg, tg_unset_soft_cpus_down, tg_nop, NULL);
 	}
 	tg->group_balancer = new;
 out:
