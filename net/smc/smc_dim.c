@@ -188,8 +188,12 @@ static bool smc_dim_check_utilization(struct dim *dim)
 
 	softirq = div_u64(kcpustat_field(&kcpustat, CPUTIME_SOFTIRQ, cpu), NSEC_PER_USEC);
 	diff_wall = wall - smc_dim->prev_wall;
-	idle_percent = div64_u64(100 * (wall_idle - smc_dim->prev_idle), diff_wall);
-	softirq_percent = div64_u64(100 * (softirq - smc_dim->prev_softirq), diff_wall);
+
+	/* 100 percent means utilization unsatisfy, do not dim */
+	idle_percent = !diff_wall ? 100 :
+			div64_u64(100 * (wall_idle - smc_dim->prev_idle), diff_wall);
+	softirq_percent = !diff_wall ? 100 :
+			  div64_u64(100 * (softirq - smc_dim->prev_softirq), diff_wall);
 
 	smc_dim->prev_softirq = softirq;
 	smc_dim->prev_idle = wall_idle;
