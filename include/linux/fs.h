@@ -2352,6 +2352,10 @@ static inline void kiocb_clone(struct kiocb *kiocb, struct kiocb *kiocb_src,
 #define __I_LRU_ISOLATING	19
 #define I_LRU_ISOLATING		(1 << __I_LRU_ISOLATING)
 
+#ifdef CONFIG_KIDLED
+#define I_KIDLED_YOUNG		(1 << 31)
+#endif
+
 #define I_DIRTY_INODE (I_DIRTY_SYNC | I_DIRTY_DATASYNC)
 #define I_DIRTY (I_DIRTY_INODE | I_DIRTY_PAGES)
 #define I_DIRTY_ALL (I_DIRTY | I_DIRTY_TIME)
