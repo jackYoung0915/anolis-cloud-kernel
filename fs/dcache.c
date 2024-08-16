@@ -686,10 +686,18 @@ static inline bool retain_dentry(struct dentry *dentry)
 
 	/* retain; LRU fodder */
 	dentry->d_lockref.count--;
-	if (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST)))
+	if (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST))) {
 		d_lru_add(dentry);
-	else if (unlikely(!(dentry->d_flags & DCACHE_REFERENCED)))
+		return true;
+	}
+
+	if (unlikely(!(dentry->d_flags & DCACHE_REFERENCED)))
 		dentry->d_flags |= DCACHE_REFERENCED;
+#ifdef CONFIG_KIDLED
+	/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
+	if (unlikely(!(dentry->d_flags & DCACHE_KIDLED_YOUNG)))
+		dentry->d_flags |= DCACHE_KIDLED_YOUNG;
+#endif
 	return true;
 }
 
@@ -1309,7 +1317,8 @@ static enum lru_status dentry_lru_cold_count(struct list_head *item,
 		goto out;
 
 	if (READ_ONCE(dentry->d_lockref.count) ||
-	    (dentry->d_flags & DCACHE_REFERENCED)) {
+	    (dentry->d_flags & DCACHE_KIDLED_YOUNG)) {
+		dentry->d_flags &= ~DCACHE_KIDLED_YOUNG;
 		if (dentry_age)
 			kidled_set_slab_age(dentry, 0);
 		goto out;
@@ -1341,7 +1350,11 @@ static inline bool valid_cold_dentry_check(struct dentry *dentry)
 	assert_spin_locked(&dentry->d_lock);
 	if (dentry->d_lockref.count)
 		return false;
-	if (dentry->d_flags & DCACHE_REFERENCED)
+	/*
+	 * Since RECLAIM_COLDPGS depends on KIDLED, check
+	 * DCACHE_KIDLED_YOUNG instead of DCACHE_REFERENCED.
+	 */
+	if (dentry->d_flags & DCACHE_KIDLED_YOUNG)
 		return false;
 
 	return true;
