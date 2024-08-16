@@ -468,8 +468,13 @@ static void __inode_add_lru(struct inode *inode, bool rotate)
 
 	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_inc(nr_unused);
-	else if (rotate)
+	else if (rotate) {
 		inode->i_state |= I_REFERENCED;
+#ifdef CONFIG_KIDLED
+		/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
+		inode->i_state |= I_KIDLED_YOUNG;
+#endif
+	}
 }
 
 /*
@@ -948,7 +953,8 @@ static enum lru_status inode_lru_cold_count(struct list_head *item,
 		goto out;
 
 	if (atomic_read(&inode->i_count) ||
-	    (inode->i_state & I_REFERENCED)) {
+	    (inode->i_state & I_KIDLED_YOUNG)) {
+		inode->i_state &= ~I_KIDLED_YOUNG;
 		if (unlikely(inode_age))
 			kidled_set_slab_age(inode, 0);
 		goto out;
@@ -988,7 +994,11 @@ static inline bool valid_cold_inode_check(struct inode *inode)
 	assert_spin_locked(&inode->i_lock);
 	if (atomic_read(&inode->i_count))
 		return false;
-	if (inode->i_state & I_REFERENCED)
+	/*
+	 * Since RECLAIM_COLDPGS depends on KIDLED, check
+	 * I_KIDLED_YOUNG instead of I_REFERENCED.
+	 */
+	if (inode->i_state & I_KIDLED_YOUNG)
 		return false;
 	if (inode_has_buffers(inode))
 		return false;
