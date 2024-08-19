@@ -24,6 +24,22 @@ struct group_balancer_sched_domain {
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
+	CK_KABI_RESERVE(9)
+	CK_KABI_RESERVE(10)
+	CK_KABI_RESERVE(11)
+	CK_KABI_RESERVE(12)
+	CK_KABI_RESERVE(13)
+	CK_KABI_RESERVE(14)
+	CK_KABI_RESERVE(15)
+	CK_KABI_RESERVE(16)
 	unsigned long					span[];
 };
 
@@ -74,12 +90,20 @@ struct group_balancer_topology_level {
 	char			*topology_name;
 	struct list_head	domains;
 	bool			skip;
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 struct group_balancer_size_level {
 	int			size;
 	/* Use list temporarily, we will change to use rb_tree later.*/
 	struct list_head	domains;
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 LIST_HEAD(group_balancer_sched_domains);
@@ -93,6 +117,10 @@ static struct kernfs_node *group_balancer_fs_root_kn;
 struct group_balancer_fs_context {
 	struct kernfs_fs_context	kfc;
 	void				*tmp;
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 struct gftype {
@@ -103,6 +131,10 @@ struct gftype {
 			struct seq_file *sf, void *v);
 	ssize_t (*write)(struct kernfs_open_file *of,
 			 char *buf, size_t nbytes, loff_t off);
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 const struct cpumask *cpu_llc_mask(int cpu)
