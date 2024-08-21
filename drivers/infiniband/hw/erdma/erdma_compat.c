@@ -34,7 +34,7 @@ MODULE_PARM_DESC(legacy_mode, "legacy mode support");
 
 u16 reserve_ports_base = 0x7790;
 module_param(reserve_ports_base, ushort, 0444);
-MODULE_PARM_DESC(reserve_ports_base, "ports reserved in RoCE mode");
+MODULE_PARM_DESC(reserve_ports_base, "ports reserved in compat mode");
 
 bool use_zeronet;
 module_param(use_zeronet, bool, 0444);
