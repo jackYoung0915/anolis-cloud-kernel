@@ -345,9 +345,11 @@ int erdma_query_device(struct ib_device *ibdev, struct ib_device_attr *attr,
 		       (((dev->attrs.fw_version >> 8) & 0xFF) << 16) |
 		       ((dev->attrs.fw_version & 0xFF));
 
+	read_lock(&dev->netdev_lock);
 	if (dev->netdev)
 		addrconf_addr_eui48((u8 *)&attr->sys_image_guid,
 				    dev->netdev->dev_addr);
+	read_unlock(&dev->netdev_lock);
 
 	return 0;
 }
@@ -371,12 +373,10 @@ int erdma_query_port(struct ib_device *ibdev, port_t port,
 	memset(attr, 0, sizeof(*attr));
 
 	attr->state = dev->port_state;
-	if (dev->netdev) {
-		attr->active_speed = IB_SPEED_EDR;
-		attr->active_width = IB_WIDTH_4X;
-		attr->max_mtu = ib_mtu_int_to_enum(dev->netdev->mtu);
-		attr->active_mtu = ib_mtu_int_to_enum(dev->netdev->mtu);
-	}
+	attr->active_speed = IB_SPEED_EDR;
+	attr->active_width = IB_WIDTH_4X;
+	attr->max_mtu = ib_mtu_int_to_enum(dev->mtu);
+	attr->active_mtu = ib_mtu_int_to_enum(dev->mtu);
 
 	if (compat_mode)
 		attr->gid_tbl_len = 16;
@@ -1865,7 +1865,7 @@ int erdma_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr,
 	qp_attr->cap.max_send_sge = qp->attrs.max_send_sge;
 	qp_attr->cap.max_recv_sge = qp->attrs.max_recv_sge;
 
-	qp_attr->path_mtu = ib_mtu_int_to_enum(dev->netdev->mtu);
+	qp_attr->path_mtu = ib_mtu_int_to_enum(dev->mtu);
 	qp_attr->max_rd_atomic = qp->attrs.irq_size;
 	qp_attr->max_dest_rd_atomic = qp->attrs.orq_size;
 
@@ -2024,8 +2024,10 @@ struct net_device *erdma_get_netdev(struct ib_device *device, port_t port_num)
 {
 	struct erdma_dev *edev = to_edev(device);
 
+	read_lock(&edev->netdev_lock);
 	if (edev->netdev)
 		dev_hold(edev->netdev);
+	read_unlock(&edev->netdev_lock);
 
 	return edev->netdev;
 }

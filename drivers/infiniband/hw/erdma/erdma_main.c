@@ -54,8 +54,6 @@ static void erdma_remove_dev_from_list(struct erdma_dev *dev)
 	synchronize_rcu();
 	erdma_device_put(dev);
 	wait_for_completion(&dev->unreg_completion);
-	if (dev->netdev)
-		dev_put(dev->netdev);
 }
 
 static int erdma_netdev_event(struct notifier_block *nb, unsigned long event,
@@ -88,17 +86,21 @@ static int erdma_netdev_event(struct notifier_block *nb, unsigned long event,
 		break;
 	case NETDEV_UNREGISTER:
 		ib_device_set_netdev(&dev->ibdev, NULL, 1);
+		write_lock(&dev->netdev_lock);
 		dev->netdev = NULL;
+		write_unlock(&dev->netdev_lock);
 		break;
 	case NETDEV_REGISTER:
 		if (netdev->lower_level > 1)
 			break;
+		write_lock(&dev->netdev_lock);
 		if (dev->netdev == NULL &&
 		    ether_addr_equal_unaligned(netdev->perm_addr,
 					       dev->attrs.peer_addr)) {
 			ib_device_set_netdev(&dev->ibdev, netdev, 1);
 			dev->netdev = netdev;
 		}
+		write_unlock(&dev->netdev_lock);
 		break;
 	case NETDEV_CHANGEADDR:
 	case NETDEV_GOING_DOWN:
@@ -145,6 +147,7 @@ static int erdma_enum_and_get_netdev(struct erdma_dev *dev)
 						   "failed (%d) to link netdev", ret);
 					return ret;
 				}
+				/* This is initialize flow, no need use rwlock to protect netdev */
 				dev->netdev = netdev;
 				break;
 			}
@@ -191,6 +194,7 @@ static int erdma_device_register(struct erdma_dev *dev)
 		}
 	}
 
+	rwlock_init(&dev->netdev_lock);
 	ret = erdma_enum_and_get_netdev(dev);
 	if (ret)
 		return -EPROBE_DEFER;
@@ -281,6 +285,7 @@ static void erdma_dwqe_resource_init(struct erdma_dev *dev)
 static int erdma_request_vectors(struct erdma_dev *dev)
 {
 	int expect_irq_num = min(num_possible_cpus() + 1, vector_num);
+
 	dev->attrs.irq_num = pci_alloc_irq_vectors(dev->pdev, 1, expect_irq_num,
 						   PCI_IRQ_MSIX);
 	if (dev->attrs.irq_num <= 0) {

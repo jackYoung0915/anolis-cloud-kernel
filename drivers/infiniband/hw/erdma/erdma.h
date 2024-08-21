@@ -208,6 +208,7 @@ enum {
 struct erdma_dev {
 	struct ib_device ibdev;
 	struct net_device *netdev;
+	rwlock_t netdev_lock;
 	struct pci_dev *pdev;
 	struct notifier_block netdev_nb;
 	struct workqueue_struct *reflush_wq;
