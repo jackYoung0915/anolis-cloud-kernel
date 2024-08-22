@@ -1316,11 +1316,19 @@ static enum lru_status dentry_lru_cold_count(struct list_head *item,
 	    kidled_is_slab_scanned(dentry_age, kidled_scan_rounds))
 		goto out;
 
-	if (READ_ONCE(dentry->d_lockref.count) ||
-	    (dentry->d_flags & DCACHE_KIDLED_YOUNG)) {
-		dentry->d_flags &= ~DCACHE_KIDLED_YOUNG;
+	if (READ_ONCE(dentry->d_lockref.count)) {
 		if (dentry_age)
 			kidled_set_slab_age(dentry, 0);
+		goto out;
+	}
+
+	if (dentry->d_flags & DCACHE_KIDLED_YOUNG) {
+		if (dentry_age)
+			kidled_set_slab_age(dentry, 0);
+		if (spin_trylock(&dentry->d_lock)) {
+			dentry->d_flags &= ~DCACHE_KIDLED_YOUNG;
+			spin_unlock(&dentry->d_lock);
+		}
 		goto out;
 	}
 
