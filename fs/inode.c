@@ -952,11 +952,19 @@ static enum lru_status inode_lru_cold_count(struct list_head *item,
 	    kidled_is_slab_scanned(inode_age, kidled_scan_rounds))
 		goto out;
 
-	if (atomic_read(&inode->i_count) ||
-	    (inode->i_state & I_KIDLED_YOUNG)) {
-		inode->i_state &= ~I_KIDLED_YOUNG;
+	if (atomic_read(&inode->i_count)) {
 		if (unlikely(inode_age))
 			kidled_set_slab_age(inode, 0);
+		goto out;
+	}
+
+	if (inode->i_state & I_KIDLED_YOUNG) {
+		if (unlikely(inode_age))
+			kidled_set_slab_age(inode, 0);
+		if (spin_trylock(&inode->i_lock)) {
+			inode->i_state &= ~I_KIDLED_YOUNG;
+			spin_unlock(&inode->i_lock);
+		}
 		goto out;
 	}
 
