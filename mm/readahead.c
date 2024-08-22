@@ -545,6 +545,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 
 	orders = file_orders_always() | BIT(0);
 	new_order = select_new_order(new_order, ilog2(ra->size), orders);
+	new_order = min(mapping_max_folio_order(mapping), new_order);
 
 	/* See comment in page_cache_ra_unbounded() */
 	nofs = memalloc_nofs_save();
