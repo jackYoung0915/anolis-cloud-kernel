@@ -29,6 +29,8 @@ struct coredump_params {
 	size_t vma_data_size;
 	struct core_vma_metadata *vma_meta;
 	struct pid *pid;
+
+	CK_KABI_RESERVE(1)
 };
 
 /*
