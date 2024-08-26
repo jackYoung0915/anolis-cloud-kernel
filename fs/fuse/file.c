@@ -2080,6 +2080,46 @@ static struct fuse_writepage_args *fuse_writepage_args_alloc(void)
 
 }
 
+static void fuse_writepage_args_page_fill(struct fuse_writepage_args *wpa, struct page *page,
+					  struct page *tmp_page, uint32_t page_index)
+{
+	struct inode *inode = page->mapping->host;
+	struct fuse_args_pages *ap = &wpa->ia.ap;
+
+	copy_highpage(tmp_page, page);
+
+	ap->pages[page_index] = tmp_page;
+	ap->descs[page_index].offset = 0;
+	ap->descs[page_index].length = PAGE_SIZE;
+
+	inc_wb_stat(&inode_to_bdi(inode)->wb, WB_WRITEBACK);
+	inc_node_page_state(tmp_page, NR_WRITEBACK_TEMP);
+}
+
+static struct fuse_writepage_args *fuse_writepage_args_setup(struct page *page,
+							     struct fuse_file *ff)
+{
+	struct inode *inode = page->mapping->host;
+	struct fuse_writepage_args *wpa;
+	struct fuse_args_pages *ap;
+
+	wpa = fuse_writepage_args_alloc();
+	if (!wpa)
+		return NULL;
+
+	fuse_write_args_fill(&wpa->ia, ff, page_offset(page), 0);
+	wpa->ia.write.in.write_flags |= FUSE_WRITE_CACHE;
+	wpa->inode = inode;
+	wpa->ia.ff = ff;
+
+	ap = &wpa->ia.ap;
+	ap->args.in_pages = true;
+	ap->args.end = fuse_writepage_end;
+	ap->args.fi = get_fuse_inode(inode);
+
+	return wpa;
+}
+
 static int fuse_writepage_locked(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
@@ -2088,39 +2128,28 @@ static int fuse_writepage_locked(struct page *page)
 	struct fuse_writepage_args *wpa;
 	struct fuse_args_pages *ap;
 	struct page *tmp_page;
+	struct fuse_file *ff;
 	int error = -ENOMEM;
-
-	set_page_writeback(page);
-
-	wpa = fuse_writepage_args_alloc();
-	if (!wpa)
-		goto err;
-	ap = &wpa->ia.ap;
 
 	tmp_page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
 	if (!tmp_page)
-		goto err_free;
+		goto err;
 
 	error = -EIO;
-	wpa->ia.ff = fuse_write_file_get(fi);
-	if (!wpa->ia.ff)
+	ff = fuse_write_file_get(fi);
+	if (!ff)
 		goto err_nofile;
 
-	fuse_write_args_fill(&wpa->ia, wpa->ia.ff, page_offset(page), 0);
+	wpa = fuse_writepage_args_setup(page, ff);
+	error = -ENOMEM;
+	if (!wpa)
+		goto err_writepage_args;
 
-	copy_highpage(tmp_page, page);
-	wpa->ia.write.in.write_flags |= FUSE_WRITE_CACHE;
-	wpa->next = NULL;
-	ap->args.in_pages = true;
+	ap = &wpa->ia.ap;
 	ap->num_pages = 1;
-	ap->pages[0] = tmp_page;
-	ap->descs[0].offset = 0;
-	ap->descs[0].length = PAGE_SIZE;
-	ap->args.end = fuse_writepage_end;
-	wpa->inode = inode;
 
-	inc_wb_stat(&inode_to_bdi(inode)->wb, WB_WRITEBACK);
-	inc_node_page_state(tmp_page, NR_WRITEBACK_TEMP);
+	set_page_writeback(page);
+	fuse_writepage_args_page_fill(wpa, page, tmp_page, 0);
 
 	spin_lock(&fi->lock);
 	tree_insert(&fi->writepages, wpa);
@@ -2132,13 +2161,12 @@ static int fuse_writepage_locked(struct page *page)
 
 	return 0;
 
+err_writepage_args:
+	fuse_file_put(ff, false, false);
 err_nofile:
 	__free_page(tmp_page);
-err_free:
-	kfree(wpa);
 err:
 	mapping_set_error(page->mapping, error);
-	end_page_writeback(page);
 	return error;
 }
 
@@ -2350,34 +2378,19 @@ static int fuse_writepages_fill(struct page *page,
 	 */
 	if (data->wpa == NULL) {
 		err = -ENOMEM;
-		wpa = fuse_writepage_args_alloc();
+		wpa = fuse_writepage_args_setup(page, data->ff);
 		if (!wpa) {
 			__free_page(tmp_page);
 			goto out_unlock;
 		}
+		fuse_file_get(wpa->ia.ff);
 		data->max_pages = 1;
-
 		ap = &wpa->ia.ap;
-		fuse_write_args_fill(&wpa->ia, data->ff, page_offset(page), 0);
-		wpa->ia.write.in.write_flags |= FUSE_WRITE_CACHE;
-		wpa->ia.ff = fuse_file_get(data->ff);
-		wpa->next = NULL;
-		ap->args.in_pages = true;
-		ap->args.end = fuse_writepage_end;
-		ap->args.fi = get_fuse_inode(inode);
-		ap->num_pages = 0;
-		wpa->inode = inode;
 	}
 	set_page_writeback(page);
 
-	copy_highpage(tmp_page, page);
-	ap->pages[ap->num_pages] = tmp_page;
-	ap->descs[ap->num_pages].offset = 0;
-	ap->descs[ap->num_pages].length = PAGE_SIZE;
+	fuse_writepage_args_page_fill(wpa, page, tmp_page, ap->num_pages);
 	data->orig_pages[ap->num_pages] = page;
-
-	inc_wb_stat(&inode_to_bdi(inode)->wb, WB_WRITEBACK);
-	inc_node_page_state(tmp_page, NR_WRITEBACK_TEMP);
 
 	err = 0;
 	if (data->wpa) {
