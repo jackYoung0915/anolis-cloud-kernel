@@ -89,6 +89,7 @@
 #endif
 
 #include <asm/barrier.h>
+#include <linux/ck_kabi.h>
 
 #include "cpupri.h"
 #include "cpudeadline.h"
@@ -299,6 +300,11 @@ struct rt_bandwidth {
 	u64			rt_runtime;
 	struct hrtimer		rt_period_timer;
 	unsigned int		rt_period_active;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 void __dl_clear_params(struct task_struct *p);
@@ -330,6 +336,11 @@ struct dl_bw {
 	raw_spinlock_t		lock;
 	u64			bw;
 	u64			total_bw;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 extern void init_dl_bw(struct dl_bw *dl_b);
@@ -423,6 +434,11 @@ struct cfs_bandwidth {
 	int			nr_burst;
 	u64			throttled_time;
 	u64			burst_time;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 #endif
 };
 
@@ -485,6 +501,15 @@ struct task_group {
 #ifdef CONFIG_SCHED_SLI
 	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
 #endif
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -723,6 +748,15 @@ struct cfs_rq {
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 	unsigned long		nr_uninterruptible;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
 };
 
 static inline int rt_bandwidth_enabled(void)
@@ -771,6 +805,11 @@ struct rt_rq {
 #endif
 
 	unsigned long		nr_uninterruptible;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 static inline bool rt_rq_is_runnable(struct rt_rq *rt_rq)
@@ -839,6 +878,11 @@ struct dl_rq {
 	 * by the GRUB algorithm.
 	 */
 	u64			bw_ratio;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -965,6 +1009,11 @@ struct root_domain {
 	 * CPUs of the rd. Protected by RCU.
 	 */
 	struct perf_domain __rcu *pd;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 extern void init_defrootdomain(void);
@@ -1263,6 +1312,15 @@ struct rq {
 	u64 last_acpu_update_time;
 	u64 last_acpu_update_time_task;
 #endif
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -2004,6 +2062,11 @@ struct sched_group_capacity {
 	int			id;
 #endif
 
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+
 	unsigned long		cpumask[];		/* Balance mask */
 };
 
@@ -2016,6 +2079,11 @@ struct sched_group {
 	struct sched_group_capacity *sgc;
 	int			asym_prefer_cpu;	/* CPU of highest priority in group */
 	int			flags;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 
 	/*
 	 * The CPUs this group covers.
@@ -2401,6 +2469,11 @@ struct sched_class {
 #endif
 	void (*update_nr_uninterruptible)(struct task_struct *p, long inc);
 	void (*update_nr_iowait)(struct task_struct *p, long inc);
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
