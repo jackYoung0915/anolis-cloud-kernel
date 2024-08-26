@@ -2581,8 +2581,6 @@ int __copy_page_range(struct vm_area_struct *dst_vma,
 		      unsigned long addr,
 		      unsigned long end,
 		      enum cpr_mode mode);
-int follow_pte(struct mm_struct *mm, unsigned long address,
-	       pte_t **ptepp, spinlock_t **ptlp);
 int follow_pfn(struct vm_area_struct *vma, unsigned long address,
 	unsigned long *pfn);
 int generic_access_phys(struct vm_area_struct *vma, unsigned long addr,
