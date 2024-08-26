@@ -5606,25 +5606,25 @@ int follow_phys(struct vm_area_struct *vma,
 		unsigned long *prot, resource_size_t *phys)
 {
 	int ret = -EINVAL;
-	pte_t *ptep, pte;
-	spinlock_t *ptl;
+	struct follow_pfnmap_args args = { .vma = vma, .address = address };
+	bool writable;
 
 	if (!(vma->vm_flags & (VM_IO | VM_PFNMAP)))
 		goto out;
 
-	if (follow_pte(vma->vm_mm, address, &ptep, &ptl))
+	if (follow_pfnmap_start(&args))
 		goto out;
-	pte = *ptep;
 
-	if ((flags & FOLL_WRITE) && !pte_write(pte))
+	writable = args.writable;
+	if ((flags & FOLL_WRITE) && !writable)
 		goto unlock;
 
-	*prot = pgprot_val(pte_pgprot(pte));
-	*phys = (resource_size_t)pte_pfn(pte) << PAGE_SHIFT;
+	*prot = pgprot_val(args.pgprot);
+	*phys = (resource_size_t)args.pfn << PAGE_SHIFT;
 
 	ret = 0;
 unlock:
-	pte_unmap_unlock(ptep, ptl);
+	follow_pfnmap_end(&args);
 out:
 	return ret;
 }
