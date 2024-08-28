@@ -3495,3 +3495,83 @@ void khugepaged_min_free_kbytes_update(void)
 		set_recommended_min_free_kbytes();
 	mutex_unlock(&khugepaged_mutex);
 }
+
+#ifdef CONFIG_HUGETEXT
+struct hugetext_collapse_info {
+	struct callback_head work;
+	unsigned long hstart;
+};
+
+static void hugetext_try_file_collapse(struct callback_head *twork)
+{
+	struct hugetext_collapse_info *info = container_of(twork,
+					struct hugetext_collapse_info, work);
+	struct page *hpage = NULL;
+	struct collapse_control *cc;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm;
+	struct file *file;
+	pgoff_t pgoff;
+
+	/* Skip direct collpase for now when adaptive hugetext is enabled. */
+	if (!hugetext_file_enabled() || __khugepaged_max_nr_hugetext())
+		goto out_free;
+
+	if (current->flags & PF_EXITING)
+		goto out_free;
+
+	mm = current->mm;
+	mmgrab(mm);
+	lru_add_drain_all();
+
+	if (!mmap_read_trylock(mm))
+		goto out_mmdrop;
+
+	vma = find_vma(mm, info->hstart);
+	if (!vma || !hugepage_vma_check(vma, vma->vm_flags))
+		goto out_unlock;
+
+	if (info->hstart < vma->vm_start || info->hstart + HPAGE_PMD_SIZE > vma->vm_end)
+		goto out_unlock;
+
+	if (vma_is_hugetext_file(vma, vma->vm_flags)) {
+		file = get_file(vma->vm_file);
+		pgoff = linear_page_index(vma, info->hstart);
+		mmap_read_unlock(mm);
+
+		cc = kmalloc(sizeof(*cc), GFP_KERNEL);
+		if (!cc)
+			goto out_mmdrop;
+		cc->last_target_node = NUMA_NO_NODE;
+		memset(cc->node_load, 0, sizeof(cc->node_load));
+		khugepaged_scan_file(mm, file, pgoff, &hpage, cc);
+		kfree(cc);
+		fput(file);
+		goto out_mmdrop;
+	}
+
+out_unlock:
+	mmap_read_unlock(mm);
+out_mmdrop:
+	mmdrop(mm);
+out_free:
+	kfree(info);
+
+	if (!IS_ERR_OR_NULL(hpage))
+		put_page(hpage);
+}
+
+void hugetext_add_file_collapse_work(unsigned long haddr)
+{
+	struct hugetext_collapse_info *info;
+
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return;
+
+	info->hstart = haddr;
+	init_task_work(&info->work, hugetext_try_file_collapse);
+	if (task_work_add(current, &info->work, TWA_RESUME))
+		kfree(info);
+}
+#endif

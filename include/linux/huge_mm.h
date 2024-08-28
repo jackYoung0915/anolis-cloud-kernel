@@ -211,6 +211,7 @@ extern inline bool __khugepaged_max_nr_hugetext(void);
 extern unsigned long hugetext_get_unmapped_area(struct file *filp,
 		unsigned long addr, unsigned long len, unsigned long pgoff,
 		unsigned long flags);
+extern void hugetext_add_file_collapse_work(unsigned long haddr);
 #else
 #define hugetext_enabled()	false
 #define hugetext_file_enabled()	false
@@ -225,6 +226,8 @@ static inline unsigned long hugetext_get_unmapped_area(struct file *filp,
 	BUILD_BUG();
 	return 0;
 }
+
+static inline void hugetext_add_file_collapse_work(unsigned long haddr) {}
 #endif /* CONFIG_HUGETEXT */
 
 static inline bool vma_is_hugetext_file(struct vm_area_struct *vma,
