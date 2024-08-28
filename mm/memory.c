@@ -4450,8 +4450,19 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 			&& vma_is_hugetext_file(vma, vma->vm_flags)) {
 		unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
 
-		if (transhuge_vma_suitable(vma, haddr))
+		if (transhuge_vma_suitable(vma, haddr)) {
+			/*
+			 * Try direct file collapse for vmf->address before
+			 * returning to the user space if needed.
+			 */
+			if (hugetext_file_direct_enabled())
+				hugetext_add_file_collapse_work(haddr);
+			/*
+			 * Then add the whole vma into khugepaged scan list
+			 * in case of failure.
+			 */
 			khugepaged_enter(vma, vma->vm_flags);
+		}
 	}
 #endif
 
