@@ -1904,6 +1904,7 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return NULL;
 	}
 }
+EXPORT_SYMBOL_GPL(bpf_base_func_proto);
 
 void __bpf_obj_drop_impl(void *p, const struct btf_record *rec);
 
