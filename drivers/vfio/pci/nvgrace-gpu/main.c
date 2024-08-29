@@ -7,6 +7,7 @@
 #include <linux/vfio_pci_core.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include "egm.h"
 
 /*
  * The device memory usable to the workloads running in the VM is cached
@@ -58,7 +59,10 @@ struct nvgrace_gpu_pci_core_device {
 	/* Lock to control device memory kernel mapping */
 	struct mutex remap_lock;
 	bool has_mig_hw_bug;
+	int egm_node;
 };
+
+static bool egm_enabled;
 
 static void nvgrace_gpu_init_fake_bar_emu_regs(struct vfio_device *core_vdev)
 {
@@ -758,6 +762,13 @@ nvgrace_gpu_fetch_memory_property(struct pci_dev *pdev,
 }
 
 static int
+nvgrace_gpu_has_egm_property(struct pci_dev *pdev, u64 *pegmpxm)
+{
+	return device_property_read_u64(&pdev->dev, "nvidia,egm-pxm",
+					pegmpxm);
+}
+
+static int
 nvgrace_gpu_init_nvdev_struct(struct pci_dev *pdev,
 			      struct nvgrace_gpu_pci_core_device *nvdev,
 			      u64 memphys, u64 memlength)
@@ -935,6 +946,7 @@ static int nvgrace_gpu_probe(struct pci_dev *pdev,
 	const struct vfio_device_ops *ops = &nvgrace_gpu_pci_core_ops;
 	struct nvgrace_gpu_pci_core_device *nvdev;
 	u64 memphys, memlength;
+	u64 egmpxm;
 	int ret;
 
 	ret = nvgrace_gpu_wait_device_ready(pdev);
@@ -942,8 +954,13 @@ static int nvgrace_gpu_probe(struct pci_dev *pdev,
 		return ret;
 
 	ret = nvgrace_gpu_fetch_memory_property(pdev, &memphys, &memlength);
-	if (!ret)
+	if (!ret) {
 		ops = &nvgrace_gpu_pci_ops;
+
+		ret = nvgrace_gpu_has_egm_property(pdev, &egmpxm);
+		if (!ret)
+			egm_enabled = true;
+	}
 
 	nvdev = vfio_alloc_device(nvgrace_gpu_pci_core_device, core_device.vdev,
 				  &pdev->dev, ops);
@@ -963,6 +980,12 @@ static int nvgrace_gpu_probe(struct pci_dev *pdev,
 						    memphys, memlength);
 		if (ret)
 			goto out_put_vdev;
+
+		if (egm_enabled) {
+			register_egm_node(pdev);
+			nvdev->egm_node = egmpxm;
+		}
+
 	}
 
 	ret = vfio_pci_core_register_device(&nvdev->core_device);
@@ -979,6 +1002,12 @@ out_put_vdev:
 static void nvgrace_gpu_remove(struct pci_dev *pdev)
 {
 	struct vfio_pci_core_device *core_device = dev_get_drvdata(&pdev->dev);
+	struct nvgrace_gpu_pci_core_device *nvdev =
+		container_of(core_device, struct nvgrace_gpu_pci_core_device,
+			     core_device);
+
+	if (egm_enabled)
+		unregister_egm_node(nvdev->egm_node);
 
 	vfio_pci_core_unregister_device(core_device);
 	vfio_put_device(&core_device->vdev);
