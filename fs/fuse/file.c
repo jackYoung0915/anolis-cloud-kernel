@@ -629,7 +629,7 @@ void fuse_read_args_fill(struct fuse_io_args *ia, struct file *file, loff_t pos,
 	args->out_args[0].size = count;
 }
 
-static void fuse_release_user_pages(struct fuse_args_pages *ap,
+static void fuse_release_user_pages(struct fuse_args_pages *ap, ssize_t nres,
 				    bool should_dirty)
 {
 	unsigned int i;
@@ -637,8 +637,12 @@ static void fuse_release_user_pages(struct fuse_args_pages *ap,
 	for (i = 0; i < ap->num_pages; i++) {
 		if (should_dirty)
 			set_page_dirty_lock(ap->pages[i]);
-		put_page(ap->pages[i]);
+		if (ap->args.is_pinned)
+			put_page(ap->pages[i]);
 	}
+
+	if (nres > 0 && ap->args.invalidate_vmap)
+		invalidate_kernel_vmap_range(ap->args.vmap_base, nres);
 }
 
 static void fuse_io_release(struct kref *kref)
@@ -737,24 +741,28 @@ static void fuse_aio_complete_req(struct fuse_mount *fm, struct fuse_args *args,
 	struct fuse_io_args *ia = container_of(args, typeof(*ia), ap.args);
 	struct fuse_io_priv *io = ia->io;
 	ssize_t pos = -1;
-
-	fuse_release_user_pages(&ia->ap, io->should_dirty);
+	size_t nres;
 
 	if (err) {
 		/* Nothing */
 	} else if (io->write) {
 		if (ia->write.out.size > ia->write.in.size) {
 			err = -EIO;
-		} else if (ia->write.in.size != ia->write.out.size) {
-			pos = ia->write.in.offset - io->offset +
-				ia->write.out.size;
+		} else {
+			nres = ia->write.out.size;
+			if (ia->write.in.size != ia->write.out.size)
+				pos = ia->write.in.offset - io->offset +
+				      ia->write.out.size;
 		}
 	} else {
 		u32 outsize = args->out_args[0].size;
 
+		nres = outsize;
 		if (ia->read.in.size != outsize)
 			pos = ia->read.in.offset - io->offset + outsize;
 	}
+
+	fuse_release_user_pages(&ia->ap, err ?: nres, io->should_dirty);
 
 	fuse_aio_complete(io, err, pos);
 	fuse_io_free(ia);
@@ -1429,12 +1437,107 @@ static inline size_t fuse_get_frag_size(const struct iov_iter *ii,
 	return min(iov_iter_single_seg_count(ii), max_size);
 }
 
+static int fuse_extract_kvec_pages(struct iov_iter *i, struct page **pages,
+			       size_t maxsize, unsigned int maxpages,
+			       size_t *offset0)
+{
+	struct page *page;
+	const void *kaddr;
+	size_t skip = i->iov_offset, offset, len, size;
+	int k;
+	unsigned int count;
+
+	maxsize = min_t(size_t, maxsize, i->count);
+	if (!maxsize)
+		return 0;
+
+	for (;;) {
+		if (i->nr_segs == 0)
+			return 0;
+		size = min(maxsize, i->kvec->iov_len - skip);
+		if (size)
+			break;
+		i->iov_offset = 0;
+		i->nr_segs--;
+		i->kvec++;
+		skip = 0;
+	}
+
+	kaddr = i->kvec->iov_base + skip;
+	offset = (unsigned long)kaddr & ~PAGE_MASK;
+	*offset0 = offset;
+
+	count = DIV_ROUND_UP(size + offset, PAGE_SIZE);
+	maxpages = min_t(unsigned int, maxpages, count);
+
+	kaddr -= offset;
+	len = offset + size;
+	for (k = 0; k < maxpages; k++) {
+		size_t seg = min_t(size_t, len, PAGE_SIZE);
+
+		if (is_vmalloc_or_module_addr(kaddr))
+			page = vmalloc_to_page(kaddr);
+		else
+			page = virt_to_page(kaddr);
+
+		pages[k] = page;
+		len -= seg;
+		kaddr += PAGE_SIZE;
+	}
+
+	size = min_t(size_t, size, maxpages * PAGE_SIZE - offset);
+	iov_iter_advance(i, size);
+	return size;
+}
+
+static int fuse_get_kvec_pages(struct fuse_args_pages *ap, struct iov_iter *i,
+			       size_t *nbytesp, int write,
+			       unsigned int maxpages)
+{
+	void *user_addr = (void *)fuse_get_user_addr(i);
+	unsigned int npages;
+	ssize_t ret;
+	size_t start;
+
+	ret = fuse_extract_kvec_pages(i, ap->pages, *nbytesp, maxpages,
+				      &start);
+	if (ret < 0)
+		return ret;
+
+	ap->descs[0].offset = start;
+	npages = DIV_ROUND_UP(ret + start, PAGE_SIZE);
+	ap->num_pages = npages;
+	fuse_page_descs_length_init(ap->descs, 0, npages);
+	ap->descs[ap->num_pages - 1].length -=
+		npages * PAGE_SIZE - (ret + start);
+
+	if (write)
+		ap->args.in_pages = true;
+	else
+		ap->args.out_pages = true;
+	*nbytesp = ret;
+
+	if (is_vmalloc_addr(user_addr)) {
+		ap->args.vmap_base = user_addr;
+		if (write)
+			flush_kernel_vmap_range(user_addr, ret);
+		else
+			ap->args.invalidate_vmap = true;
+
+	}
+	return 0;
+}
+
 static int fuse_get_user_pages(struct fuse_args_pages *ap, struct iov_iter *ii,
 			       size_t *nbytesp, int write,
-			       unsigned int max_pages)
+			       unsigned int max_pages,
+			       bool kvec_pages)
 {
 	size_t nbytes = 0;  /* # bytes already packed in req */
 	ssize_t ret = 0;
+
+	if (iov_iter_is_kvec(ii) && kvec_pages)
+		return fuse_get_kvec_pages(ap, ii, nbytesp, write, max_pages);
 
 	/* Special case for kernel I/O: can copy directly into the buffer */
 	if (iov_iter_is_kvec(ii)) {
@@ -1475,6 +1578,7 @@ static int fuse_get_user_pages(struct fuse_args_pages *ap, struct iov_iter *ii,
 			(PAGE_SIZE - ret) & (PAGE_SIZE - 1);
 	}
 
+	ap->args.is_pinned = true;
 	ap->args.user_pages = true;
 	if (write)
 		ap->args.in_pages = true;
@@ -1544,7 +1648,7 @@ ssize_t fuse_direct_io(struct fuse_io_priv *io, struct iov_iter *iter,
 		size_t nbytes = min(count, nmax);
 
 		err = fuse_get_user_pages(&ia->ap, iter, &nbytes, write,
-					  max_pages);
+					  max_pages, fc->kvec_pages);
 		if (err && !nbytes)
 			break;
 
@@ -1558,7 +1662,7 @@ ssize_t fuse_direct_io(struct fuse_io_priv *io, struct iov_iter *iter,
 		}
 
 		if (!io->async || nres < 0) {
-			fuse_release_user_pages(&ia->ap, io->should_dirty);
+			fuse_release_user_pages(&ia->ap, nres, io->should_dirty);
 			fuse_io_free(ia);
 		}
 		ia = NULL;
