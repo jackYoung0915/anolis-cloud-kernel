@@ -93,6 +93,7 @@ enum transparent_hugepage_flag {
 #ifdef CONFIG_HUGETEXT
 	TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
 	TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
+	TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 #endif
 };
 
@@ -193,6 +194,10 @@ static inline bool transhuge_vma_enabled(struct vm_area_struct *vma,
 	(transparent_hugepage_flags &		\
 	 (1<<TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG))
 
+#define hugetext_file_direct_enabled()		\
+	(transparent_hugepage_flags &		\
+	 (1<<TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG))
+
 #define hugetext_anon_enabled()			\
 	(transparent_hugepage_flags &		\
 	 (1<<TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG))
@@ -209,6 +214,7 @@ extern unsigned long hugetext_get_unmapped_area(struct file *filp,
 #else
 #define hugetext_enabled()	false
 #define hugetext_file_enabled()	false
+#define hugetext_file_direct_enabled() false
 #define hugetext_anon_enabled()	false
 #define hugetext_padding_enabled()	false
 
