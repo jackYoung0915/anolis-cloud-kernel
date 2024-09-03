@@ -3699,6 +3699,7 @@ long memfd_pin_folios(struct file *memfd, loff_t start, loff_t end,
 					ret = PTR_ERR(folio);
 					if (ret != -EEXIST)
 						goto err;
+					folio = NULL;
 				}
 			}
 		}
