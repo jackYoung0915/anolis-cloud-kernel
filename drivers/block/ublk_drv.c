@@ -1844,6 +1844,8 @@ static int ublk_ctrl_start_recovery(struct io_uring_cmd *cmd)
 	mutex_lock(&ub->mutex);
 	if (!ublk_can_use_recovery(ub))
 		goto out_unlock;
+	if (!ub->nr_queues_ready)
+		goto out_unlock;
 	/*
 	 * START_RECOVERY is only allowd after:
 	 *
