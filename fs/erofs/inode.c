@@ -249,8 +249,9 @@ static int erofs_fill_inode(struct inode *inode)
 	}
 
 	if (erofs_is_fileio_mode(EROFS_SB(inode->i_sb))) {
-		/* XXX: data I/Os will be implemented in the following patches */
-		err = -EOPNOTSUPP;
+		inode->i_mapping->a_ops = &erofs_fileio_aops;
+		err = 0;
+		goto out_unlock;
 	} else if (erofs_inode_is_data_compressed(vi->datalayout)) {
 #ifdef CONFIG_EROFS_FS_ZIP
 		if (!erofs_is_fscache_mode(inode->i_sb)) {
@@ -265,7 +266,7 @@ static int erofs_fill_inode(struct inode *inode)
 		err = -EOPNOTSUPP;
 		goto out_unlock;
 	}
-	inode->i_mapping->a_ops = &erofs_raw_access_aops;
+	inode->i_mapping->a_ops = &erofs_aops;
 	mapping_set_large_folios(inode->i_mapping);
 #ifdef CONFIG_EROFS_FS_ONDEMAND
 	if (erofs_is_fscache_mode(inode->i_sb))
