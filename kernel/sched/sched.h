@@ -4214,11 +4214,13 @@ extern void sched_clear_group_balancer_sched_domains(void);
 extern void tg_set_specs_ratio(struct task_group *tg);
 extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg);
 extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg);
+extern void update_group_balancer_root_cpumask(void);
 #else
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
 	return p->cpus_ptr;
 }
 static inline void tg_set_specs_ratio(struct task_group *tg) { }
+static inline void update_group_balancer_root_cpumask(void) { }
 #endif
 #endif /* _KERNEL_SCHED_SCHED_H */
