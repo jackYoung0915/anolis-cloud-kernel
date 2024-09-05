@@ -132,7 +132,7 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 	if (map->m_la >= inode->i_size) {
 		/* leave out-of-bound access unmapped */
 		map->m_flags = 0;
-		map->m_plen = 0;
+		map->m_plen = map->m_llen;
 		goto out;
 	}
 
@@ -198,8 +198,9 @@ static void erofs_fill_from_devinfo(struct super_block *sb,
 				    struct erofs_device_info *dif)
 {
 	map->m_bdev = dif->bdev_handle ? dif->bdev_handle->bdev : NULL;
-	if (!dif->file && !map->m_bdev) {
-		erofs_err(sb, "invalid device handle for path %s", dif->path);
+	map->m_fp = dif->file;
+	if (!map->m_bdev && !map->m_fp) {
+		erofs_err(sb, "invalid device handle and file for path %s", dif->path);
 		DBG_BUGON(1);
 	}
 	map->m_daxdev = dif->dax_dev;
@@ -218,6 +219,7 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 	map->m_daxdev = EROFS_SB(sb)->dax_dev;
 	map->m_dax_part_off = EROFS_SB(sb)->dax_part_off;
 	map->m_fscache = EROFS_SB(sb)->s_fscache;
+	map->m_fp = EROFS_SB(sb)->fdev;
 
 	if (map->m_deviceid) {
 		down_read(&devs->rwsem);
@@ -251,6 +253,50 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 		up_read(&devs->rwsem);
 	}
 	return 0;
+}
+
+/*
+ * bit 30: I/O error occurred on this folio
+ * bit 29: CPU has dirty data in D-cache (needs aliasing handling);
+ * bit 0 - 29: remaining parts to complete this folio
+ */
+#define EROFS_FOLIO_EIO		30
+#define EROFS_ONLINEPAGE_DIRTY	29
+
+void erofs_onlinefolio_init(struct folio *folio)
+{
+	union {
+		atomic_t o;
+		void *v;
+	} u = { .o = ATOMIC_INIT(1) };
+
+	folio->private = u.v;	/* valid only if file-backed folio is locked */
+}
+
+void erofs_onlinefolio_split(struct folio *folio)
+{
+	atomic_inc((atomic_t *)&folio->private);
+}
+
+void erofs_onlinefolio_end(struct folio *folio, int err, bool dirty)
+{
+	int orig, v;
+
+	do {
+		orig = atomic_read((atomic_t *)&folio->private);
+		DBG_BUGON(orig <= 0);
+		v = dirty << EROFS_ONLINEPAGE_DIRTY;
+		v |= (orig - 1) | (!!err << EROFS_FOLIO_EIO);
+	} while (atomic_cmpxchg((atomic_t *)&folio->private, orig, v) != orig);
+
+	if (v & (BIT(EROFS_ONLINEPAGE_DIRTY) - 1))
+		return;
+	if (v & (BIT(EROFS_FOLIO_EIO) - 1))
+		return;
+	folio->private = 0;
+	if (v & BIT(EROFS_ONLINEPAGE_DIRTY))
+		flush_dcache_folio(folio);
+	folio_end_read(folio, !(v & BIT(EROFS_FOLIO_EIO)));
 }
 
 static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
@@ -404,7 +450,7 @@ static ssize_t erofs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 }
 
 /* for uncompressed (aligned) files and raw access for other files */
-const struct address_space_operations erofs_raw_access_aops = {
+const struct address_space_operations erofs_aops = {
 	.read_folio = erofs_read_folio,
 	.readahead = erofs_readahead,
 	.bmap = erofs_bmap,
