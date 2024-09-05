@@ -8,6 +8,7 @@
 #include "sched.h"
 #include <linux/log2.h>
 #include <linux/fs_context.h>
+#include <linux/sched/isolation.h>
 
 struct group_balancer_sched_domain {
 	struct group_balancer_sched_domain		*parent;
@@ -1191,11 +1192,16 @@ cleanup_root:
 	return ret;
 }
 
+void update_group_balancer_root_cpumask(void)
+{
+	cpumask_copy(&root_cpumask, housekeeping_cpumask(HK_TYPE_DOMAIN));
+}
+
 static int __init group_balancer_init(void)
 {
 	int ret;
 
-	cpumask_copy(&root_cpumask, cpu_online_mask);
+	update_group_balancer_root_cpumask();
 	sched_init_group_balancer_levels();
 	validate_topology_levels();
 	ret = sched_init_group_balancer_kernfs();
