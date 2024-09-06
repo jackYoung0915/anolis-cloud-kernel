@@ -97,6 +97,15 @@ static struct ctl_table smc_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_douintvec,
 	},
+	{
+		.procname	= "limit_smc_hs",
+		.data		= &init_net.smc.limit_smc_hs,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
 	{  }
 };
 
@@ -129,6 +138,8 @@ int __net_init smc_sysctl_net_init(struct net *net)
 	net->smc.sysctl_rmem = 262144; /* 256 KiB */
 	net->smc.sysctl_max_links_per_lgr = SMC_LINKS_PER_LGR_MAX_PREFER;
 	net->smc.sysctl_max_conns_per_lgr = SMC_CONN_PER_LGR_PREFER;
+	/* disable handshake limitation by default */
+	net->smc.limit_smc_hs = 0;
 	return 0;
 
 err_reg:
