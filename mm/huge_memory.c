@@ -3403,6 +3403,7 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	struct address_space *swap_cache = NULL;
 	unsigned long offset = 0;
 	unsigned int nr = thp_nr_pages(head);
+	unsigned int old_order = compound_order(head);
 	int i, nr_dropped = 0;
 
 	/* complete memcg works before add pages to LRU */
@@ -3446,7 +3447,7 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	/* Caller disabled irqs, so they are still disabled here */
 
 	split_page_owner(head, nr);
-	pgalloc_tag_split(head, nr);
+	pgalloc_tag_split(folio, old_order, 0);
 
 	/* See comment in __split_huge_page_tail() */
 	if (PageAnon(head)) {
