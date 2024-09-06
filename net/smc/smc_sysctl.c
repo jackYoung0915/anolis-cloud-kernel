@@ -116,6 +116,15 @@ static struct ctl_table smc_table[] = {
 		.extra1		= &autosplit_size_min,
 		.extra2		= &autosplit_size_max,
 	},
+	{
+		.procname   = "limit_smc_hs",
+		.data       = &init_net.smc.limit_smc_hs,
+		.maxlen     = sizeof(int),
+		.mode       = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1     = SYSCTL_ZERO,
+		.extra2     = SYSCTL_ONE,
+	},
 	{  }
 };
 
