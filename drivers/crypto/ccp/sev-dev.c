@@ -1821,7 +1821,8 @@ void sev_pci_init(void)
 	}
 
 #ifdef CONFIG_HYGON_CSV
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
+	    boot_cpu_has(X86_FEATURE_CSV3)) {
 		/* Set SMR for CSV */
 		rc = csv_platform_cmd_set_secure_memory_region(&error);
 		if (rc)
