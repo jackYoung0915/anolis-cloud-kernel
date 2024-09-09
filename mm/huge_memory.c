@@ -345,6 +345,8 @@ static ssize_t hugetext_enabled_show(struct kobject *kobj,
 		val |= 0x01;
 	if (test_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG, &transparent_hugepage_flags))
 		val |= 0x02;
+	if (test_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG, &transparent_hugepage_flags))
+		val |= 0x04;
 
 	return sprintf(buf, "%d\n", val);
 }
@@ -359,7 +361,11 @@ static ssize_t hugetext_enabled_store(struct kobject *kobj,
 		return -EINVAL;
 
 	ret = kstrtoul(buf, 0, &val);
-	if (ret < 0 || val > 3)
+	if (ret < 0 || val > 7)
+		return -EINVAL;
+
+	/* FILE_TEXT_DIRECT depends on FILE_TEXT_ENABLED */
+	if ((val & 0x4) && !(val & 0x1))
 		return -EINVAL;
 
 	ret = count;
@@ -375,6 +381,13 @@ static ssize_t hugetext_enabled_store(struct kobject *kobj,
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
+			  &transparent_hugepage_flags);
+
+	if (val & 0x04)
+		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
+			  &transparent_hugepage_flags);
+	else
+		clear_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 			  &transparent_hugepage_flags);
 
 	if (ret > 0) {
@@ -739,8 +752,14 @@ static int __init setup_hugetext(char *str)
 		goto out;
 
 	err = kstrtoul(str, 0, &val);
-	if (err < 0 || val > 3)
+	if (err < 0 || val > 7)
 		goto out;
+
+	/* FILE_TEXT_DIRECT depends on FILE_TEXT_ENABLED */
+	if ((val & 0x4) && !(val & 0x1)) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	if (val & 0x01)
 		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
@@ -754,6 +773,13 @@ static int __init setup_hugetext(char *str)
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
+			  &transparent_hugepage_flags);
+
+	if (val & 0x04)
+		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
+			  &transparent_hugepage_flags);
+	else
+		clear_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 			  &transparent_hugepage_flags);
 
 out:
