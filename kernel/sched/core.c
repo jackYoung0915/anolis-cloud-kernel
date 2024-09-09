@@ -9787,7 +9787,7 @@ static int cpu_cfs_stat_show(struct seq_file *sf, void *v)
 		seq_printf(sf, "wait_sum %llu\n", ws);
 	}
 
-	seq_printf(sf, "current_bw %llu\n", cfs_b->runtime);
+	seq_printf(sf, "current_bw %lld\n", cfs_b->runtime);
 	seq_printf(sf, "nr_burst %d\n", cfs_b->nr_burst);
 	seq_printf(sf, "burst_time %llu\n", cfs_b->burst_time);
 
@@ -10217,7 +10217,7 @@ static int cpu_extra_stat_show(struct seq_file *sf,
 		seq_printf(sf, "nr_periods %d\n"
 			   "nr_throttled %d\n"
 			   "throttled_usec %llu\n"
-			   "current_bw %llu\n"
+			   "current_bw %lld\n"
 			   "nr_bursts %d\n"
 			   "burst_usec %llu\n",
 			   cfs_b->nr_periods, cfs_b->nr_throttled,
