@@ -9,6 +9,11 @@
 #include <asm/sw64_init.h>
 #include <asm/pci_impl.h>
 
+#define OFFSET_DEVINT_WKEN	0x1500UL
+#define OFFSET_DEVINTWK_INTEN	0x1600UL
+
+bool sunway_legacy_pci;
+
 /*
  * The PCI controller list.
  */
@@ -19,7 +24,7 @@ static void __init pcibios_reserve_legacy_regions(struct pci_bus *bus);
 static int __init
 pcibios_init(void)
 {
-	if (acpi_disabled)
+	if (sunway_legacy_pci)
 		sw64_init_pci();
 	return 0;
 }
@@ -65,6 +70,12 @@ int __weak chip_pcie_configure(struct pci_controller *hose)
 	return 0;
 }
 
+static struct pci_ops sunway_pci_ops = {
+	.map_bus = sunway_pci_map_bus,
+	.read    = sunway_pci_config_read,
+	.write   = sunway_pci_config_write,
+};
+
 unsigned char last_bus = PCI0_BUS;
 void __init common_init_pci(void)
 {
@@ -97,9 +108,9 @@ void __init common_init_pci(void)
 		bridge->dev.parent = NULL;
 		bridge->sysdata = hose;
 		bridge->busnr = hose->busn_space->start;
-		bridge->ops = &sw64_pci_ops;
+		bridge->ops = &sunway_pci_ops;
 		bridge->swizzle_irq = pci_common_swizzle;
-		bridge->map_irq = sw64_map_irq;
+		bridge->map_irq = sunway_pci_map_irq;
 
 		ret = pci_scan_root_bus_bridge(bridge);
 		if (ret) {
@@ -195,17 +206,6 @@ no_io:
 	return;
 }
 
-struct pci_ops sw64_pci_ops = {
-	.map_bus = sw64_pcie_map_bus,
-	.read    = sw64_pcie_config_read,
-	.write   = sw64_pcie_config_write,
-};
-
-int sw64_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
-{
-	return sw64_chip_init->pci_init.map_irq(dev, slot, pin);
-}
-
 static bool rc_linkup[MAX_NUMNODES][MAX_NR_RCS_PER_NODE];
 
 static void __init
@@ -240,8 +240,16 @@ sw64_init_host(unsigned long node, unsigned long index)
 	}
 }
 
-void __weak set_devint_wken(int node) {}
-void __weak set_adr_int(int node) {}
+static void set_devint_wken(int node)
+{
+	unsigned long val;
+	void __iomem *intpu_base = misc_platform_get_intpu_base(node);
+
+	/* enable INTD wakeup */
+	val = 0x80;
+	writeq(val, intpu_base + OFFSET_DEVINT_WKEN);
+	writeq(val, intpu_base + OFFSET_DEVINTWK_INTEN);
+}
 
 static bool __init is_any_rc_linkup_one_node(unsigned long node)
 {
@@ -263,17 +271,21 @@ void __init sw64_init_arch(void)
 		char id[8], msg[64];
 		int i;
 
+		if (!acpi_disabled)
+			return;
+
+		if (!sunway_machine_is_compatible("sunway,chip3") &&
+			!sunway_machine_is_compatible("sunway,junzhang"))
+			return;
+
+		sunway_legacy_pci = true;
+
 		cpu_num = sw64_chip->get_cpu_num();
 
 		for (node = 0; node < cpu_num; node++) {
-			if (is_in_host()) {
+			if (is_in_host())
 				set_devint_wken(node);
-				set_adr_int(node);
-			}
 		}
-
-		if (!acpi_disabled)
-			return;
 
 		pr_info("SW arch PCI initialize!\n");
 		for (node = 0; node < cpu_num; node++) {

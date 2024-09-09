@@ -2,6 +2,7 @@
 #include <linux/list.h>
 #include <linux/pci.h>
 #include <linux/pci-ecam.h>
+#include <linux/acpi.h>
 
 #include <asm/pci.h>
 #include <asm/sw64_init.h>
@@ -282,7 +283,7 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, PCI_ANY_ID, enable_sw_dca);
  */
 static unsigned char last_bus;
 
-void sw64_pci_root_bridge_prepare(struct pci_host_bridge *bridge)
+static void sunway_pci_root_bridge_prepare(struct pci_host_bridge *bridge)
 {
 	struct pci_controller *hose = NULL;
 	struct resource_entry *entry = NULL;
@@ -326,7 +327,7 @@ void sw64_pci_root_bridge_prepare(struct pci_host_bridge *bridge)
 	bus->number = last_bus;
 
 	bridge->swizzle_irq = pci_common_swizzle;
-	bridge->map_irq = sw64_pci_map_irq;
+	bridge->map_irq = sunway_pci_map_irq;
 
 	init_busnr = (0xff << 16) + ((last_bus + 1) << 8) + (last_bus);
 	writel(init_busnr, (hose->rc_config_space_base + RC_PRIMARY_BUS));
@@ -366,7 +367,7 @@ sw64_pci_root_bridge_reserve_legacy_io(struct pci_host_bridge *bridge)
 	}
 }
 
-void sw64_pci_root_bridge_scan_finish_up(struct pci_host_bridge *bridge)
+void sunway_pci_root_bridge_scan_finish(struct pci_host_bridge *bridge)
 {
 	struct pci_controller *hose = NULL;
 	struct pci_bus *bus = NULL;
@@ -423,4 +424,26 @@ void sw64_pci_root_bridge_scan_finish_up(struct pci_host_bridge *bridge)
 	 * before scanning Root Complex and cleared after scanning Root Complex.
 	 */
 	pci_clear_flags(PCI_REASSIGN_ALL_BUS);
+}
+
+int pcibios_root_bridge_prepare(struct pci_host_bridge *bridge)
+{
+	struct pci_config_window *cfg = bridge->sysdata;
+	struct acpi_device *adev = NULL;
+	struct pci_controller *hose = cfg->priv;
+	struct device *bus_dev = &bridge->bus->dev;
+
+	if (sunway_legacy_pci)
+		return 0;
+
+	if (!acpi_disabled)
+		adev = to_acpi_device(cfg->parent);
+
+	ACPI_COMPANION_SET(&bridge->dev, adev);
+	set_dev_node(bus_dev, hose->node);
+
+	/* Some quirks for Sunway PCIe controller before scanning */
+	sunway_pci_root_bridge_prepare(bridge);
+
+	return 0;
 }

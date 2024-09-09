@@ -101,6 +101,9 @@ DEFINE_STATIC_KEY_FALSE(run_mode_guest_key);
 DEFINE_STATIC_KEY_FALSE(run_mode_emul_key);
 
 DEFINE_STATIC_KEY_FALSE(hw_una_enabled);
+DEFINE_STATIC_KEY_FALSE(junzhang_v1_key);
+DEFINE_STATIC_KEY_FALSE(junzhang_v2_key);
+DEFINE_STATIC_KEY_FALSE(junzhang_v3_key);
 
 struct cpu_desc_t cpu_desc;
 struct socket_desc_t socket_desc[MAX_NUMSOCKETS];
@@ -122,6 +125,9 @@ EXPORT_SYMBOL(sunway_boot_magic);
 
 unsigned long sunway_dtb_address;
 EXPORT_SYMBOL(sunway_dtb_address);
+
+unsigned long legacy_io_base;
+unsigned long legacy_io_shift;
 
 u64 sunway_mclk_hz;
 u64 sunway_extclk_hz;
@@ -409,10 +415,6 @@ static int __init request_standard_resources(void)
 }
 subsys_initcall(request_standard_resources);
 
-#ifdef CONFIG_NUMA
-extern void cpu_set_node(void);
-#endif
-
 static int __init topology_init(void)
 {
 	int i;
@@ -483,6 +485,18 @@ void early_parse_fdt_property(const void *fdt, const char *path,
 	*property = of_read_number(prop, size / 4);
 }
 
+bool sunway_machine_is_compatible(const char *compat)
+{
+	const void *fdt = initial_boot_params;
+	int offset;
+
+	offset = fdt_path_offset(fdt, "/");
+	if (offset < 0)
+		return false;
+
+	return !fdt_node_check_compatible(fdt, offset, compat);
+}
+
 static void __init setup_firmware_fdt(void)
 {
 	void *dt_virt;
@@ -523,6 +537,20 @@ static void __init setup_firmware_fdt(void)
 		pr_info("EXTCLK: %llu Hz\n", sunway_extclk_hz);
 	}
 
+	if (sunway_machine_is_compatible("sunway,junzhang")) {
+		static_branch_enable(&junzhang_v1_key);
+		static_branch_disable(&junzhang_v2_key);
+		static_branch_disable(&junzhang_v3_key);
+	} else if (sunway_machine_is_compatible("sunway,junzhang_v2")) {
+		static_branch_enable(&junzhang_v2_key);
+		static_branch_disable(&junzhang_v1_key);
+		static_branch_disable(&junzhang_v3_key);
+	} else if (sunway_machine_is_compatible("sunway,junzhang_v3")) {
+		static_branch_enable(&junzhang_v3_key);
+		static_branch_disable(&junzhang_v1_key);
+		static_branch_disable(&junzhang_v2_key);
+	}
+
 	name = of_flat_dt_get_machine_name();
 	if (name)
 		pr_info("DTB(from firmware): Machine model: %s\n", name);
@@ -550,6 +578,30 @@ cmd_handle:
 			strlcpy(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
 #endif
 #endif /* CONFIG_CMDLINE */
+	}
+}
+
+static void __init setup_legacy_io(void)
+{
+	if (is_guest_or_emul()) {
+		legacy_io_base = PCI_VT_LEGACY_IO;
+		legacy_io_shift = 0;
+		return;
+	}
+
+	if (sunway_machine_is_compatible("sunway,junzhang") ||
+	    sunway_machine_is_compatible("sunway,junzhang_v2")) {
+		/*
+		 * Due to a hardware defect, chip junzhang and junzhang_v2 cannot
+		 * recognize accesses to LPC legacy IO. The workaround is using some
+		 * of the LPC MEMIO space to access Legacy IO space. Thus,
+		 * legacy_io_base should be LPC_MEM_IO instead on these chips.
+		 */
+		legacy_io_base = LPC_MEM_IO;
+		legacy_io_shift = 12;
+	} else {
+		legacy_io_base = LPC_LEGACY_IO;
+		legacy_io_shift = 0;
 	}
 }
 
@@ -704,8 +756,6 @@ setup_arch(char **cmdline_p)
 	setup_cpu_info();
 	setup_run_mode();
 	setup_chip_ops();
-	if (is_guest_or_emul())
-		get_vt_smp_info();
 
 	setup_sched_clock();
 
@@ -714,6 +764,9 @@ setup_arch(char **cmdline_p)
 
 	/* Now we get the final boot_command_line */
 	*cmdline_p = boot_command_line;
+
+	/* Decide legacy IO base addr based on chips */
+	setup_legacy_io();
 
 	/* Register a call for panic conditions. */
 	atomic_notifier_chain_register(&panic_notifier_list,
@@ -786,12 +839,6 @@ setup_arch(char **cmdline_p)
 
 	/* Default root filesystem to sda2.  */
 	ROOT_DEV = Root_SDA2;
-
-	if (acpi_disabled) {
-#ifdef CONFIG_NUMA
-		cpu_set_node();
-#endif
-	}
 }
 
 static int
