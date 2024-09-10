@@ -97,6 +97,18 @@ enum transparent_hugepage_flag {
 #endif
 };
 
+#ifdef CONFIG_HUGETEXT
+#define BIT_SHIFT_THP_TEXT_FILE		0
+#define BIT_SHIFT_THP_TEXT_ANON		1
+#define BIT_SHIFT_THP_TEXT_FILE_DIRECT	2
+
+#define BIT_MASK_THP_TEXT_FILE		(1 << BIT_SHIFT_THP_TEXT_FILE)
+#define BIT_MASK_THP_TEXT_ANON		(1 << BIT_SHIFT_THP_TEXT_ANON)
+#define BIT_MASK_THP_TEXT_FILE_DIRECT	(1 << BIT_SHIFT_THP_TEXT_FILE_DIRECT)
+#define BIT_MASK_THP_TEXT_ALL (BIT_MASK_THP_TEXT_FILE |			\
+		BIT_MASK_THP_TEXT_ANON | BIT_MASK_THP_TEXT_FILE_DIRECT)
+#endif
+
 struct kobject;
 struct kobj_attribute;
 

@@ -342,11 +342,11 @@ static ssize_t hugetext_enabled_show(struct kobject *kobj,
 	int val = 0;
 
 	if (test_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG, &transparent_hugepage_flags))
-		val |= 0x01;
+		val |= BIT_MASK_THP_TEXT_FILE;
 	if (test_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG, &transparent_hugepage_flags))
-		val |= 0x02;
+		val |= BIT_MASK_THP_TEXT_ANON;
 	if (test_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG, &transparent_hugepage_flags))
-		val |= 0x04;
+		val |= BIT_MASK_THP_TEXT_FILE_DIRECT;
 
 	return sprintf(buf, "%d\n", val);
 }
@@ -361,29 +361,29 @@ static ssize_t hugetext_enabled_store(struct kobject *kobj,
 		return -EINVAL;
 
 	ret = kstrtoul(buf, 0, &val);
-	if (ret < 0 || val > 7)
+	if (ret < 0 || val > BIT_MASK_THP_TEXT_ALL)
 		return -EINVAL;
 
 	/* FILE_TEXT_DIRECT depends on FILE_TEXT_ENABLED */
-	if ((val & 0x4) && !(val & 0x1))
+	if ((val & BIT_MASK_THP_TEXT_FILE_DIRECT) && !(val & BIT_MASK_THP_TEXT_FILE))
 		return -EINVAL;
 
 	ret = count;
-	if (val & 0x01)
+	if (val & BIT_MASK_THP_TEXT_FILE)
 		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 
-	if (val & 0x02)
+	if (val & BIT_MASK_THP_TEXT_ANON)
 		set_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 
-	if (val & 0x04)
+	if (val & BIT_MASK_THP_TEXT_FILE_DIRECT)
 		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 			  &transparent_hugepage_flags);
 	else
@@ -753,30 +753,30 @@ static int __init setup_hugetext(char *str)
 		goto out;
 
 	err = kstrtoul(str, 0, &val);
-	if (err < 0 || val > 7)
+	if (err < 0 || val > BIT_MASK_THP_TEXT_ALL)
 		goto out;
 
 	/* FILE_TEXT_DIRECT depends on FILE_TEXT_ENABLED */
-	if ((val & 0x4) && !(val & 0x1)) {
+	if ((val & BIT_MASK_THP_TEXT_FILE_DIRECT) && !(val & BIT_MASK_THP_TEXT_FILE)) {
 		err = -EINVAL;
 		goto out;
 	}
 
-	if (val & 0x01)
+	if (val & BIT_MASK_THP_TEXT_FILE)
 		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 
-	if (val & 0x02)
+	if (val & BIT_MASK_THP_TEXT_ANON)
 		set_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
 			  &transparent_hugepage_flags);
 
-	if (val & 0x04)
+	if (val & BIT_MASK_THP_TEXT_FILE_DIRECT)
 		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 			  &transparent_hugepage_flags);
 	else
