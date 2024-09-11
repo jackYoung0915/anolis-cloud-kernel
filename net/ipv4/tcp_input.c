@@ -6052,6 +6052,8 @@ static void smc_check_reset_syn(struct tcp_sock *tp)
 	if (static_branch_unlikely(&tcp_have_smc)) {
 		if (tp->syn_smc && !tp->rx_opt.smc_ok)
 			tp->syn_smc = 0;
+		if (!tp->syn_smc && tp->is_smc)
+			tp->inet_conn.icsk_inet.sk.sk_user_data = NULL;
 	}
 #endif
 }
