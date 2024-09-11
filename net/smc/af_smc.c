@@ -184,7 +184,7 @@ static struct sock *smc_tcp_syn_recv_sock(const struct sock *sk,
 	struct smc_sock *smc;
 	struct sock *child;
 
-	smc = smc_clcsock_user_data(sk);
+	smc = smc_get_sock_from_clcsk(sk);
 	if (unlikely(!smc))
 		goto drop;
 
@@ -221,7 +221,7 @@ static bool smc_hs_congested(const struct sock *sk)
 	struct smc_sock *smc;
 	int tcp_cnt, smc_cnt;
 
-	smc = smc_clcsock_user_data(sk);
+	smc = smc_get_sock_from_clcsk(sk);
 
 	if (!smc)
 		return true;
@@ -2971,17 +2971,17 @@ static inline void smc_init_listen(struct smc_sock *smc)
 
 	clcsk = smc_sock_is_inet_sock(&smc->sk) ? &smc->sk : smc->clcsock->sk;
 
-	/* save original sk_data_ready function and establish
-	 * smc-specific sk_data_ready function
-	 */
-	write_lock_bh(&clcsk->sk_callback_lock);
-	clcsk->sk_user_data =
-		(void *)((uintptr_t)smc | SK_USER_DATA_NOCOPY);
-	smc_clcsock_replace_cb(&clcsk->sk_data_ready,
-			       smc_clcsock_data_ready, &smc->clcsk_data_ready);
-	write_unlock_bh(&clcsk->sk_callback_lock);
-
 	if (!smc_sock_is_inet_sock(&smc->sk)) {
+		/* save original sk_data_ready function and establish
+		 * smc-specific sk_data_ready function
+		 */
+		write_lock_bh(&clcsk->sk_callback_lock);
+		clcsk->sk_user_data =
+			(void *)((uintptr_t)smc | SK_USER_DATA_NOCOPY);
+		smc_clcsock_replace_cb(&clcsk->sk_data_ready,
+				       smc_clcsock_data_ready, &smc->clcsk_data_ready);
+		write_unlock_bh(&clcsk->sk_callback_lock);
+
 		/* save original ops */
 		smc->ori_af_ops = inet_csk(clcsk)->icsk_af_ops;
 
@@ -4045,6 +4045,17 @@ int smc_inet_init_sock(struct sock *sk)
 	if (rc)
 		return rc;
 
+#define IPPROTO_SMC_USER_DATA_PLACEHOLDER        ((void *)(0xffffffff & SK_USER_DATA_PTRMASK))
+	/* Prevent sockmap from overriding IPPROTO_SMC's sk_prot
+	 *
+	 * For IPPROTO_SMC, sk_user_data is useless since the clcsk and the smc_sk
+	 * are the same one within IPPROTO_SMC. We can of course set it as 'smc' instead
+	 * of a magic number, but magic numbers can prevent accidental use of sk_user_data
+	 * within IPPROTO_SMC in the future, it's will panic immediately.
+	 */
+	sk->sk_user_data = IPPROTO_SMC_USER_DATA_PLACEHOLDER;
+#undef IPPROTO_SMC_USER_DATA_PLACEHOLDER
+
 	/* init common smc sock */
 	smc_sock_init(sk, sock_net(sk));
 
@@ -4706,6 +4717,7 @@ static void smc_inet_tcp_listen_work(struct work_struct *work)
 
 static void smc_inet_sock_data_ready(struct sock *sk)
 {
+	void (*saved_clcsk_data_ready)(struct sock *sk);
 	struct smc_sock *smc = smc_sk(sk);
 	int mask;
 
@@ -4716,14 +4728,11 @@ static void smc_inet_sock_data_ready(struct sock *sk)
 		if (mask & SMC_REQSK_SMC)
 			queue_work(smc_tcp_ls_wq, &smc->tcp_listen_work);
 	} else {
-		write_lock_bh(&sk->sk_callback_lock);
-		if (!smc->clcsk_data_ready) {
-			write_unlock_bh(&sk->sk_callback_lock);
+		saved_clcsk_data_ready = READ_ONCE(smc->clcsk_data_ready);
+		if (!saved_clcsk_data_ready)
 			return;
-		}
-		sk->sk_data_ready = smc->clcsk_data_ready;
-		write_unlock_bh(&sk->sk_callback_lock);
-		smc->clcsk_data_ready(sk);
+		WRITE_ONCE(sk->sk_data_ready, saved_clcsk_data_ready);
+		saved_clcsk_data_ready(sk);
 	}
 }
 
