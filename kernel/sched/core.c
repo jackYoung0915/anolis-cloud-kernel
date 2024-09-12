@@ -10612,6 +10612,7 @@ static int cpu_sched_cfs_show(struct seq_file *sf, void *v)
 	struct sched_entity *se;
 	int cpu;
 	u64 wait_max = 0, wait_sum = 0, wait_sum_other = 0, wait_sum_fi = 0, exec_sum = 0;
+	u64 wait_sum_self = 0;
 
 	if (!schedstat_enabled())
 		goto out_show;
@@ -10630,16 +10631,19 @@ static int cpu_sched_cfs_show(struct seq_file *sf, void *v)
 		wait_sum += schedstat_val(se->statistics.wait_sum);
 		wait_max =
 			max(wait_max, schedstat_val(se->statistics.wait_max));
+		wait_sum_self += schedstat_val(se->statistics.wait_self);
 	}
 	rcu_read_unlock();
 out_show:
 	/*
 	 * [Serve time] [On CPU time] [Queue other time]
 	 * [Queue sibling time] [Queue max time] [Force idled time]
+	 * [Queue self time]
 	 */
-	seq_printf(sf, "%lld %lld %lld %lld %lld %lld\n",
+	seq_printf(sf, "%lld %lld %lld %lld %lld %lld %lld\n",
 			exec_sum + wait_sum, exec_sum, wait_sum_other,
-			wait_sum - wait_sum_other - wait_sum_fi, wait_max, wait_sum_fi);
+			wait_sum - wait_sum_other - wait_sum_fi, wait_max, wait_sum_fi,
+			wait_sum_self);
 
 	return 0;
 }
