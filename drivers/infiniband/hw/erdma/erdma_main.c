@@ -818,7 +818,7 @@ static int erdma_ib_device_add(struct pci_dev *pdev)
 	if (ret)
 		goto device_unregister;
 
-	dev->ibdev.use_cq_dim = true;
+	dev->ibdev.use_cq_dim = false;
 
 	return 0;
 
