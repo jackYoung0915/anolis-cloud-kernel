@@ -1455,6 +1455,7 @@ int erdma_create_listen(struct iw_cm_id *id, int backlog)
 
 	if (addr_family == AF_INET) {
 		struct sockaddr_in *laddr = &to_sockaddr_in(id->local_addr);
+
 		if (ipv4_is_zeronet(laddr->sin_addr.s_addr) && use_zeronet)
 			s->sk->sk_bound_dev_if = dev->netdev->ifindex;
 		ret = s->ops->bind(s, (struct sockaddr *)laddr,
