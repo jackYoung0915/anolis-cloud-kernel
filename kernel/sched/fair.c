@@ -1375,6 +1375,12 @@ static void __group_identity_enable(void)
 
 static void __group_identity_disable(void)
 {
+	unsigned int identity_count = atomic_read(&group_identity_count);
+
+	if (identity_count)
+		pr_info("Group Identity switch: There are still %d cgroups with non-zero identiy.\n",
+			identity_count);
+
 	group_identity_flip(false);
 
 	static_branch_disable(&__group_identity_enabled);
@@ -1417,7 +1423,6 @@ int sched_group_identity_enable_handler(struct ctl_table *table, int write,
 {
 	int ret;
 	unsigned int old, new;
-	unsigned int identity_count;
 
 	mutex_lock(&identity_mutex);
 
@@ -1425,11 +1430,6 @@ int sched_group_identity_enable_handler(struct ctl_table *table, int write,
 		ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 		goto out;
 	}
-
-	identity_count = atomic_read(&group_identity_count);
-	if (identity_count)
-		pr_info("Group Identity switch: There are still %d cgroups with non-zero identiy.\n",
-			identity_count);
 
 	old = sysctl_sched_group_indentity_enabled;
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
