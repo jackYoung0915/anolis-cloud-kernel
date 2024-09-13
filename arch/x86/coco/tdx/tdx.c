@@ -308,7 +308,11 @@ void __cpuidle tdx_safe_halt(void)
 
 	/*
 	 * Use WARN_ONCE() to report the failure.
+	 * x86_idle cannot be guaranteed to be invoked with irq disabled --
+	 * see arch_safe_halt(), do sti before hlt. Therefore sti
+	 * also has to be invoked before emulate hlt
 	 */
+	local_irq_enable();
 	if (__halt(irq_disabled))
 		WARN_ONCE(1, "HLT instruction emulation failed\n");
 }
