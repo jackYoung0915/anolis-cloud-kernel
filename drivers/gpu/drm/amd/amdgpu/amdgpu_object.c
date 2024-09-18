@@ -600,7 +600,7 @@ int amdgpu_bo_create(struct amdgpu_device *adev,
 		/* For GPUs without spatial partitioning */
 		bo->xcp_id = 0;
 
-	if (!amdgpu_bo_support_uswc(bo->flags))
+	if (!amdgpu_bo_support_uswc(bo->flags) || !(bp->domain & AMDGPU_GEM_DOMAIN_VRAM))
 		bo->flags &= ~AMDGPU_GEM_CREATE_CPU_GTT_USWC;
 
 	if (adev->ras_enabled)
