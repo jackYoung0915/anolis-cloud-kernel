@@ -3592,7 +3592,10 @@ void migrate_vma_pages(struct migrate_vma *migrate)
 			}
 		}
 
-		r = migrate_page(mapping, newpage, page, MIGRATE_SYNC_NO_COPY);
+		if (migrate && migrate->fault_page == page)
+			r = migrate_page_extra(mapping, newpage, page, MIGRATE_SYNC_NO_COPY, 1);
+		else
+			r = migrate_page(mapping, newpage, page, MIGRATE_SYNC_NO_COPY);
 		if (r != MIGRATEPAGE_SUCCESS)
 			migrate->src[i] &= ~MIGRATE_PFN_MIGRATE;
 	}
