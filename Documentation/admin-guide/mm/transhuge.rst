@@ -343,10 +343,6 @@ also applies to the regions registered in khugepaged.
 Monitoring usage
 ================
 
-.. note::
-   Currently the below counters only record events relating to
-   PMD-sized THP. Events relating to other THP sizes are not included.
-
 The number of PMD-sized anonymous transparent huge pages currently used by the
 system is available by reading the AnonHugePages field in ``/proc/meminfo``.
 To identify what applications are using PMD-sized anonymous transparent huge
@@ -369,7 +365,7 @@ monitor how successfully the system is providing huge pages for use.
 
 thp_fault_alloc
 	is incremented every time a huge page is successfully
-	allocated to handle a page fault.
+	allocated and charged to handle a page fault.
 
 thp_collapse_alloc
 	is incremented by khugepaged when it has found
@@ -377,7 +373,7 @@ thp_collapse_alloc
 	successfully allocated a new huge page to store the data.
 
 thp_fault_fallback
-	is incremented if a page fault fails to allocate
+	is incremented if a page fault fails to allocate or charge
 	a huge page and instead falls back to using small pages.
 
 thp_fault_fallback_charge
@@ -446,6 +442,49 @@ thp_swpout_fallback
 	is incremented if a huge page has to be split before swapout.
 	Usually because failed to allocate some continuous swap space
 	for the huge page.
+
+In /sys/kernel/mm/transparent_hugepage/hugepages-<size>kB/stats, There are
+also individual counters for each huge page size, which can be utilized to
+monitor the system's effectiveness in providing huge pages for usage. Each
+counter has its own corresponding file.
+
+anon_fault_alloc
+	is incremented every time a huge page is successfully
+	allocated and charged to handle a page fault.
+
+anon_fault_fallback
+	is incremented if a page fault fails to allocate or charge
+	a huge page and instead falls back to using huge pages with
+	lower orders or small pages.
+
+anon_fault_fallback_charge
+	is incremented if a page fault fails to charge a huge page and
+	instead falls back to using huge pages with lower orders or
+	small pages even though the allocation was successful.
+
+swpout
+	is incremented every time a huge page is swapped out in one
+	piece without splitting.
+
+swpout_fallback
+	is incremented if a huge page has to be split before swapout.
+	Usually because failed to allocate some continuous swap space
+	for the huge page.
+
+split
+	is incremented every time a huge page is successfully split into
+	smaller orders. This can happen for a variety of reasons but a
+	common reason is that a huge page is old and is being reclaimed.
+
+split_failed
+	is incremented if kernel fails to split huge
+	page. This can happen if the page was pinned by somebody.
+
+split_deferred
+        is incremented when a huge page is put onto split queue.
+        This happens when a huge page is partially unmapped and splitting
+        it would free up some memory. Pages on split queue are going to
+        be split under memory pressure, if splitting is possible.
 
 As the system ages, allocating huge pages may be expensive as the
 system uses memory compaction to copy data around memory to free a
