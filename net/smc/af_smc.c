@@ -3659,11 +3659,24 @@ static void __net_exit smc_net_exit(struct net *net)
 
 static __net_init int smc_net_stat_init(struct net *net)
 {
-	return smc_stats_init(net);
+	int rc;
+
+	rc = smc_stats_init(net);
+	if (rc)
+		return rc;
+	rc = smc_dump_init(net);
+	if (rc)
+		goto stats_exit;
+	return 0;
+
+stats_exit:
+	smc_stats_exit(net);
+	return rc;
 }
 
 static void __net_exit smc_net_stat_exit(struct net *net)
 {
+	smc_dump_exit(net);
 	smc_stats_exit(net);
 }
 

@@ -89,6 +89,11 @@ struct smc_stats {
 	u64			srv_hshake_err_cnt;
 };
 
+struct smc_dump_ctx {
+	struct net_device __rcu *dump_ndev;
+	spinlock_t dump_ndev_lock; /* protects dump_ndev */
+};
+
 #define SMC_STAT_PAYLOAD_SUB(_smc_stats, _tech, key, _len, _rc) \
 do { \
 	typeof(_smc_stats) stats = (_smc_stats); \
@@ -276,5 +281,10 @@ int smc_nl_get_stats(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_nl_get_fback_stats(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_stats_init(struct net *net);
 void smc_stats_exit(struct net *net);
+int smc_nl_get_dump_ndev(struct sk_buff *skb, struct netlink_callback *cb);
+int smc_nl_set_dump_ndev(struct sk_buff *skb, struct genl_info *info);
+int smc_nl_reset_dump_ndev(struct sk_buff *skb, struct genl_info *info);
+int smc_dump_init(struct net *net);
+void smc_dump_exit(struct net *net);
 
 #endif /* NET_SMC_SMC_STATS_H_ */
