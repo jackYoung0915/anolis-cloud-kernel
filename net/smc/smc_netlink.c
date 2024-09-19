@@ -31,6 +31,14 @@ smc_gen_ueid_policy[SMC_NLA_EID_TABLE_MAX + 1] = {
 					  },
 };
 
+const struct nla_policy
+smc_gen_dump_ndev_policy[SMC_NLA_DUMP_DEV_MAX + 1] = {
+	[SMC_NLA_DUMP_DEV_UNSPEC]	= { .type = NLA_UNSPEC },
+	[SMC_NLA_DUMP_DEV_NAME]		= { .type = NLA_STRING,
+					    .len = SMC_MAX_DUMP_DEV_LEN,
+					  },
+};
+
 #define SMC_CMD_MAX_ATTR 1
 /* SMC_GENL generic netlink operation definition */
 static const struct genl_ops smc_gen_nl_ops[] = {
@@ -125,6 +133,22 @@ static const struct genl_ops smc_gen_nl_ops[] = {
 		.cmd = SMC_NETLINK_DISABLE_HS_LIMITATION,
 		.flags = GENL_ADMIN_PERM,
 		.doit = smc_nl_disable_hs_limitation,
+	},
+	{
+		.cmd = SMC_NETLINK_GET_DUMP_DEV,
+		/* can be retrieved by unprivileged users */
+		.dumpit = smc_nl_get_dump_ndev,
+	},
+	{
+		.cmd = SMC_NETLINK_SET_DUMP_DEV,
+		.flags = GENL_ADMIN_PERM,
+		.doit = smc_nl_set_dump_ndev,
+		.policy = smc_gen_dump_ndev_policy,
+	},
+	{
+		.cmd = SMC_NETLINK_RESET_DUMP_DEV,
+		.flags = GENL_ADMIN_PERM,
+		.doit = smc_nl_reset_dump_ndev,
 	},
 };
 

@@ -8,6 +8,7 @@
 
 struct smc_stats_rsn;
 struct smc_stats;
+struct smc_dump_ctx;
 struct netns_smc {
 	/* per cpu counters for SMC */
 	struct smc_stats __percpu	*smc_stats;
@@ -30,6 +31,7 @@ struct netns_smc {
 
 	atomic_t			iwarp_cnt;
 	struct socket			*rsvd_sock[SMC_IWARP_RSVD_PORTS_NUM];
+	struct smc_dump_ctx		*dump_ctx;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)

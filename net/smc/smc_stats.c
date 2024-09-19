@@ -417,3 +417,149 @@ int smc_nl_get_fback_stats(struct sk_buff *skb, struct netlink_callback *cb)
 	cb_ctx->pos[0] = k;
 	return skb->len;
 }
+
+static struct net_device *smc_net_set_dump_ndev(struct net *net,
+						struct net_device *ndev)
+{
+	struct net_device *orig_ndev;
+
+	spin_lock(&net->smc.dump_ctx->dump_ndev_lock);
+	orig_ndev = rcu_replace_pointer(net->smc.dump_ctx->dump_ndev,
+					ndev, true);
+	spin_unlock(&net->smc.dump_ctx->dump_ndev_lock);
+	synchronize_rcu();
+	/* no one references orig_ndev now */
+
+	return orig_ndev;
+}
+
+int smc_nl_set_dump_ndev(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *nla_dev = info->attrs[SMC_NLA_DUMP_DEV_NAME];
+	char ndev_name[SMC_MAX_DUMP_DEV_LEN + 1] = { 0 };
+	struct net_device *ndev, *orig_ndev;
+	struct net *net = sock_net(skb->sk);
+
+	if (!nla_dev ||
+	    nla_len(nla_dev) > SMC_MAX_DUMP_DEV_LEN + 1)
+		return -EINVAL;
+
+	nla_strscpy(ndev_name, nla_dev, SMC_MAX_DUMP_DEV_LEN);
+	/* put when reset dump ndev or smc_dump_exit() */
+	ndev = dev_get_by_name(net, ndev_name);
+	if (!ndev)
+		return -ENODEV;
+
+	orig_ndev = smc_net_set_dump_ndev(net, ndev);
+	/* put the old dump ndev */
+	if (orig_ndev)
+		dev_put(orig_ndev);
+	return 0;
+}
+
+int smc_nl_reset_dump_ndev(struct sk_buff *skb, struct genl_info *info)
+{
+	struct net *net = sock_net(skb->sk);
+	struct net_device *ndev;
+
+	ndev = smc_net_set_dump_ndev(net, NULL);
+	if (!ndev)
+		return -ENODEV;
+
+	dev_put(ndev);
+	return 0;
+}
+
+int smc_nl_get_dump_ndev(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	struct smc_nl_dmp_ctx *cb_ctx = smc_nl_dmp_ctx(cb);
+	char ndev_name[SMC_MAX_DUMP_DEV_LEN + 1] = { 0 };
+	struct net *net = sock_net(skb->sk);
+	struct net_device *ndev;
+	void *hdr;
+
+	if (cb_ctx->pos[0])
+		return skb->len;
+
+	hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
+			  &smc_gen_nl_family, NLM_F_MULTI,
+			  SMC_NETLINK_GET_DUMP_DEV);
+	if (!hdr)
+		return -ENOMEM;
+
+	rcu_read_lock();
+	ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!ndev)
+		goto end;
+	strscpy(ndev_name, ndev->name, SMC_MAX_DUMP_DEV_LEN);
+
+	if (nla_put_string(skb, SMC_NLA_DUMP_DEV_NAME, ndev_name))
+		goto err;
+
+end:
+	rcu_read_unlock();
+	genlmsg_end(skb, hdr);
+	cb_ctx->pos[0]++;
+	return skb->len;
+err:
+	rcu_read_unlock();
+	genlmsg_cancel(skb, hdr);
+	return -EMSGSIZE;
+}
+
+static int smc_dump_netdev_event(struct notifier_block *this,
+				 unsigned long event, void *ptr)
+{
+	struct net_device *event_dev = netdev_notifier_info_to_dev(ptr);
+	struct net *net = dev_net(event_dev);
+	struct smc_dump_ctx *dump_ctx;
+	struct net_device *dump_ndev;
+
+	dump_ctx = net->smc.dump_ctx;
+	switch (event) {
+	case NETDEV_REBOOT:
+	case NETDEV_UNREGISTER:
+		spin_lock(&dump_ctx->dump_ndev_lock);
+		dump_ndev = rcu_dereference(dump_ctx->dump_ndev);
+		if (!dump_ndev || dump_ndev != event_dev) {
+			spin_unlock(&dump_ctx->dump_ndev_lock);
+			return NOTIFY_DONE;
+		}
+		/* event occurred on dump_ndev */
+		rcu_assign_pointer(dump_ctx->dump_ndev, NULL);
+		spin_unlock(&dump_ctx->dump_ndev_lock);
+		synchronize_rcu();
+		dev_put(dump_ndev);
+		return NOTIFY_OK;
+	default:
+		return NOTIFY_DONE;
+	}
+}
+
+static struct notifier_block smc_dump_notifier = {
+	.notifier_call = smc_dump_netdev_event
+};
+
+int smc_dump_init(struct net *net)
+{
+	int rc;
+
+	net->smc.dump_ctx =
+		kzalloc(sizeof(struct smc_dump_ctx), GFP_KERNEL);
+	if (!net->smc.dump_ctx)
+		return -ENOMEM;
+	spin_lock_init(&net->smc.dump_ctx->dump_ndev_lock);
+	rc = register_netdevice_notifier_net(net, &smc_dump_notifier);
+	if (rc)
+		goto out;
+	return 0;
+out:
+	kfree(net->smc.dump_ctx);
+	return rc;
+}
+
+void smc_dump_exit(struct net *net)
+{
+	unregister_netdevice_notifier_net(net, &smc_dump_notifier);
+	kfree(net->smc.dump_ctx);
+}
