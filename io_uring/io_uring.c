@@ -8358,6 +8358,23 @@ static struct io_sq_data *io_attach_sq_data(struct io_uring_params *p)
 	return sqd;
 }
 
+static struct io_sq_data *io_alloc_sq_data(void)
+{
+	struct io_sq_data *sqd;
+
+	sqd = kzalloc(sizeof(*sqd), GFP_KERNEL);
+	if (!sqd)
+		return ERR_PTR(-ENOMEM);
+
+	atomic_set(&sqd->park_pending, 0);
+	refcount_set(&sqd->refs, 1);
+	INIT_LIST_HEAD(&sqd->ctx_list);
+	mutex_init(&sqd->lock);
+	init_waitqueue_head(&sqd->wait);
+	init_completion(&sqd->exited);
+	return sqd;
+}
+
 static struct io_sq_data *io_get_sq_data(struct io_uring_params *p,
 					 bool *attached, bool *percpu_found)
 {
@@ -8379,30 +8396,30 @@ static struct io_sq_data *io_get_sq_data(struct io_uring_params *p,
 	    (p->flags & IORING_SETUP_SQPOLL_PERCPU)) {
 		mutex_lock(&percpu_sqd_lock);
 		sqd = *per_cpu_ptr(percpu_sqd, p->sq_thread_cpu);
-		if (sqd) {
-			if (sqd->task_tgid != current->tgid) {
+		if (!sqd) {
+			sqd = io_alloc_sq_data();
+			if (IS_ERR(sqd)) {
 				mutex_unlock(&percpu_sqd_lock);
-				return ERR_PTR(-EPERM);
+				return sqd;
 			}
-			refcount_inc(&sqd->refs);
+
+			*per_cpu_ptr(percpu_sqd, p->sq_thread_cpu) = sqd;
 			mutex_unlock(&percpu_sqd_lock);
-			*percpu_found = true;
 			return sqd;
 		}
+
+		if (sqd->task_tgid != current->tgid) {
+			mutex_unlock(&percpu_sqd_lock);
+			return ERR_PTR(-EPERM);
+		}
+
+		refcount_inc(&sqd->refs);
 		mutex_unlock(&percpu_sqd_lock);
+		*percpu_found = true;
+		return sqd;
 	}
 
-	sqd = kzalloc(sizeof(*sqd), GFP_KERNEL);
-	if (!sqd)
-		return ERR_PTR(-ENOMEM);
-
-	atomic_set(&sqd->park_pending, 0);
-	refcount_set(&sqd->refs, 1);
-	INIT_LIST_HEAD(&sqd->ctx_list);
-	mutex_init(&sqd->lock);
-	init_waitqueue_head(&sqd->wait);
-	init_completion(&sqd->exited);
-	return sqd;
+	return io_alloc_sq_data();
 }
 
 static void io_rsrc_file_put(struct io_ring_ctx *ctx, struct io_rsrc_put *prsrc)
@@ -8884,12 +8901,6 @@ static int io_sq_offload_create(struct io_ring_ctx *ctx,
 		}
 
 		sqd->thread = tsk;
-		if ((p->flags & IORING_SETUP_SQ_AFF) &&
-		    (p->flags & IORING_SETUP_SQPOLL_PERCPU)) {
-			mutex_lock(&percpu_sqd_lock);
-			*per_cpu_ptr(percpu_sqd, sqd->sq_cpu) = sqd;
-			mutex_unlock(&percpu_sqd_lock);
-		}
 		ret = io_uring_alloc_task_context(tsk, ctx);
 		wake_up_new_task(tsk);
 		if (ret)
