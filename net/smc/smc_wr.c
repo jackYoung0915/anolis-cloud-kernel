@@ -649,8 +649,10 @@ void smc_wr_free_link(struct smc_link *lnk)
 	smc_wr_tx_wait_no_pending_sends(lnk);
 	percpu_ref_kill(&lnk->wr_reg_refs);
 	wait_for_completion(&lnk->reg_ref_comp);
+	percpu_ref_exit(&lnk->wr_reg_refs);
 	percpu_ref_kill(&lnk->wr_tx_refs);
 	wait_for_completion(&lnk->tx_ref_comp);
+	percpu_ref_exit(&lnk->wr_tx_refs);
 
 	for (i = 0; i < lnk->wr_rx_cnt; i++) {
 		if (lnk->wr_rx_dma_addr[i]) {
@@ -922,7 +924,7 @@ int smc_wr_create_link(struct smc_link *lnk)
 	init_waitqueue_head(&lnk->wr_reg_wait);
 	rc = percpu_ref_init(&lnk->wr_reg_refs, smcr_wr_reg_refs_free, 0, GFP_KERNEL);
 	if (rc)
-		goto dma_unmap;
+		goto cancel_ref;
 	init_completion(&lnk->reg_ref_comp);
 	atomic_set(&lnk->tx_inflight_credit, lnk->wr_tx_cnt);
 	atomic_set(&lnk->peer_rq_credits, 0);
@@ -937,6 +939,8 @@ int smc_wr_create_link(struct smc_link *lnk)
 	lnk->credits_update_limit = max(lnk->wr_rx_cnt / 10, 5U);
 	return rc;
 
+cancel_ref:
+	percpu_ref_exit(&lnk->wr_tx_refs);
 dma_unmap:
 	if (lnk->wr_tx_v2_dma_addr) {
 		ib_dma_unmap_single(ibdev, lnk->wr_tx_v2_dma_addr,
