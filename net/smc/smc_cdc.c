@@ -19,6 +19,7 @@
 #include "smc_rx.h"
 #include "smc_close.h"
 #include "smc_ism.h"
+#include "smc_stats.h"
 
 /********************************** send *************************************/
 
@@ -195,6 +196,7 @@ int smc_cdc_msg_send(struct smc_connection *conn,
 	atomic_inc(&conn->cdc_pend_tx_wr);
 	smp_mb__after_atomic(); /* Make sure cdc_pend_tx_wr added before post */
 
+	smc_dump_cdc_msg(conn, cdc_msg, sizeof(struct smc_cdc_msg), false);
 	rc = smc_wr_tx_send(link, (struct smc_wr_tx_pend_priv *)pend);
 	if (likely(!rc)) {
 		smc_curs_copy(&conn->rx_curs_confirmed, &cfed, conn);
@@ -321,6 +323,7 @@ int smcd_cdc_msg_send(struct smc_connection *conn)
 	cdc.cons.count = curs.count;
 	cdc.cons.prod_flags = conn->local_tx_ctrl.prod_flags;
 	cdc.cons.conn_state_flags = conn->local_tx_ctrl.conn_state_flags;
+	smc_dump_cdc_msg(conn, &cdc, sizeof(struct smcd_cdc_msg), false);
 	rc = smcd_tx_ism_write(conn, &cdc, sizeof(cdc), 0, 1);
 	if (rc)
 		return rc;
@@ -498,6 +501,12 @@ static void smc_cdc_msg_recv_action(struct smc_sock *smc,
 				  &conn->local_rx_ctrl.cons);
 	diff_prod = smc_curs_diff(conn->rmb_desc->len, &prod_old,
 				  &conn->local_rx_ctrl.prod);
+	if (diff_prod)
+		smc_dump_raw_data(conn, prod_old.count, diff_prod, true);
+	if (conn->lgr->is_smcd)
+		smc_dump_cdc_msg(conn, cdc, sizeof(struct smcd_cdc_msg), true);
+	else
+		smc_dump_cdc_msg(conn, cdc, sizeof(struct smc_cdc_msg), true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -601,6 +610,9 @@ static void smc_cdc_handle_rwwi_data_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.prod_flags, 0,
 	       sizeof(struct smc_cdc_producer_flags));
 
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -625,6 +637,9 @@ static void smc_cdc_handle_rwwi_data_with_flags_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.conn_state_flags, 0,
 	       sizeof(struct smc_cdc_conn_state_flags));
 
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -646,6 +661,9 @@ static void smc_cdc_handle_rwwi_data_cr_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.prod_flags, 0,
 	       sizeof(struct smc_cdc_producer_flags));
 
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -673,6 +691,9 @@ static void smc_cdc_handle_rwwi_data_with_flags_cr_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.conn_state_flags, 0,
 	       sizeof(struct smc_cdc_conn_state_flags));
 
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -683,6 +704,10 @@ static void smc_cdc_handle_rwwi_ctrl_msg(struct smc_sock *smc,
 
 	conn->local_rx_ctrl.prod_flags = imm_msg->ctrl.pflags;
 	conn->local_rx_ctrl.conn_state_flags = imm_msg->ctrl.csflags;
+
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	/* this imm_data contains no diff_cons info, clean it */
 	__smc_cdc_msg_recv_action(smc, diff_prod, 0);
 }
@@ -711,9 +736,11 @@ void smc_cdc_rx_handler_rwwi(struct ib_wc *wc)
 	conn = &smc->conn;
 	bh_lock_sock(&smc->sk);
 	diff_prod = wc->byte_len;
-	if (diff_prod)
+	if (diff_prod) {
+		smc_dump_raw_data(conn, conn->local_rx_ctrl.prod.count,
+				  diff_prod, true);
 		smc_curs_add_safe(conn->rmb_desc->len, &conn->local_rx_ctrl.prod, diff_prod, conn);
-
+	}
 	switch (imm_msg.hdr.opcode) {
 	case SMC_WR_OP_DATA:
 		smc_cdc_handle_rwwi_data_msg(smc, &imm_msg, diff_prod);

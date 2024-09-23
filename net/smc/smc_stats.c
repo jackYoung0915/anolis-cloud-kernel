@@ -17,6 +17,7 @@
 #include <net/sock.h>
 #include "smc_netlink.h"
 #include "smc_stats.h"
+#include "smc_cdc.h"
 
 int smc_stats_init(struct net *net)
 {
@@ -562,4 +563,327 @@ void smc_dump_exit(struct net *net)
 {
 	unregister_netdevice_notifier_net(net, &smc_dump_notifier);
 	kfree(net->smc.dump_ctx);
+}
+
+static int smc_dump_fill_skb_data(struct sk_buff *skb, void *data, int length)
+{
+	struct skb_shared_info *shinfo = skb_shinfo(skb);
+	int i, left = length, len, off, sum = 0;
+	struct page *page;
+	char *p = data;
+
+	/* too large to fit */
+	if (left > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
+
+	/* nolinear part: frags */
+	for (i = 0; i < MAX_SKB_FRAGS; i++) {
+		page = is_vmalloc_addr(p) ?
+			vmalloc_to_page(p) : virt_to_page(p);
+		off = i ? 0 : offset_in_page(p);
+		len = min_t(size_t, PAGE_SIZE - off, left);
+
+		shinfo->frags[i].bv_page = page;
+		shinfo->frags[i].bv_offset = off;
+		shinfo->frags[i].bv_len = len;
+
+		/* unref in skb_release_data */
+		__skb_frag_ref(&shinfo->frags[i]);
+
+		p += len;
+		sum += len;
+		left -= len;
+		if (!left)
+			break;
+	}
+	shinfo->nr_frags = i + 1;
+	skb->data_len += sum;
+	skb->len += sum;
+	skb->truesize += sum;
+	return sum;
+}
+
+static int smc_dump_fill_skb_header(struct smc_sock *smc,
+				    struct sk_buff *skb,
+				    struct net_device *dev,
+				    int data_len, int type, bool is_rx)
+{
+	struct smc_link_group *lgr;
+	struct smc_dumphdr *smch;
+	struct udphdr *udph;
+	struct sock *clcsk;
+	struct ethhdr *eh;
+	struct iphdr *iph;
+
+	/* too large to fit */
+	if (data_len > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
+
+	clcsk = smc->clcsock->sk;
+	if (!clcsk)
+		return -EINVAL;
+
+	lgr = smc->conn.lgr;
+	if (!lgr)
+		return -EINVAL;
+	smch = skb_push(skb, sizeof(struct smc_dumphdr));
+	smch->magic = htonl(0xCFD3E7A5);
+	smch->hdr_ver = SMC_DUMP_VER;
+	smch->smc_ver = lgr->smc_version;
+	smch->mode = lgr->is_smcd ? 2 : 1; /* SMC-R: 1, SMC-D: 2*/
+	smch->type = type;
+	smch->len = htons(sizeof(struct smc_dumphdr) + data_len);
+	memset(smch->reserved, 0, sizeof(smch->reserved));
+
+	udph = skb_push(skb, sizeof(struct udphdr));
+	udph->source = is_rx ? clcsk->sk_dport : htons(clcsk->sk_num);
+	udph->dest = is_rx ? htons(clcsk->sk_num) : clcsk->sk_dport;
+	udph->len = htons(sizeof(struct udphdr) +
+			  sizeof(struct smc_dumphdr) + data_len);
+	udph->check = 0;
+	skb_set_transport_header(skb, 0);
+
+	/* only support IPv4 now */
+	iph = skb_push(skb, sizeof(struct iphdr));
+	iph->version = IPVERSION;
+	iph->ihl = 5;	/* 20 bytes */
+	iph->tos = 0;
+	iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) +
+			     sizeof(struct smc_dumphdr) + data_len);
+	iph->id = 0;
+	iph->frag_off = 0;
+	iph->ttl = 64;
+	iph->protocol = IPPROTO_UDP;
+	iph->check = 0;
+	iph->saddr = is_rx ? clcsk->sk_daddr : clcsk->sk_rcv_saddr;
+	iph->daddr = is_rx ? clcsk->sk_rcv_saddr : clcsk->sk_daddr;
+	skb_set_network_header(skb, 0);
+
+	eh = skb_push(skb, sizeof(struct ethhdr));
+	memcpy(eh->h_dest, dev->dev_addr, ETH_ALEN);
+	memcpy(eh->h_source, dev->dev_addr, ETH_ALEN);
+	eh->h_proto = htons(ETH_P_IP);
+	return 0;
+}
+
+/* The caller must ensure that the buffer of @len starting
+ * from @data is valid, e.g. no wrapping.
+ * And the data @len is no larger than SMC_DUMP_MAX_DATA_LEN.
+ */
+static int __smc_dump_forward_data(struct smc_sock *smc,
+				   struct net_device *dump_ndev, void *data,
+				   int len, int type, bool is_rx)
+{
+	int header_size, data_size;
+	struct sk_buff *skb;
+	int rc, i;
+
+	/* too large to fit */
+	if (len > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
+
+	/* pretend to be a UDP packet */
+	header_size = sizeof(struct smc_dumphdr) + sizeof(struct udphdr) +
+			sizeof(struct iphdr) + sizeof(struct ethhdr);
+	skb = alloc_skb(header_size, GFP_ATOMIC);
+	if (!skb) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	skb_reserve(skb, header_size);
+
+	/* assume total packet size is less than 65535 */
+	data_size = smc_dump_fill_skb_data(skb, data, len);
+	if (data_size < 0) {
+		rc = data_size;
+		goto out_skb;
+	}
+	rc = smc_dump_fill_skb_header(smc, skb, dump_ndev, data_size,
+				      type, is_rx);
+	if (rc)
+		goto out_unref;
+
+	skb->dev = dump_ndev;
+	skb->protocol = htons(ETH_P_IP); /* only support IPv4 now */
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	/* regardless of the return value, the skb is consumed. */
+	rc = dev_queue_xmit(skb);
+	if (rc != NET_XMIT_SUCCESS) {
+		rc = -EPIPE;
+		goto out;
+	}
+
+	return data_size;
+
+out_unref:
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
+		__skb_frag_unref(&(skb_shinfo(skb)->frags[i]), false);
+out_skb:
+	kfree(skb);
+out:
+	return rc;
+}
+
+int smc_dump_raw_data(struct smc_connection *conn, int offset,
+		      int length, bool is_rx)
+{
+	struct smc_buf_desc *buf = is_rx ? conn->rmb_desc : conn->sndbuf_desc;
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
+	bool is_smcd = conn->lgr->is_smcd;
+	int chunk, chunk_len, chunk_off;
+	struct net_device *dump_ndev;
+	int total_left, l, f, rc;
+	char *p;
+
+	rcu_read_lock();
+	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!dump_ndev) {
+		rc = -ENODEV;
+		goto out;
+	}
+	total_left = length;
+	chunk_off = offset;
+
+	/* skip the section at the front of SMC-D DMB that
+	 * contains CDC messages.
+	 */
+	p = (is_smcd && is_rx) ?
+		(char *)buf->cpu_addr + sizeof(struct smcd_cdc_msg) + offset :
+		(char *)buf->cpu_addr + offset;
+	for (chunk = 0; chunk < 2; chunk++) {
+		chunk_len = min_t(int, total_left, buf->len - chunk_off);
+		while (chunk_len) {
+			/* split into maximum data size */
+			l = min_t(int, chunk_len, SMC_DUMP_MAX_DATA_LEN);
+			f = __smc_dump_forward_data(smc, dump_ndev, p, l,
+						    SMC_DUMP_T_RAW_DATA, is_rx);
+			if (f <= 0) {
+				/* error */
+				rc = f ? f : -EAGAIN;
+				goto out;
+			}
+			p += f;
+			chunk_len -= f;
+			total_left -= f;
+		}
+		if (!total_left)
+			break;	/* either on 1st or 2nd iteration */
+		chunk_off = 0;
+		p = (is_smcd && is_rx) ?
+			(char *)buf->cpu_addr + sizeof(struct smcd_cdc_msg) :
+			buf->cpu_addr;
+	}
+	rc = length - total_left;
+out:
+	rcu_read_unlock();
+	return rc;
+}
+
+int smc_dump_cdc_msg(struct smc_connection *conn, void *buf,
+		     int length, bool is_rx)
+{
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
+	struct net_device *dump_ndev;
+	int f, rc;
+
+	rcu_read_lock();
+	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!dump_ndev) {
+		rc = -ENODEV;
+		goto out;
+	}
+	/* CDC msg size is mush smaller than
+	 * SMC_DUMP_MAX_DATA_LEN, so send it directly.
+	 */
+	f = __smc_dump_forward_data(smc, dump_ndev, buf, length,
+				    SMC_DUMP_T_CDC_MSG, is_rx);
+	if (f <= 0) {
+		rc = f ? f : -EAGAIN;
+		goto out;
+	}
+	rc = f;
+out:
+	rcu_read_unlock();
+	return rc;
+}
+
+int smc_dump_cdc_msg_rwwi(struct smc_connection *conn, u32 imm_data,
+			  union smc_host_cursor *prod,
+			  union smc_host_cursor *cons, bool is_rx)
+{
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
+	struct smc_host_cdc_msg *local;
+	struct net_device *dump_ndev;
+	union smc_wr_imm_msg imm_msg;
+	union smc_host_cursor save;
+	struct smc_cdc_msg cdc;
+	int f, rc;
+	u32 token;
+
+	rcu_read_lock();
+	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!dump_ndev) {
+		rc = -ENODEV;
+		goto out;
+	}
+
+	/* Unlike smc_dump_cdc_msg(), we need to construct a cdc message
+	 * based on local_{rx|tx}_ctrl and imm_data, similar to what we
+	 * do in smc_host_msg_to_cdc().
+	 */
+	memset(&cdc, 0, sizeof(cdc));
+	imm_msg.imm_data = imm_data;
+	local = is_rx ? &conn->local_rx_ctrl : &conn->local_tx_ctrl;
+	cdc.common.type = local->common.type;
+	cdc.len = local->len;
+	/* in rwwi mode, seqno is not generated and imm_msg
+	 * does not pass seqno as well.
+	 */
+	token = imm_msg.hdr.token;
+	cdc.token = htonl(token);
+	smc_host_cursor_to_cdc(&cdc.prod, prod, &save, conn);
+	smc_host_cursor_to_cdc(&cdc.cons, cons, &save, conn);
+	cdc.prod_flags = local->prod_flags;
+	cdc.conn_state_flags = local->conn_state_flags;
+	/* local_rx_ctrl doesn't have following information,
+	 * we need to set on our own.
+	 */
+	cdc.common.type = SMC_CDC_MSG_TYPE;
+	cdc.len = SMC_WR_TX_SIZE;
+
+	switch (imm_msg.hdr.opcode) {
+	case SMC_WR_OP_DATA:
+	case SMC_WR_OP_CTRL:
+	case SMC_WR_OP_DATA_WITH_FLAGS:
+		/* nothing to do */
+		break;
+	case SMC_WR_OP_DATA_CR:
+		cdc.credits = imm_msg.data_cr.credits;
+		break;
+	case SMC_WR_OP_DATA_WITH_FLAGS_CR:
+		cdc.credits = imm_msg.data_with_flags_cr.credits;
+		break;
+	default:
+		rc = -EINVAL;
+		goto out;
+	}
+
+	/* CDC msg size is mush smaller than
+	 * SMC_DUMP_MAX_DATA_LEN, so send it directly.
+	 */
+	f = __smc_dump_forward_data(smc, dump_ndev, &cdc,
+				    sizeof(struct smc_cdc_msg),
+				    SMC_DUMP_T_CDC_MSG, is_rx);
+	if (f <= 0) {
+		rc = f ? f : -EAGAIN;
+		goto out;
+	}
+	rc = f;
+out:
+	rcu_read_unlock();
+	return rc;
 }
