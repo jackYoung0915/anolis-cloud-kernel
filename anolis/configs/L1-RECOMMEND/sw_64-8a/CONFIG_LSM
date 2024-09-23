@@ -1,0 +1,1 @@
+CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,bpf"

@@ -80,6 +80,7 @@ config CC_HAS_ASM_INLINE
 	def_bool $(success,echo 'void foo(void) { asm inline (""); }' | $(CC) -x c - -c -o /dev/null)
 
 config PAHOLE_VERSION
+	depends on !SW64
 	int
 	default $(shell,$(srctree)/scripts/pahole-version.sh $(PAHOLE))
 
