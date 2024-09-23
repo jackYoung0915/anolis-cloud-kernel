@@ -59,6 +59,10 @@
 %define with_bpftool 0
 %endif
 
+%ifarch sw_64
+%define with_bpftool 1
+%endif
+
 %define with_gcov %{?_with_gcov: 1} %{?!_with_gcov: 0}
 
 # turn off debug kernel for gcov builds
@@ -902,8 +906,7 @@ BuildKernel() {
 
 %ifarch sw_64
     objdump -d vmlinux>1
-    objcopy -O binary vmlinux vmlinux.bin
-    cp vmlinux.bin ./arch/sw_64/boot/vmlinux
+    cp vmlinux ./arch/sw_64/boot/vmlinux
 %endif
     mkdir -p $RPM_BUILD_ROOT/%{image_install_path}
     mkdir -p $RPM_BUILD_ROOT/lib/modules/$KernelVer
