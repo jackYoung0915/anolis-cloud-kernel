@@ -336,7 +336,7 @@ config I2C_ZHAOXIN
 
 config I2C_SUNWAY
 	tristate "Sunway i2c lib"
-	depends on UNCORE_XUELANG
+	depends on UNCORE_XUELANG || UNCORE_JUNZHANG
 	help
 	  If you say yes to this option, support will be included for the
 	  Sunway Soc I2C interface on SW64 platform.
