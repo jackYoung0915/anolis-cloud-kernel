@@ -550,7 +550,7 @@ struct task_group {
 	int			specs_ratio;
 	struct rb_node		gb_node;
 	struct group_balancer_sched_domain *gb_sd;
-	struct group_balancer_sched_domain *prev_gb_sd;
+	struct task_group	*gb_tg;
 	bool			group_balancer;
 	bool			leap_level;
 	unsigned long		leap_level_timestamp;
@@ -4208,9 +4208,12 @@ static inline void tg_inc_soft_cpus_version(struct task_group *tg)
 extern void sched_init_group_balancer_sched_domains(void);
 extern void sched_clear_group_balancer_sched_domains(void);
 extern void tg_set_specs_ratio(struct task_group *tg);
-extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg);
-extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg);
+extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
+						    struct group_balancer_sched_domain *target,
+						    bool enable);
+extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg, bool disable);
 extern void update_group_balancer_root_cpumask(void);
+extern void tg_specs_change(struct task_group *tg);
 #else
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
@@ -4218,5 +4221,6 @@ static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 }
 static inline void tg_set_specs_ratio(struct task_group *tg) { }
 static inline void update_group_balancer_root_cpumask(void) { }
+static inline void tg_specs_change(struct task_group *tg) { }
 #endif
 #endif /* _KERNEL_SCHED_SCHED_H */
