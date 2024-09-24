@@ -4214,6 +4214,8 @@ extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
 extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg, bool disable);
 extern void update_group_balancer_root_cpumask(void);
 extern void tg_specs_change(struct task_group *tg);
+extern unsigned long cfs_h_load(struct cfs_rq *cfs_rq);
+extern bool gb_cpu_overutilized(int cpu);
 #else
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
