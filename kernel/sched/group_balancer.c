@@ -1229,6 +1229,50 @@ static void __exit sched_exit_group_balancer_kernfs(void)
 
 __exitcall(sched_exit_group_balancer_kernfs);
 
+static unsigned long tg_gb_sd_load(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	unsigned long load = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		load += cfs_h_load(tg->cfs_rq[cpu]);
+
+	return load;
+}
+
+static unsigned long tg_gb_sd_util(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	unsigned long util = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		util += READ_ONCE(tg->cfs_rq[cpu]->avg.util_est.enqueued);
+
+	return util;
+}
+
+static unsigned long gb_sd_load(struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	unsigned long load = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		load += cpu_rq(cpu)->cfs.avg.load_avg;
+
+	return load;
+}
+
+static unsigned long gb_sd_capacity(struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	int cap = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		cap += cpu_rq(cpu)->cpu_capacity;
+
+	return cap;
+}
+
 static struct group_balancer_sched_domain *select_idle_gb_sd(int specs)
 {
 	struct group_balancer_sched_domain *gb_sd, *child;
