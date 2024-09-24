@@ -1551,14 +1551,15 @@ void __init csv_init(struct kvm_x86_ops *ops)
 	if (boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
 		return;
 
+	memcpy(&csv_x86_ops, ops, sizeof(struct kvm_x86_ops));
+
+	ops->mem_enc_op = csv_mem_enc_op;
+	ops->vm_size = sizeof(struct kvm_svm_csv);
+
 	/* Retrieve CSV CPUID information */
 	cpuid(0x8000001f, &eax, &ebx, &ecx, &edx);
 	if (eax & CSV_BIT) {
-		memcpy(&csv_x86_ops, ops, sizeof(struct kvm_x86_ops));
-
-		ops->mem_enc_op = csv_mem_enc_op;
 		ops->vm_destroy = csv_vm_destroy;
-		ops->vm_size = sizeof(struct kvm_svm_csv);
 		ops->handle_exit = csv_handle_exit;
 		ops->guest_memory_reclaimed = csv_guest_memory_reclaimed;
 	}
