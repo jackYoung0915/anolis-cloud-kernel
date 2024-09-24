@@ -8185,6 +8185,13 @@ static inline bool cpu_overutilized(int cpu)
 	return !util_fits_cpu(cpu_util(cpu), rq_util_min, rq_util_max, cpu);
 }
 
+#ifdef CONFIG_GROUP_BALANCER
+bool gb_cpu_overutilized(int cpu)
+{
+	return cpu_overutilized(cpu);
+}
+#endif
+
 static inline void update_overutilized_status(struct rq *rq)
 {
 	if (!READ_ONCE(rq->rd->overutilized) && cpu_overutilized(rq->cpu)) {
@@ -10973,6 +10980,14 @@ static void update_cfs_rq_h_load(struct cfs_rq *cfs_rq)
 		cfs_rq->last_h_load_update = now;
 	}
 }
+
+#ifdef CONFIG_GROUP_BALANCER
+unsigned long cfs_h_load(struct cfs_rq *cfs_rq)
+{
+	update_cfs_rq_h_load(cfs_rq);
+	return cfs_rq->h_load;
+}
+#endif
 
 static unsigned long task_h_load(struct task_struct *p)
 {
