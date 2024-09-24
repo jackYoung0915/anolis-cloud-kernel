@@ -573,6 +573,8 @@ struct task_group {
 	struct group_balancer_sched_domain *gb_sd;
 	struct group_balancer_sched_domain *prev_gb_sd;
 	bool			group_balancer;
+	bool			leap_level;
+	unsigned long		leap_level_timestamp;
 #endif
 	long			priority;
 
