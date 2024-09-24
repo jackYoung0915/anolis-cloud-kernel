@@ -977,7 +977,7 @@ static long hct_ioctl(struct mdev_device *mdev, unsigned int cmd,
 	return -ENOTTY;
 }
 
-static int hct_open(struct mdev_device *mdev)
+static int hct_open_device(struct mdev_device *mdev)
 {
 	struct mdev_state *mdev_state = mdev_get_drvdata(mdev);
 
@@ -994,7 +994,7 @@ static int hct_open(struct mdev_device *mdev)
 	return 0;
 }
 
-static void hct_close(struct mdev_device *mdev)
+static void hct_close_device(struct mdev_device *mdev)
 {
 	struct mdev_state *mdev_state = mdev_get_drvdata(mdev);
 	int i;
@@ -1213,8 +1213,8 @@ static const struct mdev_parent_ops hct_mdev_fops = {
 	.supported_type_groups	= hct_type_groups,
 	.create			= hct_create,
 	.remove			= hct_remove,
-	.open			= hct_open,
-	.release		= hct_close,
+	.open_device		= hct_open_device,
+	.close_device		= hct_close_device,
 	.read			= hct_read,
 	.write			= hct_write,
 	.ioctl			= hct_ioctl,
