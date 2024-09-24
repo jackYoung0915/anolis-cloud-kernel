@@ -1292,6 +1292,23 @@ static struct group_balancer_sched_domain *select_idle_gb_sd(int specs,
 	return gb_sd;
 }
 
+static void
+check_task_group_leap_level(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	struct group_balancer_sched_domain *child;
+	int specs = tg->specs_ratio;
+
+	for_each_gb_sd_child(child, gb_sd) {
+		if (specs <= 100 * child->span_weight) {
+			tg->leap_level = true;
+			tg->leap_level_timestamp = jiffies;
+			return;
+		}
+	}
+
+	tg->leap_level = false;
+}
+
 /*
  * When we attach/detach a task group to/from a domain, we hold the read lock
  * group_balancer_sched_domain_lock first, and then hold gb_sd->lock.
@@ -1321,6 +1338,7 @@ void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
 		}
 	}
 	walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, gb_sd_span(gb_sd));
+	check_task_group_leap_level(tg, gb_sd);
 }
 
 void remove_tg_from_group_balancer_sched_domain(struct task_group *tg)
