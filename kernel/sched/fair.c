@@ -13368,12 +13368,10 @@ void tg_set_specs_ratio(struct task_group *tg)
 
 	specs_ratio = quota / ((1 << BW_SHIFT) / 100);
 
-	if (tg->group_balancer)
-		detach_tg_from_group_balancer_sched_domain(tg);
 	/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
 	tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
 	if (tg->group_balancer)
-		attach_tg_to_group_balancer_sched_domain(tg);
+		tg_specs_change(tg);
 }
 #endif
 
