@@ -124,6 +124,7 @@ struct packet_sock {
 				tp_tx_has_off:1;
 	int			pressure;
 	int			ifindex;	/* bound device		*/
+	u8			vnet_hdr_sz;
 	__be16			num;
 	struct packet_rollover	*rollover;
 	struct packet_mclist	*mclist;
