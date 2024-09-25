@@ -19,6 +19,7 @@
 #include "smc_rx.h"
 #include "smc_close.h"
 #include "smc_ism.h"
+#include "smc_stats.h"
 
 /********************************** send *************************************/
 
@@ -494,6 +495,8 @@ static void smc_cdc_msg_recv_action(struct smc_sock *smc,
 				  &conn->local_rx_ctrl.cons);
 	diff_prod = smc_curs_diff(conn->rmb_desc->len, &prod_old,
 				  &conn->local_rx_ctrl.prod);
+	if (diff_prod)
+		smc_dump_raw_data(conn, prod_old.count, diff_prod, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -714,9 +717,11 @@ void smc_cdc_rx_handler_rwwi(struct ib_wc *wc)
 	conn = &smc->conn;
 	bh_lock_sock(&smc->sk);
 	diff_prod = wc->byte_len;
-	if (diff_prod)
+	if (diff_prod) {
+		smc_dump_raw_data(conn, conn->local_rx_ctrl.prod.count,
+				  diff_prod, true);
 		smc_curs_add_safe(conn->rmb_desc->len, &conn->local_rx_ctrl.prod, diff_prod, conn);
-
+	}
 	switch (imm_msg.hdr.opcode) {
 	case SMC_WR_OP_DATA:
 		smc_cdc_handle_rwwi_data_msg(smc, &imm_msg, diff_prod);
