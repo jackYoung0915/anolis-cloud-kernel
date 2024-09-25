@@ -10,6 +10,11 @@
 
 #include <linux/types.h>
 
+#define CSV_EXT_CSV3_MULT_LUP_DATA_BIT	0
+#define CSV_EXT_CSV3_MULT_LUP_DATA	(1 << CSV_EXT_CSV3_MULT_LUP_DATA_BIT)
+#define CSV_EXT_CSV3_INJ_SECRET_BIT	1
+#define CSV_EXT_CSV3_INJ_SECRET		(1 << CSV_EXT_CSV3_INJ_SECRET_BIT)
+
 /**
  * Guest/platform management commands
  */
@@ -285,4 +290,25 @@ struct csv_data_receive_encrypt_context {
 	u32 vmcb_block_len;		/* In */
 } __packed;
 
-#endif
+#ifdef CONFIG_CRYPTO_DEV_SP_PSP
+
+/**
+ * csv_get_extension_info - collect extension set of the firmware
+ *
+ * @buf: The buffer to save extension set
+ * @size: The size of the @buf
+ *
+ * Returns:
+ * 0 if @buf is filled with extension bitflags
+ * -%ENODEV if the CSV device is not available
+ * -%EINVAL if @buf is NULL or @size is too smaller
+ */
+int csv_get_extension_info(void *buf, size_t *size);
+
+#else	/* !CONFIG_CRYPTO_DEV_SP_PSP */
+
+static inline int csv_get_extension_info(void *buf, size_t *size) { return -ENODEV; }
+
+#endif	/* !CONFIG_CRYPTO_DEV_SP_PSP */
+
+#endif	/* __PSP_CSV_H__ */
