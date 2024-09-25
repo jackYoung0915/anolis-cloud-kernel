@@ -196,6 +196,7 @@ int smc_cdc_msg_send(struct smc_connection *conn,
 	atomic_inc(&conn->cdc_pend_tx_wr);
 	smp_mb__after_atomic(); /* Make sure cdc_pend_tx_wr added before post */
 
+	smc_dump_cdc_msg(conn, cdc_msg, sizeof(struct smc_cdc_msg), false);
 	rc = smc_wr_tx_send(link, (struct smc_wr_tx_pend_priv *)pend);
 	if (likely(!rc)) {
 		smc_curs_copy(&conn->rx_curs_confirmed, &cfed, conn);
@@ -322,6 +323,7 @@ int smcd_cdc_msg_send(struct smc_connection *conn)
 	cdc.cons.count = curs.count;
 	cdc.cons.prod_flags = conn->local_tx_ctrl.prod_flags;
 	cdc.cons.conn_state_flags = conn->local_tx_ctrl.conn_state_flags;
+	smc_dump_cdc_msg(conn, &cdc, sizeof(struct smcd_cdc_msg), false);
 	rc = smcd_tx_ism_write(conn, &cdc, sizeof(cdc), 0, 1);
 	if (rc)
 		return rc;
@@ -497,6 +499,10 @@ static void smc_cdc_msg_recv_action(struct smc_sock *smc,
 				  &conn->local_rx_ctrl.prod);
 	if (diff_prod)
 		smc_dump_raw_data(conn, prod_old.count, diff_prod, true);
+	if (conn->lgr->is_smcd)
+		smc_dump_cdc_msg(conn, cdc, sizeof(struct smcd_cdc_msg), true);
+	else
+		smc_dump_cdc_msg(conn, cdc, sizeof(struct smc_cdc_msg), true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
