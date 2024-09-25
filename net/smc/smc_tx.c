@@ -731,6 +731,7 @@ static int smcr_tx_rdma_writes_rwwi(struct smc_connection *conn)
 	wr.wr.opcode = IB_WR_RDMA_WRITE_WITH_IMM;
 	num_sges = smc_tx_fill_wr(conn, &src_off, src_len, dst_len, &wr, sge, true);
 	wr.wr.sg_list = sge;
+	smc_dump_raw_data(conn, sent.count, dst_len, false);
 	rc = __smcr_tx_rdma_writes_rwwi(conn, prod.count, dst_len, num_sges, &wr);
 	if (rc)
 		return rc;
@@ -893,6 +894,7 @@ static int smc_tx_rdma_writes(struct smc_connection *conn,
 		src_len = conn->sndbuf_desc->len - sent.count;
 	}
 
+	smc_dump_raw_data(conn, sent.count, len, false);
 	if (conn->lgr->is_smcd)
 		rc = smcd_tx_rdma_writes(conn, len, sent.count, src_len,
 					 dst_off, dst_len);

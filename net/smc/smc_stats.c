@@ -717,11 +717,12 @@ int smc_dump_raw_data(struct smc_connection *conn, int offset,
 {
 	struct smc_buf_desc *buf = is_rx ? conn->rmb_desc : conn->sndbuf_desc;
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
-	char *p = (char *)buf->cpu_addr + offset;
 	struct net *net = sock_net(&smc->sk);
+	bool is_smcd = conn->lgr->is_smcd;
 	int chunk, chunk_len, chunk_off;
 	struct net_device *dump_ndev;
 	int total_left, l, f, rc;
+	char *p;
 
 	rcu_read_lock();
 	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
@@ -731,6 +732,13 @@ int smc_dump_raw_data(struct smc_connection *conn, int offset,
 	}
 	total_left = length;
 	chunk_off = offset;
+
+	/* skip the section at the front of SMC-D DMB that
+	 * contains CDC messages.
+	 */
+	p = (is_smcd && is_rx) ?
+		(char *)buf->cpu_addr + sizeof(struct smcd_cdc_msg) + offset :
+		(char *)buf->cpu_addr + offset;
 	for (chunk = 0; chunk < 2; chunk++) {
 		chunk_len = min_t(int, total_left, buf->len - chunk_off);
 		while (chunk_len) {
@@ -750,7 +758,9 @@ int smc_dump_raw_data(struct smc_connection *conn, int offset,
 		if (!total_left)
 			break;	/* either on 1st or 2nd iteration */
 		chunk_off = 0;
-		p = buf->cpu_addr;
+		p = (is_smcd && is_rx) ?
+			(char *)buf->cpu_addr + sizeof(struct smcd_cdc_msg) :
+			buf->cpu_addr;
 	}
 	rc = length - total_left;
 out:
