@@ -13,7 +13,8 @@ ccp-$(CONFIG_CRYPTO_DEV_SP_PSP) += psp-dev.o \
                                    sev-dev.o \
                                    tee-dev.o \
                                    psp-ringbuf.o \
-                                   vpsp.o
+                                   vpsp.o \
+                                   hygon/csv-dev.o
 
 ccp-$(CONFIG_TDM_DEV_HYGON) += tdm-dev.o
 
