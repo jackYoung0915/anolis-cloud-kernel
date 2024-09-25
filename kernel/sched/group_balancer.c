@@ -22,6 +22,7 @@ struct group_balancer_sched_domain {
 	unsigned int					nr_children;
 	/* If free_tg_specs is less than zero, the gb_sd is overloaded. */
 	int						free_tg_specs;
+	unsigned int					depth;
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
@@ -578,6 +579,17 @@ static void add_to_tree(struct group_balancer_sched_domain *gb_sd,
 		list_add_tail(&gb_sd->sibling, &parent->child);
 		gb_sd->parent = parent;
 		parent->nr_children++;
+		/*
+		 * When we bi-divide the group balancer sched domain, the parent, middle layer,
+		 * hasn't been added to the tree yet, so for this case, we just let the depth
+		 * increase by 1.
+		 */
+		if (parent->depth)
+			gb_sd->depth = parent->depth + 1;
+		else
+			gb_sd->depth++;
+	} else {
+		gb_sd->depth = 0;
 	}
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
 	gb_sd->free_tg_specs = 100 * gb_sd->span_weight;
@@ -877,6 +889,36 @@ out:
 	return ret;
 }
 
+/*
+ * After we build the tree, the depth may be not correct as we moved
+ * the subtree during the build process, so we correct the depth by
+ * recalculating.
+ */
+static void set_group_balancer_sched_domain_depth(void)
+{
+	struct group_balancer_sched_domain *parent, *child;
+
+	parent = group_balancer_root_domain;
+	parent->depth = 0;
+down:
+	for_each_gb_sd_child(child, parent) {
+		child->depth = parent->depth + 1;
+		parent = child;
+		goto down;
+up:
+		continue;
+	}
+	if (parent == group_balancer_root_domain)
+		goto out;
+
+	child = parent;
+	parent = parent->parent;
+	if (parent)
+		goto up;
+out:
+	return;
+}
+
 static int build_group_balancer_root_domain(void)
 {
 	struct group_balancer_sched_domain *root;
@@ -1154,6 +1196,7 @@ void sched_init_group_balancer_sched_domains(void)
 		pr_err("Group Balancer: Failed to build group balancer sched domains: %d\n", ret);
 	else
 		pr_info("Group Balancer: Build group balancer sched domains successfully.\n");
+	set_group_balancer_sched_domain_depth();
 	write_unlock(&group_balancer_sched_domain_lock);
 	cpus_read_unlock();
 }
@@ -1493,4 +1536,40 @@ void tg_specs_change(struct task_group *tg)
 upper:
 	tg_upper_level(tg, gb_sd);
 
+}
+
+static struct group_balancer_sched_domain
+*find_matching_gb_sd(struct group_balancer_sched_domain **src,
+		     struct group_balancer_sched_domain **dst)
+{
+	int src_depth, dst_depth;
+
+	if (!*src || !*dst || *src == *dst)
+		return NULL;
+
+	src_depth = (*src)->depth;
+	dst_depth = (*dst)->depth;
+
+	if (!src_depth || !dst_depth)
+		return NULL;
+
+	while (src_depth > dst_depth) {
+		src_depth--;
+		*src = (*src)->parent;
+	}
+
+	while (dst_depth > src_depth) {
+		dst_depth--;
+		*dst = (*dst)->parent;
+	}
+
+
+	while ((*src)->parent != (*dst)->parent) {
+		*src = (*src)->parent;
+		*dst = (*dst)->parent;
+		if (!*src || !*dst)
+			return NULL;
+	}
+
+	return (*src)->parent;
 }
