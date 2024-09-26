@@ -12,6 +12,19 @@
 %define pkgrelease %%DIST_PKGRELEASEVERION%%
 %define variant %%VARIANT%%
 
+# for sw_64 architecture
+%ifarch sw_64
+%if %(gcc -dM -E - </dev/null | grep '__sw_64_sw6b__\s*1$' -q ; echo $?) == 0
+%define sw_dist_arch -6b
+%else
+%if %(gcc -dM -E - </dev/null | grep '__sw_64_sw8a__\s*1$' -q ; echo $?) == 0
+%define sw_dist_arch -8a
+%else
+%define sw_dist_arch _unknown_sw_arch
+%endif # sw8a architecture
+%endif # sw6b architecture
+%endif # all sw_64 architecture
+
 # allow pkg_release to have configurable %%{?dist} tag
 %define specrelease %{pkgrelease}%{?dist}
 
@@ -283,15 +296,18 @@ Source17: mod-blacklist.sh
 
 Source90: filter-x86_64.sh
 Source93: filter-aarch64.sh
-Source96: filter-sw_64.sh
+Source96: filter-sw_64-6b.sh
+Source97: filter-sw_64-8a.sh
 Source99: filter-modules.sh
 
 Source20: kernel-%{version}-aarch64.config
 Source21: kernel-%{version}-aarch64-debug.config
 Source39: kernel-%{version}-x86_64.config
 Source40: kernel-%{version}-x86_64-debug.config
-Source3000: kernel-%{version}-sw_64.config
-Source3001: kernel-%{version}-sw_64-debug.config
+Source3000: kernel-%{version}-sw_64-6b.config
+Source3001: kernel-%{version}-sw_64-6b-debug.config
+Source3002: kernel-%{version}-sw_64-8a.config
+Source3003: kernel-%{version}-sw_64-8a-debug.config
 Source43: generate_bls_conf.sh
 Source44: mod-internal.list
 Source45: kernel-5.10.134-loongarch64.config
@@ -866,7 +882,8 @@ BuildKernel() {
     DoModules=1
 
     # Pick the right config file for the kernel we're building
-    Config=kernel-%{version}-%{_target_cpu}${Flavour:+-${Flavour}}.config
+    Config=kernel-%{version}-%{_target_cpu}%{?sw_dist_arch}${Flavour:+-${Flavour}}.config
+
     DevelDir=/usr/src/kernels/%{KVERREL}${Flav}
 
     # When the bootable image is just the ELF kernel, strip it.
