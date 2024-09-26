@@ -93,6 +93,13 @@ struct kvm_csv_info {
 
 	struct list_head smr_list; /* List of guest secure memory regions */
 	unsigned long nodemask; /* Nodemask where CSV guest's memory resides */
+
+	/* The following 5 fields record the extension status for current VM */
+	bool fw_ext_valid;	/* if @fw_ext field is valid */
+	u32 fw_ext;		/* extensions supported by current platform */
+	bool kvm_ext_valid;	/* if @kvm_ext field is valid */
+	u32 kvm_ext;		/* extensions supported by KVM */
+	u32 inuse_ext;		/* extensions inused by current VM */
 };
 
 struct kvm_svm_csv {
@@ -197,7 +204,7 @@ static int to_csv_pg_level(int level)
 	return ret;
 }
 
-static bool csv_guest(struct kvm *kvm)
+static bool csv3_guest(struct kvm *kvm)
 {
 	struct kvm_csv_info *csv = &to_kvm_svm_csv(kvm)->csv_info;
 
@@ -348,7 +355,7 @@ static int csv_set_guest_private_memory(struct kvm *kvm)
 	int npages;
 	struct page *page;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	nodes_clear(nodemask);
@@ -478,7 +485,7 @@ static int csv_launch_encrypt_data(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	unsigned long pfn, pfn_sme_mask;
 	int ret = 0;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	if (copy_from_user(&params, (void __user *)(uintptr_t)argp->data,
@@ -573,7 +580,7 @@ static int csv_launch_encrypt_vmcb(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	int ret = 0;
 	unsigned long i = 0;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	encrypt_vmcb = kzalloc(sizeof(*encrypt_vmcb), GFP_KERNEL);
@@ -649,7 +656,7 @@ static int csv_send_encrypt_data(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	int ret = 0;
 	int i;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	if (copy_from_user(&params, (void __user *)(uintptr_t)argp->data,
@@ -801,7 +808,7 @@ static int csv_send_encrypt_context(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	u32 offset;
 	int ret = 0;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	if (copy_from_user(&params, (void __user *)(uintptr_t)argp->data,
@@ -896,7 +903,7 @@ static int csv_receive_encrypt_data(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	u32 offset;
 	int ret = 0;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	if (unlikely(list_empty(&csv->smr_list))) {
@@ -1016,7 +1023,7 @@ static int csv_receive_encrypt_context(struct kvm *kvm, struct kvm_sev_cmd *argp
 	struct kvm_vcpu *vcpu;
 	unsigned long i;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	if (copy_from_user(&params, (void __user *)(uintptr_t)argp->data,
@@ -1403,7 +1410,7 @@ static void csv_vm_destroy(struct kvm *kvm)
 	struct rb_node *node;
 	unsigned long i = 0;
 
-	if (csv_guest(kvm)) {
+	if (csv3_guest(kvm)) {
 		mutex_lock(&csv->sp_lock);
 		while ((node = rb_first(&csv->sp_mgr.root))) {
 			sp = rb_entry(node, struct shared_page, node);
@@ -1426,7 +1433,7 @@ static void csv_vm_destroy(struct kvm *kvm)
 	if (likely(csv_x86_ops.vm_destroy))
 		csv_x86_ops.vm_destroy(kvm);
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return;
 
 	/* free secure memory region */
@@ -1470,7 +1477,7 @@ static int csv_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 	/*
 	 * NPF for csv is dedicated.
 	 */
-	if (csv_guest(vcpu->kvm) && exit_code == SVM_EXIT_NPF) {
+	if (csv3_guest(vcpu->kvm) && exit_code == SVM_EXIT_NPF) {
 		gpa_t gpa = __sme_clr(svm->vmcb->control.exit_info_2);
 		u64 error_code = svm->vmcb->control.exit_info_1;
 
@@ -1485,7 +1492,7 @@ static int csv_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 
 static void csv_guest_memory_reclaimed(struct kvm *kvm)
 {
-	if (!csv_guest(kvm)) {
+	if (!csv3_guest(kvm)) {
 		if (likely(csv_x86_ops.guest_memory_reclaimed))
 			csv_x86_ops.guest_memory_reclaimed(kvm);
 	}
@@ -1496,7 +1503,7 @@ static int csv_handle_memory(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	struct kvm_csv_handle_memory params;
 	int r = -EINVAL;
 
-	if (!csv_guest(kvm))
+	if (!csv3_guest(kvm))
 		return -ENOTTY;
 
 	if (copy_from_user(&params, (void __user *)(uintptr_t)argp->data,
@@ -1568,6 +1575,80 @@ out:
 	return r;
 }
 
+/**
+ * When userspace recognizes these extensions, it is suggested that the userspace
+ * enables these extensions through KVM_ENABLE_CAP, so that both the userspace
+ * and KVM can utilize these extensions.
+ */
+static int csv_get_hygon_coco_extension(struct kvm *kvm)
+{
+	struct kvm_csv_info *csv;
+	size_t len = sizeof(uint32_t);
+	int ret = 0;
+
+	if (!kvm)
+		return 0;
+
+	csv = &to_kvm_svm_csv(kvm)->csv_info;
+
+	if (csv->fw_ext_valid == false) {
+		ret = csv_get_extension_info(&csv->fw_ext, &len);
+
+		if (ret == -ENODEV) {
+			pr_err("Unable to interact with CSV firmware!\n");
+			return 0;
+		} else if (ret == -EINVAL) {
+			pr_err("Need %ld bytes to record fw extension!\n", len);
+			return 0;
+		}
+
+		csv->fw_ext_valid = true;
+	}
+
+	/* The kvm_ext field of kvm_csv_info is filled in only if the fw_ext
+	 * field of kvm_csv_info is valid.
+	 */
+	if (csv->kvm_ext_valid == false) {
+		/* Currently, KVM doesn't support any extensions, we don't need
+		 * to fill in kvm_ext field of kvm_csv_info here.
+		 */
+		csv->kvm_ext_valid = true;
+	}
+
+	/* Return extension info only if both fw_ext and kvm_ext fields of
+	 * kvm_csv_info are valid.
+	 */
+	pr_debug("%s: fw_ext=%#x kvm_ext=%#x\n",
+		 __func__, csv->fw_ext, csv->kvm_ext);
+	return (int)csv->kvm_ext;
+}
+
+/**
+ * Return 0 means KVM accept the negotiation from userspace. Both the
+ * userspace and KVM should not utilise extensions if failed to negotiate.
+ */
+static int csv_enable_hygon_coco_extension(struct kvm *kvm, u32 arg)
+{
+	struct kvm_csv_info *csv;
+
+	if (!kvm)
+		return -EINVAL;
+
+	csv = &to_kvm_svm_csv(kvm)->csv_info;
+
+	/* Negotiation is accepted only if both the fw_ext and kvm_ext fields
+	 * of kvm_csv_info are valid and the virtual machine is a CSV3 guest.
+	 */
+	if (csv->fw_ext_valid && csv->kvm_ext_valid && csv3_guest(kvm)) {
+		csv->inuse_ext = csv->kvm_ext & arg;
+		pr_debug("%s: inuse_ext=%#x\n", __func__, csv->inuse_ext);
+		return csv->inuse_ext;
+	}
+
+	/* Userspace should not utilise the extensions */
+	return -EINVAL;
+}
+
 #define CSV_BIT		BIT(30)
 
 void __init csv_init(struct kvm_x86_ops *ops)
@@ -1581,6 +1662,8 @@ void __init csv_init(struct kvm_x86_ops *ops)
 
 	ops->mem_enc_op = csv_mem_enc_op;
 	ops->vm_size = sizeof(struct kvm_svm_csv);
+	ops->get_hygon_coco_extension = csv_get_hygon_coco_extension;
+	ops->enable_hygon_coco_extension = csv_enable_hygon_coco_extension;
 
 	/* Retrieve CSV CPUID information */
 	cpuid(0x8000001f, &eax, &ebx, &ecx, &edx);

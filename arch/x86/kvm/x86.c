@@ -80,6 +80,8 @@
 #include <asm/sgx.h>
 #include <clocksource/hyperv_timer.h>
 
+#include <asm/processor-hygon.h>
+
 #define CREATE_TRACE_POINTS
 #include "trace.h"
 
@@ -4078,6 +4080,18 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 			r = kvm_x86_ops.has_emulated_msr(kvm,
 						MSR_AMD64_SEV_ES_GHCB);
 		break;
+	case KVM_CAP_HYGON_COCO_EXT:
+		r = 0;
+
+		/*
+		 * Before running a Hygon confidential guest, the userspace
+		 * should find the advanced extensions of the Hygon CSV
+		 * technology. If the userspace recognize the extensions, it's
+		 * suggested that the userspace to utilise extensions.
+		 */
+		if (is_x86_vendor_hygon() && kvm_x86_ops.get_hygon_coco_extension)
+			r = kvm_x86_ops.get_hygon_coco_extension(kvm);
+		break;
 	default:
 		break;
 	}
@@ -5654,6 +5668,17 @@ split_irqchip_unlock:
 			r = 0;
 		}
 		mutex_unlock(&kvm->lock);
+		break;
+	case KVM_CAP_HYGON_COCO_EXT:
+		r = -EINVAL;
+
+		/*
+		 * The userspace negotiate with KVM to utilise extensions of
+		 * Hygon CSV technology.
+		 */
+		if (is_x86_vendor_hygon() && kvm_x86_ops.enable_hygon_coco_extension)
+			r = kvm_x86_ops.enable_hygon_coco_extension(kvm,
+								(u32)cap->args[0]);
 		break;
 	default:
 		r = -EINVAL;
