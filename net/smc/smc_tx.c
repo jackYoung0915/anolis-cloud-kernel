@@ -741,6 +741,7 @@ static int smcr_tx_rdma_writes_rwwi(struct smc_connection *conn)
 	smc_curs_copy(&conn->local_tx_ctrl.prod, &prod, conn);
 							/* dst: peer RMBE */
 	smc_curs_copy(&conn->tx_curs_sent, &sent, conn);/* src: local sndbuf */
+	smc_dump_cdc_msg_rwwi(conn, __be32_to_cpu(wr.wr.ex.imm_data), false);
 
 	return 0;
 }
