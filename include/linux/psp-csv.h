@@ -20,7 +20,7 @@
  */
 enum csv3_cmd {
 	/* Guest launch commands */
-	CSV_CMD_SET_GUEST_PRIVATE_MEMORY	= 0x200,
+	CSV3_CMD_SET_GUEST_PRIVATE_MEMORY	= 0x200,
 	CSV_CMD_LAUNCH_ENCRYPT_DATA		= 0x201,
 	CSV_CMD_LAUNCH_ENCRYPT_VMCB		= 0x202,
 	/* Guest NPT(Nested Page Table) management commands */
@@ -124,14 +124,14 @@ struct csv_data_memory_region {
 } __packed;
 
 /**
- * struct csv_data_set_guest_private_memory - CSV_CMD_SET_GUEST_PRIVATE_MEMORY
+ * struct csv3_data_set_guest_private_memory - CSV3_CMD_SET_GUEST_PRIVATE_MEMORY
  * command parameters
  *
  * @handle: handle assigned to the VM
  * @nregions: number of memory regions
  * @regions_paddr: address of memory containing multiple memory regions
  */
-struct csv_data_set_guest_private_memory {
+struct csv3_data_set_guest_private_memory {
 	u32 handle;			/* In */
 	u32 nregions;			/* In */
 	u64 regions_paddr;		/* In */
