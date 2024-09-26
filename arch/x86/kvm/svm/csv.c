@@ -332,14 +332,14 @@ static bool csv_is_mmio_pfn(kvm_pfn_t pfn)
 				     E820_TYPE_RAM);
 }
 
-static int csv_set_guest_private_memory(struct kvm *kvm)
+static int csv3_set_guest_private_memory(struct kvm *kvm, struct kvm_sev_cmd *argp)
 {
 	struct kvm_memslots *slots = kvm_memslots(kvm);
 	struct kvm_memory_slot *memslot;
 	struct secure_memory_region *smr;
 	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
 	struct kvm_csv_info *csv = &to_kvm_svm_csv(kvm)->csv_info;
-	struct csv_data_set_guest_private_memory *set_guest_private_memory;
+	struct csv3_data_set_guest_private_memory *set_guest_private_memory;
 	struct csv_data_memory_region *regions;
 	nodemask_t nodemask;
 	nodemask_t *nodemask_ptr;
@@ -347,7 +347,7 @@ static int csv_set_guest_private_memory(struct kvm *kvm)
 	LIST_HEAD(tmp_list);
 	struct list_head *pos, *q;
 	u32 i = 0, count = 0, remainder;
-	int ret = 0, error;
+	int ret = 0;
 	u64 size = 0, nr_smr = 0, nr_pages = 0;
 	u32 smr_entry_shift;
 
@@ -357,6 +357,10 @@ static int csv_set_guest_private_memory(struct kvm *kvm)
 
 	if (!csv3_guest(kvm))
 		return -ENOTTY;
+
+	/* The smr_list should be initialized only once */
+	if (!list_empty(&csv->smr_list))
+		return -EFAULT;
 
 	nodes_clear(nodemask);
 	for_each_set_bit(i, &csv->nodemask, BITS_PER_LONG)
@@ -438,8 +442,8 @@ static int csv_set_guest_private_memory(struct kvm *kvm)
 			set_guest_private_memory->regions_paddr = __sme_pa(regions);
 
 			/* set secury memory region for launch enrypt data */
-			ret = csv_issue_cmd(kvm, CSV_CMD_SET_GUEST_PRIVATE_MEMORY,
-					set_guest_private_memory, &error);
+			ret = csv_issue_cmd(kvm, CSV3_CMD_SET_GUEST_PRIVATE_MEMORY,
+					set_guest_private_memory, &argp->error);
 			if (ret)
 				goto e_free_smr;
 
@@ -499,10 +503,17 @@ static int csv_launch_encrypt_data(struct kvm *kvm, struct kvm_sev_cmd *argp)
 		goto exit;
 	}
 
-	/* Allocate all the guest memory from CMA */
-	ret = csv_set_guest_private_memory(kvm);
-	if (ret)
-		goto exit;
+	/*
+	 * If userspace request to invoke CSV3_CMD_SET_GUEST_PRIVATE_MEMORY
+	 * explicitly, we should not calls to csv3_set_guest_private_memory()
+	 * here.
+	 */
+	if (!(csv->inuse_ext & KVM_CAP_HYGON_COCO_EXT_CSV3_SET_PRIV_MEM)) {
+		/* Allocate all the guest memory from CMA */
+		ret = csv3_set_guest_private_memory(kvm, argp);
+		if (ret)
+			goto exit;
+	}
 
 	num_entries = params.len / PAGE_SIZE;
 	num_entries_in_block = ARRAY_SIZE(blocks->entry);
@@ -908,7 +919,7 @@ static int csv_receive_encrypt_data(struct kvm *kvm, struct kvm_sev_cmd *argp)
 
 	if (unlikely(list_empty(&csv->smr_list))) {
 		/* Allocate all the guest memory from CMA */
-		ret = csv_set_guest_private_memory(kvm);
+		ret = csv3_set_guest_private_memory(kvm, argp);
 		if (ret)
 			goto exit;
 	}
@@ -1511,7 +1522,7 @@ static int csv_handle_memory(struct kvm *kvm, struct kvm_sev_cmd *argp)
 		return -EFAULT;
 
 	switch (params.opcode) {
-	case KVM_CSV_RELEASE_SHARED_MEMORY:
+	case KVM_CSV3_RELEASE_SHARED_MEMORY:
 		r = csv_unpin_shared_memory(kvm, params.gpa, params.num_pages);
 		break;
 	default:
@@ -1535,29 +1546,32 @@ static int csv_mem_enc_op(struct kvm *kvm, void __user *argp)
 	mutex_lock(&kvm->lock);
 
 	switch (sev_cmd.id) {
-	case KVM_CSV_INIT:
+	case KVM_CSV3_INIT:
 		r = csv_guest_init(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_LAUNCH_ENCRYPT_DATA:
+	case KVM_CSV3_LAUNCH_ENCRYPT_DATA:
 		r = csv_launch_encrypt_data(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_LAUNCH_ENCRYPT_VMCB:
+	case KVM_CSV3_LAUNCH_ENCRYPT_VMCB:
 		r = csv_launch_encrypt_vmcb(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_SEND_ENCRYPT_DATA:
+	case KVM_CSV3_SEND_ENCRYPT_DATA:
 		r = csv_send_encrypt_data(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_SEND_ENCRYPT_CONTEXT:
+	case KVM_CSV3_SEND_ENCRYPT_CONTEXT:
 		r = csv_send_encrypt_context(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_RECEIVE_ENCRYPT_DATA:
+	case KVM_CSV3_RECEIVE_ENCRYPT_DATA:
 		r = csv_receive_encrypt_data(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_RECEIVE_ENCRYPT_CONTEXT:
+	case KVM_CSV3_RECEIVE_ENCRYPT_CONTEXT:
 		r = csv_receive_encrypt_context(kvm, &sev_cmd);
 		break;
-	case KVM_CSV_HANDLE_MEMORY:
+	case KVM_CSV3_HANDLE_MEMORY:
 		r = csv_handle_memory(kvm, &sev_cmd);
+		break;
+	case KVM_CSV3_SET_GUEST_PRIVATE_MEMORY:
+		r = csv3_set_guest_private_memory(kvm, &sev_cmd);
 		break;
 	default:
 		mutex_unlock(&kvm->lock);
@@ -1609,9 +1623,8 @@ static int csv_get_hygon_coco_extension(struct kvm *kvm)
 	 * field of kvm_csv_info is valid.
 	 */
 	if (csv->kvm_ext_valid == false) {
-		/* Currently, KVM doesn't support any extensions, we don't need
-		 * to fill in kvm_ext field of kvm_csv_info here.
-		 */
+		if (csv3_guest(kvm))
+			csv->kvm_ext |= KVM_CAP_HYGON_COCO_EXT_CSV3_SET_PRIV_MEM;
 		csv->kvm_ext_valid = true;
 	}
 

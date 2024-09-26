@@ -168,8 +168,8 @@ static int sev_cmd_buffer_len(int cmd)
 			return sizeof(struct csv_data_set_smr);
 		case CSV_CMD_SET_SMCR:
 			return sizeof(struct csv_data_set_smcr);
-		case CSV_CMD_SET_GUEST_PRIVATE_MEMORY:
-			return sizeof(struct csv_data_set_guest_private_memory);
+		case CSV3_CMD_SET_GUEST_PRIVATE_MEMORY:
+			return sizeof(struct csv3_data_set_guest_private_memory);
 		case CSV_CMD_DBG_READ_VMSA:
 			return sizeof(struct csv_data_dbg_read_vmsa);
 		case CSV_CMD_DBG_READ_MEM:
