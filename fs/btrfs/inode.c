@@ -1670,7 +1670,7 @@ static bool run_delalloc_compressed(struct btrfs_inode *inode,
 			 * need full accuracy.  Just account the whole thing
 			 * against the first page.
 			 */
-			wbc_account_cgroup_owner(wbc, locked_page,
+			wbc_account_cgroup_owner(wbc, page_folio(locked_page),
 						 cur_end - start);
 			async_chunk[i].locked_page = locked_page;
 			locked_page = NULL;
