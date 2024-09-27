@@ -1464,7 +1464,8 @@ static int atc_terminate_all(struct dma_chan *chan)
  * @txstate: if not %NULL updated with transaction state
  *
  * If @txstate is passed in, upon return it reflect the driver
- * internal state.
+ * internal state and can be used with dma_async_is_complete() to check
+ * the status of multiple cookies without re-checking hardware state.
  */
 static enum dma_status
 atc_tx_status(struct dma_chan *chan,

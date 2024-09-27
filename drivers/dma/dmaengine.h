@@ -79,15 +79,7 @@ static inline enum dma_status dma_cookie_status(struct dma_chan *chan,
 		state->residue = 0;
 		state->in_flight_bytes = 0;
 	}
-
-	if (complete <= used) {
-		if ((cookie <= complete) || (cookie > used))
-			return DMA_COMPLETE;
-	} else {
-		if ((cookie <= complete) && (cookie > used))
-			return DMA_COMPLETE;
-	}
-	return DMA_IN_PROGRESS;
+	return dma_async_is_complete(cookie, complete, used);
 }
 
 static inline void dma_set_tx_state(struct dma_tx_state *st,
