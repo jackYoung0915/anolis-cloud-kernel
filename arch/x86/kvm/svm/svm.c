@@ -44,6 +44,8 @@
 #include "trace.h"
 
 #include "svm.h"
+
+#include <asm/processor-hygon.h>
 #include "csv.h"
 
 #define __ex(x) __kvm_handle_fault_on_reboot(x)
@@ -4784,7 +4786,11 @@ static struct kvm_x86_init_ops svm_init_ops __initdata = {
 static int __init svm_init(void)
 {
 	__unused_size_checks();
-	csv_init(&svm_x86_ops);
+
+	/* Register CSV specific interface for Hygon CPUs */
+	if (is_x86_vendor_hygon())
+		csv_init(&svm_x86_ops);
+
 	return kvm_init(&svm_init_ops, sizeof(struct vcpu_svm),
 			__alignof__(struct vcpu_svm), THIS_MODULE);
 }
