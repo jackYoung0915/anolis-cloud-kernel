@@ -28,6 +28,9 @@
 #include "cpuid.h"
 #include "trace.h"
 
+#include <asm/processor-hygon.h>
+#include "csv.h"
+
 #define __ex(x) __kvm_handle_fault_on_reboot(x)
 
 static u8 sev_enc_bit;
@@ -2739,6 +2742,22 @@ void __init sev_set_cpu_caps(void)
 		kvm_cpu_cap_clear(X86_FEATURE_SEV_ES);
 }
 
+#ifdef CONFIG_HYGON_CSV
+/* Code to set all of the function and vaiable pointers */
+void sev_install_hooks(void)
+{
+	hygon_kvm_hooks.sev_enabled = &sev;
+	hygon_kvm_hooks.sev_me_mask = &sev_me_mask;
+	hygon_kvm_hooks.sev_issue_cmd = sev_issue_cmd;
+	hygon_kvm_hooks.get_num_contig_pages = get_num_contig_pages;
+	hygon_kvm_hooks.sev_pin_memory = sev_pin_memory;
+	hygon_kvm_hooks.sev_unpin_memory = sev_unpin_memory;
+	hygon_kvm_hooks.sev_clflush_pages = sev_clflush_pages;
+
+	hygon_kvm_hooks.sev_hooks_installed = true;
+}
+#endif
+
 void __init sev_hardware_setup(void)
 {
 	unsigned int eax, ebx, ecx, edx;
@@ -2841,6 +2860,17 @@ void __init sev_hardware_setup(void)
 out:
 	sev = sev_supported;
 	sev_es = sev_es_supported;
+
+#ifdef CONFIG_HYGON_CSV
+	/* Setup resources which are necessary for HYGON CSV */
+	if (is_x86_vendor_hygon()) {
+		/*
+		 * Install sev related function and variable pointers hooks
+		 * no matter @sev is false.
+		 */
+		sev_install_hooks();
+	}
+#endif
 }
 
 void sev_hardware_teardown(void)
