@@ -1951,7 +1951,7 @@ struct kvm_csv_init_data {
 	__u64 nodemask;
 };
 
-struct kvm_csv_launch_encrypt_data {
+struct kvm_csv3_launch_encrypt_data {
 	__u64 gpa;
 	__u64 uaddr;
 	__u32 len;

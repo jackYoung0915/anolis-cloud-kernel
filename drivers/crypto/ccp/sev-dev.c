@@ -158,8 +158,8 @@ static int sev_cmd_buffer_len(int cmd)
 			return sizeof(struct csv_data_hgsc_cert_import);
 		case CSV_CMD_RING_BUFFER:
 			return sizeof(struct csv_data_ring_buffer);
-		case CSV_CMD_LAUNCH_ENCRYPT_DATA:
-			return sizeof(struct csv_data_launch_encrypt_data);
+		case CSV3_CMD_LAUNCH_ENCRYPT_DATA:
+			return sizeof(struct csv3_data_launch_encrypt_data);
 		case CSV_CMD_LAUNCH_ENCRYPT_VMCB:
 			return sizeof(struct csv_data_launch_encrypt_vmcb);
 		case CSV_CMD_UPDATE_NPT:
