@@ -8490,6 +8490,10 @@ LIST_HEAD(task_groups);
 static struct kmem_cache *task_group_cache __read_mostly;
 #endif
 
+#ifdef CONFIG_GROUP_BALANCER
+DECLARE_PER_CPU(cpumask_var_t, group_balancer_mask);
+#endif
+
 void __init sched_init(void)
 {
 	unsigned long ptr = 0;
@@ -8664,6 +8668,10 @@ void __init sched_init(void)
 		rq->gb_sd = NULL;
 #endif
 		zalloc_cpumask_var_node(&rq->scratch_mask, GFP_KERNEL, cpu_to_node(i));
+#ifdef CONFIG_GROUP_BALANCER
+		zalloc_cpumask_var_node(
+			&per_cpu(group_balancer_mask, i), GFP_KERNEL, cpu_to_node(i));
+#endif
 	}
 
 	set_load_weight(&init_task, false);
@@ -9042,6 +9050,7 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 	tg->gb_sd = NULL;
+	raw_spin_lock_init(&tg->gb_lock);
 #endif
 	return tg;
 
