@@ -7243,6 +7243,16 @@ static inline unsigned int cfs_h_nr_delayed(struct rq *rq)
 static DEFINE_PER_CPU(cpumask_var_t, load_balance_mask);
 static DEFINE_PER_CPU(cpumask_var_t, select_rq_mask);
 static DEFINE_PER_CPU(cpumask_var_t, should_we_balance_tmpmask);
+#ifdef CONFIG_GROUP_BALANCER
+	/*
+	 * group_balancer_mask is used to mark which cpus have been balanced
+	 * to this cpu during this load balance. If the src cpu hasn't been
+	 * marked, we will balance the group balancer sched domains of src
+	 * cpu and this cpu, and then mark the cpus of the src group balancer
+	 * sched domain as balanced.
+	 */
+DEFINE_PER_CPU(cpumask_var_t, group_balancer_mask);
+#endif
 
 #ifdef CONFIG_NO_HZ_COMMON
 
@@ -9099,8 +9109,6 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
 
 static unsigned long __read_mostly max_load_balance_interval = HZ/10;
 
-enum fbq_type { regular, remote, all };
-
 /*
  * 'group_type' describes the group of CPUs at the moment of load balancing.
  *
@@ -9144,45 +9152,11 @@ enum group_type {
 	group_overloaded
 };
 
-enum migration_type {
-	migrate_load = 0,
-	migrate_util,
-	migrate_task,
-	migrate_misfit
-};
-
 #define LBF_ALL_PINNED	0x01
 #define LBF_NEED_BREAK	0x02
 #define LBF_DST_PINNED  0x04
 #define LBF_SOME_PINNED	0x08
 #define LBF_ACTIVE_LB	0x10
-
-struct lb_env {
-	struct sched_domain	*sd;
-
-	struct rq		*src_rq;
-	int			src_cpu;
-
-	int			dst_cpu;
-	struct rq		*dst_rq;
-
-	struct cpumask		*dst_grpmask;
-	int			new_dst_cpu;
-	enum cpu_idle_type	idle;
-	long			imbalance;
-	/* The set of CPUs under consideration for load-balancing */
-	struct cpumask		*cpus;
-
-	unsigned int		flags;
-
-	unsigned int		loop;
-	unsigned int		loop_break;
-	unsigned int		loop_max;
-
-	enum fbq_type		fbq_type;
-	enum migration_type	migration_type;
-	struct list_head	tasks;
-};
 
 /*
  * Is this task likely cache-hot:
@@ -11742,6 +11716,7 @@ redo:
 	/* Clear this flag as soon as we find a pullable task */
 	env.flags |= LBF_ALL_PINNED;
 	if (busiest->nr_running > 1) {
+		gb_load_balance(&env);
 		/*
 		 * Attempt to move tasks. If find_busiest_group has found
 		 * an imbalance but busiest->nr_running <= 1, the group is
@@ -12127,7 +12102,12 @@ static void rebalance_domains(struct rq *rq, enum cpu_idle_type idle)
 	int update_next_balance = 0;
 	int need_serialize, need_decay = 0;
 	u64 max_cost = 0;
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
 
+	if (group_balancer_enabled())
+		cpumask_clear(gb_mask);
+#endif
 	rcu_read_lock();
 	for_each_domain(cpu, sd) {
 		/*
@@ -12711,7 +12691,12 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 	u64 t0, t1, curr_cost = 0;
 	struct sched_domain *sd;
 	int pulled_task = 0;
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
 
+	if (group_balancer_enabled())
+		cpumask_clear(gb_mask);
+#endif
 	update_misfit_status(NULL, this_rq);
 
 	/*
