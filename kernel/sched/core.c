@@ -8485,6 +8485,9 @@ DECLARE_PER_CPU(cpumask_var_t, select_idle_mask);
 DECLARE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
 DECLARE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+DECLARE_PER_CPU(cpumask_var_t, group_balancer_mask);
+#endif
 
 void __init sched_init(void)
 {
@@ -8546,6 +8549,10 @@ void __init sched_init(void)
 			 cpumask_size(), GFP_KERNEL, cpu_to_node(i));
 		per_cpu(push_expellee_traversed_mask, i) = (cpumask_var_t)kzalloc_node(
 			 cpumask_size(), GFP_KERNEL, cpu_to_node(i));
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+		per_cpu(group_balancer_mask, i) = (cpumask_var_t)kzalloc_node(
+			cpumask_size(), GFP_KERNEL, cpu_to_node(i));
 #endif
 	}
 #endif /* CONFIG_CPUMASK_OFFSTACK */
@@ -8981,6 +8988,7 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 	tg->gb_sd = NULL;
+	raw_spin_lock_init(&tg->gb_lock);
 #endif
 	return tg;
 
