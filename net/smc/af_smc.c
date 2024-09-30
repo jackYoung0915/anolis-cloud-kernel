@@ -4165,6 +4165,7 @@ int smc_inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	int rc;
 
 	smc = smc_sk(sk);
+	trace_smc_send_start(smc, len);
 
 	/* Send before connected, might be fastopen or user's incorrect usage, but
 	 * whatever, in either case, we do not need to replace it with SMC any more.
