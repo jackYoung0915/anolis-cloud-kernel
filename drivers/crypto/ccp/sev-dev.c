@@ -1329,10 +1329,19 @@ static int csv_ioctl_do_download_firmware(struct sev_issue_cmd *argp)
 	data->len = input.length;
 
 	ret = __sev_do_cmd_locked(SEV_CMD_DOWNLOAD_FIRMWARE, data, &argp->error);
-	if (ret)
+	if (ret) {
 		pr_err("Failed to update CSV firmware: %#x\n", argp->error);
-	else
+		goto err_free_page;
+	} else {
 		pr_info("CSV firmware update successful\n");
+	}
+
+	/*
+	 * Synchronize API version status, and return -EIO if the Hygon PSP fails
+	 * to respond to the PLATFORM_STATUS API.
+	 */
+	if (sev_get_api_version())
+		ret = -EIO;
 
 err_free_page:
 	__free_pages(p, order);
