@@ -4882,7 +4882,7 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!hisi_hba->regs) {
 		dev_err(dev, "cannot map register\n");
 		rc = -ENOMEM;
-		goto err_out_ha;
+		goto err_out_free_host;
 	}
 
 	phy_nr = port_nr = hisi_hba->n_phy;
@@ -4891,7 +4891,7 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	arr_port = devm_kcalloc(dev, port_nr, sizeof(void *), GFP_KERNEL);
 	if (!arr_phy || !arr_port) {
 		rc = -ENOMEM;
-		goto err_out_ha;
+		goto err_out_free_host;
 	}
 
 	sha->sas_phy = arr_phy;
@@ -4927,16 +4927,13 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 					    SHOST_DIX_GUARD_CRC);
 	}
 
-	if (hisi_sas_debugfs_enable)
-		debugfs_init_v3_hw(hisi_hba);
-
 	rc = interrupt_preinit_v3_hw(hisi_hba);
 	if (rc)
 		goto err_out_debugfs;
 	dev_err(dev, "%d hw queues\n", shost->nr_hw_queues);
 	rc = scsi_add_host(shost, dev);
 	if (rc)
-		goto err_out_free_irq_vectors;
+		goto err_out_free_host;
 
 	rc = sas_register_ha(sha);
 	if (rc)
@@ -4947,6 +4944,8 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_out_hw_init;
 
 	scsi_scan_host(shost);
+	if (hisi_sas_debugfs_enable)
+		debugfs_init_v3_hw(hisi_hba);
 
 	pm_runtime_set_autosuspend_delay(dev, 5000);
 	pm_runtime_use_autosuspend(dev);
@@ -4967,12 +4966,10 @@ err_out_hw_init:
 	sas_unregister_ha(sha);
 err_out_register_ha:
 	scsi_remove_host(shost);
-err_out_free_irq_vectors:
-	pci_free_irq_vectors(pdev);
 err_out_debugfs:
 	if (hisi_sas_debugfs_enable)
 		debugfs_exit_v3_hw(hisi_hba);
-err_out_ha:
+err_out_free_host:
 	hisi_sas_free(hisi_hba);
 	scsi_host_put(shost);
 err_out_regions:
@@ -5007,6 +5004,8 @@ static void hisi_sas_v3_remove(struct pci_dev *pdev)
 	struct Scsi_Host *shost = sha->core.shost;
 
 	pm_runtime_get_noresume(dev);
+	if (hisi_sas_debugfs_enable)
+		debugfs_exit_v3_hw(hisi_hba);
 
 	sas_unregister_ha(sha);
 	flush_workqueue(hisi_hba->wq);
@@ -5016,8 +5015,6 @@ static void hisi_sas_v3_remove(struct pci_dev *pdev)
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 	hisi_sas_free(hisi_hba);
-	if (hisi_sas_debugfs_enable)
-		debugfs_exit_v3_hw(hisi_hba);
 	scsi_host_put(shost);
 }
 
@@ -5027,11 +5024,6 @@ static void hisi_sas_reset_prepare_v3_hw(struct pci_dev *pdev)
 	struct hisi_hba *hisi_hba = sha->lldd_ha;
 	struct device *dev = hisi_hba->dev;
 	int rc;
-
-	dev_info(dev, "FLR prepare\n");
-	down(&hisi_hba->sem);
-	set_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags);
-	hisi_sas_controller_reset_prepare(hisi_hba);
 
 	interrupt_disable_v3_hw(hisi_hba);
 	rc = disable_host_v3_hw(hisi_hba);
