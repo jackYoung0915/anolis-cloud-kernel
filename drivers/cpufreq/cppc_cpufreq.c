@@ -637,6 +637,11 @@ static unsigned int cppc_cpufreq_get_rate(unsigned int cpu)
         u64 delivered_perf;
 	int ret;
 
+	if (!policy)
+		return -ENODEV;
+
+	cpu_data = policy->driver_data;
+
 	cpufreq_cpu_put(policy);
 
 	if (cpu_has_amu_feat(cpu))
@@ -700,9 +705,14 @@ static struct cpufreq_driver cppc_cpufreq_driver = {
 static unsigned int hisi_cppc_cpufreq_get_rate(unsigned int cpu)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
-	struct cppc_cpudata *cpu_data = policy->driver_data;
+	struct cppc_cpudata *cpu_data;
 	u64 desired_perf;
 	int ret;
+
+	if (!policy)
+		return -ENODEV;
+
+	cpu_data = policy->driver_data;
 
 	cpufreq_cpu_put(policy);
 
