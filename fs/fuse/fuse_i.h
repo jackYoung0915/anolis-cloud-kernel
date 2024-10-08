@@ -1150,10 +1150,6 @@ struct fuse_forget_link *fuse_alloc_forget(void);
 struct fuse_forget_link *fuse_dequeue_forget(struct fuse_iqueue *fiq,
 					     unsigned int max,
 					     unsigned int *countp);
-/**
- * Send FUSE_INIT command
- */
-void fuse_queue_init(struct fuse_iqueue *fiq, struct fuse_req *req);
 
 /*
  * Initialize READ or READDIR request
