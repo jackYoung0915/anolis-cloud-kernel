@@ -1669,7 +1669,7 @@ update_expel_start(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	cfs_rq->expel_start = sysctl_sched_bvt_place_epsilon;
 
 	min_under_vruntime = cfs_rq->min_under_vruntime + cfs_rq->expel_spread;
-	if (min_under_vruntime <= cfs_rq->min_vruntime)
+	if ((s64)(min_under_vruntime - cfs_rq->min_vruntime) <= 0)
 		return;
 
 	cfs_rq->expel_start += min_under_vruntime - cfs_rq->min_vruntime;
@@ -1688,7 +1688,8 @@ static inline void update_expel_spread(struct cfs_rq *cfs_rq)
 	 */
 	cfs_rq->expel_spread = cfs_rq->min_vruntime -
 				cfs_rq->min_under_vruntime +
-				cfs_rq->expel_start;
+				min(sysctl_sched_latency, cfs_rq->expel_start);
+
 	cfs_rq->expel_start = 0;
 }
 
@@ -1792,8 +1793,8 @@ id_rb_first_cached(struct cfs_rq *cfs_rq)
 	update_expel_spread(cfs_rq);
 
 	if (!sched_feat(ID_ABSOLUTE_EXPEL)) {
-		if (cfs_rq->min_under_vruntime + get_expel_spread(cfs_rq) <
-		    cfs_rq->min_vruntime) {
+		if ((s64)(cfs_rq->min_under_vruntime + get_expel_spread(cfs_rq) -
+			cfs_rq->min_vruntime) < 0) {
 			roots[0] = &cfs_rq->under_timeline;
 			roots[1] = &cfs_rq->tasks_timeline;
 		}
