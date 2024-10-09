@@ -937,6 +937,7 @@ static int build_group_balancer_sched_domains(void)
 		if (!next_gb_tl->mask)
 			break;
 		/* Build children from parent level. */
+		rcu_read_lock();
 		for_each_topology_level_sibling_safe(parent, n, gb_tl) {
 			/*
 			 * If the cpumasks of the adjacent topology levels are the same,
@@ -967,6 +968,7 @@ static int build_group_balancer_sched_domains(void)
 				child = alloc_init_group_balancer_sched_domain(parent->kn, name, 0);
 				if (IS_ERR(child)) {
 					ret = PTR_ERR(child);
+					rcu_read_unlock();
 					goto err_free_name;
 				}
 				cpumask_copy(gb_sd_span(child), child_cpumask);
@@ -976,6 +978,7 @@ static int build_group_balancer_sched_domains(void)
 				add_to_tree(child, parent);
 			}
 		}
+		rcu_read_unlock();
 	}
 
 	kfree(name);
@@ -1130,9 +1133,11 @@ static void validate_topology_levels(void)
 		next_gb_tl = &default_topology[i + 1];
 		if (!next_gb_tl->mask)
 			break;
+		rcu_read_lock();
 		if (!cpumask_subset(next_gb_tl->mask(0), gb_tl->mask(0)) ||
 		    (cpumask_weight(gb_tl->mask(0)) <= 1))
 			gb_tl->skip = true;
+		rcu_read_unlock();
 	}
 }
 
