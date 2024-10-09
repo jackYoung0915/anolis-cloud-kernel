@@ -2015,6 +2015,58 @@ static int mbm_local_bytes_config_show(struct kernfs_open_file *of,
 	return 0;
 }
 
+/*
+ * Get the counter index for the assignable counter
+ * 0 for evtid == QOS_L3_MBM_TOTAL_EVENT_ID
+ * 1 for evtid == QOS_L3_MBM_LOCAL_EVENT_ID
+ */
+#define MBM_EVENT_ARRAY_INDEX(_event) ((_event) - 2)
+
+static bool resctrl_mbm_event_assigned(struct rdtgroup *rdtg,
+				       struct rdt_domain *d, u32 evtid)
+{
+	int index = MBM_EVENT_ARRAY_INDEX(evtid);
+	int cntr_id = rdtg->mon.cntr_id[index];
+
+	return  (cntr_id != MON_CNTR_UNSET && test_bit(cntr_id, d->mbm_cntr_map));
+}
+
+static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
+					   struct rdt_domain *d, u32 evtid)
+{
+	struct rdt_domain *dom;
+	struct rdtgroup *rdtg;
+	int ret = 0;
+
+	if (!resctrl_arch_get_mbm_cntr_assign_enable())
+		return ret;
+
+	list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
+		struct rdtgroup *crg;
+
+		list_for_each_entry(dom, &r->domains, list) {
+			if (d == dom && resctrl_mbm_event_assigned(rdtg, dom, evtid)) {
+				ret = rdtgroup_assign_cntr(rdtg, evtid);
+				if (ret)
+					goto out_done;
+			}
+		}
+
+		list_for_each_entry(crg, &rdtg->mon.crdtgrp_list, mon.crdtgrp_list) {
+			list_for_each_entry(dom, &r->domains, list) {
+				if (d == dom && resctrl_mbm_event_assigned(crg, dom, evtid)) {
+					ret = rdtgroup_assign_cntr(crg, evtid);
+					if (ret)
+						goto out_done;
+				}
+			}
+		}
+	}
+
+out_done:
+	return ret;
+}
+
 static int mon_config_write(struct rdt_resource *r, char *tok, u32 evtid)
 {
 	char *dom_str = NULL, *id_str;
@@ -2047,6 +2099,17 @@ next:
 				rdt_last_cmd_puts("Invalid event configuration\n");
 				return -EINVAL;
 			}
+
+			/*
+			 * Counter assignments needs to be updated to match the event
+			 * configuration.
+			 */
+			ret = resctrl_mbm_event_update_assign(r, d, evtid);
+			if (ret) {
+				rdt_last_cmd_puts("Assign failed, event will be Unavailable\n");
+				return -EINVAL;
+			}
+
 			goto next;
 		}
 	}
