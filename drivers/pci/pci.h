@@ -710,4 +710,7 @@ static inline int pci_acpi_program_hp_params(struct pci_dev *dev)
 extern const struct attribute_group aspm_ctrl_attr_group;
 #endif
 
+void pci_seq_tree_add_dev(struct pci_dev *dev);
+void pci_seq_tree_remove_dev(struct pci_dev *dev);
+
 #endif /* DRIVERS_PCI_H */
