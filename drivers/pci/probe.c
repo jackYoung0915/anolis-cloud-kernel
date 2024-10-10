@@ -2509,6 +2509,8 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 	ret = pcibios_add_device(dev);
 	WARN_ON(ret < 0);
 
+	pci_seq_tree_add_dev(dev);
+
 	/* Set up MSI IRQ domain */
 	pci_set_msi_domain(dev);
 
