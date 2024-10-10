@@ -141,6 +141,7 @@ static void __init reserve_crashkernel(void)
 	unsigned long long crash_max = CRASH_ADDR_LOW_MAX;
 	char *cmdline = boot_command_line;
 	int ret;
+	bool bottom_up = memblock_bottom_up();
 
 	if (!IS_ENABLED(CONFIG_KEXEC_CORE))
 		return;
@@ -167,6 +168,10 @@ static void __init reserve_crashkernel(void)
 	} else if (ret || !crash_size) {
 		/* The specified value is invalid. */
 		return;
+	} else {
+		/* crashkernel=X[@offset], contain low mem by default */
+		if (!bottom_up)
+			memblock_set_bottom_up(true);
 	}
 
 	crash_size = PAGE_ALIGN(crash_size);
@@ -177,6 +182,7 @@ static void __init reserve_crashkernel(void)
 
 	crash_base = memblock_phys_alloc_range(crash_size, CRASH_ALIGN,
 							crash_base, crash_max);
+	memblock_set_bottom_up(bottom_up);
 
 	if (!crash_base) {
 		pr_warn("cannot allocate crashkernel (size:0x%llx)\n",
