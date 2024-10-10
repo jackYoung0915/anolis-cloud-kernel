@@ -141,6 +141,7 @@ static void __init reserve_crashkernel(void)
 	unsigned long long crash_max = CRASH_ADDR_LOW_MAX;
 	char *cmdline = boot_command_line;
 	int ret;
+	bool bottom_up;
 
 	if (!IS_ENABLED(CONFIG_KEXEC_CORE))
 		return;
@@ -175,8 +176,11 @@ static void __init reserve_crashkernel(void)
 	if (crash_base)
 		crash_max = crash_base + crash_size;
 
+	bottom_up = memblock_bottom_up();
+	memblock_set_bottom_up(true);
 	crash_base = memblock_phys_alloc_range(crash_size, CRASH_ALIGN,
 							crash_base, crash_max);
+	memblock_set_bottom_up(bottom_up);
 
 	if (!crash_base) {
 		pr_warn("cannot allocate crashkernel (size:0x%llx)\n",
