@@ -32,6 +32,10 @@ static DEFINE_IDA(vd_index_ida);
 
 static struct workqueue_struct *virtblk_wq;
 
+static bool virtio_blk_irq_affinity = true;
+
+module_param(virtio_blk_irq_affinity, bool, 0444);
+
 struct virtio_blk_vq {
 	struct virtqueue *vq;
 	spinlock_t lock;
@@ -581,7 +585,8 @@ static int init_vq(struct virtio_blk *vblk)
 	}
 
 	/* Discover virtqueues and write information to configuration.  */
-	err = virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc);
+	err = virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names,
+			      virtio_blk_irq_affinity ? &desc : NULL);
 	if (err)
 		goto out;
 

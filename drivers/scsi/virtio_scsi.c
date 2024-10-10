@@ -36,6 +36,10 @@
 #define VIRTIO_SCSI_EVENT_LEN 8
 #define VIRTIO_SCSI_VQ_BASE 2
 
+static bool virtio_scsi_irq_affinity = true;
+
+module_param(virtio_scsi_irq_affinity, bool, 0444);
+
 /* Command queue element */
 struct virtio_scsi_cmd {
 	struct scsi_cmnd *sc;
@@ -816,7 +820,8 @@ static int virtscsi_init(struct virtio_device *vdev,
 	}
 
 	/* Discover virtqueues and write information to configuration.  */
-	err = virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names, &desc);
+	err = virtio_find_vqs(vdev, num_vqs, vqs, callbacks, names,
+			      virtio_scsi_irq_affinity ? &desc : NULL);
 	if (err)
 		goto out;
 
