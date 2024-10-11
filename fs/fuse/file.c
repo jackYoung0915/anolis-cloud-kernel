@@ -19,6 +19,7 @@
 #include <linux/uio.h>
 #include <linux/fs.h>
 #include <linux/filelock.h>
+#include <linux/task_io_accounting_ops.h>
 
 static int fuse_send_open(struct fuse_mount *fm, u64 nodeid,
 			  unsigned int open_flags, int opcode,
@@ -74,7 +75,6 @@ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm, bool release)
 	}
 
 	INIT_LIST_HEAD(&ff->write_entry);
-	mutex_init(&ff->readdir.lock);
 	refcount_set(&ff->count, 1);
 	RB_CLEAR_NODE(&ff->polled_node);
 	init_waitqueue_head(&ff->poll_wait);
@@ -87,7 +87,6 @@ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm, bool release)
 void fuse_file_free(struct fuse_file *ff)
 {
 	kfree(ff->release_args);
-	mutex_destroy(&ff->readdir.lock);
 	kfree(ff);
 }
 
@@ -449,15 +448,15 @@ static struct fuse_writepage_args *fuse_find_writeback(struct fuse_inode *fi,
 
 /*
  * Check if any page in a range is under writeback
- *
- * This is currently done by walking the list of writepage requests
- * for the inode, which can be pretty inefficient.
  */
 static bool fuse_range_is_writeback(struct inode *inode, pgoff_t idx_from,
 				   pgoff_t idx_to)
 {
 	struct fuse_inode *fi = get_fuse_inode(inode);
 	bool found;
+
+	if (RB_EMPTY_ROOT(&fi->writepages))
+		return false;
 
 	spin_lock(&fi->lock);
 	found = fuse_find_writeback(fi, idx_from, idx_to);
@@ -654,7 +653,8 @@ static void fuse_release_user_pages(struct fuse_args_pages *ap,
 	for (i = 0; i < ap->num_pages; i++) {
 		if (should_dirty)
 			set_page_dirty_lock(ap->pages[i]);
-		put_page(ap->pages[i]);
+		if (ap->args.is_pinned)
+			unpin_user_page(ap->pages[i]);
 	}
 }
 
@@ -1349,7 +1349,7 @@ static bool fuse_dio_wr_exclusive_lock(struct kiocb *iocb, struct iov_iter *from
 
 	/* shared locks are not allowed with parallel page cache IO */
 	if (test_bit(FUSE_I_CACHE_IO_MODE, &fi->state))
-		return false;
+		return true;
 
 	/* Parallel dio beyond EOF is not supported, at least for now. */
 	if (fuse_io_past_eof(iocb, from))
@@ -1405,7 +1405,7 @@ static ssize_t fuse_cache_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct address_space *mapping = file->f_mapping;
 	ssize_t written = 0;
 	struct inode *inode = mapping->host;
-	ssize_t err;
+	ssize_t err, count;
 	struct fuse_conn *fc = get_fuse_conn(inode);
 
 	if (fc->writeback_cache) {
@@ -1427,9 +1427,11 @@ static ssize_t fuse_cache_write_iter(struct kiocb *iocb, struct iov_iter *from)
 writethrough:
 	inode_lock(inode);
 
-	err = generic_write_checks(iocb, from);
+	err = count = generic_write_checks(iocb, from);
 	if (err <= 0)
 		goto out;
+
+	task_io_account_write(count);
 
 	err = file_remove_privs(file);
 	if (err)
@@ -1492,10 +1494,13 @@ static int fuse_get_user_pages(struct fuse_args_pages *ap, struct iov_iter *ii,
 	while (nbytes < *nbytesp && ap->num_pages < max_pages) {
 		unsigned npages;
 		size_t start;
-		ret = iov_iter_get_pages2(ii, &ap->pages[ap->num_pages],
-					*nbytesp - nbytes,
-					max_pages - ap->num_pages,
-					&start);
+		struct page **pt_pages;
+
+		pt_pages = &ap->pages[ap->num_pages];
+		ret = iov_iter_extract_pages(ii, &pt_pages,
+					     *nbytesp - nbytes,
+					     max_pages - ap->num_pages,
+					     0, &start);
 		if (ret < 0)
 			break;
 
@@ -1512,6 +1517,7 @@ static int fuse_get_user_pages(struct fuse_args_pages *ap, struct iov_iter *ii,
 			(PAGE_SIZE - ret) & (PAGE_SIZE - 1);
 	}
 
+	ap->args.is_pinned = iov_iter_extract_will_pin(ii);
 	ap->args.user_pages = true;
 	if (write)
 		ap->args.in_pages = true;
@@ -1668,6 +1674,7 @@ static ssize_t fuse_direct_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	fuse_dio_lock(iocb, from, &exclusive);
 	res = generic_write_checks(iocb, from);
 	if (res > 0) {
+		task_io_account_write(res);
 		if (!is_sync_kiocb(iocb) && iocb->ki_flags & IOCB_DIRECT) {
 			res = fuse_direct_IO(iocb, from);
 		} else {
@@ -2636,10 +2643,6 @@ static int fuse_setlk(struct file *file, struct file_lock *fl, int flock)
 		/* NLM needs asynchronous locks, which we don't support yet */
 		return -ENOLCK;
 	}
-
-	/* Unlock on close is handled by the flush method */
-	if ((fl->fl_flags & FL_CLOSE_POSIX) == FL_CLOSE_POSIX)
-		return 0;
 
 	fuse_lk_fill(&args, file, fl, opcode, pid_nr, flock, &inarg);
 	err = fuse_simple_request(fm, &args);
