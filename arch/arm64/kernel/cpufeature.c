@@ -1141,6 +1141,7 @@ int arm64_cpu_ftr_regs_traverse(int (*op)(u32, u64, void *), void *argp)
 	}
 	return 0;
 }
+EXPORT_SYMBOL_GPL(arm64_cpu_ftr_regs_traverse);
 
 #define read_sysreg_case(r)	\
 	case r:		return read_sysreg_s(r)
