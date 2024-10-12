@@ -349,7 +349,7 @@ STATIC int
 xfs_reflink_unshare_range(
 	struct xfs_inode	*src,
 	struct xfs_bmbt_irec	*oimap,
-	bool *secondary_evicting)
+	bool			*secondary_evicting)
 {
 	struct xfs_mount	*mp = src->i_mount;
 	struct xfs_inode	*ip;
@@ -469,7 +469,8 @@ error:
 STATIC int
 xfs_reflink_unshare_range(
 	struct xfs_inode	*src,
-	struct xfs_bmbt_irec	*oimap)
+	struct xfs_bmbt_irec	*oimap,
+	bool			*secondary_evicting)
 {
 	return 0;
 }
