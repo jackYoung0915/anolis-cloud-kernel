@@ -236,7 +236,8 @@ ret_from_sys_call:
 	beq	$0, restore_all
 ret_to_user:
 	ldw	$17, TI_FLAGS($8)
-	and	$17, _TIF_WORK_MASK, $2
+	ldi	$2, _TIF_WORK_MASK
+	and	$17, $2, $2
 	beq	$2, restore_all
 	ldi	$16, STACKFRAME_SIZE($sp)
 	call	$26, do_notify_resume
