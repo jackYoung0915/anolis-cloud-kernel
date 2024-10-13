@@ -22,7 +22,6 @@
 #include <linux/integrity.h>
 #include <linux/ima.h>
 #include <linux/evm.h>
-#include <linux/fsnotify.h>
 #include <linux/mman.h>
 #include <linux/mount.h>
 #include <linux/personality.h>
@@ -2871,13 +2870,7 @@ int security_file_receive(struct file *file)
  */
 int security_file_open(struct file *file)
 {
-	int ret;
-
-	ret = call_int_hook(file_open, 0, file);
-	if (ret)
-		return ret;
-
-	return fsnotify_open_perm(file);
+	return call_int_hook(file_open, 0, file);
 }
 
 /**
