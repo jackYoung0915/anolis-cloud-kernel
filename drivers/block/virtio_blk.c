@@ -21,6 +21,9 @@
 #define VQ_NAME_LEN 16
 #define MAX_DISCARD_SEGMENTS 256u
 
+/* The maximum number of sg elements that fit into a virtqueue */
+#define VIRTIO_BLK_MAX_SG_ELEMS 32768
+
 #ifdef CONFIG_ARCH_NO_SG_CHAIN
 #define VIRTIO_BLK_INLINE_SG_CNT	0
 #else
@@ -65,9 +68,6 @@ struct virtio_blk {
 	 * longer in use.
 	 */
 	refcount_t refs;
-
-	/* What host tells us, plus 2 for header & tailer. */
-	unsigned int sg_elems;
 
 	/* Ida index - used to track minor number allocations. */
 	int index;
@@ -200,8 +200,9 @@ static void virtblk_cleanup_cmd(struct request *req)
 	}
 }
 
-static int virtblk_setup_cmd(struct virtio_device *vdev, struct request *req,
-		struct virtblk_req *vbr)
+static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
+				      struct request *req,
+				      struct virtblk_req *vbr)
 {
 	bool unmap = false;
 	u32 type;
@@ -309,15 +310,13 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	unsigned long flags;
 	int num;
 	int qid = hctx->queue_num;
-	int err;
 	bool notify = false;
+	blk_status_t status;
+	int err;
 
-	if (req_op(req) != REQ_OP_DISCARD)
-		BUG_ON(req->nr_phys_segments + 2 > vblk->sg_elems);
-
-	err = virtblk_setup_cmd(vblk->vdev, req, vbr);
-	if (unlikely(err))
-		return err;
+	status = virtblk_setup_cmd(vblk->vdev, req, vbr);
+	if (unlikely(status))
+		return status;
 
 	blk_mq_start_request(req);
 
@@ -772,8 +771,9 @@ static int virtblk_probe(struct virtio_device *vdev)
 	if (err || !sg_elems)
 		sg_elems = 1;
 
-	/* We need an extra sg elements at head and tail. */
-	sg_elems += 2;
+	/* Prevent integer overflows and honor max vq size */
+	sg_elems = min_t(u32, sg_elems, VIRTIO_BLK_MAX_SG_ELEMS - 2);
+
 	vdev->priv = vblk = kmalloc(sizeof(*vblk), GFP_KERNEL);
 	if (!vblk) {
 		err = -ENOMEM;
@@ -785,7 +785,6 @@ static int virtblk_probe(struct virtio_device *vdev)
 	mutex_init(&vblk->vdev_mutex);
 
 	vblk->vdev = vdev;
-	vblk->sg_elems = sg_elems;
 
 	INIT_WORK(&vblk->config_work, virtblk_config_changed_work);
 
@@ -849,7 +848,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 		set_disk_ro(vblk->disk, 1);
 
 	/* We can handle whatever the host told us to handle. */
-	blk_queue_max_segments(q, vblk->sg_elems-2);
+	blk_queue_max_segments(q, sg_elems);
 
 	/* No real sector limit. */
 	blk_queue_max_hw_sectors(q, -1U);
@@ -928,7 +927,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 		 * handled it.
 		 */
 		if (!v)
-			v = sg_elems - 2;
+			v = sg_elems;
 		blk_queue_max_discard_segments(q,
 					       min(v, MAX_DISCARD_SEGMENTS));
 
