@@ -23,6 +23,7 @@
 
 #include "ccp-dev.h"
 #include "psp-dev.h"
+#include "hygon/ccp-mdev.h"
 
 #define MSIX_VECTORS			2
 
@@ -232,6 +233,14 @@ static int sp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto free_irqs;
 
+	if (pdev->vendor == PCI_VENDOR_ID_HYGON) {
+		ret = ccp_dev_wrapper_alloc(pdev);
+		if (ret) {
+			dev_err(dev, "ccp_dev_wrapper_alloc failed (%d)\n", ret);
+			goto free_irqs;
+		}
+	}
+
 	return 0;
 
 free_irqs:
@@ -259,6 +268,9 @@ static void sp_pci_remove(struct pci_dev *pdev)
 
 	if (!sp)
 		return;
+
+	if (pdev->vendor == PCI_VENDOR_ID_HYGON)
+		ccp_dev_wrapper_free(pdev);
 
 	sp_destroy(sp);
 
