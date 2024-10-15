@@ -925,7 +925,7 @@ struct fuse_conn {
 	/** Negotiated minor version */
 	unsigned minor;
 
-	/** Entry on the fuse_mount_list */
+	/** Entry on the fuse_conn_list */
 	struct list_head entry;
 
 	/** Device ID from the root super block */
@@ -1291,11 +1291,6 @@ void fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
  * Release reference to fuse_conn
  */
 void fuse_conn_put(struct fuse_conn *fc);
-
-/**
- * Acquire reference to fuse_mount
- */
-struct fuse_mount *fuse_mount_get(struct fuse_mount *fm);
 
 /**
  * Release reference to fuse_mount

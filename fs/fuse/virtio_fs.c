@@ -108,14 +108,14 @@ static const struct fs_parameter_spec virtio_fs_parameters[] = {
 	{}
 };
 
-static int virtio_fs_parse_param(struct fs_context *fc,
+static int virtio_fs_parse_param(struct fs_context *fsc,
 				 struct fs_parameter *param)
 {
 	struct fs_parse_result result;
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 	int opt;
 
-	opt = fs_parse(fc, virtio_fs_parameters, param, &result);
+	opt = fs_parse(fsc, virtio_fs_parameters, param, &result);
 	if (opt < 0)
 		return opt;
 
@@ -133,9 +133,9 @@ static int virtio_fs_parse_param(struct fs_context *fc,
 	return 0;
 }
 
-static void virtio_fs_free_fc(struct fs_context *fc)
+static void virtio_fs_free_fsc(struct fs_context *fsc)
 {
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 
 	kfree(ctx);
 }
@@ -1500,18 +1500,6 @@ static int virtio_fs_test_super(struct super_block *sb,
 	return fsc_fm->fc->iq.priv == sb_fm->fc->iq.priv;
 }
 
-static int virtio_fs_set_super(struct super_block *sb,
-			       struct fs_context *fsc)
-{
-	int err;
-
-	err = get_anon_bdev(&sb->s_dev);
-	if (!err)
-		fuse_mount_get(fsc->s_fs_info);
-
-	return err;
-}
-
 static int virtio_fs_get_tree(struct fs_context *fsc)
 {
 	struct virtio_fs *fs;
@@ -1555,8 +1543,9 @@ static int virtio_fs_get_tree(struct fs_context *fsc)
 				    virtqueue_size - FUSE_HEADER_OVERHEAD);
 
 	fsc->s_fs_info = fm;
-	sb = sget_fc(fsc, virtio_fs_test_super, virtio_fs_set_super);
-	fuse_mount_put(fm);
+	sb = sget_fc(fsc, virtio_fs_test_super, set_anon_super_fc);
+	if (fsc->s_fs_info)
+		fuse_mount_put(fm);
 	if (IS_ERR(sb))
 		return PTR_ERR(sb);
 
@@ -1585,7 +1574,7 @@ out_err:
 }
 
 static const struct fs_context_operations virtio_fs_context_ops = {
-	.free		= virtio_fs_free_fc,
+	.free		= virtio_fs_free_fsc,
 	.parse_param	= virtio_fs_parse_param,
 	.get_tree	= virtio_fs_get_tree,
 };
