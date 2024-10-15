@@ -1688,7 +1688,7 @@ static inline void update_expel_spread(struct cfs_rq *cfs_rq)
 	 */
 	cfs_rq->expel_spread = cfs_rq->min_vruntime -
 				cfs_rq->min_under_vruntime +
-				min(sysctl_sched_latency, cfs_rq->expel_start);
+				min((u64)sysctl_sched_latency, cfs_rq->expel_start);
 
 	cfs_rq->expel_start = 0;
 }
