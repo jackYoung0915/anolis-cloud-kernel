@@ -97,7 +97,6 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 		EXT_KEY(ZBS);
 		EXT_KEY(ZICBOZ);
 		EXT_KEY(ZBC);
-
 		EXT_KEY(ZBKB);
 		EXT_KEY(ZBKC);
 		EXT_KEY(ZBKX);
@@ -149,6 +148,9 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 			EXT_KEY(ZCD);
 			EXT_KEY(ZCF);
 		}
+
+		if (IS_ENABLED(CONFIG_RISCV_ISA_SUPM))
+			EXT_KEY(SUPM);
 #undef EXT_KEY
 	}
 
