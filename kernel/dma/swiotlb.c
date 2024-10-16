@@ -60,6 +60,7 @@
 #define IO_TLB_MIN_SLABS ((1<<20) >> IO_TLB_SHIFT)
 
 enum swiotlb_force swiotlb_force;
+static bool swiotlb_any;
 
 /*
  * Max segment that we can provide which (if pages are contingous) will
@@ -134,6 +135,10 @@ setup_io_tlb_npages(char *str)
 		swiotlb_force = SWIOTLB_NO_FORCE;
 		default_nslabs = 1;
 	}
+	if (*str == ',')
+		++str;
+	if (!strcmp(str, "any"))
+		swiotlb_any = true;
 
 	return 0;
 }
@@ -290,8 +295,17 @@ swiotlb_init(int verbose)
 	size_t bytes = PAGE_ALIGN(default_nslabs << IO_TLB_SHIFT);
 	void *tlb;
 
-	/* Get IO TLB memory from the low pages */
-	tlb = memblock_alloc_low(bytes, PAGE_SIZE);
+	/*
+	 * For TDX, SEV or CSV without tee-io, all dma have to use
+	 * shared memory, that is, using the swiotlb mechanism.
+	 * Reserve the memory below 4G is not enough for such scenario.
+	 * Remove the limitation here. (XEN can also get benefit)
+	 */
+	if (swiotlb_any)
+		tlb = memblock_alloc(bytes, PAGE_SIZE);
+	else
+		/* Get IO TLB memory from the low pages */
+		tlb = memblock_alloc_low(bytes, PAGE_SIZE);
 	if (!tlb)
 		goto fail;
 	if (swiotlb_init_with_tbl(tlb, default_nslabs, verbose))
