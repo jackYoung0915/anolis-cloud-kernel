@@ -1,0 +1,24 @@
+* Thu Dec 07 2023 Qiao Ma <mqaio@linux.alibaba.com> [5.10.134-16.1%%DIST%%]
+* nothing changed, it is same as 5.10.134-16.1_beta
+
+* Fri Dec 01 2023 Qiao Ma <mqaio@linux.alibaba.com> [5.10.134-16.1_beta%%DIST%%]
+- anolis: sched: update forceidle time during ttwu (Tianchen Ding)
+- anolis: sched: account cfs_rq runtime hierarchically for ht-aware-quota (Cruz Zhao)
+- anolis: sched/fair: fix the problem that cfs_rq->core is NULL (Cruz Zhao)
+- anolis: net/smc: add sysctl for max conns per lgr for SMC-R v2.1 (Guangguan Wang)
+- anolis: net/smc: add sysctl for max links per lgr for SMC-R v2.1 (Guangguan Wang)
+- anolis: net/smc: fix UAF due to SMC_PROCESSABORT (D. Wythe)
+- anolis: introduce sched feature SCHED_CORE_VRUNTIME (Cruz Zhao)
+- anolis: sched/fair: introduce fine-grained priority scheduler (Tianchen Ding)
+- anolis: configs: enable CONFIG_DRM_PHYTIUM (Qiao Ma)
+- anolis: configs: refresh configs by scripts/dummy-tools (Qiao Ma)
+- anolis: blk-throttle: add io latency indicators in cgroupV2 (Ferry Meng)
+- perf/core: Fix perf_cgroup_switch() (Chengming Zhou)
+- perf/core: Don't pass task around when ctx sched in (Chengming Zhou)
+- anolis: sched/core: fix cfs_prio_less (Cruz Zhao)
+- anolis: sched/fair: introduce core_vruntime and (Cruz Zhao)
+- anolis: sched/core: introduce core to struct cfs_rq (Cruz Zhao)
+- anolis: sched/core: introduce core_id to struct rq (Cruz Zhao)
+- anolis: sched: add forceidled time for task and cgroup (Tianchen Ding)
+- anolis: sched: fix percpu account for CPUTIME_*IDLE (Tianchen Ding)
+
