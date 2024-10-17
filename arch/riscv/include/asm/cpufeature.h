@@ -36,8 +36,8 @@ extern struct riscv_isainfo hart_isa[NR_CPUS];
 
 void __init riscv_user_isa_enable(void);
 
-#if defined(CONFIG_RISCV_SCALAR_MISALIGNED)
 bool check_unaligned_access_emulated_all_cpus(void);
+#if defined(CONFIG_RISCV_SCALAR_MISALIGNED)
 void check_unaligned_access_emulated(struct work_struct *work __always_unused);
 void unaligned_emulation_finish(void);
 bool unaligned_ctl_available(void);
@@ -47,6 +47,12 @@ static inline bool unaligned_ctl_available(void)
 {
 	return false;
 }
+#endif
+
+bool check_vector_unaligned_access_emulated_all_cpus(void);
+#if defined(CONFIG_RISCV_VECTOR_MISALIGNED)
+void check_vector_unaligned_access_emulated(struct work_struct *work __always_unused);
+DECLARE_PER_CPU(long, vector_misaligned_access);
 #endif
 
 #if defined(CONFIG_RISCV_PROBE_UNALIGNED_ACCESS)
