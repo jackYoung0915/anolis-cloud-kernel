@@ -75,6 +75,20 @@ DEFINE_EVENT(smc_msg_event, smc_rx_recvmsg,
 	     TP_ARGS(smc, len)
 );
 
+DEFINE_EVENT(smc_msg_event, smc_send_start,
+
+		 TP_PROTO(const struct smc_sock *smc, size_t len),
+
+		 TP_ARGS(smc, len)
+);
+
+DEFINE_EVENT(smc_msg_event, smc_send_complete,
+
+		 TP_PROTO(const struct smc_sock *smc, size_t len),
+
+		 TP_ARGS(smc, len)
+);
+
 TRACE_EVENT(smcr_link_down,
 
 	    TP_PROTO(const struct smc_link *lnk, void *location),

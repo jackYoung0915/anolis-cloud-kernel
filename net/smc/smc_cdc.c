@@ -19,6 +19,7 @@
 #include "smc_rx.h"
 #include "smc_close.h"
 #include "smc_ism.h"
+#include "smc_tracepoint.h"
 
 /********************************** send *************************************/
 
@@ -291,6 +292,10 @@ int smc_cdc_get_slot_and_msg_send(struct smc_connection *conn)
 	} else {
 		rc = smcr_cdc_get_slot_and_msg_send(conn);
 	}
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	size_t len = conn->sndbuf_desc->len - atomic_read(&conn->sndbuf_space);
+
+	trace_smc_send_complete(smc, len);
 
 	return rc;
 }
