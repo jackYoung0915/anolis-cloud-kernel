@@ -1,0 +1,23 @@
+* Fri Aug 09 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-17.2%%DIST%%]
+
+* Wed Aug 07 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-17.2_rc2%%DIST%%]
+- anolis: net/smc: do not schedule credits_announce_work after link clearing (Guangguan Wang)
+- anolis: kabi: fix 17.2 kabi broken (Guixin Liu)
+- anolis: configs: bugfix for "make dist-configs" command. (Qinyun Tan)
+
+* Fri Aug 02 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-17.2_rc1%%DIST%%]
+- fuse: don't unhash root (Miklos Szeredi)
+- fuse: fix root lookup with nonzero generation (Miklos Szeredi)
+- anolis: fuse: increment fo_version when fuse server recovers (Jingbo Xu)
+- anolis: fuse: uid-based security enhancement for the recovery mechanism (Jingbo Xu)
+- anolis: fuse: introduce recovery mechanism for fuse server (Jingbo Xu)
+- anolis: fuse: extract fuse_requeue_requests() helper (Jingbo Xu)
+- anolis: fuse: rearrange fuse_dev_ioctl_attach() (Jingbo Xu)
+- anolis: fuse: factor out helper for FUSE_DEV_IOC_ATTACH (Jingbo Xu)
+- anolis: fuse: factor out helper for FUSE_DEV_IOC_PASSTHROUGH_OPEN_V0 (Jingbo Xu)
+- anolis: factor out helper for FUSE_DEV_IOC_CLONE (Jingbo Xu)
+- fuse: clear FR_SENT when re-adding requests into pending list (Hou Tao)
+- fuse: set FR_PENDING atomically in fuse_resend() (Hou Tao)
+- fuse: Use the high bit of request ID for indicating resend requests (Zhao Chen)
+- fuse: Introduce a new notification type for resend pending requests (Zhao Chen)
+

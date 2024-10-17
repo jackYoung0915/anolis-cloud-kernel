@@ -1,0 +1,66 @@
+* Tue Mar 26 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-16.3%%DIST%%]
+
+* Mon Mar 25 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-16.3_rc2%%DIST%%]
+- anolis: fix kabi broken in structs (Guixin Liu)
+
+* Mon Mar 18 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-16.3_rc1%%DIST%%]
+- anolis: kernel/sched: Fix compile error on loongarch (xianglai li)
+- anolis: loongarch: config: Enable the LSX LASX compilation option on loongarch (xianglai li)
+- anolis: net/smc: set SOCK_NOSPACE when send_remaining but no sndbuf_space left (Guangguan Wang)
+- anolis: net/smc: fix negotiator_ops refcount leak after listen (D. Wythe)
+- erofs: fix refcount on the metabuf used for inode lookup (Sandeep Dhavale)
+- erofs: fold in z_erofs_decompress() (Yue Hu)
+- erofs: avoid debugging output for (de)compressed data (Gao Xiang)
+- erofs: fix lz4 inplace decompression (Gao Xiang)
+- erofs: fix memory leak on short-lived bounced pages (Gao Xiang)
+- mm: Don't pin ZERO_PAGE in pin_user_pages() (David Howells)
+- anolis: scsi: target: tcmu: fix possible mem reclaim recursion (Guixin Liu)
+- cachefiles, erofs: Fix NULL deref in when cachefiles is not doing ondemand-mode (David Howells)
+- erofs: fix handling kern_mount() failure (Al Viro)
+- mm/page-writeback: Fix performance when BDI's share of ratio is 0. (Chi Wu)
+- Bluetooth: rfcomm: Fix null-ptr-deref in rfcomm_check_security (Yuxuan Hu) {CVE-2024-22099}
+- Bluetooth: Fix atomicity violation in {min,max}_key_size_set (Gui-Dong Han) {CVE-2024-24860}
+- netfilter: nf_tables: reject QUEUE/DROP verdict parameters (Florian Westphal) {CVE-2024-1086}
+- Bluetooth: af_bluetooth: Fix Use-After-Free in bt_sock_recvmsg (Hyunwoo Kim) {CVE-2023-51779}
+- net: qualcomm: rmnet: fix global oob in rmnet_policy (Lin Ma) {CVE-2024-26597}
+- scsi: lpfc: Fix a possible data race in lpfc_unregister_fcf_rescan() (Tuo Li) {CVE-2024-24855}
+- binder: fix use-after-free in shinker's callback (Carlos Llamas) {CVE-2023-52438}
+- af_unix: Fix null-ptr-deref in unix_stream_sendpage(). (shaxiaoxiao)
+- ipv4: igmp: fix refcnt uaf issue when receiving igmp query packet (Zhengchao Shao) {CVE-2023-6932}
+- x86/CPU/AMD: Fix the DIV(0) initial fix attempt (Borislav Petkov (AMD)) {CVE-2023-20588}
+- x86/CPU/AMD: Do not leak quotient data after a division by 0 (Borislav Petkov (AMD)) {CVE-2023-20588}
+- perf/core: Fix potential NULL deref (Peter Zijlstra) {CVE-2023-5717}
+- perf: Disallow mis-matched inherited group reads (Peter Zijlstra) {CVE-2023-5717}
+- perf: Fix perf_event_validate_size() lockdep splat (Mark Rutland) {CVE-2023-6931}
+- perf: Fix perf_event_validate_size() (Peter Zijlstra) {CVE-2023-6931}
+- Bluetooth: Fix double free in hci_conn_cleanup (ZhengHan Wang)
+- netfilter: xt_u32: validate user space input (Wander Lairson Costa) {CVE-2023-39192}
+- net/tls: do not free tls_rec on async operation in bpf_exec_tx_verdict() (Liu Jian) {CVE-2023-6176}
+- kobject: Fix slab-out-of-bounds in fill_kobj_path() (Wang Hai) {CVE-2023-45863}
+- nvmet-tcp: Fix a possible UAF in queue intialization setup (Sagi Grimberg) {CVE-2023-5178}
+- igb: set max size RX buffer when store bad packet is enabled (Radoslaw Tyl) {CVE-2023-45871}
+- net/smc: fix illegal rmb_desc access in SMC-D connection dump (Wen Gu)
+- net/smc: fix invalid link access in dumping SMC-R connections (Wen Gu)
+- anolis: sched/core: introduce CPUTIME_SIBIDLE_TASK (Cruz Zhao)
+- seccomp: Move copy_seccomp() to no failure path. (Kuniyuki Iwashima)
+- blk-throttle: Fix io statistics for cgroup v1 (Jinke Han)
+- anolis: support pnet function when using eRDMA device (Wen Gu)
+- anolis: net/smc: detach sndbuf when connection is killed (Wen Gu)
+- anolis: cgroup: skip kthread in ioasid subsys (Xuchun Shang)
+- anolis: sched: support force disable group identity (Cruz Zhao)
+- anolis: sched: fix conflicts between group identity and core scheduling (Yi Tao)
+- anolis: sched/fair: fix compile error and warnings of ID_LOAD_BALANCE (Cruz Zhao)
+- anolis: sched/features: expand the space of sched features (Cruz Zhao)
+- anolis: sched/fair: introduce sched_feat ID_LOAD_BALANCE (Cruz Zhao)
+- anolis: sched/fair: introduce sched_feat ID_ABSOLUTE_EXPEL (Cruz Zhao)
+- anolis: sched/core: fix the race condition when disable core sched (Cruz Zhao)
+- anolis: x86/resctrl: Add mount option for memory bandwidth HWDRC (Guanjun)
+- anolis: x86/resctrl: Workaround to detect if memory bandwidth HWDRC is capable (Guanjun)
+- anolis: x86/resctrl: Add closid and rmid files for rdtgroup (Guanjun)
+- anolis: idxd: make intel idxd perfmon config enable (Kun(llfl))
+- sched: resolve semantic conflict (Ingo Molnar)
+- sched/core: Avoid multiple calling update_rq_clock() in __cfsb_csd_unthrottle() (Hao Jia)
+- sched: Async unthrottling for cfs bandwidth (Josh Don)
+- smp: Cleanup smp_call_function*() (Peter Zijlstra)
+- ipmi_si: Phytium S2500 workaround for MMIO-based IPMI (Gu Mi)
+
