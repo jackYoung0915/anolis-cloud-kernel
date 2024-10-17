@@ -9,6 +9,7 @@
 
 struct smc_stats_rsn;
 struct smc_stats;
+struct smc_dump_ctx;
 struct netns_smc {
 	/* per cpu counters for SMC */
 	struct smc_stats __percpu	*smc_stats;
@@ -33,8 +34,8 @@ struct netns_smc {
 	CK_KABI_USE_SPLIT(1, unsigned int sysctl_autosplit_size)
 	CK_KABI_USE(2, 3, 4, long sysctl_mem[3])
 	CK_KABI_USE(5, atomic_long_t memory_allocated)
+	CK_KABI_USE(6, struct smc_dump_ctx *dump_ctx)
 
-	CK_KABI_RESERVE(6)
 	CK_KABI_RESERVE(7)
 	CK_KABI_RESERVE(8)
 	CK_KABI_RESERVE(9)

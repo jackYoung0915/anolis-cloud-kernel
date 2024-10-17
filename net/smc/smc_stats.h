@@ -90,6 +90,37 @@ struct smc_stats {
 	u64			srv_hshake_err_cnt;
 };
 
+struct smc_dump_ctx {
+	struct net_device __rcu *dump_ndev;
+	spinlock_t dump_ndev_lock; /* protects dump_ndev */
+};
+
+/* 65503 */
+#define SMC_DUMP_MAX_DATA_LEN \
+	(IPV4_MAX_PMTU - sizeof(struct iphdr) - \
+	 sizeof(struct udphdr) - sizeof(struct smc_dumphdr))
+
+#define SMC_DUMP_V1	1
+
+enum {
+	SMC_DUMP_T_RAW_DATA = 1,
+	SMC_DUMP_T_CDC_MSG,
+	SMC_DUMP_T_LLC_MSG,
+	/* can not be larger than 0xf */
+};
+
+struct smc_dumphdr {
+	__u8	magic;
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8	type:4,
+		version:4;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	__u8	version:4,
+		type:4;
+#endif
+	__u8	reserved[2];
+} __packed;
+
 #define SMC_STAT_PAYLOAD_SUB(_smc_stats, _tech, key, _len, _rc) \
 do { \
 	typeof(_smc_stats) stats = (_smc_stats); \
@@ -277,5 +308,16 @@ int smc_nl_get_stats(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_nl_get_fback_stats(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_stats_init(struct net *net);
 void smc_stats_exit(struct net *net);
+int smc_nl_get_dump_ndev(struct sk_buff *skb, struct netlink_callback *cb);
+int smc_nl_set_dump_ndev(struct sk_buff *skb, struct genl_info *info);
+int smc_nl_reset_dump_ndev(struct sk_buff *skb, struct genl_info *info);
+int smc_dump_init(struct net *net);
+void smc_dump_exit(struct net *net);
+int smc_dump_raw_data(struct smc_connection *conn, int offset,
+		      int length, bool is_rx);
+int smc_dump_cdc_msg(struct smc_connection *conn, void *buf,
+		     int length, bool is_rx);
+int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
+			  u32 imm_data, bool is_rx);
 
 #endif /* NET_SMC_SMC_STATS_H_ */

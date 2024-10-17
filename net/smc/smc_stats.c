@@ -17,6 +17,7 @@
 #include <net/sock.h>
 #include "smc_netlink.h"
 #include "smc_stats.h"
+#include "smc_cdc.h"
 
 int smc_stats_init(struct net *net)
 {
@@ -416,4 +417,458 @@ int smc_nl_get_fback_stats(struct sk_buff *skb, struct netlink_callback *cb)
 	cb_ctx->pos[1] = skip_serv;
 	cb_ctx->pos[0] = k;
 	return skb->len;
+}
+
+static struct net_device *smc_net_set_dump_ndev(struct net *net,
+						struct net_device *ndev)
+{
+	struct net_device *orig_ndev;
+
+	spin_lock(&net->smc.dump_ctx->dump_ndev_lock);
+	orig_ndev = rcu_replace_pointer(net->smc.dump_ctx->dump_ndev,
+					ndev, true);
+	spin_unlock(&net->smc.dump_ctx->dump_ndev_lock);
+	synchronize_rcu();
+	/* no one references orig_ndev now */
+
+	return orig_ndev;
+}
+
+int smc_nl_set_dump_ndev(struct sk_buff *skb, struct genl_info *info)
+{
+	struct nlattr *nla_dev = info->attrs[SMC_NLA_DUMP_DEV_NAME];
+	char ndev_name[SMC_MAX_DUMP_DEV_LEN + 1] = { 0 };
+	struct net_device *ndev, *orig_ndev;
+	struct net *net = sock_net(skb->sk);
+
+	if (!nla_dev ||
+	    nla_len(nla_dev) > SMC_MAX_DUMP_DEV_LEN + 1)
+		return -EINVAL;
+
+	nla_strlcpy(ndev_name, nla_dev, SMC_MAX_DUMP_DEV_LEN);
+	/* put when reset dump ndev or smc_dump_exit() */
+	ndev = dev_get_by_name(net, ndev_name);
+	if (!ndev)
+		return -ENODEV;
+
+	orig_ndev = smc_net_set_dump_ndev(net, ndev);
+	/* put the old dump ndev */
+	if (orig_ndev)
+		dev_put(orig_ndev);
+	return 0;
+}
+
+int smc_nl_reset_dump_ndev(struct sk_buff *skb, struct genl_info *info)
+{
+	struct net *net = sock_net(skb->sk);
+	struct net_device *ndev;
+
+	ndev = smc_net_set_dump_ndev(net, NULL);
+	if (!ndev)
+		return -ENODEV;
+
+	dev_put(ndev);
+	return 0;
+}
+
+int smc_nl_get_dump_ndev(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	struct smc_nl_dmp_ctx *cb_ctx = smc_nl_dmp_ctx(cb);
+	char ndev_name[SMC_MAX_DUMP_DEV_LEN + 1] = { 0 };
+	struct net *net = sock_net(skb->sk);
+	struct net_device *ndev;
+	void *hdr;
+
+	if (cb_ctx->pos[0])
+		return skb->len;
+
+	hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
+			  &smc_gen_nl_family, NLM_F_MULTI,
+			  SMC_NETLINK_GET_DUMP_DEV);
+	if (!hdr)
+		return -ENOMEM;
+
+	rcu_read_lock();
+	ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!ndev)
+		goto end;
+	strncpy(ndev_name, ndev->name, SMC_MAX_DUMP_DEV_LEN);
+
+	if (nla_put_string(skb, SMC_NLA_DUMP_DEV_NAME, ndev_name))
+		goto err;
+
+end:
+	rcu_read_unlock();
+	genlmsg_end(skb, hdr);
+	cb_ctx->pos[0]++;
+	return skb->len;
+err:
+	rcu_read_unlock();
+	genlmsg_cancel(skb, hdr);
+	return -EMSGSIZE;
+}
+
+static int smc_dump_netdev_event(struct notifier_block *this,
+				 unsigned long event, void *ptr)
+{
+	struct net_device *event_dev = netdev_notifier_info_to_dev(ptr);
+	struct net *net = dev_net(event_dev);
+	struct smc_dump_ctx *dump_ctx;
+	struct net_device *dump_ndev;
+
+	dump_ctx = net->smc.dump_ctx;
+	switch (event) {
+	case NETDEV_REBOOT:
+	case NETDEV_UNREGISTER:
+		spin_lock(&dump_ctx->dump_ndev_lock);
+		dump_ndev = rcu_dereference(dump_ctx->dump_ndev);
+		if (!dump_ndev || dump_ndev != event_dev) {
+			spin_unlock(&dump_ctx->dump_ndev_lock);
+			return NOTIFY_DONE;
+		}
+		/* event occurred on dump_ndev */
+		rcu_assign_pointer(dump_ctx->dump_ndev, NULL);
+		spin_unlock(&dump_ctx->dump_ndev_lock);
+		synchronize_rcu();
+		dev_put(dump_ndev);
+		return NOTIFY_OK;
+	default:
+		return NOTIFY_DONE;
+	}
+}
+
+static struct notifier_block smc_dump_notifier = {
+	.notifier_call = smc_dump_netdev_event
+};
+
+int smc_dump_init(struct net *net)
+{
+	int rc;
+
+	net->smc.dump_ctx =
+		kzalloc(sizeof(struct smc_dump_ctx), GFP_KERNEL);
+	if (!net->smc.dump_ctx)
+		return -ENOMEM;
+	spin_lock_init(&net->smc.dump_ctx->dump_ndev_lock);
+	rc = register_netdevice_notifier_net(net, &smc_dump_notifier);
+	if (rc)
+		goto out;
+	return 0;
+out:
+	kfree(net->smc.dump_ctx);
+	return rc;
+}
+
+void smc_dump_exit(struct net *net)
+{
+	unregister_netdevice_notifier_net(net, &smc_dump_notifier);
+	kfree(net->smc.dump_ctx);
+}
+
+static int smc_dump_fill_skb_data(struct sk_buff *skb, void *data, int length)
+{
+	struct skb_shared_info *shinfo = skb_shinfo(skb);
+	int i, left = length, len, off, sum = 0;
+	struct page *page;
+	char *p = data;
+
+	/* too large to fit */
+	if (left > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
+
+	/* nolinear part: frags */
+	for (i = 0; i < MAX_SKB_FRAGS; i++) {
+		page = is_vmalloc_addr(p) ?
+			vmalloc_to_page(p) : virt_to_page(p);
+		off = i ? 0 : offset_in_page(p);
+		len = min_t(size_t, PAGE_SIZE - off, left);
+
+		shinfo->frags[i].bv_page = page;
+		shinfo->frags[i].bv_offset = off;
+		shinfo->frags[i].bv_len = len;
+
+		/* unref in skb_release_data */
+		__skb_frag_ref(&shinfo->frags[i]);
+
+		p += len;
+		sum += len;
+		left -= len;
+		if (!left)
+			break;
+	}
+	shinfo->nr_frags = i + 1;
+	skb->data_len += sum;
+	skb->len += sum;
+	skb->truesize += sum;
+	return sum;
+}
+
+static int smc_dump_fill_skb_header(struct smc_sock *smc,
+				    struct sk_buff *skb,
+				    struct net_device *dev,
+				    int data_len, int type, bool is_rx)
+{
+	struct smc_dumphdr *smch;
+	struct udphdr *udph;
+	struct sock *clcsk;
+	struct ethhdr *eh;
+	struct iphdr *iph;
+
+	clcsk = smc_sock_is_inet_sock(&smc->sk) ?
+				&smc->sk : smc->clcsock->sk;
+	if (!clcsk)
+		return -EINVAL;
+
+	smch = skb_push(skb, sizeof(struct smc_dumphdr));
+	smch->version = SMC_DUMP_V1;
+	smch->type = type;
+	smch->reserved[0] = 0;
+	smch->reserved[1] = 0;
+	smch->magic = 0xcf;
+
+	udph = skb_push(skb, sizeof(struct udphdr));
+	udph->source = is_rx ? clcsk->sk_dport : htons(clcsk->sk_num);
+	udph->dest = is_rx ? htons(clcsk->sk_num) : clcsk->sk_dport;
+	udph->len = htons(sizeof(struct udphdr) +
+			  sizeof(struct smc_dumphdr) + data_len);
+	udph->check = 0;
+	skb_set_transport_header(skb, 0);
+
+	/* only support IPv4 now */
+	iph = skb_push(skb, sizeof(struct iphdr));
+	iph->version = IPVERSION;
+	iph->ihl = 5;	/* 20 bytes */
+	iph->tos = 0;
+	iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) +
+			     sizeof(struct smc_dumphdr) + data_len);
+	iph->id = 0;
+	iph->frag_off = 0;
+	iph->ttl = 64;
+	iph->protocol = IPPROTO_UDP;
+	iph->check = 0;
+	iph->saddr = is_rx ? clcsk->sk_daddr : clcsk->sk_rcv_saddr;
+	iph->daddr = is_rx ? clcsk->sk_rcv_saddr : clcsk->sk_daddr;
+	skb_set_network_header(skb, 0);
+
+	eh = skb_push(skb, sizeof(struct ethhdr));
+	memcpy(eh->h_dest, dev->dev_addr, ETH_ALEN);
+	memcpy(eh->h_source, dev->dev_addr, ETH_ALEN);
+	eh->h_proto = htons(ETH_P_IP);
+	return 0;
+}
+
+/* The caller must ensure that the buffer of @len starting
+ * from @data is valid, e.g. no wrapping.
+ * And the data @len is no larger than SMC_DUMP_MAX_DATA_LEN.
+ */
+static int __smc_dump_forward_data(struct smc_sock *smc,
+				   struct net_device *dump_ndev, void *data,
+				   int len, int type, bool is_rx)
+{
+	int header_size, data_size;
+	struct sk_buff *skb;
+	int rc, i;
+
+	/* pretend to be a UDP packet */
+	header_size = sizeof(struct smc_dumphdr) + sizeof(struct udphdr) +
+			sizeof(struct iphdr) + sizeof(struct ethhdr);
+	skb = alloc_skb(header_size, GFP_ATOMIC);
+	if (!skb) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	skb_reserve(skb, header_size);
+
+	/* assume total packet size is less than 65535 */
+	data_size = smc_dump_fill_skb_data(skb, data, len);
+	if (data_size < 0) {
+		rc = data_size;
+		goto out_skb;
+	}
+	rc = smc_dump_fill_skb_header(smc, skb, dump_ndev, data_size,
+				      type, is_rx);
+	if (rc)
+		goto out_unref;
+
+	skb->dev = dump_ndev;
+	skb->protocol = htons(ETH_P_IP); /* only support IPv4 now */
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	/* regardless of the return value, the skb is consumed. */
+	rc = dev_queue_xmit(skb);
+	if (rc != NET_XMIT_SUCCESS) {
+		rc = -EPIPE;
+		goto out;
+	}
+
+	return data_size;
+
+out_unref:
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
+		__skb_frag_unref(&(skb_shinfo(skb)->frags[i]));
+out_skb:
+	kfree(skb);
+out:
+	return rc;
+}
+
+int smc_dump_raw_data(struct smc_connection *conn, int offset,
+		      int length, bool is_rx)
+{
+	struct smc_buf_desc *buf = is_rx ? conn->rmb_desc : conn->sndbuf_desc;
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
+	bool is_smcd = conn->lgr->is_smcd;
+	int chunk, chunk_len, chunk_off;
+	struct net_device *dump_ndev;
+	int total_left, l, f, rc;
+	char *p;
+
+	rcu_read_lock();
+	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!dump_ndev) {
+		rc = -ENODEV;
+		goto out;
+	}
+	total_left = length;
+	chunk_off = offset;
+
+	/* skip the section at the front of SMC-D DMB that
+	 * contains CDC messages.
+	 */
+	p = (is_smcd && is_rx) ?
+		(char *)buf->cpu_addr + sizeof(struct smcd_cdc_msg) + offset :
+		(char *)buf->cpu_addr + offset;
+	for (chunk = 0; chunk < 2; chunk++) {
+		chunk_len = min_t(int, total_left, buf->len - chunk_off);
+		while (chunk_len) {
+			/* split into maximum data size */
+			l = min_t(int, chunk_len, SMC_DUMP_MAX_DATA_LEN);
+			f = __smc_dump_forward_data(smc, dump_ndev, p, l,
+						    SMC_DUMP_T_RAW_DATA, is_rx);
+			if (f <= 0) {
+				/* error */
+				rc = f ? f : -EAGAIN;
+				goto out;
+			}
+			p += f;
+			chunk_len -= f;
+			total_left -= f;
+		}
+		if (!total_left)
+			break;	/* either on 1st or 2nd iteration */
+		chunk_off = 0;
+		p = (is_smcd && is_rx) ?
+			(char *)buf->cpu_addr + sizeof(struct smcd_cdc_msg) :
+			buf->cpu_addr;
+	}
+	rc = length - total_left;
+out:
+	rcu_read_unlock();
+	return rc;
+}
+
+int smc_dump_cdc_msg(struct smc_connection *conn, void *buf,
+		     int length, bool is_rx)
+{
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
+	struct net_device *dump_ndev;
+	int f, rc;
+
+	rcu_read_lock();
+	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!dump_ndev) {
+		rc = -ENODEV;
+		goto out;
+	}
+	/* CDC msg size is mush smaller than
+	 * SMC_DUMP_MAX_DATA_LEN, so send it directly.
+	 */
+	f = __smc_dump_forward_data(smc, dump_ndev, buf, length,
+				    SMC_DUMP_T_CDC_MSG, is_rx);
+	if (f <= 0) {
+		rc = f ? f : -EAGAIN;
+		goto out;
+	}
+	rc = f;
+out:
+	rcu_read_unlock();
+	return rc;
+}
+
+int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
+			  u32 imm_data, bool is_rx)
+{
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	struct net *net = sock_net(&smc->sk);
+	struct smc_host_cdc_msg *local;
+	struct net_device *dump_ndev;
+	union smc_wr_imm_msg imm_msg;
+	union smc_host_cursor save;
+	struct smc_cdc_msg cdc;
+	int f, rc;
+
+	rcu_read_lock();
+	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
+	if (!dump_ndev) {
+		rc = -ENODEV;
+		goto out;
+	}
+
+	/* Unlike smc_dump_cdc_msg(), we need to construct a cdc message
+	 * based on local_{rx|tx}_ctrl and imm_data, similar to what we
+	 * do in smc_host_msg_to_cdc().
+	 */
+	memset(&cdc, 0, sizeof(cdc));
+	imm_msg.imm_data = imm_data;
+	local = is_rx ? &conn->local_rx_ctrl : &conn->local_tx_ctrl;
+	cdc.common.type = local->common.type;
+	cdc.len = local->len;
+	cdc.seqno = htons(local->seqno);
+	cdc.token = htonl(local->token);
+	smc_host_cursor_to_cdc(&cdc.prod, &local->prod, &save, conn);
+	smc_host_cursor_to_cdc(&cdc.cons, &local->cons, &save, conn);
+	cdc.prod_flags = local->prod_flags;
+	cdc.conn_state_flags = local->conn_state_flags;
+	/* local_rx_ctrl doesn't have following information,
+	 * we need to set on our own.
+	 */
+	cdc.common.type = SMC_CDC_MSG_TYPE;
+	cdc.len = SMC_WR_TX_SIZE;
+	/* we can't get peer cdc->seqno in Rx, so we may find that this
+	 * field is not present in the Rx cdc messages dumped.
+	 */
+
+	switch (imm_msg.hdr.opcode) {
+	case SMC_WR_OP_DATA:
+	case SMC_WR_OP_CTRL:
+	case SMC_WR_OP_DATA_WITH_FLAGS:
+		/* nothing to do */
+		break;
+	case SMC_WR_OP_DATA_CR:
+		cdc.credits = imm_msg.data_cr.credits;
+		break;
+	case SMC_WR_OP_DATA_WITH_FLAGS_CR:
+		cdc.credits = imm_msg.data_with_flags_cr.credits;
+		break;
+	default:
+		rc = -EINVAL;
+		goto out;
+	}
+
+	/* CDC msg size is mush smaller than
+	 * SMC_DUMP_MAX_DATA_LEN, so send it directly.
+	 */
+	f = __smc_dump_forward_data(smc, dump_ndev, &cdc,
+				    sizeof(struct smc_cdc_msg),
+				    SMC_DUMP_T_CDC_MSG, is_rx);
+	if (f <= 0) {
+		rc = f ? f : -EAGAIN;
+		goto out;
+	}
+	rc = f;
+out:
+	rcu_read_unlock();
+	return rc;
 }
