@@ -165,7 +165,7 @@ static void ghes_unmap(void __iomem *vaddr, enum fixed_addresses fixmap_idx)
 	clear_fixmap(fixmap_idx);
 }
 
-int ghes_estatus_pool_init(int num_ghes)
+int ghes_estatus_pool_init(unsigned int num_ghes)
 {
 	unsigned long addr, len;
 	int rc;
@@ -479,7 +479,7 @@ static void memory_failure_cb(struct callback_head *twork)
 		container_of(twork, struct mce_task_work, twork);
 	unsigned long pfn = twcb->pfn;
 
-	rc = memory_failure(twcb->pfn, twcb->flags);
+	rc = memory_failure(pfn, twcb->flags);
 	kfree(twcb);
 
 	if (!rc)
@@ -763,6 +763,9 @@ static bool ghes_do_proc(struct ghes *ghes,
 			queued = ghes_handle_memory_failure(gdata, sync, sev);
 		}
 		else if (guid_equal(sec_type, &CPER_SEC_PCIE)) {
+			struct cper_sec_pcie *pcie_err = acpi_hest_get_payload(gdata);
+
+			arch_apei_report_pcie_error(sec_sev, pcie_err);
 			ghes_handle_aer(gdata);
 		}
 		else if (guid_equal(sec_type, &CPER_SEC_PROC_ARM)) {
@@ -770,10 +773,13 @@ static bool ghes_do_proc(struct ghes *ghes,
 		} else {
 			void *err = acpi_hest_get_payload(gdata);
 
-			ghes_defer_non_standard_event(gdata, sev);
-			log_non_standard_event(sec_type, fru_id, fru_text,
-					       sec_sev, err,
-					       gdata->error_data_length);
+			if (!arch_apei_report_zdi_error(sec_type,
+							(struct cper_sec_proc_generic *)err)) {
+				ghes_defer_non_standard_event(gdata, sev);
+				log_non_standard_event(sec_type, fru_id, fru_text,
+						       sec_sev, err,
+						       gdata->error_data_length);
+			}
 		}
 	}
 
@@ -1157,6 +1163,8 @@ static int ghes_in_nmi_queue_one_entry(struct ghes *ghes,
 	u32 len, node_len;
 	u64 buf_paddr;
 	int sev, rc;
+	struct acpi_hest_generic_data *gdata;
+	guid_t *sec_type;
 
 	if (!IS_ENABLED(CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG))
 		return -EOPNOTSUPP;
@@ -1192,6 +1200,23 @@ static int ghes_in_nmi_queue_one_entry(struct ghes *ghes,
 
 	sev = ghes_severity(estatus->error_severity);
 	if (sev >= GHES_SEV_PANIC) {
+		apei_estatus_for_each_section(estatus, gdata) {
+			sec_type = (guid_t *)gdata->section_type;
+			if (guid_equal(sec_type, &CPER_SEC_PLATFORM_MEM)) {
+				struct cper_sec_mem_err *mem_err = acpi_hest_get_payload(gdata);
+
+				arch_apei_report_mem_error(sev, mem_err);
+			} else if (guid_equal(sec_type, &CPER_SEC_PCIE)) {
+				struct cper_sec_pcie *pcie_err = acpi_hest_get_payload(gdata);
+
+				arch_apei_report_pcie_error(sev, pcie_err);
+			} else if (guid_equal(sec_type, &CPER_SEC_PROC_GENERIC)) {
+				struct cper_sec_proc_generic *zdi_err =
+							acpi_hest_get_payload(gdata);
+
+				arch_apei_report_zdi_error(sec_type, zdi_err);
+			}
+		}
 		ghes_print_queued_estatus();
 		__ghes_panic(ghes, estatus, buf_paddr, fixmap_idx);
 	}

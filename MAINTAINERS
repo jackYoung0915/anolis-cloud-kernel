@@ -856,6 +856,12 @@ Q:	https://patchwork.kernel.org/project/linux-rdma/list/
 F:	drivers/infiniband/hw/efa/
 F:	include/uapi/rdma/efa-abi.h
 
+AMD ADDRESS TRANSLATION LIBRARY (ATL)
+M:	Yazen Ghannam <Yazen.Ghannam@amd.com>
+L:	linux-edac@vger.kernel.org
+S:	Supported
+F:	drivers/ras/amd/atl/*
+
 AMD CRYPTOGRAPHIC COPROCESSOR (CCP) DRIVER
 M:	Tom Lendacky <thomas.lendacky@amd.com>
 M:	John Allen <john.allen@amd.com>
@@ -956,6 +962,16 @@ M:	Shyam Sundar S K <shyam-sundar.s-k@amd.com>
 L:	linux-i2c@vger.kernel.org
 S:	Maintained
 F:	drivers/i2c/busses/i2c-amd-mp2*
+
+AMD HSMP DRIVER
+M:	Naveen Krishna Chatradhi <naveenkrishna.chatradhi@amd.com>
+R:	Carlos Bilbao <carlos.bilbao@amd.com>
+L:	platform-driver-x86@vger.kernel.org
+S:	Maintained
+F:	Documentation/x86/amd_hsmp.rst
+F:	arch/x86/include/asm/amd_hsmp.h
+F:	arch/x86/include/uapi/asm/amd_hsmp.h
+F:	drivers/platform/x86/amd/hsmp.c
 
 AMD POWERPLAY
 M:	Evan Quan <evan.quan@amd.com>
@@ -3314,6 +3330,7 @@ F:	net/core/filter.c
 F:	net/sched/act_bpf.c
 F:	net/sched/cls_bpf.c
 F:	samples/bpf/
+F:	scripts/pahole-version.sh
 F:	tools/bpf/
 F:	tools/lib/bpf/
 F:	tools/testing/selftests/bpf/
@@ -14785,6 +14802,7 @@ M:	Tony Luck <tony.luck@intel.com>
 M:	Borislav Petkov <bp@alien8.de>
 L:	linux-edac@vger.kernel.org
 S:	Maintained
+F:	Documentation/RAS/
 F:	Documentation/admin-guide/ras.rst
 F:	drivers/ras/
 F:	include/linux/ras.h
@@ -18986,16 +19004,12 @@ F:	drivers/input/tablet/wacom_serial4.c
 
 WANGXUN ETHERNET DRIVER
 M:	Jiawen Wu <jiawenwu@trustnetic.com>
-L:	netdev@vger.kernel.org
-S:	Maintained
-F:	Documentation/networking/device_drivers/ethernet/wangxun/txgbe.rst
-F:	drivers/net/ethernet/wangxun/
-
-WANGXUN ETHERNET DRIVER
 M:	Duanqiang Wen <duanqiangwen@trustnetic.com>
 L:	netdev@vger.kernel.org
 S:	Maintained
+F:	Documentation/networking/device_drivers/ethernet/wangxun/txgbe.rst
 F:	Documentation/networking/device_drivers/ethernet/wangxun/ngbe.rst
+F:	Documentation/networking/device_drivers/ethernet/wangxun/txgbevf.rst
 F:	drivers/net/ethernet/wangxun/
 
 WATCHDOG DEVICE DRIVERS

@@ -16,6 +16,15 @@
 /* cpu_feature_enabled() cannot be used this early */
 #define USE_EARLY_PGTABLE_L5
 
+/*
+ * Boot stub deals with identity mappings, physical and virtual addresses are
+ * the same, so override these defines.
+ *
+ * <asm/page.h> will not define them if they are already defined.
+ */
+#define __pa(x)  ((unsigned long)(x))
+#define __va(x)  ((void *)((unsigned long)(x)))
+
 #include <linux/linkage.h>
 #include <linux/screen_info.h>
 #include <linux/elf.h>
@@ -32,6 +41,8 @@
 #define BOOT_BOOT_H
 #include "../ctype.h"
 #include "../io.h"
+
+#include "efi.h"
 
 #ifdef CONFIG_X86_64
 #define memptr long
@@ -164,9 +175,63 @@ static inline void cleanup_exception_handling(void) { }
 
 /* IDT Entry Points */
 void boot_page_fault(void);
+void boot_nmi_trap(void);
 void boot_stage1_vc(void);
 void boot_stage2_vc(void);
 
 unsigned long sev_verify_cbit(unsigned long cr3);
+
+enum efi_type {
+	EFI_TYPE_64,
+	EFI_TYPE_32,
+	EFI_TYPE_NONE,
+};
+
+#ifdef CONFIG_EFI
+/* helpers for early EFI config table access */
+enum efi_type efi_get_type(struct boot_params *bp);
+unsigned long efi_get_system_table(struct boot_params *bp);
+int efi_get_conf_table(struct boot_params *bp, unsigned long *cfg_tbl_pa,
+		       unsigned int *cfg_tbl_len);
+unsigned long efi_find_vendor_table(struct boot_params *bp,
+				    unsigned long cfg_tbl_pa,
+				    unsigned int cfg_tbl_len,
+				    efi_guid_t guid);
+#else
+static inline enum efi_type efi_get_type(struct boot_params *bp)
+{
+	return EFI_TYPE_NONE;
+}
+
+static inline unsigned long efi_get_system_table(struct boot_params *bp)
+{
+	return 0;
+}
+
+static inline int efi_get_conf_table(struct boot_params *bp,
+				     unsigned long *cfg_tbl_pa,
+				     unsigned int *cfg_tbl_len)
+{
+	return -ENOENT;
+}
+
+static inline unsigned long efi_find_vendor_table(struct boot_params *bp,
+						  unsigned long cfg_tbl_pa,
+						  unsigned int cfg_tbl_len,
+						  efi_guid_t guid)
+{
+	return 0;
+}
+#endif /* CONFIG_EFI */
+
+#ifdef CONFIG_UNACCEPTED_MEMORY
+bool init_unaccepted_memory(void);
+#else
+static inline bool init_unaccepted_memory(void) { return false; }
+#endif
+
+/* Defined in EFI stub */
+extern struct efi_unaccepted_memory *unaccepted_table;
+void accept_memory(phys_addr_t start, phys_addr_t end);
 
 #endif /* BOOT_COMPRESSED_MISC_H */

@@ -187,6 +187,10 @@
  *
  *  7.39
  *  - add FUSE_DIRECT_IO_ALLOW_MMAP
+ *
+ *  7.40
+ *  - add FUSE_NO_EXPORT_SUPPORT init flag
+ *  - add FUSE_NOTIFY_RESEND, add FUSE_HAS_RESEND init flag
  */
 
 #ifndef _LINUX_FUSE_H
@@ -342,6 +346,13 @@ struct fuse_file_lock {
  * FUSE_INIT_RESERVED: reserved, do not use
  * FUSE_HAS_INODE_DAX:  use per inode DAX
  * FUSE_DIRECT_IO_ALLOW_MMAP: allow shared mmap in FOPEN_DIRECT_IO mode.
+ * FUSE_NO_EXPORT_SUPPORT: explicitly disable export support
+ * FUSE_HAS_RESEND: kernel supports resending pending requests, and the high bit
+ *		    of the request ID indicates resend requests
+ * FUSE_SEPARATE_BACKGROUND: separate background queue for WRITE requests and
+ *			     the others
+ * FUSE_HAS_RECOVERY:	recovery mechanism for fuse server
+ * FUSE_WRITE_ALIGNMENT: write request is aligned on max_write boundary
  */
 #define FUSE_ASYNC_READ		(1 << 0)
 #define FUSE_POSIX_LOCKS	(1 << 1)
@@ -377,6 +388,11 @@ struct fuse_file_lock {
 /* bits 32..63 get shifted down 32 bits into the flags2 field */
 #define FUSE_HAS_INODE_DAX	(1ULL << 33)
 #define FUSE_DIRECT_IO_ALLOW_MMAP (1ULL << 36)
+#define FUSE_NO_EXPORT_SUPPORT	(1ULL << 38)
+#define FUSE_HAS_RESEND		(1ULL << 39)
+#define FUSE_WRITE_ALIGNMENT	(1ULL << 55)
+#define FUSE_SEPARATE_BACKGROUND (1ULL << 56)
+#define FUSE_HAS_RECOVERY	(1ULL << 57)
 #define FUSE_DELETE_STALE	(1ULL << 58)
 /* The 59th bit is left to FUSE_DIO_SHARED_MMAP */
 #define FUSE_INVAL_CACHE_INFAIL	(1ULL << 60)
@@ -545,6 +561,7 @@ enum fuse_notify_code {
 	FUSE_NOTIFY_STORE = 4,
 	FUSE_NOTIFY_RETRIEVE = 5,
 	FUSE_NOTIFY_DELETE = 6,
+	FUSE_NOTIFY_RESEND = 7,
 	FUSE_NOTIFY_CODE_MAX,
 };
 
@@ -857,6 +874,14 @@ struct fuse_fallocate_in {
 	uint32_t	padding;
 };
 
+/**
+ * FUSE request unique ID flag
+ *
+ * Indicates whether this is a resend request. The receiver should handle this
+ * request accordingly.
+ */
+#define FUSE_UNIQUE_RESEND (1ULL << 63)
+
 struct fuse_in_header {
 	uint32_t	len;
 	uint32_t	opcode;
@@ -948,6 +973,7 @@ struct fuse_notify_retrieve_in {
 #define FUSE_DEV_IOC_PASSTHROUGH_OPEN_V0	_IOW(FUSE_DEV_IOC_MAGIC, 100, uint32_t)
 #define FUSE_DEV_IOC_PASSTHROUGH_WRITE_OPEN_V0	_IOW(FUSE_DEV_IOC_MAGIC, 101, uint32_t)
 #define FUSE_DEV_IOC_ATTACH		_IOWR(FUSE_DEV_IOC_MAGIC, 200, struct fuse_ioctl_attach)
+#define FUSE_DEV_IOC_RECOVER		_IOWR(FUSE_DEV_IOC_MAGIC, 201, struct fuse_ioctl_attach)
 
 struct fuse_lseek_in {
 	uint64_t	fh;

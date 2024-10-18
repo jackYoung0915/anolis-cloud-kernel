@@ -1162,6 +1162,9 @@ const char * const vmstat_text[] = {
 	"nr_zspages",
 #endif
 	"nr_free_cma",
+#ifdef CONFIG_UNACCEPTED_MEMORY
+	"nr_unaccepted",
+#endif
 #ifdef CONFIG_PAGE_PREZERO
 	"nr_zeroed_pages",
 #endif

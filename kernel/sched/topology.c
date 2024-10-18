@@ -935,6 +935,31 @@ static void init_overlap_sched_group(struct sched_domain *sd,
 	sg->sgc->max_capacity = SCHED_CAPACITY_SCALE;
 }
 
+static struct sched_domain *
+find_descended_sibling(struct sched_domain *sd, struct sched_domain *sibling)
+{
+	/*
+	 * The proper descendant would be the one whose child won't span out
+	 * of sd
+	 */
+	while (sibling->child &&
+	       !cpumask_subset(sched_domain_span(sibling->child),
+			       sched_domain_span(sd)))
+		sibling = sibling->child;
+
+	/*
+	 * As we are referencing sgc across different topology level, we need
+	 * to go down to skip those sched_domains which don't contribute to
+	 * scheduling because they will be degenerated in cpu_attach_domain
+	 */
+	while (sibling->child &&
+	       cpumask_equal(sched_domain_span(sibling->child),
+			     sched_domain_span(sibling)))
+		sibling = sibling->child;
+
+	return sibling;
+}
+
 static int
 build_overlap_sched_groups(struct sched_domain *sd, int cpu)
 {
@@ -968,6 +993,41 @@ build_overlap_sched_groups(struct sched_domain *sd, int cpu)
 		if (!cpumask_test_cpu(i, sched_domain_span(sibling)))
 			continue;
 
+		/*
+		 * Usually we build sched_group by sibling's child sched_domain
+		 * But for machines whose NUMA diameter are 3 or above, we move
+		 * to build sched_group by sibling's proper descendant's child
+		 * domain because sibling's child sched_domain will span out of
+		 * the sched_domain being built as below.
+		 *
+		 * Smallest diameter=3 topology is:
+		 *
+		 *   node   0   1   2   3
+		 *     0:  10  20  30  40
+		 *     1:  20  10  20  30
+		 *     2:  30  20  10  20
+		 *     3:  40  30  20  10
+		 *
+		 *   0 --- 1 --- 2 --- 3
+		 *
+		 * NUMA-3       0-3             N/A             N/A             0-3
+		 *  groups:     {0-2},{1-3}                                     {1-3},{0-2}
+		 *
+		 * NUMA-2       0-2             0-3             0-3             1-3
+		 *  groups:     {0-1},{1-3}     {0-2},{2-3}     {1-3},{0-1}     {2-3},{0-2}
+		 *
+		 * NUMA-1       0-1             0-2             1-3             2-3
+		 *  groups:     {0},{1}         {1},{2},{0}     {2},{3},{1}     {3},{2}
+		 *
+		 * NUMA-0       0               1               2               3
+		 *
+		 * The NUMA-2 groups for nodes 0 and 3 are obviously buggered, as the
+		 * group span isn't a subset of the domain span.
+		 */
+		if (sibling->child &&
+			!cpumask_subset(sched_domain_span(sibling->child), span))
+			sibling = find_descended_sibling(sd, sibling);
+
 		sg = build_group_from_child_sched_domain(sibling, cpu);
 		if (!sg)
 			goto fail;
@@ -975,7 +1035,7 @@ build_overlap_sched_groups(struct sched_domain *sd, int cpu)
 		sg_span = sched_group_span(sg);
 		cpumask_or(covered, covered, sg_span);
 
-		init_overlap_sched_group(sd, sg);
+		init_overlap_sched_group(sibling, sg);
 
 		if (!first)
 			first = sg;
@@ -1217,7 +1277,7 @@ static void set_domain_attribute(struct sched_domain *sd,
 	} else
 		request = attr->relax_domain_level;
 
-	if (sd->level > request) {
+	if (sd->level >= request) {
 		/* Turn off idle balance on this domain: */
 		sd->flags &= ~(SD_BALANCE_WAKE|SD_BALANCE_NEWIDLE);
 	}

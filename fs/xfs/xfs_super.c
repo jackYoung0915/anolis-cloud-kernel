@@ -36,6 +36,7 @@
 #include "xfs_bmap_item.h"
 #include "xfs_reflink.h"
 #include "xfs_defer.h"
+#include "xfs_pwork.h"
 
 #include <linux/magic.h>
 #include <linux/fs_context.h>
@@ -501,20 +502,29 @@ xfs_init_mount_workqueues(
 	if (!mp->m_reclaim_workqueue)
 		goto out_destroy_cil;
 
-	mp->m_eofblocks_workqueue = alloc_workqueue("xfs-eofblocks/%s",
-			WQ_MEM_RECLAIM|WQ_FREEZABLE, 0, mp->m_super->s_id);
-	if (!mp->m_eofblocks_workqueue)
+	mp->m_blockgc_wq = alloc_workqueue("xfs-blockgc/%s",
+			WQ_SYSFS | WQ_UNBOUND | WQ_FREEZABLE | WQ_MEM_RECLAIM,
+			0, mp->m_super->s_id);
+	if (!mp->m_blockgc_wq)
 		goto out_destroy_reclaim;
+
+	mp->m_inodegc_wq = alloc_workqueue("xfs-inodegc/%s",
+			WQ_SYSFS | WQ_FREEZABLE | WQ_MEM_RECLAIM,
+			1, mp->m_super->s_id);
+	if (!mp->m_inodegc_wq)
+		goto out_destroy_blockgc;
 
 	mp->m_sync_workqueue = alloc_workqueue("xfs-sync/%s", WQ_FREEZABLE, 0,
 					       mp->m_super->s_id);
 	if (!mp->m_sync_workqueue)
-		goto out_destroy_eofb;
+		goto out_destroy_inodegc;
 
 	return 0;
 
-out_destroy_eofb:
-	destroy_workqueue(mp->m_eofblocks_workqueue);
+out_destroy_inodegc:
+	destroy_workqueue(mp->m_inodegc_wq);
+out_destroy_blockgc:
+	destroy_workqueue(mp->m_blockgc_wq);
 out_destroy_reclaim:
 	destroy_workqueue(mp->m_reclaim_workqueue);
 out_destroy_cil:
@@ -532,7 +542,8 @@ xfs_destroy_mount_workqueues(
 	struct xfs_mount	*mp)
 {
 	destroy_workqueue(mp->m_sync_workqueue);
-	destroy_workqueue(mp->m_eofblocks_workqueue);
+	destroy_workqueue(mp->m_blockgc_wq);
+	destroy_workqueue(mp->m_inodegc_wq);
 	destroy_workqueue(mp->m_reclaim_workqueue);
 	destroy_workqueue(mp->m_cil_workqueue);
 	destroy_workqueue(mp->m_unwritten_workqueue);
@@ -583,32 +594,6 @@ xfs_fs_alloc_inode(
 	return NULL;
 }
 
-#ifdef DEBUG
-static void
-xfs_check_delalloc(
-	struct xfs_inode	*ip,
-	int			whichfork)
-{
-	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
-	struct xfs_bmbt_irec	got;
-	struct xfs_iext_cursor	icur;
-
-	if (!ifp || !xfs_iext_lookup_extent(ip, ifp, 0, &icur, &got))
-		return;
-	do {
-		if (isnullstartblock(got.br_startblock)) {
-			xfs_warn(ip->i_mount,
-	"ino %llx %s fork has delalloc extent at [0x%llx:0x%llx]",
-				ip->i_ino,
-				whichfork == XFS_DATA_FORK ? "data" : "cow",
-				got.br_startoff, got.br_blockcount);
-		}
-	} while (xfs_iext_next_extent(ifp, &icur, &got));
-}
-#else
-#define xfs_check_delalloc(ip, whichfork)	do { } while (0)
-#endif
-
 /*
  * Now that the generic code is guaranteed not to be accessing
  * the linux inode, we can inactivate and reclaim the inode.
@@ -628,30 +613,8 @@ xfs_fs_destroy_inode(
 	if ((ip->i_d.di_flags2 & XFS_DIFLAG2_DIO_ATOMIC_WRITE) && !inode->i_nlink)
 		xfs_info(ip->i_mount, "atomic write inode %lld evicting",
 			 ip->i_ino);
-	xfs_inactive(ip);
 
-	if (!XFS_FORCED_SHUTDOWN(ip->i_mount) && ip->i_delayed_blks) {
-		xfs_check_delalloc(ip, XFS_DATA_FORK);
-		xfs_check_delalloc(ip, XFS_COW_FORK);
-		ASSERT(0);
-	}
-
-	XFS_STATS_INC(ip->i_mount, vn_reclaim);
-
-	/*
-	 * We should never get here with one of the reclaim flags already set.
-	 */
-	ASSERT_ALWAYS(!xfs_iflags_test(ip, XFS_IRECLAIMABLE));
-	ASSERT_ALWAYS(!xfs_iflags_test(ip, XFS_IRECLAIM));
-
-	/*
-	 * We always use background reclaim here because even if the inode is
-	 * clean, it still may be under IO and hence we have wait for IO
-	 * completion to occur before we can reclaim the inode. The background
-	 * reclaim path handles this more efficiently than we can here, so
-	 * simply let background reclaim tear down all inodes.
-	 */
-	xfs_inode_set_reclaim_tag(ip);
+	xfs_inode_mark_reclaimable(ip);
 }
 
 static void
@@ -748,6 +711,8 @@ xfs_fs_sync_fs(
 	struct xfs_mount	*mp = XFS_M(sb);
 	int			error;
 
+	trace_xfs_fs_sync_fs(mp, __return_address);
+
 	/*
 	 * Doing anything during the async pass would be counterproductive.
 	 */
@@ -767,6 +732,25 @@ xfs_fs_sync_fs(
 		flush_delayed_work(&mp->m_log->l_work);
 	}
 
+	/*
+	 * If we are called with page faults frozen out, it means we are about
+	 * to freeze the transaction subsystem. Take the opportunity to shut
+	 * down inodegc because once SB_FREEZE_FS is set it's too late to
+	 * prevent inactivation races with freeze. The fs doesn't get called
+	 * again by the freezing process until after SB_FREEZE_FS has been set,
+	 * so it's now or never.  Same logic applies to speculative allocation
+	 * garbage collection.
+	 *
+	 * We don't care if this is a normal syncfs call that does this or
+	 * freeze that does this - we can run this multiple times without issue
+	 * and we won't race with a restart because a restart can only occur
+	 * when the state is either SB_FREEZE_FS or SB_FREEZE_COMPLETE.
+	 */
+	if (sb->s_writers.frozen == SB_FREEZE_PAGEFAULT) {
+		xfs_inodegc_stop(mp);
+		xfs_blockgc_stop(mp);
+	}
+
 	return 0;
 }
 
@@ -784,6 +768,9 @@ xfs_fs_statfs(
 	uint64_t		fdblocks;
 	xfs_extlen_t		lsize;
 	int64_t			ffree;
+
+	/* Wait for whatever inactivations are in progress. */
+	xfs_inodegc_flush(mp);
 
 	statp->f_type = XFS_SUPER_MAGIC;
 	statp->f_namelen = MAXNAMELEN - 1;
@@ -913,11 +900,23 @@ xfs_fs_freeze(
 	 * set a GFP_NOFS context here to avoid recursion deadlocks.
 	 */
 	flags = memalloc_nofs_save();
-	xfs_stop_block_reaping(mp);
 	xfs_save_resvblks(mp);
 	xfs_quiesce_attr(mp);
 	ret = xfs_sync_sb(mp, true);
 	memalloc_nofs_restore(flags);
+
+	/*
+	 * For read-write filesystems, we need to restart the inodegc on error
+	 * because we stopped it at SB_FREEZE_PAGEFAULT level and a thaw is not
+	 * going to be run to restart it now.  We are at SB_FREEZE_FS level
+	 * here, so we can restart safely without racing with a stop in
+	 * xfs_fs_sync_fs().
+	 */
+	if (ret && !(mp->m_flags & XFS_MOUNT_RDONLY)) {
+		xfs_blockgc_start(mp);
+		xfs_inodegc_start(mp);
+	}
+
 	return ret;
 }
 
@@ -929,7 +928,18 @@ xfs_fs_unfreeze(
 
 	xfs_restore_resvblks(mp);
 	xfs_log_work_queue(mp);
-	xfs_start_block_reaping(mp);
+
+	/*
+	 * Don't reactivate the inodegc worker on a readonly filesystem because
+	 * inodes are sent directly to reclaim.  Don't reactivate the blockgc
+	 * worker because there are no speculative preallocations on a readonly
+	 * filesystem.
+	 */
+	if (!(mp->m_flags & XFS_MOUNT_RDONLY)) {
+		xfs_blockgc_start(mp);
+		xfs_inodegc_start(mp);
+	}
+
 	return 0;
 }
 
@@ -1055,6 +1065,35 @@ xfs_destroy_percpu_counters(
 	percpu_counter_destroy(&mp->m_delalloc_blks);
 }
 
+static int
+xfs_inodegc_init_percpu(
+	struct xfs_mount	*mp)
+{
+	struct xfs_inodegc	*gc;
+	int			cpu;
+
+	mp->m_inodegc = alloc_percpu(struct xfs_inodegc);
+	if (!mp->m_inodegc)
+		return -ENOMEM;
+
+	for_each_possible_cpu(cpu) {
+		gc = per_cpu_ptr(mp->m_inodegc, cpu);
+		init_llist_head(&gc->list);
+		gc->items = 0;
+		INIT_WORK(&gc->work, xfs_inodegc_worker);
+	}
+	return 0;
+}
+
+static void
+xfs_inodegc_free_percpu(
+	struct xfs_mount	*mp)
+{
+	if (!mp->m_inodegc)
+		return;
+	free_percpu(mp->m_inodegc);
+}
+
 static void
 xfs_fs_put_super(
 	struct super_block	*sb)
@@ -1071,6 +1110,7 @@ xfs_fs_put_super(
 
 	xfs_freesb(mp);
 	free_percpu(mp->m_stats.xs_stats);
+	xfs_inodegc_free_percpu(mp);
 	xfs_destroy_percpu_counters(mp);
 	xfs_destroy_mount_workqueues(mp);
 	xfs_close_devices(mp);
@@ -1420,6 +1460,14 @@ xfs_fc_fill_super(
 #endif
 	sb->s_op = &xfs_super_operations;
 
+	spin_lock_init(&mp->m_reflink_opt_gclock);
+	INIT_LIST_HEAD(&mp->m_reflink_opt_gclist);
+	INIT_WORK(&mp->m_reflink_opt_gcwork, xfs_inodegc_reflink_opt_worker);
+	init_waitqueue_head(&mp->m_reflink_opt_wait);
+	error = xfs_inodegc_init_percpu(mp);
+	if (error)
+		goto out_destroy_counters;
+
 	/*
 	 * Delay mount work if the debug hook is set. This is debug
 	 * instrumention to coordinate simulation of xfs mount failures with
@@ -1450,7 +1498,7 @@ xfs_fc_fill_super(
 	mp->m_stats.xs_stats = alloc_percpu(struct xfsstats);
 	if (!mp->m_stats.xs_stats) {
 		error = -ENOMEM;
-		goto out_destroy_counters;
+		goto out_destroy_inodegc;
 	}
 
 	error = xfs_readsb(mp, flags);
@@ -1615,6 +1663,8 @@ xfs_fc_fill_super(
 	xfs_freesb(mp);
  out_free_stats:
 	free_percpu(mp->m_stats.xs_stats);
+out_destroy_inodegc:
+	xfs_inodegc_free_percpu(mp);
  out_destroy_counters:
 	xfs_destroy_percpu_counters(mp);
  out_destroy_workqueues:
@@ -1691,12 +1741,15 @@ xfs_remount_rw(
 		xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
 		return error;
 	}
-	xfs_start_block_reaping(mp);
+	xfs_blockgc_start(mp);
 
 	/* Create the per-AG metadata reservation pool .*/
 	error = xfs_fs_reserve_ag_blocks(mp);
 	if (error && error != -ENOSPC)
 		return error;
+
+	/* Re-enable the background inode inactivation worker. */
+	xfs_inodegc_start(mp);
 
 	return 0;
 }
@@ -1719,7 +1772,7 @@ xfs_remount_ro(
 	 * Cancel background eofb scanning so it cannot race with the final
 	 * log force+buftarg wait and deadlock the remount.
 	 */
-	xfs_stop_block_reaping(mp);
+	xfs_blockgc_stop(mp);
 
 	/*
 	 * Clear out all remaining COW staging extents and speculative post-EOF
@@ -1727,11 +1780,20 @@ xfs_remount_ro(
 	 * cleanups during reclaim on a read-only mount.  We must process every
 	 * cached inode, so this requires a synchronous cache scan.
 	 */
-	error = xfs_icache_free_cowblocks(mp, &eofb);
+	error = xfs_blockgc_free_space(mp, &eofb);
 	if (error) {
 		xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
 		return error;
 	}
+
+	/*
+	 * Stop the inodegc background worker.  xfs_fs_reconfigure already
+	 * flushed all pending inodegc work when it sync'd the filesystem.
+	 * The VFS holds s_umount, so we know that inodes cannot enter
+	 * xfs_fs_destroy_inode during a remount operation.  In readonly mode
+	 * we send inodes straight to reclaim, so no inodes will be queued.
+	 */
+	xfs_inodegc_stop(mp);
 
 	/* Free the per-AG metadata reservation pool. */
 	error = xfs_fs_unreserve_ag_blocks(mp);
@@ -1852,10 +1914,10 @@ static int xfs_init_fs_context(
 	INIT_RADIX_TREE(&mp->m_perag_tree, GFP_ATOMIC);
 	spin_lock_init(&mp->m_perag_lock);
 	mutex_init(&mp->m_growlock);
+	mutex_init(&mp->m_reflink_opt_lock);
+
 	INIT_WORK(&mp->m_flush_inodes_work, xfs_flush_inodes_worker);
 	INIT_DELAYED_WORK(&mp->m_reclaim_work, xfs_reclaim_worker);
-	INIT_DELAYED_WORK(&mp->m_eofblocks_work, xfs_eofblocks_worker);
-	INIT_DELAYED_WORK(&mp->m_cowblocks_work, xfs_cowblocks_worker);
 	mp->m_kobj.kobject.kset = xfs_kset;
 	/*
 	 * We don't create the finobt per-ag space reservation until after log

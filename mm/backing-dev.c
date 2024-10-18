@@ -556,7 +556,7 @@ int allocate_memcg_blkcg_links(int count, struct list_head *tmp_links)
 	struct memcg_blkcg_link *link;
 	int i;
 
-	if (!cgwb_v1)
+	if (!cgroup_writeback_support_v1())
 		return 0;
 
 	for (i = 0; i < count; i++) {
@@ -586,7 +586,7 @@ void insert_memcg_blkcg_link(struct cgroup_subsys *ss,
 	struct cgroup_subsys_state *memcg_css;
 	int err;
 
-	if (!cgwb_v1)
+	if (!cgroup_writeback_support_v1())
 		return;
 
 	if (ss->id != io_cgrp_id && ss->id != memory_cgrp_id)
@@ -674,7 +674,7 @@ static void delete_blkcg_link(struct cgroup_subsys_state *blkcg_css)
 void delete_memcg_blkcg_link(struct cgroup_subsys *ss,
 			     struct cgroup_subsys_state *css)
 {
-	if (!cgwb_v1)
+	if (!cgroup_writeback_support_v1())
 		return;
 
 	if (ss->id != io_cgrp_id && ss->id != memory_cgrp_id)
@@ -722,6 +722,15 @@ static LIST_HEAD(offline_cgwbs);
 static void cleanup_offline_cgwbs_workfn(struct work_struct *work);
 static DECLARE_WORK(cleanup_offline_cgwbs_work, cleanup_offline_cgwbs_workfn);
 
+static void cgwb_free_rcu(struct rcu_head *rcu_head)
+{
+	struct bdi_writeback *wb = container_of(rcu_head,
+			struct bdi_writeback, rcu);
+
+	percpu_ref_exit(&wb->refcnt);
+	kfree(wb);
+}
+
 static void cgwb_release_workfn(struct work_struct *work)
 {
 	struct bdi_writeback *wb = container_of(work, struct bdi_writeback,
@@ -745,11 +754,10 @@ static void cgwb_release_workfn(struct work_struct *work)
 	list_del(&wb->offline_node);
 	spin_unlock_irq(&cgwb_lock);
 
-	percpu_ref_exit(&wb->refcnt);
 	wb_exit(wb);
 	bdi_put(bdi);
 	WARN_ON_ONCE(!list_empty(&wb->b_attached));
-	kfree_rcu(wb, rcu);
+	call_rcu(&wb->rcu, cgwb_free_rcu);
 }
 
 static void cgwb_release(struct percpu_ref *refcnt)

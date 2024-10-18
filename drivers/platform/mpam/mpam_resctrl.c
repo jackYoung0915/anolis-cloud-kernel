@@ -29,7 +29,7 @@ static struct mpam_resctrl_res mpam_resctrl_exports[RDT_NUM_RESOURCES];
 
 static bool exposed_alloc_capable;
 static bool exposed_mon_capable;
-static struct mpam_class *mbm_local_class;
+static struct mpam_class *mbm_local_class, *mbm_bps_class;
 
 /*
  * MPAM emulates CDP by setting different PARTID in the I/D fields of MPAM1_EL1.
@@ -65,6 +65,11 @@ bool resctrl_arch_mon_capable(void)
 bool resctrl_arch_is_mbm_local_enabled(void)
 {
 	return mbm_local_class;
+}
+
+bool resctrl_arch_is_mbm_bps_enabled(void)
+{
+	return mbm_bps_class;
 }
 
 bool resctrl_arch_get_cdp_enabled(enum resctrl_res_level rid)
@@ -133,11 +138,11 @@ void resctrl_arch_rmid_idx_decode(u32 idx, u32 *closid, u32 *rmid)
 	*rmid = idx & pmg_mask;
 }
 
-void resctrl_sched_in(void)
+void resctrl_sched_in(struct task_struct *tsk)
 {
 	lockdep_assert_preemption_disabled();
 
-	mpam_thread_switch(current);
+	mpam_thread_switch(tsk);
 }
 
 void resctrl_arch_set_cpu_default_closid_rmid(int cpu, u32 closid, u32 pmg)
@@ -170,7 +175,7 @@ void resctrl_arch_sync_cpu_defaults(void *info)
 							 r->closid, r->rmid);
 	}
 
-	resctrl_sched_in();
+	resctrl_sched_in(current);
 }
 
 void resctrl_arch_set_closid_rmid(struct task_struct *tsk, u32 closid, u32 rmid)
@@ -237,7 +242,10 @@ int resctrl_arch_mon_ctx_alloc_no_wait(struct rdt_resource *r, int evtid)
 		res = container_of(r, struct mpam_resctrl_res, resctrl_res);
 
 		return mpam_alloc_mbwu_mon(res->class);
-	case QOS_L3_MBM_TOTAL_EVENT_ID:
+	case QOS_MC_MBM_BPS_EVENT_ID:
+		if (mpam_current_machine == MPAM_YITIAN710)
+			return USE_RMID_IDX;
+		return -EOPNOTSUPP;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -287,7 +295,11 @@ int resctrl_arch_rmid_read(struct rdt_resource	*r, struct rdt_domain *d,
 	case QOS_L3_MBM_LOCAL_EVENT_ID:
 		type = mpam_feat_msmon_mbwu;
 		break;
-	case QOS_L3_MBM_TOTAL_EVENT_ID:
+	case QOS_MC_MBM_BPS_EVENT_ID:
+		if (mpam_current_machine == MPAM_YITIAN710)
+			type = mpam_feat_impl_msmon_mbwu;
+		break;
+	default:
 		return -EOPNOTSUPP;
 	}
 
@@ -421,6 +433,18 @@ static bool class_has_usable_mbwu(struct mpam_class *class)
 	else
 		mpam_monitors_free_runing = true;
 
+	return true;
+}
+
+static bool class_has_usable_impl_mbwu(struct mpam_class *class)
+{
+	struct mpam_props *cprops = &class->props;
+
+	if (!mpam_has_feature(mpam_feat_impl_msmon_mbwu, cprops))
+		return false;
+
+	/* Some vendor-specific judgements may be needed. */
+	mpam_monitors_free_runing = true;
 	return true;
 }
 
@@ -651,7 +675,7 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 
 		/* TODO: Scaling is not yet supported */
 		r->cache.cbm_len = class->props.cpbm_wd;
-		r->cache.arch_has_sparse_bitmaps = true;
+		r->cache.arch_has_sparse_bitmasks = true;
 
 		/* mpam_devices will reject empty bitmaps */
 		r->cache.min_cbm_bits = 1;
@@ -693,7 +717,7 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 			 * For mpam, each control group has its own pmg/rmid
 			 * space.
 			 */
-			r->num_rmid = 1;
+			r->mon.num_rmid = 1;
 
 			if (class_has_usable_mbwu(class))
 				mbm_local_class = class;
@@ -729,8 +753,13 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 			 * For mpam, each control group has its own pmg/rmid
 			 * space.
 			 */
-			r->num_rmid = 1;
+			r->mon.num_rmid = 1;
 			mbm_local_class = class;
+		} else if (class_has_usable_impl_mbwu(class)) {
+			r->mon_capable = true;
+			exposed_mon_capable = true;
+			if (mpam_current_machine == MPAM_YITIAN710)
+				mbm_bps_class = class;
 		}
 	}
 
@@ -749,7 +778,7 @@ int mpam_resctrl_setup(void)
 	for (i = 0; i < RDT_NUM_RESOURCES; i++) {
 		res = &mpam_resctrl_exports[i];
 		INIT_LIST_HEAD(&res->resctrl_res.domains);
-		INIT_LIST_HEAD(&res->resctrl_res.evt_list);
+		INIT_LIST_HEAD(&res->resctrl_res.mon.evt_list);
 		res->resctrl_res.rid = i;
 	}
 

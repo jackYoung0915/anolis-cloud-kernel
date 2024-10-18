@@ -2,7 +2,7 @@
 #ifndef _ASM_ARM64_MPAM_SCHED_H
 #define _ASM_ARM64_MPAM_SCHED_H
 
-#ifdef CONFIG_ARM64_MPAM
+#if defined(CONFIG_ARM64_MPAM) && defined(CONFIG_STAGING) && defined(CONFIG_ARCH_HISI)
 
 #include <linux/sched.h>
 #include <linux/jump_label.h>

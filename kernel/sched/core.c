@@ -13,7 +13,7 @@
 #include "sched.h"
 
 #include <linux/nospec.h>
-
+#include <linux/jump_label.h>
 #include <linux/kcov.h>
 #include <linux/scs.h>
 
@@ -44,9 +44,6 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_util_est_se_tp);
 EXPORT_TRACEPOINT_SYMBOL_GPL(sched_update_nr_running_tp);
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
-#if defined(CONFIG_CFS_BANDWIDTH) && defined(CONFIG_SMP)
-DEFINE_PER_CPU_SHARED_ALIGNED(call_single_data_t, cfsb_csd);
-#endif
 
 #ifdef CONFIG_SCHED_DEBUG
 /*
@@ -92,6 +89,58 @@ unsigned int sysctl_sched_acpu_enabled;
 unsigned int sysctl_sched_rt_period = 1000000;
 
 __read_mostly int scheduler_running;
+
+#ifdef CONFIG_GROUP_BALANCER
+DEFINE_STATIC_KEY_FALSE(__group_balancer_enabled);
+unsigned int sysctl_sched_group_balancer_enabled;
+DEFINE_RWLOCK(group_balancer_lock);
+
+static void group_balancer_enable(void)
+{
+	sched_init_group_balancer_sched_domains();
+	static_branch_enable(&__group_balancer_enabled);
+}
+
+static void group_balancer_disable(void)
+{
+	static_branch_disable(&__group_balancer_enabled);
+	sched_clear_group_balancer_sched_domains();
+}
+
+bool group_balancer_enabled(void)
+{
+	return static_branch_unlikely(&__group_balancer_enabled);
+}
+
+int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
+					void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret;
+	unsigned int old, new;
+
+	if (!write) {
+		ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+		return ret;
+	}
+
+	old = sysctl_sched_group_balancer_enabled;
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	new = sysctl_sched_group_balancer_enabled;
+	if (!ret && (old != new)) {
+		if (new)
+			/*
+			 * Even if failed to build group balancer sched domains,
+			 * group balancer should be enabled, so that we can use
+			 * the cpu.soft_cpus interface.
+			 */
+			group_balancer_enable();
+		else
+			group_balancer_disable();
+	}
+
+	return ret;
+}
+#endif
 
 #ifdef CONFIG_SCHED_CORE
 
@@ -1241,27 +1290,24 @@ int tg_nop(struct task_group *tg, void *data)
 static void set_load_weight(struct task_struct *p, bool update_load)
 {
 	int prio = p->static_prio - MAX_RT_PRIO;
-	struct load_weight *load = &p->se.load;
+	struct load_weight lw;
 
-	/*
-	 * SCHED_IDLE tasks get minimal weight:
-	 */
 	if (task_has_idle_policy(p)) {
-		load->weight = scale_load(WEIGHT_IDLEPRIO);
-		load->inv_weight = WMULT_IDLEPRIO;
-		return;
+		lw.weight = scale_load(WEIGHT_IDLEPRIO);
+		lw.inv_weight = WMULT_IDLEPRIO;
+	} else {
+		lw.weight = scale_load(sched_prio_to_weight[prio]);
+		lw.inv_weight = sched_prio_to_wmult[prio];
 	}
 
 	/*
 	 * SCHED_OTHER tasks have to update their load when changing their
 	 * weight
 	 */
-	if (update_load && p->sched_class == &fair_sched_class) {
-		reweight_task(p, prio);
-	} else {
-		load->weight = scale_load(sched_prio_to_weight[prio]);
-		load->inv_weight = sched_prio_to_wmult[prio];
-	}
+	if (update_load && p->sched_class == &fair_sched_class)
+		reweight_task(p, &lw);
+	else
+		p->se.load = lw;
 }
 
 #ifdef CONFIG_UCLAMP_TASK
@@ -1373,7 +1419,7 @@ static inline void uclamp_idle_reset(struct rq *rq, enum uclamp_id clamp_id,
 	if (!(rq->uclamp_flags & UCLAMP_FLAG_IDLE))
 		return;
 
-	WRITE_ONCE(rq->uclamp[clamp_id].value, clamp_value);
+	uclamp_rq_set(rq, clamp_id, clamp_value);
 }
 
 static inline
@@ -1551,8 +1597,8 @@ static inline void uclamp_rq_inc_id(struct rq *rq, struct task_struct *p,
 	if (bucket->tasks == 1 || uc_se->value > bucket->value)
 		bucket->value = uc_se->value;
 
-	if (uc_se->value > READ_ONCE(uc_rq->value))
-		WRITE_ONCE(uc_rq->value, uc_se->value);
+	if (uc_se->value > uclamp_rq_get(rq, clamp_id))
+		uclamp_rq_set(rq, clamp_id, uc_se->value);
 }
 
 /*
@@ -1618,7 +1664,7 @@ static inline void uclamp_rq_dec_id(struct rq *rq, struct task_struct *p,
 	if (likely(bucket->tasks))
 		return;
 
-	rq_clamp = READ_ONCE(uc_rq->value);
+	rq_clamp = uclamp_rq_get(rq, clamp_id);
 	/*
 	 * Defensive programming: this should never happen. If it happens,
 	 * e.g. due to future modification, warn and fixup the expected value.
@@ -1626,7 +1672,7 @@ static inline void uclamp_rq_dec_id(struct rq *rq, struct task_struct *p,
 	SCHED_WARN_ON(bucket->value > rq_clamp);
 	if (bucket->value >= rq_clamp) {
 		bkt_clamp = uclamp_rq_max_value(rq, clamp_id, uc_se->value);
-		WRITE_ONCE(uc_rq->value, bkt_clamp);
+		uclamp_rq_set(rq, clamp_id, bkt_clamp);
 	}
 }
 
@@ -2121,7 +2167,7 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
  */
 static inline bool is_cpu_allowed(struct task_struct *p, int cpu)
 {
-	if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+	if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)))
 		return false;
 
 	if (is_per_cpu_kthread(p))
@@ -2276,6 +2322,10 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
 	if (running)
 		set_next_task(rq, p);
+#ifdef CONFIG_GROUP_BALANCER
+	/* Once p->cpus_ptr changed, keep soft_cpus_version negative before we sync soft cpus. */
+	p->soft_cpus_version = -1;
+#endif
 }
 
 /*
@@ -2481,10 +2531,10 @@ static int migrate_swap_stop(void *data)
 	if (task_cpu(arg->src_task) != arg->src_cpu)
 		goto unlock;
 
-	if (!cpumask_test_cpu(arg->dst_cpu, arg->src_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg->dst_cpu, task_allowed_cpu(arg->src_task)))
 		goto unlock;
 
-	if (!cpumask_test_cpu(arg->src_cpu, arg->dst_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg->src_cpu, task_allowed_cpu(arg->dst_task)))
 		goto unlock;
 
 	__migrate_swap_task(arg->src_task, arg->dst_cpu);
@@ -2526,10 +2576,10 @@ int migrate_swap(struct task_struct *cur, struct task_struct *p,
 	if (!cpu_active(arg.src_cpu) || !cpu_active(arg.dst_cpu))
 		goto out;
 
-	if (!cpumask_test_cpu(arg.dst_cpu, arg.src_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg.dst_cpu, task_allowed_cpu(arg.src_task)))
 		goto out;
 
-	if (!cpumask_test_cpu(arg.src_cpu, arg.dst_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg.src_cpu, task_allowed_cpu(arg.dst_task)))
 		goto out;
 
 	trace_sched_swap_numa(cur, arg.src_cpu, p, arg.dst_cpu);
@@ -2714,14 +2764,14 @@ static int select_fallback_rq(int cpu, struct task_struct *p)
 		for_each_cpu(dest_cpu, nodemask) {
 			if (!cpu_active(dest_cpu))
 				continue;
-			if (cpumask_test_cpu(dest_cpu, p->cpus_ptr))
+			if (cpumask_test_cpu(dest_cpu, task_allowed_cpu(p)))
 				return dest_cpu;
 		}
 	}
 
 	for (;;) {
 		/* Any allowed, online CPU? */
-		for_each_cpu(dest_cpu, p->cpus_ptr) {
+		for_each_cpu(dest_cpu, task_allowed_cpu(p)) {
 			if (!is_cpu_allowed(p, dest_cpu))
 				continue;
 
@@ -2775,7 +2825,7 @@ int select_task_rq(struct task_struct *p, int cpu, int sd_flags, int wake_flags)
 	if (p->nr_cpus_allowed > 1)
 		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags, wake_flags);
 	else
-		cpu = cpumask_any(p->cpus_ptr);
+		cpu = cpumask_any(task_allowed_cpu(p));
 
 	/*
 	 * In order not to call set_task_cpu() on a blocking task we need
@@ -3733,6 +3783,9 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	plist_node_init(&p->pushable_tasks, MAX_PRIO);
 	RB_CLEAR_NODE(&p->pushable_dl_tasks);
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+	p->soft_cpus_version = -1;
+#endif
 	return 0;
 }
 
@@ -3986,11 +4039,6 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 		goto out;
 #endif
 
-	/* Update idle sum and busy sum for current rq. */
-	delta = now - rq->last_acpu_update_time;
-	if (prev == rq->idle)
-		rq->acpu_idle_sum += delta;
-
 	/*
 	 * Be carefule, smt_mask maybe NULL.
 	 * We only consider the case where there are two SMT at this stage.
@@ -4003,6 +4051,7 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 			struct rq *rq_i = cpu_rq(i);
 			struct task_struct *curr_i = rq_i->curr;
 
+			/* If last >= 0, this cpu is the latest one, else the sibling is. */
 			last = (s64)(rq->last_acpu_update_time -
 				     rq_i->last_acpu_update_time);
 			last_update_time = last >= 0 ? rq->last_acpu_update_time :
@@ -4021,13 +4070,23 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 			delta_task = now_task - last_update_time_task;
 			delta_task = delta_task > 0 ? delta_task : 0;
 
+			if (prev == rq->idle && rq_i->curr != rq_i->idle) {
+				rq->acpu_idle_sum = last >= 0 ? rq->acpu_idle_sum + delta :
+								rq_i->sibidle_sum + delta;
+				rq->acpu_idle_task_sum = last >= 0 ?
+							 rq->acpu_idle_task_sum + delta_task :
+							 rq_i->sibidle_task_sum + delta_task;
+			}
+
 			/* Add the delta to improve accuracy. */
 			sibidle_sum = last >= 0 ? rq->sibidle_sum : rq_i->acpu_idle_sum;
 			sibidle_task_sum = last_task >= 0 ? rq->sibidle_task_sum :
-							    rq_i->acpu_idle_sum;
-			if (curr_i == rq_i->idle) {
+							    rq_i->acpu_idle_task_sum;
+			if (prev != rq->idle && curr_i == rq_i->idle) {
 				sibidle_sum += delta;
 				sibidle_task_sum += delta_task;
+				rq_i->acpu_idle_sum = sibidle_sum;
+				rq_i->acpu_idle_task_sum = sibidle_task_sum;
 			}
 		}
 	}
@@ -4046,6 +4105,28 @@ out:
 	rq->last_acpu_update_time = now;
 	rq->last_acpu_update_time_task = now_task;
 }
+
+static int acpu_proc_show(struct seq_file *m, void *v)
+{
+	int cpu;
+	struct rq *rq;
+
+	if (!static_branch_likely(&acpu_enabled) || !schedstat_enabled())
+		return 0;
+
+	for_each_online_cpu(cpu) {
+		rq = cpu_rq(cpu);
+		seq_printf(m, "cpu%d %llu\n", cpu, rq->sibidle_sum);
+	}
+	return 0;
+}
+
+static int __init proc_acpu_init(void)
+{
+	proc_create_single("acpu", 0, NULL, acpu_proc_show);
+	return 0;
+}
+fs_initcall(proc_acpu_init);
 #else
 static inline void update_acpu(struct rq *rq, struct task_struct *prev, struct task_struct *next)
 {
@@ -4368,8 +4449,6 @@ context_switch(struct rq *rq, struct task_struct *prev,
 			prev->active_mm = NULL;
 		}
 	}
-
-	rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
 
 	prepare_lock_switch(rq, next, rf);
 
@@ -5567,6 +5646,7 @@ static void __sched notrace __schedule(bool preempt)
 	/* Promote REQ to ACT */
 	rq->clock_update_flags <<= 1;
 	update_rq_clock(rq);
+	rq->clock_update_flags = RQCF_UPDATED;
 
 	switch_count = &prev->nivcsw;
 
@@ -5654,7 +5734,6 @@ static void __sched notrace __schedule(bool preempt)
 		wake_up_idle_ht(rq);
 #endif
 	} else {
-		rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
 		rq_unlock_irq(rq, &rf);
 	}
 
@@ -5835,7 +5914,6 @@ asmlinkage __visible void __sched notrace preempt_schedule(void)
 	 */
 	if (likely(!preemptible()))
 		return;
-
 	preempt_schedule_common();
 }
 NOKPROBE_SYMBOL(preempt_schedule);
@@ -6341,6 +6419,7 @@ static int __sched_setscheduler(struct task_struct *p,
 	int reset_on_fork;
 	int queue_flags = DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
 	struct rq *rq;
+	bool cpuset_locked = false;
 
 	/* The pi code expects interrupts enabled */
 	BUG_ON(pi && in_interrupt());
@@ -6438,8 +6517,14 @@ recheck:
 			return retval;
 	}
 
-	if (pi)
-		cpuset_read_lock();
+	/*
+	 * SCHED_DEADLINE bandwidth accounting relies on stable cpusets
+	 * information.
+	 */
+	if (dl_policy(policy) || dl_policy(p->policy)) {
+		cpuset_locked = true;
+		cpuset_lock();
+	}
 
 	/*
 	 * Make sure no PI-waiters arrive (or leave) while we are
@@ -6502,7 +6587,7 @@ change:
 			 * the entire root_domain to become SCHED_DEADLINE. We
 			 * will also fail if there's no bandwidth available.
 			 */
-			if (!cpumask_subset(span, p->cpus_ptr) ||
+			if (!cpumask_subset(span, task_allowed_cpu(p)) ||
 			    rq->rd->dl_bw.bw == 0) {
 				retval = -EPERM;
 				goto unlock;
@@ -6515,8 +6600,8 @@ change:
 	if (unlikely(oldpolicy != -1 && oldpolicy != p->policy)) {
 		policy = oldpolicy = -1;
 		task_rq_unlock(rq, p, &rf);
-		if (pi)
-			cpuset_read_unlock();
+		if (cpuset_locked)
+			cpuset_unlock();
 		goto recheck;
 	}
 
@@ -6582,7 +6667,8 @@ change:
 	task_rq_unlock(rq, p, &rf);
 
 	if (pi) {
-		cpuset_read_unlock();
+		if (cpuset_locked)
+			cpuset_unlock();
 		rt_mutex_adjust_pi(p);
 	}
 
@@ -6594,8 +6680,8 @@ change:
 
 unlock:
 	task_rq_unlock(rq, p, &rf);
-	if (pi)
-		cpuset_read_unlock();
+	if (cpuset_locked)
+		cpuset_unlock();
 	return retval;
 }
 
@@ -7187,14 +7273,14 @@ SYSCALL_DEFINE3(sched_getaffinity, pid_t, pid, unsigned int, len,
 	if (len & (sizeof(unsigned long)-1))
 		return -EINVAL;
 
-	if (!alloc_cpumask_var(&mask, GFP_KERNEL))
+	if (!zalloc_cpumask_var(&mask, GFP_KERNEL))
 		return -ENOMEM;
 
 	ret = sched_getaffinity(pid, mask);
 	if (ret == 0) {
 		unsigned int retlen = min(len, cpumask_size());
 
-		if (copy_to_user(user_mask_ptr, mask, retlen))
+		if (copy_to_user(user_mask_ptr, cpumask_bits(mask), retlen))
 			ret = -EFAULT;
 		else
 			ret = retlen;
@@ -7235,17 +7321,51 @@ SYSCALL_DEFINE0(sched_yield)
 	return 0;
 }
 
-#ifndef CONFIG_PREEMPTION
-int __sched _cond_resched(void)
+#if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
+int __sched __cond_resched(void)
 {
 	if (should_resched(0)) {
 		preempt_schedule_common();
 		return 1;
 	}
+#ifndef CONFIG_PREEMPT_RCU
 	rcu_all_qs();
+#endif
 	return 0;
 }
-EXPORT_SYMBOL(_cond_resched);
+EXPORT_SYMBOL(__cond_resched);
+#endif
+
+#ifdef CONFIG_PREEMPT_DYNAMIC
+#if defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
+#define cond_resched_dynamic_enabled	__cond_resched
+#define cond_resched_dynamic_disabled	((void *)&__static_call_return0)
+DEFINE_STATIC_CALL_RET0(cond_resched, __cond_resched);
+EXPORT_STATIC_CALL_TRAMP(cond_resched);
+
+#define might_resched_dynamic_enabled	__cond_resched
+#define might_resched_dynamic_disabled	((void *)&__static_call_return0)
+DEFINE_STATIC_CALL_RET0(might_resched, __cond_resched);
+EXPORT_STATIC_CALL_TRAMP(might_resched);
+#elif defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+static DEFINE_STATIC_KEY_FALSE(sk_dynamic_cond_resched);
+int __sched dynamic_cond_resched(void)
+{
+	if (!static_branch_unlikely(&sk_dynamic_cond_resched))
+		return 0;
+	return __cond_resched();
+}
+EXPORT_SYMBOL(dynamic_cond_resched);
+
+static DEFINE_STATIC_KEY_FALSE(sk_dynamic_might_resched);
+int __sched dynamic_might_resched(void)
+{
+	if (!static_branch_unlikely(&sk_dynamic_might_resched))
+		return 0;
+	return __cond_resched();
+}
+EXPORT_SYMBOL(dynamic_might_resched);
+#endif
 #endif
 
 /*
@@ -7275,6 +7395,143 @@ int __cond_resched_lock(spinlock_t *lock)
 	return ret;
 }
 EXPORT_SYMBOL(__cond_resched_lock);
+
+#ifdef CONFIG_PREEMPT_DYNAMIC
+
+#ifdef CONFIG_GENERIC_ENTRY
+#include <linux/entry-common.h>
+#endif
+
+/*
+ * SC:cond_resched
+ * SC:might_resched
+ * SC:preempt_schedule
+ * SC:preempt_schedule_notrace
+ * SC:irqentry_exit_cond_resched
+ *
+ *
+ * NONE:
+ *   cond_resched               <- __cond_resched
+ *   might_resched              <- RET0
+ *   preempt_schedule           <- NOP
+ *   preempt_schedule_notrace   <- NOP
+ *   irqentry_exit_cond_resched <- NOP
+ *
+ * VOLUNTARY:
+ *   cond_resched               <- __cond_resched
+ *   might_resched              <- __cond_resched
+ *   preempt_schedule           <- NOP
+ *   preempt_schedule_notrace   <- NOP
+ *   irqentry_exit_cond_resched <- NOP
+ *
+ * FULL:
+ *   cond_resched               <- RET0
+ *   might_resched              <- RET0
+ *   preempt_schedule           <- preempt_schedule
+ *   preempt_schedule_notrace   <- preempt_schedule_notrace
+ *   irqentry_exit_cond_resched <- irqentry_exit_cond_resched
+ */
+
+enum {
+	preempt_dynamic_undefined = -1,
+	preempt_dynamic_none,
+	preempt_dynamic_voluntary,
+	preempt_dynamic_full,
+};
+
+int preempt_dynamic_mode = preempt_dynamic_undefined;
+
+int sched_dynamic_mode(const char *str)
+{
+	if (!strcmp(str, "none"))
+		return preempt_dynamic_none;
+
+	if (!strcmp(str, "voluntary"))
+		return preempt_dynamic_voluntary;
+
+	if (!strcmp(str, "full"))
+		return preempt_dynamic_full;
+
+	return -EINVAL;
+}
+
+#if defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
+#define preempt_dynamic_enable(f)	static_call_update(f, f##_dynamic_enabled)
+#define preempt_dynamic_disable(f)	static_call_update(f, f##_dynamic_disabled)
+#elif defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+#define preempt_dynamic_enable(f)	static_key_enable(&sk_dynamic_##f.key)
+#define preempt_dynamic_disable(f)	static_key_disable(&sk_dynamic_##f.key)
+#else
+#error "Unsupported PREEMPT_DYNAMIC mechanism"
+#endif
+
+void sched_dynamic_update(int mode)
+{
+	/*
+	 * Avoid {NONE,VOLUNTARY} -> FULL transitions from ever ending up in
+	 * the ZERO state, which is invalid.
+	 */
+	if (mode == preempt_dynamic_full) {
+		pr_warn("Sorry, ANCK 5.10 prohibits using bootcmdline or debugfs to dynamic enable preempt!\n");
+		pr_warn("The dynamic preempt change doesn't take effect.\n");
+		return;
+	}
+
+	preempt_dynamic_enable(cond_resched);
+	preempt_dynamic_enable(might_resched);
+
+	switch (mode) {
+	case preempt_dynamic_none:
+		preempt_dynamic_enable(cond_resched);
+		preempt_dynamic_disable(might_resched);
+		pr_info("Dynamic Preempt: none\n");
+		break;
+
+	case preempt_dynamic_voluntary:
+		preempt_dynamic_enable(cond_resched);
+		preempt_dynamic_enable(might_resched);
+		pr_info("Dynamic Preempt: voluntary\n");
+		break;
+
+	}
+
+	preempt_dynamic_mode = mode;
+}
+
+static int __init setup_preempt_mode(char *str)
+{
+	int mode = sched_dynamic_mode(str);
+	if (mode < 0) {
+		pr_warn("Dynamic Preempt: unsupported mode: %s\n", str);
+		return 0;
+	}
+
+	sched_dynamic_update(mode);
+	return 1;
+}
+__setup("preempt=", setup_preempt_mode);
+
+static void __init preempt_dynamic_init(void)
+{
+	if (preempt_dynamic_mode == preempt_dynamic_undefined) {
+		if (IS_ENABLED(CONFIG_PREEMPT_NONE)) {
+			sched_dynamic_update(preempt_dynamic_none);
+		} else if (IS_ENABLED(CONFIG_PREEMPT_VOLUNTARY)) {
+			sched_dynamic_update(preempt_dynamic_voluntary);
+		} else {
+			/* Default static call setting, nothing to do */
+			WARN_ON_ONCE(!IS_ENABLED(CONFIG_PREEMPT));
+			preempt_dynamic_mode = preempt_dynamic_full;
+			pr_info("Dynamic Preempt: full\n");
+		}
+	}
+}
+
+#else /* !CONFIG_PREEMPT_DYNAMIC */
+
+static inline void preempt_dynamic_init(void) { }
+
+#endif /* #ifdef CONFIG_PREEMPT_DYNAMIC */
 
 /**
  * yield - yield the current processor to other threads.
@@ -7712,8 +7969,7 @@ int cpuset_cpumask_can_shrink(const struct cpumask *cur,
 	return ret;
 }
 
-int task_can_attach(struct task_struct *p,
-		    const struct cpumask *cs_cpus_allowed)
+int task_can_attach(struct task_struct *p)
 {
 	int ret = 0;
 
@@ -7726,16 +7982,9 @@ int task_can_attach(struct task_struct *p,
 	 * success of set_cpus_allowed_ptr() on all attached tasks
 	 * before cpus_mask may be changed.
 	 */
-	if (p->flags & PF_NO_SETAFFINITY) {
+	if (p->flags & PF_NO_SETAFFINITY)
 		ret = -EINVAL;
-		goto out;
-	}
 
-	if (dl_task(p) && !cpumask_intersects(task_rq(p)->rd->span,
-					      cs_cpus_allowed))
-		ret = dl_task_can_attach(p, cs_cpus_allowed);
-
-out:
 	return ret;
 }
 
@@ -7751,7 +8000,7 @@ int migrate_task_to(struct task_struct *p, int target_cpu)
 	if (curr_cpu == target_cpu)
 		return 0;
 
-	if (!cpumask_test_cpu(target_cpu, p->cpus_ptr))
+	if (!cpumask_test_cpu(target_cpu, task_allowed_cpu(p)))
 		return -EINVAL;
 
 	/* TODO: This is not properly updating schedstats */
@@ -7997,8 +8246,10 @@ static void cpuset_cpu_active(void)
 static int cpuset_cpu_inactive(unsigned int cpu)
 {
 	if (!cpuhp_tasks_frozen) {
-		if (dl_cpu_busy(cpu))
-			return -EBUSY;
+		int ret = dl_bw_check_overflow(cpu);
+
+		if (ret)
+			return ret;
 		cpuset_update_active_cpus();
 	} else {
 		num_cpus_frozen++;
@@ -8007,18 +8258,31 @@ static int cpuset_cpu_inactive(unsigned int cpu)
 	return 0;
 }
 
+static inline void sched_smt_present_inc(int cpu)
+{
+#ifdef CONFIG_SCHED_SMT
+	if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
+		static_branch_inc_cpuslocked(&sched_smt_present);
+#endif
+}
+
+static inline void sched_smt_present_dec(int cpu)
+{
+#ifdef CONFIG_SCHED_SMT
+	if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
+		static_branch_dec_cpuslocked(&sched_smt_present);
+#endif
+}
+
 int sched_cpu_activate(unsigned int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	struct rq_flags rf;
 
-#ifdef CONFIG_SCHED_SMT
 	/*
 	 * When going up, increment the number of cores with SMT present.
 	 */
-	if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
-		static_branch_inc_cpuslocked(&sched_smt_present);
-#endif
+	sched_smt_present_inc(cpu);
 	set_cpu_active(cpu, true);
 
 	if (sched_smp_initialized) {
@@ -8059,13 +8323,12 @@ int sched_cpu_deactivate(unsigned int cpu)
 	 */
 	synchronize_rcu();
 
-#ifdef CONFIG_SCHED_SMT
 	/*
 	 * When going down, decrement the number of cores with SMT present.
 	 */
-	if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
-		static_branch_dec_cpuslocked(&sched_smt_present);
+	sched_smt_present_dec(cpu);
 
+#ifdef CONFIG_SCHED_SMT
 	sched_core_cpu_deactivate(cpu);
 #endif
 
@@ -8074,6 +8337,7 @@ int sched_cpu_deactivate(unsigned int cpu)
 
 	ret = cpuset_cpu_inactive(cpu);
 	if (ret) {
+		sched_smt_present_inc(cpu);
 		set_cpu_active(cpu, true);
 		return ret;
 	}
@@ -8136,6 +8400,11 @@ void __init sched_init_smp(void)
 	mutex_lock(&sched_domains_mutex);
 	sched_init_domains(cpu_active_mask);
 	mutex_unlock(&sched_domains_mutex);
+
+#ifdef CONFIG_GROUP_BALANCER
+	cpumask_copy(&root_task_group.soft_cpus_allowed, cpu_online_mask);
+	root_task_group.soft_cpus_allowed_ptr = &root_task_group.soft_cpus_allowed;
+#endif
 
 	/* Move init over to a non-isolated CPU */
 	if (set_cpus_allowed_ptr(current, housekeeping_cpumask(HK_FLAG_DOMAIN)) < 0)
@@ -8224,7 +8493,7 @@ void __init sched_init(void)
 		ptr += nr_cpu_ids * sizeof(void **);
 
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
-		init_cfs_bandwidth(&root_task_group.cfs_bandwidth);
+		init_cfs_bandwidth(&root_task_group.cfs_bandwidth, NULL);
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 #ifdef CONFIG_RT_GROUP_SCHED
 		root_task_group.rt_se = (struct sched_rt_entity **)ptr;
@@ -8235,6 +8504,13 @@ void __init sched_init(void)
 
 #endif /* CONFIG_RT_GROUP_SCHED */
 	}
+#ifdef CONFIG_GROUP_BALANCER
+	root_task_group.specs_ratio = -1;
+	root_task_group.group_balancer = 0;
+	root_task_group.soft_cpus_version = 0;
+	root_task_group.gb_sd = NULL;
+	root_task_group.prev_gb_sd = NULL;
+#endif
 #ifdef CONFIG_CPUMASK_OFFSTACK
 	for_each_possible_cpu(i) {
 		per_cpu(load_balance_mask, i) = (cpumask_var_t)kzalloc_node(
@@ -8335,7 +8611,9 @@ void __init sched_init(void)
 
 #ifdef CONFIG_SCHED_ACPU
 		rq->acpu_idle_sum = 0;
+		rq->acpu_idle_task_sum = 0;
 		rq->sibidle_sum = 0;
+		rq->sibidle_task_sum = 0;
 		rq->last_acpu_update_time = rq->clock;
 #endif
 		hrtick_rq_init(rq);
@@ -8360,6 +8638,9 @@ void __init sched_init(void)
 		rq->cfs.core = &rq->cfs;
 
 		rq->core_cookie = 0UL;
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+		rq->gb_sd = NULL;
 #endif
 	}
 
@@ -8391,6 +8672,8 @@ void __init sched_init(void)
 	psi_init();
 
 	init_uclamp();
+
+	preempt_dynamic_init();
 
 	scheduler_running = 1;
 }
@@ -8642,6 +8925,24 @@ struct task_group *sched_create_group(struct task_group *parent)
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 	tg->ht_ratio = 100;
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+	cpumask_copy(&tg->soft_cpus_allowed, &parent->soft_cpus_allowed);
+	if (group_balancer_enabled()) {
+		read_lock(&group_balancer_lock);
+		if (parent->soft_cpus_allowed_ptr != &parent->soft_cpus_allowed ||
+		    parent->group_balancer)
+			tg->soft_cpus_allowed_ptr = parent->soft_cpus_allowed_ptr;
+		else
+			tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+		read_unlock(&group_balancer_lock);
+	} else {
+		tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+	}
+	tg->group_balancer = 0;
+	tg->soft_cpus_version = 0;
+	tg->gb_sd = NULL;
+	tg->prev_gb_sd = NULL;
+#endif
 	return tg;
 
 err:
@@ -8715,6 +9016,10 @@ static void sched_change_group(struct task_struct *tsk, int type)
 	else
 #endif
 		set_task_rq(tsk, task_cpu(tsk));
+#ifdef CONFIG_GROUP_BALANCER
+	/* Once tsk changed task group, keep soft_cpus_version negative before we sync soft cpus. */
+	tsk->soft_cpus_version = -1;
+#endif
 }
 
 /*
@@ -9432,11 +9737,16 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 
 		/*
 		 * Ensure max(child_quota) <= parent_quota.  On cgroup2,
-		 * always take the min.  On cgroup1, only inherit when no
-		 * limit is set:
+		 * always take the non-RUNTIME_INF min.  On cgroup1, only
+		 * inherit when no limit is set. In both cases this is used
+		 * by the scheduler to determine if a given CFS task has a
+		 * bandwidth constraint at some higher level.
 		 */
 		if (cgroup_subsys_on_dfl(cpu_cgrp_subsys)) {
-			quota = min(quota, parent_quota);
+			if (quota == RUNTIME_INF)
+				quota = parent_quota;
+			else if (parent_quota != RUNTIME_INF)
+				quota = min(quota, parent_quota);
 		} else {
 			if (quota == RUNTIME_INF)
 				quota = parent_quota;
@@ -9445,6 +9755,7 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 		}
 	}
 	cfs_b->hierarchical_quota = quota;
+	tg_set_specs_ratio(tg);
 
 	return 0;
 }
@@ -9489,7 +9800,7 @@ static int cpu_cfs_stat_show(struct seq_file *sf, void *v)
 		seq_printf(sf, "wait_sum %llu\n", ws);
 	}
 
-	seq_printf(sf, "current_bw %llu\n", cfs_b->runtime);
+	seq_printf(sf, "current_bw %lld\n", cfs_b->runtime);
 	seq_printf(sf, "nr_burst %d\n", cfs_b->nr_burst);
 	seq_printf(sf, "burst_time %llu\n", cfs_b->burst_time);
 
@@ -9616,6 +9927,149 @@ static u64 cpu_ht_ratio_read(struct cgroup_subsys_state *css,
 }
 #endif
 
+#ifdef CONFIG_GROUP_BALANCER
+static int cpu_soft_cpus_show(struct seq_file *sf, void *v)
+{
+	struct task_group *tg = css_tg(seq_css(sf));
+
+	seq_printf(sf, "%*pbl\n", cpumask_pr_args(tg->soft_cpus_allowed_ptr));
+
+	return 0;
+}
+
+static ssize_t cpu_soft_cpus_write(struct kernfs_open_file *of,
+				   char *buf, size_t nbytes, loff_t off)
+{
+	struct task_group *tg = css_tg(of_css(of));
+	cpumask_t tmp_soft_cpus_allowed;
+	cpumask_t *tg_soft_cpus_allowed;
+	int retval;
+
+	if (tg == &root_task_group)
+		return -EACCES;
+
+	/*
+	 * If any ancestor of tg(or itself) has already enabled group_balancer,
+	 * it's not allowed to edit its soft_cpus_allowed.
+	 */
+	if (tg->soft_cpus_allowed_ptr != &tg->soft_cpus_allowed || tg->group_balancer)
+		return -EACCES;
+
+	if (!*buf) {
+		cpumask_clear(&tmp_soft_cpus_allowed);
+	} else {
+		retval = cpulist_parse(buf, &tmp_soft_cpus_allowed);
+		if (retval < 0)
+			return retval;
+	}
+
+	if (!cpumask_subset(&tmp_soft_cpus_allowed, cpu_online_mask))
+		return -EINVAL;
+
+	if (cpumask_empty(&tmp_soft_cpus_allowed))
+		return -ENOSPC;
+
+	tg_soft_cpus_allowed = &tg->soft_cpus_allowed;
+	if (!cpumask_equal(tg_soft_cpus_allowed, &tmp_soft_cpus_allowed)) {
+		cpumask_copy(tg_soft_cpus_allowed, &tmp_soft_cpus_allowed);
+		tg_inc_soft_cpus_version(tg);
+	}
+
+	return nbytes;
+}
+
+static u64 cpu_group_balancer_read_u64(struct cgroup_subsys_state *css,
+				       struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->group_balancer;
+}
+
+static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
+{
+	if (tg->group_balancer)
+		return -EINVAL;
+	return 0;
+}
+
+/*
+ * There is only one task group allowed to enable group balancer in the path from
+ * root_task_group to a certion leaf task group.
+ */
+static int validate_group_balancer(struct task_group *tg)
+{
+	int retval = 0;
+
+	rcu_read_lock();
+	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
+				   tg_nop, NULL);
+	if (retval)
+		goto out;
+
+	for (; tg != &root_task_group; tg = tg->parent) {
+		if (tg->group_balancer) {
+			retval = -EINVAL;
+			break;
+		}
+	}
+out:
+	rcu_read_unlock();
+	return retval;
+}
+
+static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
+					struct cftype *cftype, u64 new)
+{
+	struct task_group *tg = css_tg(css);
+	bool old;
+	int retval = 0;
+
+	if (!group_balancer_enabled())
+		return -EPERM;
+
+	if (tg == &root_task_group || task_group_is_autogroup(tg))
+		return -EACCES;
+
+	if (new > 1)
+		return -EINVAL;
+
+	write_lock(&group_balancer_lock);
+	old = tg->group_balancer;
+
+	if (old == new)
+		goto out;
+
+	if (new) {
+		retval = validate_group_balancer(tg);
+		if (retval)
+			goto out;
+		retval = attach_tg_to_group_balancer_sched_domain(tg);
+		if (retval)
+			goto out;
+	} else {
+		/*
+		 * As gb_sd may be freed by user, set tg->prev_gb_sd NULL to prevent
+		 * use after free.
+		 */
+		tg->prev_gb_sd = NULL;
+		detach_tg_from_group_balancer_sched_domain(tg);
+	}
+	tg->group_balancer = new;
+out:
+	write_unlock(&group_balancer_lock);
+	return retval;
+}
+
+static s64 cpu_specs_ratio_read_s64(struct cgroup_subsys_state *css,
+				    struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->specs_ratio;
+}
+#endif
+
 static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	{
@@ -9736,6 +10190,26 @@ static struct cftype cpu_legacy_files[] = {
 		.write_u64 = cpu_ht_ratio_write,
 	},
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+	{
+		.name = "soft_cpus",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_soft_cpus_show,
+		.write = cpu_soft_cpus_write,
+		.max_write_len = (100U + 6 * 1024),
+	},
+	{
+		.name = "group_balancer",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_group_balancer_read_u64,
+		.write_u64 = cpu_group_balancer_write_u64,
+	},
+	{
+		.name = "specs_ratio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_specs_ratio_read_s64,
+	},
+#endif
 	{ }	/* Terminate */
 };
 
@@ -9756,7 +10230,7 @@ static int cpu_extra_stat_show(struct seq_file *sf,
 		seq_printf(sf, "nr_periods %d\n"
 			   "nr_throttled %d\n"
 			   "throttled_usec %llu\n"
-			   "current_bw %llu\n"
+			   "current_bw %lld\n"
 			   "nr_bursts %d\n"
 			   "burst_usec %llu\n",
 			   cfs_b->nr_periods, cfs_b->nr_throttled,
@@ -10151,6 +10625,7 @@ static int cpu_sched_cfs_show(struct seq_file *sf, void *v)
 	struct sched_entity *se;
 	int cpu;
 	u64 wait_max = 0, wait_sum = 0, wait_sum_other = 0, wait_sum_fi = 0, exec_sum = 0;
+	u64 wait_sum_self = 0;
 
 	if (!schedstat_enabled())
 		goto out_show;
@@ -10163,20 +10638,25 @@ static int cpu_sched_cfs_show(struct seq_file *sf, void *v)
 		exec_sum += schedstat_val(se->sum_exec_runtime);
 		wait_sum_other +=
 			schedstat_val(se->statistics.parent_wait_contrib);
+#ifdef CONFIG_SCHED_CORE
 		wait_sum_fi += schedstat_val(se->statistics.forceidled_sum);
+#endif
 		wait_sum += schedstat_val(se->statistics.wait_sum);
 		wait_max =
 			max(wait_max, schedstat_val(se->statistics.wait_max));
+		wait_sum_self += schedstat_val(se->statistics.wait_self);
 	}
 	rcu_read_unlock();
 out_show:
 	/*
 	 * [Serve time] [On CPU time] [Queue other time]
 	 * [Queue sibling time] [Queue max time] [Force idled time]
+	 * [Queue self time]
 	 */
-	seq_printf(sf, "%lld %lld %lld %lld %lld %lld\n",
+	seq_printf(sf, "%lld %lld %lld %lld %lld %lld %lld\n",
 			exec_sum + wait_sum, exec_sum, wait_sum_other,
-			wait_sum - wait_sum_other - wait_sum_fi, wait_max, wait_sum_fi);
+			wait_sum - wait_sum_other - wait_sum_fi, wait_max, wait_sum_fi,
+			wait_sum_self);
 
 	return 0;
 }
@@ -10314,6 +10794,26 @@ static struct cftype cpu_files[] = {
 		.name = "ht_ratio",
 		.read_u64 = cpu_ht_ratio_read,
 		.write_u64 = cpu_ht_ratio_write,
+	},
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+	{
+		.name = "soft_cpus",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_soft_cpus_show,
+		.write = cpu_soft_cpus_write,
+		.max_write_len = (100U + 6 * 1024),
+	},
+	{
+		.name = "group_balancer",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_group_balancer_read_u64,
+		.write_u64 = cpu_group_balancer_write_u64,
+	},
+	{
+		.name = "specs_ratio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_specs_ratio_read_s64,
 	},
 #endif
 	{ }	/* terminate */

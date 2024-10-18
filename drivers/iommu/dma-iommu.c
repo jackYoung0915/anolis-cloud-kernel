@@ -1232,8 +1232,29 @@ static void *iommu_dma_alloc_pages(struct device *dev, size_t size,
 	void *cpu_addr;
 
 	page = dma_alloc_contiguous(dev, alloc_size, gfp);
-	if (!page)
+	if (!page) {
+		if (is_zhaoxin_kh40000()) {
+			if (node == NUMA_NO_NODE) {
+				page = __alloc_pages_nodemask(gfp, get_order(alloc_size),
+							      numa_mem_id(), NULL);
+			} else if (!(gfp & (GFP_DMA | GFP_DMA32))) {
+				nodemask_t nodemask;
+
+				nodes_clear(nodemask);
+				node_set(node, nodemask);
+				page = __alloc_pages_nodemask(gfp | __GFP_HIGH,
+							      get_order(alloc_size),
+							      node, &nodemask);
+			} else {
+				page = __alloc_pages_nodemask(gfp | __GFP_HIGH,
+							      get_order(alloc_size),
+							      node, NULL);
+			}
+			goto check_alloc;
+		}
 		page = alloc_pages_node(node, gfp, get_order(alloc_size));
+	}
+check_alloc:
 	if (!page)
 		return NULL;
 

@@ -19,6 +19,8 @@
 #include "ngbe_sriov.h"
 
 char ngbe_driver_name[] = "ngbe";
+#define DRV_VERSION     __stringify(1.2.5-k)
+const char ngbe_driver_version[32] = DRV_VERSION;
 
 static struct workqueue_struct *ngbe_wq;
 

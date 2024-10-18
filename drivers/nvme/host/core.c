@@ -19,7 +19,6 @@
 #include <linux/ptrace.h>
 #include <linux/nvme_ioctl.h>
 #include <linux/pm_qos.h>
-#include <linux/crc32c.h>
 #include <asm/unaligned.h>
 
 #include "nvme.h"
@@ -823,16 +822,26 @@ static blk_status_t nvme_setup_discard(struct nvme_ns *ns, struct request *req,
 		range = page_address(ns->ctrl->discard_page);
 	}
 
-	__rq_for_each_bio(bio, req) {
-		u64 slba = nvme_sect_to_lba(ns, bio->bi_iter.bi_sector);
-		u32 nlb = bio->bi_iter.bi_size >> ns->lba_shift;
+	if (queue_max_discard_segments(req->q) == 1) {
+		u64 slba = nvme_sect_to_lba(ns, blk_rq_pos(req));
+		u32 nlb = blk_rq_sectors(req) >> (ns->lba_shift - 9);
 
-		if (n < segments) {
-			range[n].cattr = cpu_to_le32(0);
-			range[n].nlb = cpu_to_le32(nlb);
-			range[n].slba = cpu_to_le64(slba);
+		range[0].cattr = cpu_to_le32(0);
+		range[0].nlb = cpu_to_le32(nlb);
+		range[0].slba = cpu_to_le64(slba);
+		n = 1;
+	} else {
+		__rq_for_each_bio(bio, req) {
+			u64 slba = nvme_sect_to_lba(ns, bio->bi_iter.bi_sector);
+			u32 nlb = bio->bi_iter.bi_size >> ns->lba_shift;
+
+			if (n < segments) {
+				range[n].cattr = cpu_to_le32(0);
+				range[n].nlb = cpu_to_le32(nlb);
+				range[n].slba = cpu_to_le64(slba);
+			}
+			n++;
 		}
-		n++;
 	}
 
 	if (WARN_ON_ONCE(n != segments)) {
@@ -1801,9 +1810,10 @@ static void nvme_update_disk_info(struct gendisk *disk,
 
 	/*
 	 * The block layer can't support LBA sizes larger than the page size
-	 * yet, so catch this early and don't allow block I/O.
+	 * or smaller than a sector size yet, so catch this early and don't
+	 * allow block I/O.
 	 */
-	if (ns->lba_shift > PAGE_SHIFT) {
+	if (ns->lba_shift > PAGE_SHIFT || ns->lba_shift < SECTOR_SHIFT) {
 		capacity = 0;
 		bs = (1 << 9);
 	}
@@ -2037,13 +2047,15 @@ static int nvme_pr_preempt(struct block_device *bdev, u64 old, u64 new,
 
 static int nvme_pr_clear(struct block_device *bdev, u64 key)
 {
-	u32 cdw10 = 1 | (key ? 1 << 3 : 0);
-	return nvme_pr_command(bdev, cdw10, key, 0, nvme_cmd_resv_register);
+	u32 cdw10 = 1 | (key ? 0 : 1 << 3);
+
+	return nvme_pr_command(bdev, cdw10, key, 0, nvme_cmd_resv_release);
 }
 
 static int nvme_pr_release(struct block_device *bdev, u64 key, enum pr_type type)
 {
-	u32 cdw10 = nvme_pr_type(type) << 8 | (key ? 1 << 3 : 0);
+	u32 cdw10 = nvme_pr_type(type) << 8 | (key ? 0 : 1 << 3);
+
 	return nvme_pr_command(bdev, cdw10, key, 0, nvme_cmd_resv_release);
 }
 
@@ -2664,7 +2676,6 @@ static int nvme_init_subsystem(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 	nvme_init_subnqn(subsys, ctrl, id);
 	memcpy(subsys->serial, id->sn, sizeof(subsys->serial));
 	memcpy(subsys->model, id->mn, sizeof(subsys->model));
-	memcpy(subsys->firmware_rev, id->fr, sizeof(subsys->firmware_rev));
 	subsys->vendor_id = le16_to_cpu(id->vid);
 	subsys->cmic = id->cmic;
 	subsys->awupf = le16_to_cpu(id->awupf);
@@ -2825,6 +2836,8 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
 				ctrl->quirks |= core_quirks[i].quirks;
 		}
 	}
+	memcpy(ctrl->subsys->firmware_rev, id->fr,
+	       sizeof(ctrl->subsys->firmware_rev));
 
 	if (force_apst && (ctrl->quirks & NVME_QUIRK_NO_DEEPEST_PS)) {
 		dev_warn(ctrl->device, "forcibly allowing all power states due to nvme_core.force_apst -- use at your own risk\n");
@@ -3106,44 +3119,12 @@ static ssize_t nsid_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(nsid);
 
-static ssize_t activation_info_store(struct device *dev,
-			struct device_attribute *attr, const char *buf,
-			size_t count)
-{
-	struct nvme_ns_head *head = dev_to_ns_head(dev);
-	struct nvme_ctrl *ctrl = nvme_get_ns_from_dev(dev)->ctrl;
-
-	if (ctrl->quirks & NVME_QUIRK_ACTIVATE_NS &&
-	    count == sizeof(struct nvme_activation_info)) {
-		memcpy(&head->activation_info, buf, count);
-		head->activation_check_crc32 = crc32c(0,
-						&head->activation_info, count);
-		return count;
-	}
-	dev_warn(dev, "activation set fail, count:%lu, activate ns quirk:%lu\n",
-		 count, ctrl->quirks & NVME_QUIRK_ACTIVATE_NS);
-	return -EINVAL;
-}
-static DEVICE_ATTR_WO(activation_info);
-
-static ssize_t activation_status_show(struct device *dev,
-			struct device_attribute *attr, char *buf)
-{
-	struct nvme_ns_head *head = dev_to_ns_head(dev);
-
-	return sysfs_emit(buf, "activation_result:0x%.4x\nactivation_count:%llu\n",
-			  head->activation_result, head->activation_count);
-}
-static DEVICE_ATTR_RO(activation_status);
-
 static struct attribute *nvme_ns_id_attrs[] = {
 	&dev_attr_wwid.attr,
 	&dev_attr_uuid.attr,
 	&dev_attr_nguid.attr,
 	&dev_attr_eui.attr,
 	&dev_attr_nsid.attr,
-	&dev_attr_activation_info.attr,
-	&dev_attr_activation_status.attr,
 #ifdef CONFIG_NVME_MULTIPATH
 	&dev_attr_ana_grpid.attr,
 	&dev_attr_ana_state.attr,
@@ -3156,7 +3137,6 @@ static umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct nvme_ns_ids *ids = &dev_to_ns_head(dev)->ids;
-	struct nvme_ctrl *ctrl;
 
 	if (a == &dev_attr_uuid.attr) {
 		if (uuid_is_null(&ids->uuid) &&
@@ -3171,14 +3151,7 @@ static umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
 		if (!memchr_inv(ids->eui64, 0, sizeof(ids->eui64)))
 			return 0;
 	}
-	if (a == &dev_attr_activation_info.attr ||
-	    a == &dev_attr_activation_status.attr) {
-		if (dev_to_disk(dev)->fops != &nvme_bdev_ops)
-			return 0;
-		ctrl = nvme_get_ns_from_dev(dev)->ctrl;
-		if (!(ctrl->quirks & NVME_QUIRK_ACTIVATE_NS))
-			return 0;
-	}
+
 #ifdef CONFIG_NVME_MULTIPATH
 	if (a == &dev_attr_ana_grpid.attr || a == &dev_attr_ana_state.attr) {
 		if (dev_to_disk(dev)->fops != &nvme_bdev_ops) /* per-path attr */
@@ -3970,47 +3943,6 @@ static void nvme_scan_ns_sequential(struct nvme_ctrl *ctrl)
 	nvme_remove_invalid_namespaces(ctrl, nn);
 }
 
-static int nvme_activate_ns(struct nvme_ctrl *ctrl, struct nvme_ns_head *head)
-{
-	struct nvme_command c;
-
-	memset(&c, 0, sizeof(struct nvme_command));
-	c.features.opcode = nvme_admin_set_features;
-	c.features.fid = cpu_to_le32(NVME_FEAT_VENDOR_ACTIVATE_NS);
-	c.features.nsid = cpu_to_le32(head->ns_id);
-	c.features.dword11 = cpu_to_le32(NVME_ACTIVATION_CHECK_MODE_CRC32);
-	c.features.dword12 = cpu_to_le32(head->activation_check_crc32);
-
-	return __nvme_submit_sync_cmd(ctrl->admin_q, &c, NULL,
-			&head->activation_info, sizeof(struct nvme_activation_info),
-			0, NVME_QID_ANY, 0, 0, false);
-}
-
-static void nvme_activate_all_ns(struct nvme_ctrl *ctrl)
-{
-	struct nvme_ns *ns;
-	struct nvme_ns_head *head;
-	int ret;
-
-	if (!(ctrl->quirks & NVME_QUIRK_ACTIVATE_NS))
-		return;
-
-	down_read(&ctrl->namespaces_rwsem);
-	list_for_each_entry(ns, &ctrl->namespaces, list) {
-		head = ns->head;
-		if (head->activation_check_crc32) {
-			dev_info(ctrl->device, "activate ns:%d, start\n",
-				 head->ns_id);
-			ret = nvme_activate_ns(ctrl, head);
-			head->activation_result = ret;
-			head->activation_count++;
-			dev_info(ctrl->device, "activate ns:%d, result:0x%.4x\n",
-				 head->ns_id, ret);
-		}
-	}
-	up_read(&ctrl->namespaces_rwsem);
-}
-
 static void nvme_clear_changed_ns_log(struct nvme_ctrl *ctrl)
 {
 	size_t log_size = NVME_MAX_CHANGED_NAMESPACES * sizeof(__le32);
@@ -4216,11 +4148,19 @@ static void nvme_fw_act_work(struct work_struct *work)
 	nvme_get_fw_slot_info(ctrl);
 }
 
+static u32 nvme_aer_type(u32 result)
+{
+	return result & 0x7;
+}
+
+static u32 nvme_aer_subtype(u32 result)
+{
+	return (result & 0xff00) >> 8;
+}
+
 static void nvme_handle_aen_notice(struct nvme_ctrl *ctrl, u32 result)
 {
-	u32 aer_notice_type = (result & 0xff00) >> 8;
-
-	trace_nvme_async_event(ctrl, aer_notice_type);
+	u32 aer_notice_type = nvme_aer_subtype(result);
 
 	switch (aer_notice_type) {
 	case NVME_AER_NOTICE_NS_CHANGED:
@@ -4251,24 +4191,40 @@ static void nvme_handle_aen_notice(struct nvme_ctrl *ctrl, u32 result)
 	}
 }
 
+static void nvme_handle_aer_persistent_error(struct nvme_ctrl *ctrl)
+{
+	dev_warn(ctrl->device, "resetting controller due to AER\n");
+	nvme_reset_ctrl(ctrl);
+}
+
 void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
 		volatile union nvme_result *res)
 {
 	u32 result = le32_to_cpu(res->u32);
-	u32 aer_type = result & 0x07;
+	u32 aer_type = nvme_aer_type(result);
+	u32 aer_subtype = nvme_aer_subtype(result);
 
 	if (le16_to_cpu(status) >> 1 != NVME_SC_SUCCESS)
 		return;
 
+	trace_nvme_async_event(ctrl, result);
 	switch (aer_type) {
 	case NVME_AER_NOTICE:
 		nvme_handle_aen_notice(ctrl, result);
 		break;
 	case NVME_AER_ERROR:
+		/*
+		 * For a persistent internal error, don't run async_event_work
+		 * to submit a new AER. The controller reset will do it.
+		 */
+		if (aer_subtype == NVME_AER_ERROR_PERSIST_INT_ERR) {
+			nvme_handle_aer_persistent_error(ctrl);
+			return;
+		}
+		fallthrough;
 	case NVME_AER_SMART:
 	case NVME_AER_CSS:
 	case NVME_AER_VS:
-		trace_nvme_async_event(ctrl, aer_type);
 		ctrl->aen_result = result;
 		break;
 	default:
@@ -4298,7 +4254,6 @@ void nvme_start_ctrl(struct nvme_ctrl *ctrl)
 
 	if (ctrl->queue_count > 1) {
 		nvme_queue_scan(ctrl);
-		nvme_activate_all_ns(ctrl);
 		nvme_start_queues(ctrl);
 		nvme_mpath_update(ctrl);
 	}

@@ -14,6 +14,7 @@
 #include <linux/kvm_host.h>
 #include <linux/perf_event.h>
 #include <asm/perf_event.h>
+#include <asm/cpu_device_id.h>
 #include "x86.h"
 #include "cpuid.h"
 #include "lapic.h"
@@ -21,6 +22,24 @@
 
 /* This is enough to filter the vast majority of currently defined events. */
 #define KVM_PMU_EVENT_FILTER_MAX_EVENTS 300
+
+struct x86_pmu_capability __read_mostly kvm_pmu_cap;
+EXPORT_SYMBOL_GPL(kvm_pmu_cap);
+
+/* Precise Distribution of Instructions Retired (PDIR) */
+static const struct x86_cpu_id vmx_pebs_pdir_cpu[] = {
+	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_D, NULL),
+	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_X, NULL),
+	/* Instruction-Accurate PDIR (PDIR++) */
+	X86_MATCH_INTEL_FAM6_MODEL(SAPPHIRERAPIDS_X, NULL),
+	{}
+};
+
+/* Precise Distribution (PDist) */
+static const struct x86_cpu_id vmx_pebs_pdist_cpu[] = {
+	X86_MATCH_INTEL_FAM6_MODEL(SAPPHIRERAPIDS_X, NULL),
+	{}
+};
 
 /* NOTE:
  * - Each perf counter is defined as "struct kvm_pmc";
@@ -55,43 +74,80 @@ static void kvm_pmi_trigger_fn(struct irq_work *irq_work)
 	kvm_pmu_deliver_pmi(vcpu);
 }
 
+static inline void __kvm_perf_overflow(struct kvm_pmc *pmc, bool in_pmi)
+{
+	struct kvm_pmu *pmu = pmc_to_pmu(pmc);
+	bool skip_pmi = false;
+
+	/* Ignore counters that have been reprogrammed already. */
+	if (test_and_set_bit(pmc->idx, pmu->reprogram_pmi))
+		return;
+
+	if (pmc->perf_event && pmc->perf_event->attr.precise_ip) {
+		if (!in_pmi) {
+			/*
+			 * TODO: KVM is currently _choosing_ to not generate records
+			 * for emulated instructions, avoiding BUFFER_OVF PMI when
+			 * there are no records. Strictly speaking, it should be done
+			 * as well in the right context to improve sampling accuracy.
+			 */
+			skip_pmi = true;
+		} else {
+			/* Indicate PEBS overflow PMI to guest. */
+			skip_pmi = __test_and_set_bit(GLOBAL_STATUS_BUFFER_OVF_BIT,
+						      (unsigned long *)&pmu->global_status);
+		}
+	} else {
+		__set_bit(pmc->idx, (unsigned long *)&pmu->global_status);
+	}
+	kvm_make_request(KVM_REQ_PMU, pmc->vcpu);
+
+	if (!pmc->intr || skip_pmi)
+		return;
+
+	/*
+	 * Inject PMI. If vcpu was in a guest mode during NMI PMI
+	 * can be ejected on a guest mode re-entry. Otherwise we can't
+	 * be sure that vcpu wasn't executing hlt instruction at the
+	 * time of vmexit and is not going to re-enter guest mode until
+	 * woken up. So we should wake it, but this is impossible from
+	 * NMI context. Do it from irq work instead.
+	 */
+	if (in_pmi && !kvm_is_in_guest())
+		irq_work_queue(&pmc_to_pmu(pmc)->irq_work);
+	else
+		kvm_make_request(KVM_REQ_PMI, pmc->vcpu);
+}
+
 static void kvm_perf_overflow(struct perf_event *perf_event,
 			      struct perf_sample_data *data,
 			      struct pt_regs *regs)
 {
 	struct kvm_pmc *pmc = perf_event->overflow_handler_context;
-	struct kvm_pmu *pmu = pmc_to_pmu(pmc);
 
-	if (!test_and_set_bit(pmc->idx, pmu->reprogram_pmi)) {
-		__set_bit(pmc->idx, (unsigned long *)&pmu->global_status);
-		kvm_make_request(KVM_REQ_PMU, pmc->vcpu);
-	}
+	__kvm_perf_overflow(pmc, true);
 }
 
-static void kvm_perf_overflow_intr(struct perf_event *perf_event,
-				   struct perf_sample_data *data,
-				   struct pt_regs *regs)
+static u64 pmc_get_pebs_precise_level(struct kvm_pmc *pmc)
 {
-	struct kvm_pmc *pmc = perf_event->overflow_handler_context;
-	struct kvm_pmu *pmu = pmc_to_pmu(pmc);
+	/*
+	 * For some model specific pebs counters with special capabilities
+	 * (PDIR, PDIR++, PDIST), KVM needs to raise the event precise
+	 * level to the maximum value (currently 3, backwards compatible)
+	 * so that the perf subsystem would assign specific hardware counter
+	 * with that capability for vPMC.
+	 */
+	if ((pmc->idx == 0 && x86_match_cpu(vmx_pebs_pdist_cpu)) ||
+	    (pmc->idx == 32 && x86_match_cpu(vmx_pebs_pdir_cpu)))
+		return 3;
 
-	if (!test_and_set_bit(pmc->idx, pmu->reprogram_pmi)) {
-		__set_bit(pmc->idx, (unsigned long *)&pmu->global_status);
-		kvm_make_request(KVM_REQ_PMU, pmc->vcpu);
-
-		/*
-		 * Inject PMI. If vcpu was in a guest mode during NMI PMI
-		 * can be ejected on a guest mode re-entry. Otherwise we can't
-		 * be sure that vcpu wasn't executing hlt instruction at the
-		 * time of vmexit and is not going to re-enter guest mode until
-		 * woken up. So we should wake it, but this is impossible from
-		 * NMI context. Do it from irq work instead.
-		 */
-		if (!kvm_is_in_guest())
-			irq_work_queue(&pmc_to_pmu(pmc)->irq_work);
-		else
-			kvm_make_request(KVM_REQ_PMI, pmc->vcpu);
-	}
+	/*
+	 * The non-zero precision level of guest event makes the ordinary
+	 * guest event becomes a guest PEBS event and triggers the host
+	 * PEBS PMI handler to determine whether the PEBS overflow PMI
+	 * comes from the host counters or the guest.
+	 */
+	return 1;
 }
 
 static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
@@ -99,6 +155,7 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 				  bool exclude_kernel, bool intr,
 				  bool in_tx, bool in_tx_cp)
 {
+	struct kvm_pmu *pmu = pmc_to_pmu(pmc);
 	struct perf_event *event;
 	struct perf_event_attr attr = {
 		.type = type,
@@ -110,6 +167,7 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 		.exclude_kernel = exclude_kernel,
 		.config = config,
 	};
+	bool pebs = test_bit(pmc->idx, (unsigned long *)&pmu->pebs_enable);
 
 	attr.sample_period = get_sample_period(pmc, pmc->counter);
 
@@ -124,9 +182,17 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 		attr.sample_period = 0;
 		attr.config |= HSW_IN_TX_CHECKPOINTED;
 	}
+	if (pebs) {
+		/*
+		 * For most PEBS hardware events, the difference in the software
+		 * precision levels of guest and host PEBS events will not affect
+		 * the accuracy of the PEBS profiling result, because the "event IP"
+		 * in the PEBS record is calibrated on the guest side.
+		 */
+		attr.precise_ip = pmc_get_pebs_precise_level(pmc);
+	}
 
 	event = perf_event_create_kernel_counter(&attr, -1, current,
-						 intr ? kvm_perf_overflow_intr :
 						 kvm_perf_overflow, pmc);
 	if (IS_ERR(event)) {
 		pr_debug_ratelimited("kvm_pmu: event creation failed %ld for pmc->idx = %d\n",
@@ -137,18 +203,21 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 	pmc->perf_event = event;
 	pmc_to_pmu(pmc)->event_count++;
 	clear_bit(pmc->idx, pmc_to_pmu(pmc)->reprogram_pmi);
+	pmc->is_paused = false;
+	pmc->intr = intr || pebs;
 }
 
 static void pmc_pause_counter(struct kvm_pmc *pmc)
 {
 	u64 counter = pmc->counter;
 
-	if (!pmc->perf_event)
+	if (!pmc->perf_event || pmc->is_paused)
 		return;
 
 	/* update counter, reset event value to avoid redundant accumulation */
 	counter += perf_event_pause(pmc->perf_event, true);
 	pmc->counter = counter & pmc_bitmask(pmc);
+	pmc->is_paused = true;
 }
 
 static bool pmc_resume_counter(struct kvm_pmc *pmc)
@@ -161,8 +230,13 @@ static bool pmc_resume_counter(struct kvm_pmc *pmc)
 			      get_sample_period(pmc, pmc->counter)))
 		return false;
 
+	if (test_bit(pmc->idx, (unsigned long *)&pmc_to_pmu(pmc)->pebs_enable) !=
+	    (!!pmc->perf_event->attr.precise_ip))
+		return false;
+
 	/* reuse perf_event to serve as pmc_reprogram_counter() does*/
 	perf_event_enable(pmc->perf_event);
+	pmc->is_paused = false;
 
 	clear_bit(pmc->idx, (unsigned long *)&pmc_to_pmu(pmc)->reprogram_pmi);
 	return true;
@@ -175,6 +249,7 @@ void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
 	struct kvm *kvm = pmc->vcpu->kvm;
 	struct kvm_pmu_event_filter *filter;
 	int i;
+	struct kvm_pmu *pmu = vcpu_to_pmu(pmc->vcpu);
 	bool allow_event = true;
 
 	if (eventsel & ARCH_PERFMON_EVENTSEL_PIN_CONTROL)
@@ -214,7 +289,7 @@ void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
 	}
 
 	if (type == PERF_TYPE_RAW)
-		config = eventsel & AMD64_RAW_EVENT_MASK;
+		config = eventsel & pmu->raw_event_mask;
 
 	if (pmc->current_config == eventsel && pmc_resume_counter(pmc))
 		return;
@@ -435,17 +510,6 @@ void kvm_pmu_init(struct kvm_vcpu *vcpu)
 	pmu->event_count = 0;
 	pmu->need_cleanup = false;
 	kvm_pmu_refresh(vcpu);
-}
-
-static inline bool pmc_speculative_in_use(struct kvm_pmc *pmc)
-{
-	struct kvm_pmu *pmu = pmc_to_pmu(pmc);
-
-	if (pmc_is_fixed(pmc))
-		return fixed_ctrl_field(pmu->fixed_ctr_ctrl,
-			pmc->idx - INTEL_PMC_IDX_FIXED) & 0x3;
-
-	return pmc->eventsel & ARCH_PERFMON_EVENTSEL_ENABLE;
 }
 
 /* Release perf_events for vPMCs that have been unused for a full time slice.  */

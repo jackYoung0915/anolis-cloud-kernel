@@ -664,20 +664,16 @@ void cgroup_idle_start(struct sched_entity *se)
 
 	clock = __rq_clock_broken(se->cfs_rq->rq);
 
-	local_irq_save(flags);
-
-	write_seqlock(&se->idle_seqlock);
+	write_seqcount_begin(&se->idle_seqcount);
 	__schedstat_set(se->cg_idle_start, clock);
-	write_sequnlock(&se->idle_seqlock);
+	write_seqcount_end(&se->idle_seqcount);
 
-	spin_lock(&se->iowait_lock);
+	spin_lock_irqsave(&se->iowait_lock, flags);
 	if (schedstat_val(se->cg_nr_iowait))
 		__schedstat_set(se->cg_iowait_start, clock);
-	spin_unlock(&se->iowait_lock);
+	spin_unlock_irqrestore(&se->iowait_lock, flags);
 
 	idle_start_update_expel_sum(se);
-
-	local_irq_restore(flags);
 }
 
 void cgroup_idle_end(struct sched_entity *se)
@@ -691,30 +687,28 @@ void cgroup_idle_end(struct sched_entity *se)
 
 	clock = __rq_clock_broken(se->cfs_rq->rq);
 
-	local_irq_save(flags);
-
-	write_seqlock(&se->idle_seqlock);
+	write_seqcount_begin(&se->idle_seqcount);
 	idle_start = schedstat_val(se->cg_idle_start);
 	__schedstat_add(se->cg_idle_sum, clock - idle_start);
 	__schedstat_set(se->cg_idle_start, 0);
-	write_sequnlock(&se->idle_seqlock);
+	write_seqcount_end(&se->idle_seqcount);
 
-	spin_lock(&se->iowait_lock);
+	spin_lock_irqsave(&se->iowait_lock, flags);
 	if (schedstat_val(se->cg_nr_iowait)) {
 		iowait_start = schedstat_val(se->cg_iowait_start);
 		__schedstat_add(se->cg_iowait_sum, clock - iowait_start);
 		__schedstat_set(se->cg_iowait_start, 0);
 	}
-	spin_unlock(&se->iowait_lock);
+	spin_unlock_irqrestore(&se->iowait_lock, flags);
 
 	idle_end_update_expel_sum(se);
-
-	local_irq_restore(flags);
 }
 
 void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 		struct cpumask *added)
 {
+	struct rq_flags rf;
+	struct rq *rq;
 	struct task_group *tg;
 	struct sched_entity *se;
 	int cpu;
@@ -733,10 +727,13 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 	if (added) {
 		/* Mark newly added cpus as newly-idle */
 		for_each_cpu(cpu, added) {
+			rq = cpu_rq(cpu);
 			se = tg->se[cpu];
+			rq_lock_irqsave(rq, &rf);
 			cgroup_idle_start(se);
+			rq_unlock_irqrestore(rq, &rf);
 			__schedstat_add(se->cg_ineffective_sum,
-				__rq_clock_broken(cpu_rq(cpu)) -
+				__rq_clock_broken(rq) -
 					se->cg_ineffective_start);
 			__schedstat_set(se->cg_ineffective_start, 0);
 		}
@@ -745,11 +742,14 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 	if (deleted) {
 		/* Mark ineffective_cpus as idle-invalid */
 		for_each_cpu(cpu, deleted) {
+			rq = cpu_rq(cpu);
 			se = tg->se[cpu];
+			rq_lock_irqsave(rq, &rf);
 			cgroup_idle_end(se);
+			rq_unlock_irqrestore(rq, &rf);
 			/* Use __rq_clock_broken to avoid warning */
 			__schedstat_set(se->cg_ineffective_start,
-				__rq_clock_broken(cpu_rq(cpu)));
+				__rq_clock_broken(rq));
 		}
 	}
 
@@ -866,13 +866,13 @@ static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
 		u64 clock, iowait_start;
 
 		do {
-			seq = read_seqbegin(&se->idle_seqlock);
+			seq = read_seqcount_begin(&se->idle_seqcount);
 			res->idle = schedstat_val(se->cg_idle_sum);
 			idle_start = schedstat_val(se->cg_idle_start);
 			clock = cpu_clock(cpu);
 			if (idle_start && clock > idle_start)
 				res->idle += clock - idle_start;
-		} while (read_seqretry(&se->idle_seqlock, seq));
+		} while (read_seqcount_retry(&se->idle_seqcount, seq));
 
 		ineff = schedstat_val(se->cg_ineffective_sum);
 		ineff_start = schedstat_val(se->cg_ineffective_start);
@@ -889,7 +889,7 @@ static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
 		res->steal = 0;
 
 		elapse = clock - schedstat_val(se->cg_init_time);
-		complement = res->idle + se->sum_exec_raw + ineff;
+		complement = res->idle + se->sum_exec_runtime + ineff;
 		if (elapse > complement)
 			res->steal = elapse - complement;
 
@@ -1015,6 +1015,7 @@ static int cpuacct_sched_cfs_show(struct seq_file *sf, void *v)
 	int cpu;
 	u64 wait_max = 0, wait_sum = 0, wait_sum_other = 0, wait_sum_fi = 0, exec_sum = 0;
 	u64 expel_sum = 0, steal_high = 0;
+	u64 wait_sum_self = 0;
 
 	if (!schedstat_enabled())
 		goto out_show;
@@ -1035,12 +1036,15 @@ static int cpuacct_sched_cfs_show(struct seq_file *sf, void *v)
 		exec_sum += schedstat_val(se->sum_exec_runtime);
 		wait_sum_other +=
 			schedstat_val(se->statistics.parent_wait_contrib);
+#ifdef CONFIG_SCHED_CORE
 		wait_sum_fi += schedstat_val(se->statistics.forceidled_sum);
+#endif
 		wait_sum += schedstat_val(se->statistics.wait_sum);
 		wait_max =
 			max(wait_max, schedstat_val(se->statistics.wait_max));
 		expel_sum += get_cpu_expel_sum(se, cpu);
 		steal_high += per_cpu_ptr(ca->alistats, cpu)->steal_high;
+		wait_sum_self += schedstat_val(se->statistics.wait_self);
 	}
 rcu_unlock_show:
 	rcu_read_unlock();
@@ -1048,10 +1052,12 @@ out_show:
 	/*
 	 * [Serve time] [On CPU time] [Queue other time]
 	 * [Queue sibling time] [Queue max time] [Force idled time]
+	 * [Queue self time]
 	 */
-	seq_printf(sf, "%lld %lld %lld %lld %lld %lld\n",
+	seq_printf(sf, "%lld %lld %lld %lld %lld %lld %lld\n",
 			exec_sum + wait_sum, exec_sum, wait_sum_other,
-			wait_sum - wait_sum_other - wait_sum_fi, wait_max, wait_sum_fi);
+			wait_sum - wait_sum_other - wait_sum_fi, wait_max, wait_sum_fi,
+			wait_sum_self);
 	seq_printf(sf, "%lld %lld %lld %lld\n",
 		steal_high, 0llu, expel_sum, 0llu);
 
@@ -1402,6 +1408,8 @@ void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 
 		rcu_read_lock();
 		tg = task_tg(tsk);
+		if (sysctl_rich_container_source == 2 && tg->parent)
+			tg = tg->parent;
 		quota = tg_get_cfs_quota(tg);
 		period = tg_get_cfs_period(tg);
 		rcu_read_unlock();
@@ -1427,6 +1435,8 @@ void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 
 		rcu_read_lock();
 		tg = task_tg(tsk);
+		if (sysctl_rich_container_source == 2 && tg->parent)
+			tg = tg->parent;
 		shares = scale_load_down(tg->shares);
 		rcu_read_unlock();
 
@@ -1443,7 +1453,7 @@ void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 
 cpuset_source:
 	/* cpuset.cpus source */
-	cpuset_cpus_allowed(tsk, pmask);
+	rich_container_get_cpuset_cpus(pmask);
 }
 #endif /*CONFIG_RICH_CONTAINER_CG_SWITCH */
 
@@ -1524,8 +1534,10 @@ void rich_container_source(enum rich_container_source *from)
 {
 	if (sysctl_rich_container_source == 1)
 		*from = RICH_CONTAINER_REAPER;
-	else
+	else if (sysctl_rich_container_source == 0)
 		*from = RICH_CONTAINER_CURRENT;
+	else
+		*from = RICH_CONTAINER_PARENT_CGROUP;
 }
 #endif
 
@@ -1544,6 +1556,13 @@ void rich_container_get_usage(enum rich_container_source from,
 		goto ok;
 	} else if (from == RICH_CONTAINER_CURRENT) {
 		ca_src = task_ca(current);
+		goto ok;
+	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
+		css = task_css(current, cpuacct_cgrp_id)->parent;
+		if (!css)
+			ca_src = task_ca(current);
+		else
+			ca_src = css_ca(css);
 		goto ok;
 	}
 
@@ -1580,6 +1599,13 @@ unsigned long rich_container_get_running(enum rich_container_source from,
 	} else if (from == RICH_CONTAINER_CURRENT) {
 		ca_src = task_ca(current);
 		goto ok;
+	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
+		css = task_css(current, cpuacct_cgrp_id)->parent;
+		if (!css)
+			ca_src = task_ca(current);
+		else
+			ca_src = css_ca(css);
+		goto ok;
 	}
 
 	css = task_css(current, cpuacct_cgrp_id);
@@ -1615,6 +1641,13 @@ void rich_container_get_avenrun(enum rich_container_source from,
 		goto ok;
 	} else if (from == RICH_CONTAINER_CURRENT) {
 		ca_src = task_ca(current);
+		goto ok;
+	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
+		css = task_css(current, cpuacct_cgrp_id)->parent;
+		if (!css)
+			ca_src = task_ca(current);
+		else
+			ca_src = css_ca(css);
 		goto ok;
 	}
 

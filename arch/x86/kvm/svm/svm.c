@@ -1474,7 +1474,9 @@ static void svm_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 
 	if (sd->current_vmcb != svm->vmcb) {
 		sd->current_vmcb = svm->vmcb;
-		indirect_branch_prediction_barrier();
+
+		if (!cpu_feature_enabled(X86_FEATURE_IBPB_ON_VMEXIT))
+			indirect_branch_prediction_barrier();
 	}
 	avic_vcpu_load(vcpu, cpu);
 }
@@ -2773,9 +2775,14 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 			 * Only support userspace get/set from/to
 			 * vmcb.control.ghcb_gpa
 			 */
-			if (!msr_info->host_initiated ||
-			    !sev_es_guest(svm->vcpu.kvm))
+			if (!msr_info->host_initiated)
 				return 1;
+
+			/* Filling the data as 0 if it's not a Hygon CSV2 guest */
+			if (!sev_es_guest(svm->vcpu.kvm)) {
+				msr_info->data = 0;
+				return 0;
+			}
 
 			msr_info->data = svm->vmcb->control.ghcb_gpa;
 
@@ -3007,9 +3014,15 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 			 * Only support userspace get/set from/to
 			 * vmcb.control.ghcb_gpa
 			 */
-			if (!msr->host_initiated ||
-			    !sev_es_guest(svm->vcpu.kvm))
+			if (!msr->host_initiated)
 				return 1;
+
+			/*
+			 * Ignore write to this MSR if it's not a Hygon CSV2
+			 * guest.
+			 */
+			if (!sev_es_guest(svm->vcpu.kvm))
+				return 0;
 
 			/*
 			 * Value 0 means uninitialized userspace MSR data,
@@ -4604,6 +4617,27 @@ static int svm_vm_init(struct kvm *kvm)
 	return 0;
 }
 
+static int kvm_hygon_arch_hypercall(struct kvm *kvm, u64 nr, u64 a0, u64 a1, u64 a2, u64 a3)
+{
+	int ret = 0;
+	struct kvm_vpsp vpsp = {
+		.kvm = kvm,
+		.write_guest = kvm_write_guest,
+		.read_guest = kvm_read_guest
+	};
+
+	switch (nr) {
+	case KVM_HC_PSP_OP:
+		ret = kvm_pv_psp_op(&vpsp, a0, a1, a2, a3);
+		break;
+
+	default:
+		ret = -KVM_ENOSYS;
+		break;
+	}
+	return ret;
+}
+
 static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.hardware_unsetup = svm_hardware_teardown,
 	.hardware_enable = svm_hardware_enable,
@@ -4734,6 +4768,8 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 
 	.control_pre_system_reset = csv_control_pre_system_reset,
 	.control_post_system_reset = csv_control_post_system_reset,
+
+	.arch_hypercall = kvm_hygon_arch_hypercall,
 };
 
 static struct kvm_x86_init_ops svm_init_ops __initdata = {

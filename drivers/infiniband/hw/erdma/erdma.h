@@ -18,10 +18,11 @@
 #include "erdma_ioctl.h"
 #include "erdma_stats.h"
 
-
 #define DRV_MODULE_NAME "erdma"
 #define ERDMA_NODE_DESC "Elastic RDMA(iWARP) stack"
 
+extern bool legacy_mode;
+extern bool use_zeronet;
 extern bool compat_mode;
 
 struct erdma_stats {
@@ -43,7 +44,7 @@ struct erdma_eq {
 	atomic64_t notify_num;
 
 	void __iomem *db;
-	u64 *db_record;
+	u64 *dbrec;
 };
 
 struct erdma_cmdq_sq {
@@ -60,7 +61,7 @@ struct erdma_cmdq_sq {
 
 	u64 total_cmds;
 	u64 total_comp_cmds;
-	u64 *db_record;
+	u64 *dbrec;
 };
 
 struct erdma_cmdq_cq {
@@ -73,7 +74,7 @@ struct erdma_cmdq_cq {
 	u32 ci;
 	u32 cmdsn;
 
-	u64 *db_record;
+	u64 *dbrec;
 
 	atomic64_t armed_num;
 };
@@ -128,7 +129,7 @@ enum erdma_cc_alg {
 	ERDMA_CC_CUBIC,
 	ERDMA_CC_HPCC_RTT,
 	ERDMA_CC_HPCC_ECN,
-	ERDMA_CC_HPCC_INT,
+	ERDMA_CC_MPCC,
 	ERDMA_CC_METHODS_NUM
 };
 
@@ -200,9 +201,14 @@ enum {
 #define ERDMA_EXTRA_BUFFER_SIZE ERDMA_DB_SIZE
 #define WARPPED_BUFSIZE(size) ((size) + ERDMA_EXTRA_BUFFER_SIZE)
 
+enum {
+	ERDMA_STATE_AEQ_INIT_DONE = 0,
+};
+
 struct erdma_dev {
 	struct ib_device ibdev;
 	struct net_device *netdev;
+	rwlock_t netdev_lock;
 	struct pci_dev *pdev;
 	struct notifier_block netdev_nb;
 	struct workqueue_struct *reflush_wq;
@@ -213,7 +219,8 @@ struct erdma_dev {
 
 	struct erdma_devattr attrs;
 	/* physical port state (only one port per device) */
-	enum ib_port_state state;
+	enum ib_port_state port_state;
+	unsigned long state;
 	u32 mtu;
 
 	/* cmdq and aeq use the same msix vector */
@@ -243,6 +250,11 @@ struct erdma_dev {
 	atomic_t num_ctx;
 	atomic_t num_cep;
 	struct list_head cep_list;
+
+	/* Fields for compat */
+	struct list_head dev_list;
+	refcount_t refcount;
+	struct completion unreg_completion;
 
 	struct dma_pool *db_pool;
 	struct dma_pool *resp_pool;
@@ -316,7 +328,9 @@ int erdma_chrdev_init(void);
 int erdma_query_resource(struct erdma_dev *dev, u32 mod, u32 op, u32 index,
 			 void *out, u32 len);
 int erdma_query_ext_attr(struct erdma_dev *dev, void *out);
+int erdma_set_ext_attr(struct erdma_dev *dev, struct erdma_ext_attr *attr);
 int erdma_set_dack_count(struct erdma_dev *dev, u32 value);
+int erdma_enable_legacy_mode(struct erdma_dev *dev, u32 value);
 
 void erdma_debugfs_register(void);
 void erdma_debugfs_unregister(void);

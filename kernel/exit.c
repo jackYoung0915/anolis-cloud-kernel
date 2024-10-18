@@ -64,6 +64,7 @@
 #include <linux/rcuwait.h>
 #include <linux/compat.h>
 #include <linux/io_uring.h>
+#include <linux/pre_oom.h>
 #ifdef CONFIG_TEXT_UNEVICTABLE
 #include <linux/unevictable.h>
 #endif
@@ -858,6 +859,15 @@ void __noreturn do_exit(long code)
 		put_page(tsk->task_frag.page);
 
 	validate_creds_for_do_exit(tsk);
+
+#ifdef CONFIG_PRE_OOM
+	/*
+	 * Killed task has been stalled in reclaim path, release the semaphore
+	 * here.
+	 */
+	if (unlikely(tsk->reclaim_stall))
+		pre_oom_leave();
+#endif
 
 	check_stack_usage();
 	preempt_disable();

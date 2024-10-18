@@ -1,56 +1,124 @@
-本文示例如何修改一个 kconfig 的配置。
-假设我们需要修改 CONFIG_CAN 的配置，目前这个配置是`not set`的，我们需要将其使能。
+本文示例如何修改和新增一个 kconfig 的配置。
 
+# 一、 总体方法
+总的来说，您需要以下几步：
+
+1. 进入到 `anolis/` 目录：
+
+`cd anolis/`
+
+2. 修改/新增 kconfig
+
+假设要在所有架构中将 CONFIG_foo 都只为y，使用该命令：
+
+`make dist-configs-modify C=CONFIG_foo all=y L=L1`
+
+如果只在 x86 架构中将其置为 y，而在其他架构中保持关闭，使用该命令：
+
+`make dist-configs-modify C=CONFIG_foo x86=y others=n L=L1`
+
+这个命令执行以下动作：
+
+a. 查找是否已存在现有的 CONFIG_CAN 的配置项，若有，则删除。
+
+b. 根据传入的参数，重新生成 CONFIG_CAN 的配置项。
+
+c. 根据新的配置关系，重新计算和刷新 kconfig 的依赖关系
+
+在使用时，请注意以下几点：
+
+a. 使用 `C=CONFIG_foo` 的方式来传递 kconfig 名称，而非使用这样的方式：
+
+`make dist-configs-modify CONFIG_CAN x86=y others=n L=L1`
+
+这是由 make 命令的语法所限制的。
+
+b. 在传递 kconfig 的配置信息时，请注意必须传递层级信息，即 `L=xx`
+
+3. 确认结果
+
+kconfig 的依赖关系是相当复杂的，因此在对单个 kconfig 调整后，可能会出现依赖条件不满足而导致该 kconfig 实际并未开启的情况。
+因此，`make dist-configs-modify`命令会重新计算依赖关系，这可能导致：
+
+a. 生成一系列新的 kconfig。
+
+这些都是由 CONFIG_foo 通过 `select` 或者 `depends on` 关系自动使能的。
+这类新生成的 kconfig，需要人工调整它们到对应的层级（使用`make dist-configs-move`命令）。
+
+b. 对特定 kconfig 的修改并未生效。
+
+假设 CONFIG_foo 依赖于 CONFIG_bar，而 CONFIG_bar 之前并未打开，那么在重新计算依赖关系后，CONFIG_foo 依然会处于 `not set` 的状态，甚至是 `invisible` 状态（即在最终结果中看不到关于 CONFIG_foo 的任何配置项）。
+
+这种情况，需要先定位依赖的 CONFIG_bar，并递归使用 `make dist-configs-modify` 修改 CONFIG_bar 及其依赖的 kconfig，最后再对 CONFIG_foo 进行修改。
+
+具体定位的方法，推荐如下：
+
+1. 生成最终的 .config 文件。
+`cd /path/to/cloud-kernel/; make anolis_defconfig`
+
+2. 执行 `make menuconfig` 命令
+
+3. 在具体的 tui 界面中，搜索 CONFIG_foo，并通过搜索结果查看对应的依赖关系。
+
+# 二、 示例
+我们以使能 `CONFIG_CAN` 为例。
 # 1. 修改 kconfig
-首先，进入 kenel source tree 的找到该 kconfig 的位置：
 ```
-cd anolis/
-find . -name CONFIG_CAN
+cd anolis/;
+make dist-configs-modify C=CONFIG_CAN all=y L=L1
 ```
-如果没有找到该 config，说明该 kconfig 的依赖可能没有打开，需要打开对应的 Kconfig 文件，确认其依赖关系，将依赖的 kconfig 一并打开。
-在本文的示例中，我们能找到该 kconfig 位于 `./L2-OPTIONAL/generic/CONFIG_CAN` 路径。
+这里，我们将 `CONFIG_CAN` 在所有架构中都打开，且将其层级置为 L1。
 
-接下来，修改该 kconfig 的配置:
+# 2. 检查结果
+
+在调整后，自动使能了一大堆kconfig，我们需要对这些新的 kconfig 调整层级。
 ```
-echo 'CONFIG_CAN=y' > ./configs/L2-OPTIONAL/generic/CONFIG_CAN
-```
-一般来说，调整某个 kconfig 配置，必定有实际的使用场景驱动，这表明该 kconfig 实际上是很重要的，因此我们还需要将该 kconfig 的定级转移到 L1 或者 L0.
-你可以直接使用 `mv` 命令来完成这件事情：
-```
-mv ./configs/L2-OPTIONAL/generic/CONFIG_CAN ./configs/L1-RECOMMEND
-```
-不过我们更推荐使用包装过的 `make dist-configs-move` 命令来完成这个动作，特别是当 kconfig 配置因为不统一而散落在各个目录中时
-```
-make dist-configs-move OLD=L2 C=CONFIG_CAN L=L1
-```
-# 2. 刷新 kconfig
-在调整一个 kconfig 后，其他的 kconfig 很有可能因为依赖关系而发生变化，因此需要对整体 kconfig 进行刷新。
-```
-$make dist-configs-update
+$make dist-configs-modify C=CONFIG_CAN all=y L=L1
+make -C configs/ dist-configs-modify
+make[1]: Entering directory '/cloud-kernel/anolis/configs'
+remove old file: /cloud-kernel/anolis/configs/L2-OPTIONAL/default/CONFIG_CAN
+created new file: /cloud-kernel/anolis/configs/L1-RECOMMEND/default/CONFIG_CAN
+refresh configs
+collect all old configs...
+* generated file: /cloud-kernel/anolis/output/kernel-ANCK-generic-x86.config
+* processed file: /cloud-kernel/anolis/output/kernel-ANCK-generic-x86.config
+* generated file: /cloud-kernel/anolis/output/kernel-ANCK-debug-x86.config
+* processed file: /cloud-kernel/anolis/output/kernel-ANCK-debug-x86.config
+* generated file: /cloud-kernel/anolis/output/kernel-ANCK-generic-arm64.config
+* processed file: /cloud-kernel/anolis/output/kernel-ANCK-generic-arm64.config
+* generated file: /cloud-kernel/anolis/output/kernel-ANCK-debug-arm64.config
+* processed file: /cloud-kernel/anolis/output/kernel-ANCK-debug-arm64.config
+split new configs...
+replace old configs with new configs....
 
 ******************************************************************************
 There are some UNKNOWN level's new configs.
 
-CONFIG_CAN_8DEV_USB        CONFIG_CAN_DEV       CONFIG_CAN_GW             CONFIG_CAN_KVASER_USB   CONFIG_CAN_PEAK_USB  CONFIG_CAN_UCAN
-CONFIG_CAN_BCM             CONFIG_CAN_EMS_USB   CONFIG_CAN_HI311X         CONFIG_CAN_M_CAN        CONFIG_CAN_PHYTIUM   CONFIG_CAN_VCAN
-CONFIG_CAN_CALC_BITTIMING  CONFIG_CAN_ESD_USB2  CONFIG_CAN_IFI_CANFD      CONFIG_CAN_MCBA_USB     CONFIG_CAN_RAW       CONFIG_CAN_VXCAN
-CONFIG_CAN_CC770           CONFIG_CAN_FLEXCAN   CONFIG_CAN_ISOTP          CONFIG_CAN_MCP251X      CONFIG_CAN_SJA1000   CONFIG_CAN_XILINXCAN
-CONFIG_CAN_C_CAN           CONFIG_CAN_GRCAN     CONFIG_CAN_J1939          CONFIG_CAN_MCP251XFD    CONFIG_CAN_SLCAN     CONFIG_NET_EMATCH_CANID
-CONFIG_CAN_DEBUG_DEVICES   CONFIG_CAN_GS_USB    CONFIG_CAN_KVASER_PCIEFD  CONFIG_CAN_PEAK_PCIEFD  CONFIG_CAN_SOFTING
+CONFIG_CAN_8DEV_USB        CONFIG_CAN_DEBUG_DEVICES  CONFIG_CAN_GRCAN      CONFIG_CAN_ISOTP          CONFIG_CAN_MCBA_USB     CONFIG_CAN_PHYTIUM  CONFIG_CAN_UCAN
+CONFIG_CAN_BCM             CONFIG_CAN_DEV            CONFIG_CAN_GS_USB     CONFIG_CAN_J1939          CONFIG_CAN_MCP251X      CONFIG_CAN_RAW      CONFIG_CAN_VCAN
+CONFIG_CAN_CALC_BITTIMING  CONFIG_CAN_EMS_USB        CONFIG_CAN_GW         CONFIG_CAN_KVASER_PCIEFD  CONFIG_CAN_MCP251XFD    CONFIG_CAN_SJA1000  CONFIG_CAN_VXCAN
+CONFIG_CAN_CC770           CONFIG_CAN_ESD_USB2       CONFIG_CAN_HI311X     CONFIG_CAN_KVASER_USB     CONFIG_CAN_PEAK_PCIEFD  CONFIG_CAN_SLCAN    CONFIG_CAN_XILINXCAN
+CONFIG_CAN_C_CAN           CONFIG_CAN_FLEXCAN        CONFIG_CAN_IFI_CANFD  CONFIG_CAN_M_CAN          CONFIG_CAN_PEAK_USB     CONFIG_CAN_SOFTING  CONFIG_NET_EMATCH_CANID
 
 Need to classify above configs manually !!!
-...
+See: /cloud-kernel/anolis/configs/UNKNOWN
+HINT: `make dist-configs-move` can help you.
+eg: make dist-configs-move C=CONFIG_CAN* L=L2
 
 ******************************************************************************
+
+The Final Configs After Refresh
+default: CONFIG_CAN=y
+
+******************************************************************************
+make[1]: Leaving directory '/cloud-kernel/anolis/configs'
 ```
-可以看到，大量与 CONFIG_CAN 有关的 kconfig 被刷新出来了。
-所以，接下来我们需要给新的 kconfig 评级，同样使用 move 命令：
+可以看到，大量与 CONFIG_CAN 有关的 kconfig 被刷新出来了，但是 `CONFIG_CAN` 的结果是符合预期的。
+
+这里，我们将这些自动生效的 kconfig，都放入 L2 层级中。
 ```
 make dist-configs-move C=CONFIG_CAN* L=L2
 ```
-
-# 3. 记录变更
-最后，需要到`anolis/configs/metadata/`目录下，记录下这次变更的背景信息，比如变更理由、对应场景、日期等。
 
 # 结束
 到这里为止，所以的步骤已完成，可以使用 `git add` 和 `git commit` 命令记录这些变更，并发起 PR 了。

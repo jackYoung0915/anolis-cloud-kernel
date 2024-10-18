@@ -267,10 +267,16 @@ int irq_do_set_affinity(struct irq_data *data, const struct cpumask *mask,
 		prog_mask = mask;
 	}
 
-	/* Make sure we only provide online CPUs to the irqchip */
+	/*
+	 * Make sure we only provide online CPUs to the irqchip,
+	 * unless we are being asked to force the affinity (in which
+	 * case we do as we are told).
+	 */
 	cpumask_and(&tmp_mask, prog_mask, cpu_online_mask);
-	if (!cpumask_empty(&tmp_mask))
+	if (!force && !cpumask_empty(&tmp_mask))
 		ret = chip->irq_set_affinity(data, &tmp_mask, force);
+	else if (force)
+		ret = chip->irq_set_affinity(data, mask, force);
 	else
 		ret = -EINVAL;
 
@@ -335,7 +341,7 @@ static bool irq_set_affinity_deactivated(struct irq_data *data,
 	 * If the interrupt is not yet activated, just store the affinity
 	 * mask and do not call the chip driver at all. On activation the
 	 * driver has to make sure anyway that the interrupt is in a
-	 * useable state so startup works.
+	 * usable state so startup works.
 	 */
 	if (!IS_ENABLED(CONFIG_IRQ_DOMAIN_HIERARCHY) ||
 	    irqd_is_activated(data) || !irqd_affinity_on_activate(data))
@@ -1094,7 +1100,7 @@ again:
 	 * to IRQS_INPROGRESS and the irq line is masked forever.
 	 *
 	 * This also serializes the state of shared oneshot handlers
-	 * versus "desc->threads_onehsot |= action->thread_mask;" in
+	 * versus "desc->threads_oneshot |= action->thread_mask;" in
 	 * irq_wake_thread(). See the comment there which explains the
 	 * serialization.
 	 */
@@ -1971,7 +1977,7 @@ static struct irqaction *__free_irq(struct irq_desc *desc, void *dev_id)
 	/* Last action releases resources */
 	if (!desc->action) {
 		/*
-		 * Reaquire bus lock as irq_release_resources() might
+		 * Reacquire bus lock as irq_release_resources() might
 		 * require it to deallocate resources over the slow bus.
 		 */
 		chip_bus_lock(desc);

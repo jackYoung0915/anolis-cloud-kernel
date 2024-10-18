@@ -902,7 +902,6 @@ void __init setup_arch(char **cmdline_p)
 
 	idt_setup_early_traps();
 	early_cpu_init();
-	arch_init_ideal_nops();
 	jump_label_init();
 	static_call_init();
 	early_ioremap_init();
@@ -1132,7 +1131,7 @@ void __init setup_arch(char **cmdline_p)
 	 * Needs to run after memblock setup because it needs the physical
 	 * memory size.
 	 */
-	sev_setup_arch();
+	mem_encrypt_setup_arch();
 
 	reserve_bios_regions();
 

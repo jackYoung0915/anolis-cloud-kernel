@@ -72,6 +72,7 @@ static void hash_free_result(struct sock *sk, struct hash_ctx *ctx)
 	ctx->result = NULL;
 }
 
+#ifdef CONFIG_X86
 static int hash_alg_get_tsgl(struct sock *sk, struct hash_ctx *ctx,
 			     struct msghdr *msg, size_t size)
 {
@@ -119,7 +120,6 @@ static void hash_alg_put_tsgl(struct sock *sk, struct hash_ctx *ctx, int sg_err)
 	ctx->last_sgl = NULL;
 }
 
-#ifdef CONFIG_X86
 static int hash_alg_cmsg_send(struct hash_ctx *ctx, struct msghdr *msg, int *set)
 {
 	struct af_alg_control con = {};

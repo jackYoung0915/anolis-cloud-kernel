@@ -29,6 +29,7 @@ enum idxd_scmd_stat {
 	IDXD_SCMD_WQ_NO_SIZE = 0x800e0000,
 	IDXD_SCMD_WQ_NO_PRIV = 0x800f0000,
 	IDXD_SCMD_WQ_IRQ_ERR = 0x80100000,
+	IDXD_SCMD_DEV_EVL_ERR = 0x80120000,
 	IDXD_SCMD_WQ_NO_DRV_NAME = 0x80300000,
 };
 
@@ -134,6 +135,8 @@ enum dsa_completion_status {
 	DSA_COMP_HW_ERR1,
 	DSA_COMP_HW_ERR_DRB,
 	DSA_COMP_TRANSLATION_FAIL,
+	DSA_COMP_DRAIN_EVL = 0x26,
+	DSA_COMP_BATCH_EVL_ERR,
 	DSA_ERR_PCI_CFG = 0x51,
 	DSA_ERR_CMD_REG,
 };
@@ -171,6 +174,7 @@ enum iax_completion_status {
 
 #define DSA_COMP_STATUS_MASK		0x7f
 #define DSA_COMP_STATUS_WRITE		0x80
+#define DSA_COMP_STATUS(status)		((status) & DSA_COMP_STATUS_MASK)
 
 struct dsa_hw_desc {
 	uint32_t	pasid:20;
@@ -311,8 +315,12 @@ struct dsa_completion_record {
 		uint8_t		result;
 		uint8_t		dif_status;
 	};
-	uint16_t		rsvd;
-	uint32_t		bytes_completed;
+	uint8_t			fault_info;
+	uint8_t			rsvd;
+	union {
+		uint32_t		bytes_completed;
+		uint32_t		descs_completed;
+	};
 	uint64_t		fault_addr;
 	union {
 		/* common record */
@@ -322,7 +330,7 @@ struct dsa_completion_record {
 		};
 
 		uint32_t	delta_rec_size;
-		uint32_t	crc_val;
+		uint64_t	crc_val;
 
 		/* DIF check & strip */
 		struct {
@@ -368,7 +376,8 @@ struct dsa_raw_completion_record {
 struct iax_completion_record {
 	volatile uint8_t        status;
 	uint8_t                 error_code;
-	uint16_t                rsvd;
+	uint8_t			fault_info;
+	uint8_t			rsvd;
 	uint32_t                bytes_completed;
 	uint64_t                fault_addr;
 	uint32_t                invalid_flags;

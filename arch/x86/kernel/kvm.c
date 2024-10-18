@@ -43,6 +43,7 @@
 #include <asm/reboot.h>
 #include <asm/svm.h>
 #include <asm/e820/api.h>
+#include <asm/csv_command.h>
 
 DEFINE_STATIC_KEY_FALSE(kvm_async_pf_enabled);
 
@@ -914,18 +915,22 @@ static void __init kvm_init_platform(void)
 		 * specific settings.
 		 */
 
-		for (i = 0; i < e820_table->nr_entries; i++) {
-			struct e820_entry *entry = &e820_table->entries[i];
+		if (!csv_active()) {
+			for (i = 0; i < e820_table->nr_entries; i++) {
+				struct e820_entry *entry = &e820_table->entries[i];
 
-			if (entry->type != E820_TYPE_RAM)
-				continue;
+				if (entry->type != E820_TYPE_RAM)
+					continue;
 
-			nr_pages = DIV_ROUND_UP(entry->size, PAGE_SIZE);
+				nr_pages = DIV_ROUND_UP(entry->size, PAGE_SIZE);
 
-			kvm_sev_hypercall3(KVM_HC_MAP_GPA_RANGE, entry->addr,
-				       nr_pages,
-				       KVM_MAP_GPA_RANGE_ENCRYPTED | KVM_MAP_GPA_RANGE_PAGE_SZ_4K);
+				kvm_sev_hypercall3(KVM_HC_MAP_GPA_RANGE, entry->addr,
+					       nr_pages,
+					       KVM_MAP_GPA_RANGE_ENCRYPTED |
+					       KVM_MAP_GPA_RANGE_PAGE_SZ_4K);
+			}
 		}
+
 
 		/*
 		 * Ensure that _bss_decrypted section is marked as decrypted in the

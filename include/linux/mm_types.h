@@ -394,13 +394,12 @@ struct vm_area_struct {
 #endif
 
 #ifdef CONFIG_PAGETABLE_SHARE
-	CK_KABI_USE(1, struct pgtable_share_struct *pgtable_share_data)
-#else
-	CK_KABI_RESERVE(1)
+	struct pgtable_share_struct *pgtable_share_data;
 #endif
+	bool fast_reflink;
 
-	CK_KABI_USE_SPLIT(2, bool fast_reflink);
-
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
 } __randomize_layout;

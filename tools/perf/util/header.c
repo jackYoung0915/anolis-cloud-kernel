@@ -1757,8 +1757,8 @@ static void print_bpf_prog_info(struct feat_fd *ff, FILE *fp)
 		node = rb_entry(next, struct bpf_prog_info_node, rb_node);
 		next = rb_next(&node->rb_node);
 
-		bpf_event__print_bpf_prog_info(&node->info_linear->info,
-					       env, fp);
+		__bpf_event__print_bpf_prog_info(&node->info_linear->info,
+						 env, fp);
 	}
 
 	up_read(&env->bpf_progs.lock);
@@ -3082,7 +3082,7 @@ static int process_bpf_prog_info(struct feat_fd *ff, void *data __maybe_unused)
 		/* after reading from file, translate offset to address */
 		bpf_program__bpil_offs_to_addr(info_linear);
 		info_node->info_linear = info_linear;
-		perf_env__insert_bpf_prog_info(env, info_node);
+		__perf_env__insert_bpf_prog_info(env, info_node);
 	}
 
 	up_write(&env->bpf_progs.lock);
@@ -3129,7 +3129,7 @@ static int process_bpf_btf(struct feat_fd *ff, void *data __maybe_unused)
 		if (__do_read(ff, node->data, data_size))
 			goto out;
 
-		perf_env__insert_btf(env, node);
+		__perf_env__insert_btf(env, node);
 		node = NULL;
 	}
 
@@ -3163,7 +3163,9 @@ static int process_compressed(struct feat_fd *ff,
 }
 
 static int __process_pmu_caps(struct feat_fd *ff, int *nr_caps,
-			      char ***caps, unsigned int *max_branches)
+			      char ***caps, unsigned int *max_branches,
+			      unsigned int *br_cntr_nr,
+			      unsigned int *br_cntr_width)
 {
 	char *name, *value, *ptr;
 	u32 nr_pmu_caps, i;
@@ -3198,6 +3200,12 @@ static int __process_pmu_caps(struct feat_fd *ff, int *nr_caps,
 		if (!strcmp(name, "branches"))
 			*max_branches = atoi(value);
 
+		if (!strcmp(name, "branch_counter_nr"))
+			*br_cntr_nr = atoi(value);
+
+		if (!strcmp(name, "branch_counter_width"))
+			*br_cntr_width = atoi(value);
+
 		free(value);
 		free(name);
 	}
@@ -3222,7 +3230,9 @@ static int process_cpu_pmu_caps(struct feat_fd *ff,
 {
 	int ret = __process_pmu_caps(ff, &ff->ph->env.nr_cpu_pmu_caps,
 				     &ff->ph->env.cpu_pmu_caps,
-				     &ff->ph->env.max_branches);
+				     &ff->ph->env.max_branches,
+				     &ff->ph->env.br_cntr_nr,
+				     &ff->ph->env.br_cntr_width);
 
 	if (!ret && !ff->ph->env.cpu_pmu_caps)
 		pr_debug("cpu pmu capabilities not available\n");
@@ -3251,7 +3261,9 @@ static int process_pmu_caps(struct feat_fd *ff, void *data __maybe_unused)
 	for (i = 0; i < nr_pmu; i++) {
 		ret = __process_pmu_caps(ff, &pmu_caps[i].nr_caps,
 					 &pmu_caps[i].caps,
-					 &pmu_caps[i].max_branches);
+					 &pmu_caps[i].max_branches,
+					 &pmu_caps[i].br_cntr_nr,
+					 &pmu_caps[i].br_cntr_width);
 		if (ret)
 			goto err;
 
@@ -4250,7 +4262,8 @@ int perf_event__process_attr(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct evlist **pevlist)
 {
-	u32 i, ids, n_ids;
+	u32 i, n_ids;
+	u64 *ids;
 	struct evsel *evsel;
 	struct evlist *evlist = *pevlist;
 
@@ -4266,9 +4279,8 @@ int perf_event__process_attr(struct perf_tool *tool __maybe_unused,
 
 	evlist__add(evlist, evsel);
 
-	ids = event->header.size;
-	ids -= (void *)&event->attr.id - (void *)event;
-	n_ids = ids / sizeof(u64);
+	n_ids = event->header.size - sizeof(event->header) - event->attr.attr.size;
+	n_ids = n_ids / sizeof(u64);
 	/*
 	 * We don't have the cpu and thread maps on the header, so
 	 * for allocating the perf_sample_id table we fake 1 cpu and
@@ -4277,8 +4289,9 @@ int perf_event__process_attr(struct perf_tool *tool __maybe_unused,
 	if (perf_evsel__alloc_id(&evsel->core, 1, n_ids))
 		return -ENOMEM;
 
+	ids = (void *)&event->attr.attr + event->attr.attr.size;
 	for (i = 0; i < n_ids; i++) {
-		perf_evlist__id_add(&evlist->core, &evsel->core, 0, i, event->attr.id[i]);
+		perf_evlist__id_add(&evlist->core, &evsel->core, 0, i, ids[i]);
 	}
 
 	return 0;

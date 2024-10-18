@@ -64,23 +64,20 @@ struct ftrace_ops;
  * stack alignment
  */
 struct ftrace_regs {
-	CK_KABI_REPLACE_SPLIT(
-	struct pt_regs regs,
 	/* x0 - x8 */
-	unsigned long regs[9],
+	unsigned long regs[9];
 
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
-	unsigned long direct_tramp,
+	unsigned long direct_tramp;
 #else
-	unsigned long __unused,
+	unsigned long __unused;
 #endif
 
-	unsigned long fp,
-	unsigned long lr,
+	unsigned long fp;
+	unsigned long lr;
 
-	unsigned long sp,
-	unsigned long pc,
-	)
+	unsigned long sp;
+	unsigned long pc;
 };
 
 static __always_inline unsigned long

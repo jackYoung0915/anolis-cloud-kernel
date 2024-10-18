@@ -273,8 +273,8 @@ static int bpf_map_copy_value(struct bpf_map *map, void *key, void *value,
 				copy_map_value_locked(map, value, ptr, true);
 			else
 				copy_map_value(map, value, ptr);
-			/* mask lock, since value wasn't zero inited */
-			check_and_init_map_lock(map, value);
+			/* mask lock and timer, since value wasn't zero inited */
+			check_and_init_map_value(map, value);
 		}
 		rcu_read_unlock();
 	}
@@ -496,6 +496,25 @@ static void bpf_map_put_uref(struct bpf_map *map)
 	}
 }
 
+static void bpf_map_free_in_work(struct bpf_map *map)
+{
+	INIT_WORK(&map->work, bpf_map_free_deferred);
+	schedule_work(&map->work);
+}
+
+static void bpf_map_free_rcu_gp(struct rcu_head *rcu)
+{
+	bpf_map_free_in_work(container_of(rcu, struct bpf_map, rcu));
+}
+
+static void bpf_map_free_mult_rcu_gp(struct rcu_head *rcu)
+{
+	if (rcu_trace_implies_rcu_gp())
+		bpf_map_free_rcu_gp(rcu);
+	else
+		call_rcu(rcu, bpf_map_free_rcu_gp);
+}
+
 /* decrement map refcnt and schedule it for freeing via workqueue
  * (unrelying map implementation ops->map_free() might sleep)
  */
@@ -505,8 +524,11 @@ static void __bpf_map_put(struct bpf_map *map, bool do_idr_lock)
 		/* bpf_map_free_id() must be called first */
 		bpf_map_free_id(map, do_idr_lock);
 		btf_put(map->btf);
-		INIT_WORK(&map->work, bpf_map_free_deferred);
-		schedule_work(&map->work);
+
+		if (READ_ONCE(map->free_after_mult_rcu_gp))
+			call_rcu_tasks_trace(&map->rcu, bpf_map_free_mult_rcu_gp);
+		else
+			bpf_map_free_in_work(map);
 	}
 }
 
@@ -632,7 +654,8 @@ static int bpf_map_mmap(struct file *filp, struct vm_area_struct *vma)
 	struct bpf_map *map = filp->private_data;
 	int err;
 
-	if (!map->ops->map_mmap || map_value_has_spin_lock(map))
+	if (!map->ops->map_mmap || map_value_has_spin_lock(map) ||
+	    map_value_has_timer(map))
 		return -ENOTSUPP;
 
 	if (!(vma->vm_flags & VM_SHARED))
@@ -802,6 +825,16 @@ static int map_check_btf(struct bpf_map *map, const struct btf *btf,
 		}
 	}
 
+	map->timer_off = btf_find_timer(btf, value_type);
+	if (map_value_has_timer(map)) {
+		if (map->map_flags & BPF_F_RDONLY_PROG)
+			return -EACCES;
+		if (map->map_type != BPF_MAP_TYPE_HASH &&
+		    map->map_type != BPF_MAP_TYPE_LRU_HASH &&
+		    map->map_type != BPF_MAP_TYPE_ARRAY)
+			return -EOPNOTSUPP;
+	}
+
 	if (map->ops->map_check_btf)
 		ret = map->ops->map_check_btf(map, btf, key_type, value_type);
 
@@ -858,6 +891,7 @@ static int map_create(union bpf_attr *attr)
 	mutex_init(&map->freeze_mutex);
 
 	map->spin_lock_off = -EINVAL;
+	map->timer_off = -EINVAL;
 	if (attr->btf_key_type_id || attr->btf_value_type_id ||
 	    /* Even the map's value is a kernel's struct,
 	     * the bpf_prog.o must have BTF to begin with
@@ -1303,6 +1337,9 @@ int generic_map_delete_batch(struct bpf_map *map,
 	if (!max_count)
 		return 0;
 
+	if (put_user(0, &uattr->batch.count))
+		return -EFAULT;
+
 	key = kmalloc(map->key_size, GFP_USER | __GFP_NOWARN);
 	if (!key)
 		return -ENOMEM;
@@ -1360,6 +1397,9 @@ int generic_map_update_batch(struct bpf_map *map,
 	max_count = attr->batch.count;
 	if (!max_count)
 		return 0;
+
+	if (put_user(0, &uattr->batch.count))
+		return -EFAULT;
 
 	key = kmalloc(map->key_size, GFP_USER | __GFP_NOWARN);
 	if (!key)
@@ -1607,7 +1647,8 @@ static int map_freeze(const union bpf_attr *attr)
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 
-	if (map->map_type == BPF_MAP_TYPE_STRUCT_OPS) {
+	if (map->map_type == BPF_MAP_TYPE_STRUCT_OPS ||
+	    map_value_has_timer(map)) {
 		fdput(f);
 		return -ENOTSUPP;
 	}
@@ -1683,7 +1724,7 @@ static void bpf_audit_prog(const struct bpf_prog *prog, unsigned int op)
 		return;
 	if (audit_enabled == AUDIT_OFF)
 		return;
-	if (op == BPF_AUDIT_LOAD)
+	if (!in_irq() && !irqs_disabled())
 		ctx = audit_context();
 	ab = audit_log_start(ctx, GFP_ATOMIC, AUDIT_BPF);
 	if (unlikely(!ab))
@@ -1759,6 +1800,8 @@ static int bpf_prog_alloc_id(struct bpf_prog *prog)
 
 void bpf_prog_free_id(struct bpf_prog *prog, bool do_idr_lock)
 {
+	unsigned long flags;
+
 	/* cBPF to eBPF migrations are currently not in the idr store.
 	 * Offloaded programs are removed from the store when their device
 	 * disappears - even if someone grabs an fd to them they are unusable,
@@ -1768,7 +1811,7 @@ void bpf_prog_free_id(struct bpf_prog *prog, bool do_idr_lock)
 		return;
 
 	if (do_idr_lock)
-		spin_lock_bh(&prog_idr_lock);
+		spin_lock_irqsave(&prog_idr_lock, flags);
 	else
 		__acquire(&prog_idr_lock);
 
@@ -1776,7 +1819,7 @@ void bpf_prog_free_id(struct bpf_prog *prog, bool do_idr_lock)
 	prog->aux->id = 0;
 
 	if (do_idr_lock)
-		spin_unlock_bh(&prog_idr_lock);
+		spin_unlock_irqrestore(&prog_idr_lock, flags);
 	else
 		__release(&prog_idr_lock);
 }
@@ -1808,14 +1851,30 @@ static void __bpf_prog_put_noref(struct bpf_prog *prog, bool deferred)
 	}
 }
 
+static void bpf_prog_put_deferred(struct work_struct *work)
+{
+	struct bpf_prog_aux *aux;
+	struct bpf_prog *prog;
+
+	aux = container_of(work, struct bpf_prog_aux, work);
+	prog = aux->prog;
+	perf_event_bpf_event(prog, PERF_BPF_EVENT_PROG_UNLOAD, 0);
+	bpf_audit_prog(prog, BPF_AUDIT_UNLOAD);
+	bpf_prog_free_id(prog, true);
+	__bpf_prog_put_noref(prog, true);
+}
+
 static void __bpf_prog_put(struct bpf_prog *prog, bool do_idr_lock)
 {
-	if (atomic64_dec_and_test(&prog->aux->refcnt)) {
-		perf_event_bpf_event(prog, PERF_BPF_EVENT_PROG_UNLOAD, 0);
-		bpf_audit_prog(prog, BPF_AUDIT_UNLOAD);
-		/* bpf_prog_free_id() must be called first */
-		bpf_prog_free_id(prog, do_idr_lock);
-		__bpf_prog_put_noref(prog, true);
+	struct bpf_prog_aux *aux = prog->aux;
+
+	if (atomic64_dec_and_test(&aux->refcnt)) {
+		if (in_irq() || irqs_disabled()) {
+			INIT_WORK(&aux->work, bpf_prog_put_deferred);
+			schedule_work(&aux->work);
+		} else {
+			bpf_prog_put_deferred(&aux->work);
+		}
 	}
 }
 
@@ -2970,30 +3029,6 @@ out_put_prog:
 	return err;
 }
 
-static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
-					     enum bpf_attach_type attach_type)
-{
-	switch (prog->type) {
-	case BPF_PROG_TYPE_CGROUP_SOCK:
-	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
-	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
-	case BPF_PROG_TYPE_SK_LOOKUP:
-	case BPF_PROG_TYPE_CGROUP_RICH_CONTAINER:
-		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
-	case BPF_PROG_TYPE_CGROUP_SKB:
-		if (!capable(CAP_NET_ADMIN))
-			/* cg-skb progs can be loaded by unpriv user.
-			 * check permissions at attach time.
-			 */
-			return -EPERM;
-		return prog->enforce_expected_attach_type &&
-			prog->expected_attach_type != attach_type ?
-			-EINVAL : 0;
-	default:
-		return 0;
-	}
-}
-
 static enum bpf_prog_type
 attach_type_to_prog_type(enum bpf_attach_type attach_type)
 {
@@ -3048,6 +3083,37 @@ attach_type_to_prog_type(enum bpf_attach_type attach_type)
 		return BPF_PROG_TYPE_XDP;
 	default:
 		return BPF_PROG_TYPE_UNSPEC;
+	}
+}
+
+static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
+					     enum bpf_attach_type attach_type)
+{
+	enum bpf_prog_type ptype;
+
+	switch (prog->type) {
+	case BPF_PROG_TYPE_CGROUP_SOCK:
+	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+	case BPF_PROG_TYPE_SK_LOOKUP:
+	case BPF_PROG_TYPE_CGROUP_RICH_CONTAINER:
+		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
+	case BPF_PROG_TYPE_CGROUP_SKB:
+		if (!capable(CAP_NET_ADMIN))
+			/* cg-skb progs can be loaded by unpriv user.
+			 * check permissions at attach time.
+			 */
+			return -EPERM;
+
+		ptype = attach_type_to_prog_type(attach_type);
+		if (prog->type != ptype)
+			return -EINVAL;
+
+		return prog->enforce_expected_attach_type &&
+			prog->expected_attach_type != attach_type ?
+			-EINVAL : 0;
+	default:
+		return 0;
 	}
 }
 
@@ -3972,7 +4038,6 @@ static int bpf_task_fd_query(const union bpf_attr *attr,
 	pid_t pid = attr->task_fd_query.pid;
 	u32 fd = attr->task_fd_query.fd;
 	const struct perf_event *event;
-	struct files_struct *files;
 	struct task_struct *task;
 	struct file *file;
 	int err;
@@ -3986,27 +4051,17 @@ static int bpf_task_fd_query(const union bpf_attr *attr,
 	if (attr->task_fd_query.flags != 0)
 		return -EINVAL;
 
+	rcu_read_lock();
 	task = get_pid_task(find_vpid(pid), PIDTYPE_PID);
+	rcu_read_unlock();
 	if (!task)
 		return -ENOENT;
 
-	files = get_files_struct(task);
-	put_task_struct(task);
-	if (!files)
-		return -ENOENT;
-
 	err = 0;
-	spin_lock(&files->file_lock);
-	file = fcheck_files(files, fd);
+	file = fget_task(task, fd);
+	put_task_struct(task);
 	if (!file)
-		err = -EBADF;
-	else
-		get_file(file);
-	spin_unlock(&files->file_lock);
-	put_files_struct(files);
-
-	if (err)
-		goto out;
+		return -EBADF;
 
 	if (file->f_op == &bpf_link_fops) {
 		struct bpf_link *link = file->private_data;
@@ -4046,7 +4101,6 @@ out_not_supp:
 	err = -ENOTSUPP;
 put_file:
 	fput(file);
-out:
 	return err;
 }
 

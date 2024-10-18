@@ -52,7 +52,7 @@
 #define MAX_UNEXPECTED_INSNS	32
 #define MAX_TEST_INSNS	1000000
 #define MAX_FIXUPS	8
-#define MAX_NR_MAPS	20
+#define MAX_NR_MAPS	22
 #define MAX_TEST_RUNS	8
 #define POINTER_VALUE	0xcafe4all
 #define TEST_DATA_LEN	64
@@ -116,6 +116,7 @@ struct bpf_test {
 	int fixup_sk_storage_map[MAX_FIXUPS];
 	int fixup_map_event_output[MAX_FIXUPS];
 	int fixup_map_reuseport_array[MAX_FIXUPS];
+	int fixup_map_timer[MAX_FIXUPS];
 	const char *errstr;
 	const char *errstr_unpriv;
 	uint32_t insn_processed;
@@ -599,8 +600,15 @@ static int create_cgroup_storage(bool percpu)
  *   int cnt;
  *   struct bpf_spin_lock l;
  * };
+ * struct bpf_timer {
+ *   __u64 :64;
+ *   __u64 :64;
+ * } __attribute__((aligned(8)));
+ * struct timer {
+ *   struct bpf_timer t;
+ * };
  */
-static const char btf_str_sec[] = "\0bpf_spin_lock\0val\0cnt\0l";
+static const char btf_str_sec[] = "\0bpf_spin_lock\0val\0cnt\0l\0bpf_timer\0timer\0t";
 static __u32 btf_raw_types[] = {
 	/* int */
 	BTF_TYPE_INT_ENC(0, BTF_INT_SIGNED, 0, 32, 4),  /* [1] */
@@ -611,6 +619,11 @@ static __u32 btf_raw_types[] = {
 	BTF_TYPE_ENC(15, BTF_INFO_ENC(BTF_KIND_STRUCT, 0, 2), 8),
 	BTF_MEMBER_ENC(19, 1, 0), /* int cnt; */
 	BTF_MEMBER_ENC(23, 2, 32),/* struct bpf_spin_lock l; */
+	/* struct bpf_timer */                          /* [4] */
+	BTF_TYPE_ENC(25, BTF_INFO_ENC(BTF_KIND_STRUCT, 0, 0), 16),
+	/* struct timer */                              /* [5] */
+	BTF_TYPE_ENC(35, BTF_INFO_ENC(BTF_KIND_STRUCT, 0, 1), 16),
+	BTF_MEMBER_ENC(41, 4, 0), /* struct bpf_timer t; */
 };
 
 static char bpf_vlog[UINT_MAX >> 8];
@@ -716,6 +729,29 @@ static int create_sk_storage_map(void)
 	return fd;
 }
 
+static int create_map_timer(void)
+{
+	struct bpf_create_map_attr attr = {
+		.name = "test_map",
+		.map_type = BPF_MAP_TYPE_ARRAY,
+		.key_size = 4,
+		.value_size = 16,
+		.max_entries = 1,
+		.btf_key_type_id = 1,
+		.btf_value_type_id = 5,
+	};
+	int fd, btf_fd;
+
+	btf_fd = load_btf();
+	if (btf_fd < 0)
+		return -1;
+	attr.btf_fd = btf_fd;
+	fd = bpf_create_map_xattr(&attr);
+	if (fd < 0)
+		printf("Failed to create map with timer\n");
+	return fd;
+}
+
 static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 			  struct bpf_insn *prog, int *map_fds)
 {
@@ -739,6 +775,7 @@ static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 	int *fixup_sk_storage_map = test->fixup_sk_storage_map;
 	int *fixup_map_event_output = test->fixup_map_event_output;
 	int *fixup_map_reuseport_array = test->fixup_map_reuseport_array;
+	int *fixup_map_timer = test->fixup_map_timer;
 
 	if (test->fill_helper) {
 		test->fill_insns = calloc(MAX_TEST_INSNS, sizeof(struct bpf_insn));
@@ -915,6 +952,13 @@ static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 			prog[*fixup_map_reuseport_array].imm = map_fds[19];
 			fixup_map_reuseport_array++;
 		} while (*fixup_map_reuseport_array);
+	}
+	if (*fixup_map_timer) {
+		map_fds[21] = create_map_timer();
+		do {
+			prog[*fixup_map_timer].imm = map_fds[21];
+			fixup_map_timer++;
+		} while (*fixup_map_timer);
 	}
 }
 

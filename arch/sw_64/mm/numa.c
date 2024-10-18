@@ -9,6 +9,7 @@
 #include <linux/of.h>
 
 #include <asm/core.h>
+#include <asm/platform.h>
 
 int cpu_to_node_map[NR_CPUS];
 cpumask_var_t node_to_cpumask_map[MAX_NUMNODES];
@@ -19,7 +20,7 @@ nodemask_t numa_nodes_parsed __initdata;
 
 static int numa_distance_cnt;
 static u8 *numa_distance;
-static bool numa_off;
+int numa_off;
 
 static __init int numa_setup(char *opt)
 {
@@ -291,11 +292,41 @@ static void __init get_numa_info_socket(void)
 	}
 }
 
+static void cpu_set_node(void)
+{
+	int i;
+
+	if (numa_off) {
+		for (i = 0; i < nr_cpu_ids; i++)
+			cpu_to_node_map[i] = 0;
+	} else {
+		for (i = 0; i < nr_cpu_ids; i++) {
+			int nid = rcid_to_domain_id(cpu_to_rcid(i));
+
+			cpu_to_node_map[i] = nid;
+			node_set(nid, numa_nodes_parsed);
+		}
+	}
+	/*
+	 * Setup numa_node for cpu 0 before per_cpu area for booting.
+	 * Actual setup of numa_node will be done in native_smp_prepare_cpus().
+	 */
+	set_cpu_numa_node(0, cpu_to_node_map[0]);
+}
+
 static int __init manual_numa_init(void)
 {
 	int ret, nid;
 	struct memblock_region *mblk;
 	phys_addr_t node_base, node_size, node_end;
+
+	/**
+	 * When boot magic is 0xDEED2024UL, legacy memory detection is
+	 * completely bypassed, causing manual_numa_init failure. So we
+	 * disable numa here.
+	 */
+	if (sunway_boot_magic == 0xDEED2024UL)
+		numa_off = 1;
 
 	if (numa_off) {
 		pr_info("NUMA disabled\n"); /* Forced off on command line. */
@@ -344,19 +375,35 @@ static int __init manual_numa_init(void)
 		}
 	}
 
+	cpu_set_node();
+
 	return 0;
 }
 
-/* We do not have acpi support. */
-int acpi_numa_init(void)
+#ifdef CONFIG_ACPI_NUMA
+static int __init sw64_acpi_numa_init(void)
 {
-	return -1;
+	int ret;
+
+	ret = acpi_numa_init();
+	if (ret) {
+		pr_info("Failed to initialise from firmware\n");
+		return ret;
+	}
+
+	return srat_disabled() ? -EINVAL : 0;
 }
+#else
+static int __init sw64_acpi_numa_init(void)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 void __init sw64_numa_init(void)
 {
 	if (!numa_off) {
-		if (!acpi_disabled && !numa_init(acpi_numa_init))
+		if (!acpi_disabled && !numa_init(sw64_acpi_numa_init))
 			return;
 		if (acpi_disabled && !numa_init(of_numa_init))
 			return;
@@ -365,40 +412,26 @@ void __init sw64_numa_init(void)
 	numa_init(manual_numa_init);
 }
 
-void cpu_set_node(void)
-{
-	int i;
-
-	if (numa_off) {
-		for (i = 0; i < nr_cpu_ids; i++)
-			cpu_to_node_map[i] = 0;
-	} else {
-		int rr, default_node, cid;
-
-		rr = first_node(node_online_map);
-		for (i = 0; i < nr_cpu_ids; i++) {
-			cid = cpu_to_rcid(i);
-			default_node = rcid_to_domain_id(cid);
-			if (node_online(default_node)) {
-				cpu_to_node_map[i] = default_node;
-			} else {
-				cpu_to_node_map[i] = rr;
-				rr = next_node(rr, node_online_map);
-				if (rr == MAX_NUMNODES)
-					rr = first_node(node_online_map);
-			}
-		}
-	}
-	/*
-	 * Setup numa_node for cpu 0 before per_cpu area for booting.
-	 * Actual setup of numa_node will be done in native_smp_prepare_cpus().
-	 */
-	set_cpu_numa_node(0, cpu_to_node_map[0]);
-}
-
 void numa_store_cpu_info(unsigned int cpu)
 {
 	set_cpu_numa_node(cpu, cpu_to_node_map[cpu]);
+}
+
+void __init early_map_cpu_to_node(unsigned int cpu, int nid)
+{
+	/* fallback to node 0 */
+	if (nid < 0 || nid >= MAX_NUMNODES || numa_off)
+		nid = 0;
+
+	cpu_to_node_map[cpu] = nid;
+
+	/*
+	 * We should set the numa node of cpu0 as soon as possible, because it
+	 * has already been set up online before. cpu_to_node(0) will soon be
+	 * called.
+	 */
+	if (!cpu)
+		set_cpu_numa_node(cpu, nid);
 }
 
 #ifdef CONFIG_DEBUG_PER_CPU_MAPS
@@ -449,4 +482,10 @@ void numa_add_cpu(unsigned int cpu)
 void numa_remove_cpu(unsigned int cpu)
 {
 	numa_update_cpu(cpu, true);
+}
+
+void numa_clear_node(unsigned int cpu)
+{
+	numa_remove_cpu(cpu);
+	set_cpu_numa_node(cpu, NUMA_NO_NODE);
 }

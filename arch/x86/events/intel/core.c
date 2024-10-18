@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/export.h>
 #include <linux/nmi.h>
+#include <linux/kvm_host.h>
 
 #include <asm/cpufeature.h>
 #include <asm/hardirq.h>
@@ -2464,9 +2465,14 @@ static void intel_pmu_disable_event(struct perf_event *event)
 		intel_pmu_pebs_disable(event);
 }
 
+static __always_inline bool intel_pmu_needs_branch_stack(struct perf_event *event)
+{
+	return event->hw.flags & PERF_X86_EVENT_NEEDS_BRANCH_STACK;
+}
+
 static void intel_pmu_del_event(struct perf_event *event)
 {
-	if (needs_branch_stack(event))
+	if (intel_pmu_needs_branch_stack(event))
 		intel_pmu_lbr_del(event);
 	if (event->attr.precise_ip)
 		intel_pmu_pebs_del(event);
@@ -2742,6 +2748,7 @@ static void intel_pmu_enable_fixed(struct perf_event *event)
 
 static void intel_pmu_enable_event(struct perf_event *event)
 {
+	u64 enable_mask = ARCH_PERFMON_EVENTSEL_ENABLE;
 	struct hw_perf_event *hwc = &event->hw;
 	int idx = hwc->idx;
 
@@ -2750,8 +2757,10 @@ static void intel_pmu_enable_event(struct perf_event *event)
 
 	switch (idx) {
 	case 0 ... INTEL_PMC_IDX_FIXED - 1:
+		if (branch_sample_counters(event))
+			enable_mask |= ARCH_PERFMON_EVENTSEL_BR_CNTR;
 		intel_set_masks(event, idx);
-		__x86_pmu_enable_event(hwc, ARCH_PERFMON_EVENTSEL_ENABLE);
+		__x86_pmu_enable_event(hwc, enable_mask);
 		break;
 	case INTEL_PMC_IDX_FIXED ... INTEL_PMC_IDX_FIXED_BTS - 1:
 	case INTEL_PMC_IDX_METRIC_BASE ... INTEL_PMC_IDX_METRIC_END:
@@ -2775,7 +2784,7 @@ static void intel_pmu_add_event(struct perf_event *event)
 {
 	if (event->attr.precise_ip)
 		intel_pmu_pebs_add(event);
-	if (needs_branch_stack(event))
+	if (intel_pmu_needs_branch_stack(event))
 		intel_pmu_lbr_add(event);
 }
 
@@ -2844,6 +2853,49 @@ static void intel_pmu_reset(void)
 	local_irq_restore(flags);
 }
 
+/*
+ * We may be running with guest PEBS events created by KVM, and the
+ * PEBS records are logged into the guest's DS and invisible to host.
+ *
+ * In the case of guest PEBS overflow, we only trigger a fake event
+ * to emulate the PEBS overflow PMI for guest PEBS counters in KVM.
+ * The guest will then vm-entry and check the guest DS area to read
+ * the guest PEBS records.
+ *
+ * The contents and other behavior of the guest event do not matter.
+ */
+static void x86_pmu_handle_guest_pebs(struct pt_regs *regs,
+				      struct perf_sample_data *data)
+{
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
+	u64 guest_pebs_idxs = cpuc->pebs_enabled & ~cpuc->intel_ctrl_host_mask;
+	struct perf_event *event = NULL;
+	struct perf_guest_info_callbacks *guest_cbs;
+	int bit;
+
+	guest_cbs = perf_get_guest_cbs();
+	if (!unlikely(guest_cbs && guest_cbs->is_in_guest()))
+		return;
+
+	if (!x86_pmu.pebs_ept || !x86_pmu.pebs_active ||
+	    !guest_pebs_idxs)
+		return;
+
+	for_each_set_bit(bit, (unsigned long *)&guest_pebs_idxs,
+			 INTEL_PMC_IDX_FIXED + x86_pmu.num_counters_fixed) {
+		event = cpuc->events[bit];
+		if (!event->attr.precise_ip)
+			continue;
+
+		perf_sample_data_init(data, 0, event->hw.last_period);
+		if (perf_event_overflow(event, data, regs))
+			x86_pmu_stop(event, 0);
+
+		/* Inject one fake event is enough. */
+		break;
+	}
+}
+
 static int handle_pmi_common(struct pt_regs *regs, u64 status)
 {
 	struct perf_sample_data data;
@@ -2884,10 +2936,7 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 	 * counters from the GLOBAL_STATUS mask and we always process PEBS
 	 * events via drain_pebs().
 	 */
-	if (x86_pmu.flags & PMU_FL_PEBS_ALL)
-		status &= ~cpuc->pebs_enabled;
-	else
-		status &= ~(cpuc->pebs_enabled & PEBS_COUNTER_MASK);
+	status &= ~(cpuc->pebs_enabled & x86_pmu.pebs_capable);
 
 	/*
 	 * PEBS overflow sets bit 62 in the global status register
@@ -2896,6 +2945,7 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 		u64 pebs_enabled = cpuc->pebs_enabled;
 
 		handled++;
+		x86_pmu_handle_guest_pebs(regs, &data);
 		x86_pmu.drain_pebs(regs, &data);
 		status &= intel_ctrl | GLOBAL_STATUS_TRACE_TOPAPMI;
 
@@ -2953,8 +3003,10 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 
 		perf_sample_data_init(&data, 0, event->hw.last_period);
 
-		if (has_branch_stack(event))
-			data.br_stack = &cpuc->lbr_stack;
+		if (has_branch_stack(event)) {
+			intel_pmu_lbr_save_brstack(&data, cpuc, event);
+			data.sample_flags |= PERF_SAMPLE_BRANCH_STACK;
+		}
 
 		if (perf_event_overflow(event, &data, regs))
 			x86_pmu_stop(event, 0);
@@ -3519,6 +3571,13 @@ intel_get_event_constraints(struct cpu_hw_events *cpuc, int idx,
 	if (cpuc->excl_cntrs)
 		return intel_get_excl_constraints(cpuc, event, idx, c2);
 
+	/* Not all counters support the branch counter feature. */
+	if (branch_sample_counters(event)) {
+		c2 = dyn_constraint(cpuc, c2, idx);
+		c2->idxmsk64 &= x86_pmu.lbr_counters;
+		c2->weight = hweight64(c2->idxmsk64);
+	}
+
 	return c2;
 }
 
@@ -3807,7 +3866,62 @@ static int intel_pmu_hw_config(struct perf_event *event)
 			event->attr.sample_type |= __PERF_SAMPLE_CALLCHAIN_EARLY;
 	}
 
-	if (needs_branch_stack(event)) {
+	if (needs_branch_stack(event) && is_sampling_event(event))
+		event->hw.flags  |= PERF_X86_EVENT_NEEDS_BRANCH_STACK;
+
+	if (branch_sample_counters(event)) {
+		struct perf_event *leader, *sibling;
+		int num = 0;
+
+		if (!(x86_pmu.flags & PMU_FL_BR_CNTR) ||
+		    (event->attr.config & ~INTEL_ARCH_EVENT_MASK))
+			return -EINVAL;
+
+		/*
+		 * The branch counter logging is not supported in the call stack
+		 * mode yet, since we cannot simply flush the LBR during e.g.,
+		 * multiplexing. Also, there is no obvious usage with the call
+		 * stack mode. Simply forbids it for now.
+		 *
+		 * If any events in the group enable the branch counter logging
+		 * feature, the group is treated as a branch counter logging
+		 * group, which requires the extra space to store the counters.
+		 */
+		leader = event->group_leader;
+		if (branch_sample_call_stack(leader))
+			return -EINVAL;
+		if (branch_sample_counters(leader))
+			num++;
+		leader->hw.flags |= PERF_X86_EVENT_BRANCH_COUNTERS;
+
+		for_each_sibling_event(sibling, leader) {
+			if (branch_sample_call_stack(sibling))
+				return -EINVAL;
+			if (branch_sample_counters(sibling))
+				num++;
+		}
+
+		if (num > fls(x86_pmu.lbr_counters))
+			return -EINVAL;
+		/*
+		 * Only applying the PERF_SAMPLE_BRANCH_COUNTERS doesn't
+		 * require any branch stack setup.
+		 * Clear the bit to avoid unnecessary branch stack setup.
+		 */
+		if (0 == (event->attr.branch_sample_type &
+			  ~(PERF_SAMPLE_BRANCH_PLM_ALL |
+			    PERF_SAMPLE_BRANCH_COUNTERS)))
+			event->hw.flags  &= ~PERF_X86_EVENT_NEEDS_BRANCH_STACK;
+
+		/*
+		 * Force the leader to be a LBR event. So LBRs can be reset
+		 * with the leader event. See intel_pmu_lbr_del() for details.
+		 */
+		if (!intel_pmu_needs_branch_stack(leader))
+			return -EINVAL;
+	}
+
+	if (intel_pmu_needs_branch_stack(event)) {
 		ret = intel_pmu_setup_lbr_filter(event);
 		if (ret)
 			return ret;
@@ -3929,59 +4043,123 @@ static int intel_pmu_hw_config(struct perf_event *event)
 }
 
 #ifdef CONFIG_RETPOLINE
-static struct perf_guest_switch_msr *core_guest_get_msrs(int *nr);
-static struct perf_guest_switch_msr *intel_guest_get_msrs(int *nr);
+static struct perf_guest_switch_msr *core_guest_get_msrs(int *nr, void *data);
+static struct perf_guest_switch_msr *intel_guest_get_msrs(int *nr, void *data);
 #endif
 
-struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr)
+struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr, void *data)
 {
 #ifdef CONFIG_RETPOLINE
 	if (x86_pmu.guest_get_msrs == intel_guest_get_msrs)
-		return intel_guest_get_msrs(nr);
+		return intel_guest_get_msrs(nr, data);
 	else if (x86_pmu.guest_get_msrs == core_guest_get_msrs)
-		return core_guest_get_msrs(nr);
+		return core_guest_get_msrs(nr, data);
 #endif
 	if (x86_pmu.guest_get_msrs)
-		return x86_pmu.guest_get_msrs(nr);
+		return x86_pmu.guest_get_msrs(nr, data);
 	*nr = 0;
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(perf_guest_get_msrs);
 
-static struct perf_guest_switch_msr *intel_guest_get_msrs(int *nr)
+/*
+ * Currently, the only caller of this function is the atomic_switch_perf_msrs().
+ * The host perf conext helps to prepare the values of the real hardware for
+ * a set of msrs that need to be switched atomically in a vmx transaction.
+ *
+ * For example, the pseudocode needed to add a new msr should look like:
+ *
+ * arr[(*nr)++] = (struct perf_guest_switch_msr){
+ *	.msr = the hardware msr address,
+ *	.host = the value the hardware has when it doesn't run a guest,
+ *	.guest = the value the hardware has when it runs a guest,
+ * };
+ *
+ * These values have nothing to do with the emulated values the guest sees
+ * when it uses {RD,WR}MSR, which should be handled by the KVM context,
+ * specifically in the intel_pmu_{get,set}_msr().
+ */
+static struct perf_guest_switch_msr *intel_guest_get_msrs(int *nr, void *data)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct perf_guest_switch_msr *arr = cpuc->guest_switch_msrs;
+	struct kvm_pmu *kvm_pmu = (struct kvm_pmu *)data;
 	u64 intel_ctrl = hybrid(cpuc->pmu, intel_ctrl);
+	u64 pebs_mask = cpuc->pebs_enabled & x86_pmu.pebs_capable;
+	int global_ctrl, pebs_enable;
 
-	arr[0].msr = MSR_CORE_PERF_GLOBAL_CTRL;
-	arr[0].host = intel_ctrl & ~cpuc->intel_ctrl_guest_mask;
-	arr[0].guest = intel_ctrl & ~cpuc->intel_ctrl_host_mask;
-	if (x86_pmu.flags & PMU_FL_PEBS_ALL)
-		arr[0].guest &= ~cpuc->pebs_enabled;
-	else
-		arr[0].guest &= ~(cpuc->pebs_enabled & PEBS_COUNTER_MASK);
-	*nr = 1;
+	/*
+	 * In addition to obeying exclude_guest/exclude_host, remove bits being
+	 * used for PEBS when running a guest, because PEBS writes to virtual
+	 * addresses (not physical addresses).
+	 */
+	*nr = 0;
+	global_ctrl = (*nr)++;
+	arr[global_ctrl] = (struct perf_guest_switch_msr){
+		.msr = MSR_CORE_PERF_GLOBAL_CTRL,
+		.host = intel_ctrl & ~cpuc->intel_ctrl_guest_mask,
+		.guest = intel_ctrl & ~cpuc->intel_ctrl_host_mask & ~pebs_mask,
+	};
 
-	if (x86_pmu.pebs && x86_pmu.pebs_no_isolation) {
-		/*
-		 * If PMU counter has PEBS enabled it is not enough to
-		 * disable counter on a guest entry since PEBS memory
-		 * write can overshoot guest entry and corrupt guest
-		 * memory. Disabling PEBS solves the problem.
-		 *
-		 * Don't do this if the CPU already enforces it.
-		 */
-		arr[1].msr = MSR_IA32_PEBS_ENABLE;
-		arr[1].host = cpuc->pebs_enabled;
-		arr[1].guest = 0;
-		*nr = 2;
+	if (!x86_pmu.pebs)
+		return arr;
+
+	/*
+	 * If PMU counter has PEBS enabled it is not enough to
+	 * disable counter on a guest entry since PEBS memory
+	 * write can overshoot guest entry and corrupt guest
+	 * memory. Disabling PEBS solves the problem.
+	 *
+	 * Don't do this if the CPU already enforces it.
+	 */
+	if (x86_pmu.pebs_no_isolation) {
+		arr[(*nr)++] = (struct perf_guest_switch_msr){
+			.msr = MSR_IA32_PEBS_ENABLE,
+			.host = cpuc->pebs_enabled,
+			.guest = 0,
+		};
+		return arr;
+	}
+
+	if (!kvm_pmu || !x86_pmu.pebs_ept)
+		return arr;
+
+	arr[(*nr)++] = (struct perf_guest_switch_msr){
+		.msr = MSR_IA32_DS_AREA,
+		.host = (unsigned long)cpuc->ds,
+		.guest = kvm_pmu->ds_area,
+	};
+
+	if (x86_pmu.intel_cap.pebs_baseline) {
+		arr[(*nr)++] = (struct perf_guest_switch_msr){
+			.msr = MSR_PEBS_DATA_CFG,
+			.host = cpuc->pebs_data_cfg,
+			.guest = kvm_pmu->pebs_data_cfg,
+		};
+	}
+
+	pebs_enable = (*nr)++;
+	arr[pebs_enable] = (struct perf_guest_switch_msr){
+		.msr = MSR_IA32_PEBS_ENABLE,
+		.host = cpuc->pebs_enabled & ~cpuc->intel_ctrl_guest_mask,
+		.guest = pebs_mask & ~cpuc->intel_ctrl_host_mask,
+	};
+
+	if (arr[pebs_enable].host) {
+		/* Disable guest PEBS if host PEBS is enabled. */
+		arr[pebs_enable].guest = 0;
+	} else {
+		/* Disable guest PEBS thoroughly for cross-mapped PEBS counters. */
+		arr[pebs_enable].guest &= ~kvm_pmu->host_cross_mapped_mask;
+		arr[global_ctrl].guest &= ~kvm_pmu->host_cross_mapped_mask;
+		/* Set hw GLOBAL_CTRL bits for PEBS counter when it runs for guest */
+		arr[global_ctrl].guest |= arr[pebs_enable].guest;
 	}
 
 	return arr;
 }
 
-static struct perf_guest_switch_msr *core_guest_get_msrs(int *nr)
+static struct perf_guest_switch_msr *core_guest_get_msrs(int *nr, void *data)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct perf_guest_switch_msr *arr = cpuc->guest_switch_msrs;
@@ -4306,8 +4484,13 @@ cmt_get_event_constraints(struct cpu_hw_events *cpuc, int idx,
 	 */
 	if (event->attr.precise_ip == 3) {
 		/* Force instruction:ppp on PMC0, 1 and Fixed counter 0 */
-		if (constraint_match(&fixed0_constraint, event->hw.config))
-			return &fixed0_counter0_1_constraint;
+		if (constraint_match(&fixed0_constraint, event->hw.config)) {
+			/* The fixed counter 0 doesn't support LBR event logging. */
+			if (branch_sample_counters(event))
+				return &counter0_1_constraint;
+			else
+				return &fixed0_counter0_1_constraint;
+		}
 
 		switch (c->idxmsk64 & 0x3ull) {
 		case 0x1:
@@ -4489,7 +4672,7 @@ int intel_cpuc_prepare(struct cpu_hw_events *cpuc, int cpu)
 			goto err;
 	}
 
-	if (x86_pmu.flags & (PMU_FL_EXCL_CNTRS | PMU_FL_TFA)) {
+	if (x86_pmu.flags & (PMU_FL_EXCL_CNTRS | PMU_FL_TFA | PMU_FL_BR_CNTR)) {
 		size_t sz = X86_PMC_IDX_MAX * sizeof(struct event_constraint);
 
 		cpuc->constraint_list = kzalloc_node(sz, GFP_KERNEL, cpu_to_node(cpu));
@@ -5378,10 +5561,40 @@ static ssize_t branches_show(struct device *cdev,
 
 static DEVICE_ATTR_RO(branches);
 
+static ssize_t branch_counter_nr_show(struct device *cdev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", fls(x86_pmu.lbr_counters));
+}
+
+static DEVICE_ATTR_RO(branch_counter_nr);
+
+static ssize_t branch_counter_width_show(struct device *cdev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", LBR_INFO_BR_CNTR_BITS);
+}
+
+static DEVICE_ATTR_RO(branch_counter_width);
+
 static struct attribute *lbr_attrs[] = {
 	&dev_attr_branches.attr,
+	&dev_attr_branch_counter_nr.attr,
+	&dev_attr_branch_counter_width.attr,
 	NULL
 };
+
+static umode_t
+lbr_is_visible(struct kobject *kobj, struct attribute *attr, int i)
+{
+	/* branches */
+	if (i == 0)
+		return x86_pmu.lbr_nr ? attr->mode : 0;
+
+	return (x86_pmu.flags & PMU_FL_BR_CNTR) ? attr->mode : 0;
+}
 
 static char pmu_name_str[30];
 
@@ -5410,6 +5623,15 @@ static struct attribute *intel_pmu_attrs[] = {
 };
 
 static umode_t
+default_is_visible(struct kobject *kobj, struct attribute *attr, int i)
+{
+	if (attr == &dev_attr_allow_tsx_force_abort.attr)
+		return x86_pmu.flags & PMU_FL_TFA ? attr->mode : 0;
+
+	return attr->mode;
+}
+
+static umode_t
 tsx_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 {
 	return boot_cpu_has(X86_FEATURE_RTM) ? attr->mode : 0;
@@ -5431,28 +5653,27 @@ mem_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 }
 
 static umode_t
-lbr_is_visible(struct kobject *kobj, struct attribute *attr, int i)
-{
-	return x86_pmu.lbr_nr ? attr->mode : 0;
-}
-
-static umode_t
 exra_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 {
 	return x86_pmu.version >= 2 ? attr->mode : 0;
 }
 
 static umode_t
-default_is_visible(struct kobject *kobj, struct attribute *attr, int i)
+td_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 {
-	if (attr == &dev_attr_allow_tsx_force_abort.attr)
-		return x86_pmu.flags & PMU_FL_TFA ? attr->mode : 0;
+       /*
+        * Hide the perf metrics topdown events
+        * if the feature is not enumerated.
+        */
+       if (x86_pmu.num_topdown_events)
+               return x86_pmu.intel_cap.perf_metrics ? attr->mode : 0;
 
-	return attr->mode;
+       return attr->mode;
 }
 
 static struct attribute_group group_events_td  = {
 	.name = "events",
+	.is_visible = td_is_visible,
 };
 
 static struct attribute_group group_events_mem = {
@@ -5654,9 +5875,27 @@ static umode_t hybrid_format_is_visible(struct kobject *kobj,
 	return (cpu >= 0) && (pmu->cpu_type & pmu_attr->pmu_type) ? attr->mode : 0;
 }
 
+static umode_t hybrid_td_is_visible(struct kobject *kobj,
+                                   struct attribute *attr, int i)
+{
+       struct device *dev = kobj_to_dev(kobj);
+       struct x86_hybrid_pmu *pmu =
+                container_of(dev_get_drvdata(dev), struct x86_hybrid_pmu, pmu);
+
+       if (!is_attr_for_this_pmu(kobj, attr))
+               return 0;
+
+
+       /* Only the big core supports perf metrics */
+       if (pmu->cpu_type == hybrid_big)
+               return pmu->intel_cap.perf_metrics ? attr->mode : 0;
+
+       return attr->mode;
+}
+
 static struct attribute_group hybrid_group_events_td  = {
 	.name		= "events",
-	.is_visible	= hybrid_events_is_visible,
+	.is_visible	= hybrid_td_is_visible,
 };
 
 static struct attribute_group hybrid_group_events_mem = {
@@ -5878,6 +6117,7 @@ __init int intel_pmu_init(void)
 	x86_pmu.events_mask_len		= eax.split.mask_length;
 
 	x86_pmu.max_pebs_events		= min_t(unsigned, MAX_PEBS_EVENTS, x86_pmu.num_counters);
+	x86_pmu.pebs_capable		= PEBS_COUNTER_MASK;
 
 	/*
 	 * Quirk: v2 perfmon does not report fixed-purpose events, so
@@ -6062,6 +6302,7 @@ __init int intel_pmu_init(void)
 		x86_pmu.pebs_aliases = NULL;
 		x86_pmu.pebs_prec_dist = true;
 		x86_pmu.lbr_pt_coexist = true;
+		x86_pmu.pebs_capable = ~0ULL;
 		x86_pmu.flags |= PMU_FL_HAS_RSP_1;
 		x86_pmu.flags |= PMU_FL_PEBS_ALL;
 		x86_pmu.get_event_constraints = glp_get_event_constraints;
@@ -6421,6 +6662,7 @@ __init int intel_pmu_init(void)
 
 	case INTEL_FAM6_ICELAKE_X:
 	case INTEL_FAM6_ICELAKE_D:
+		x86_pmu.pebs_ept = 1;
 		pmem = true;
 		fallthrough;
 	case INTEL_FAM6_ICELAKE_L:
@@ -6463,9 +6705,17 @@ __init int intel_pmu_init(void)
 	case INTEL_FAM6_EMERALDRAPIDS_X:
 		x86_pmu.flags |= PMU_FL_MEM_LOADS_AUX;
 		x86_pmu.extra_regs = intel_spr_extra_regs;
-		fallthrough;
+		pr_cont("Sapphire Rapids events, ");
+		name = "sapphire_rapids";
+		goto glc_common;
+
 	case INTEL_FAM6_GRANITERAPIDS_X:
 	case INTEL_FAM6_GRANITERAPIDS_D:
+		x86_pmu.extra_regs = intel_gnr_extra_regs;
+		pr_cont("Granite Rapids events, ");
+		name = "granite_rapids";
+
+	glc_common:
 		pmem = true;
 		x86_pmu.late_ack = true;
 		memcpy(hw_cache_event_ids, spr_hw_cache_event_ids, sizeof(hw_cache_event_ids));
@@ -6473,12 +6723,12 @@ __init int intel_pmu_init(void)
 
 		x86_pmu.event_constraints = intel_spr_event_constraints;
 		x86_pmu.pebs_constraints = intel_spr_pebs_event_constraints;
-		if (!x86_pmu.extra_regs)
-			x86_pmu.extra_regs = intel_gnr_extra_regs;
 		x86_pmu.limit_period = spr_limit_period;
+		x86_pmu.pebs_ept = 1;
 		x86_pmu.pebs_aliases = NULL;
 		x86_pmu.pebs_prec_dist = true;
 		x86_pmu.pebs_block = true;
+		x86_pmu.pebs_capable = ~0ULL;
 		x86_pmu.flags |= PMU_FL_HAS_RSP_1;
 		x86_pmu.flags |= PMU_FL_NO_HT_SHARING;
 		x86_pmu.flags |= PMU_FL_PEBS_ALL;
@@ -6498,8 +6748,6 @@ __init int intel_pmu_init(void)
 		x86_pmu.num_topdown_events = 8;
 		x86_pmu.update_topdown_event = icl_update_topdown_event;
 		x86_pmu.set_topdown_event_period = icl_set_topdown_event_period;
-		pr_cont("Sapphire Rapids events, ");
-		name = "sapphire_rapids";
 		break;
 
 	case INTEL_FAM6_ALDERLAKE:
@@ -6524,6 +6772,7 @@ __init int intel_pmu_init(void)
 		x86_pmu.pebs_aliases = NULL;
 		x86_pmu.pebs_prec_dist = true;
 		x86_pmu.pebs_block = true;
+		x86_pmu.pebs_capable = ~0ULL;
 		x86_pmu.flags |= PMU_FL_HAS_RSP_1;
 		x86_pmu.flags |= PMU_FL_NO_HT_SHARING;
 		x86_pmu.flags |= PMU_FL_PEBS_ALL;

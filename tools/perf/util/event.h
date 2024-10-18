@@ -148,6 +148,7 @@ struct perf_sample {
 	void *raw_data;
 	struct ip_callchain *callchain;
 	struct branch_stack *branch_stack;
+	u64 *branch_stack_cntr;
 	struct regs_dump  user_regs;
 	struct regs_dump  intr_regs;
 	struct stack_dump user_stack;
@@ -415,5 +416,8 @@ bool perf_event_paranoid_check(int max_level);
 extern int sysctl_perf_event_max_stack;
 extern int sysctl_perf_event_max_contexts_per_stack;
 extern unsigned int proc_map_timeout;
+
+#define PAGE_SIZE_NAME_LEN	32
+char *get_page_size_name(u64 size, char *str);
 
 #endif /* __PERF_RECORD_H */

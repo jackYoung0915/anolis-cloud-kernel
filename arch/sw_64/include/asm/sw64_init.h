@@ -14,13 +14,10 @@ struct sw64_early_init_ops {
 };
 
 struct sw64_pci_init_ops {
-	int (*map_irq)(const struct pci_dev *dev, u8 slot, u8 pin);
 	unsigned long (*get_rc_enable)(unsigned long node);
 	void (*hose_init)(struct pci_controller *hose);
-	void (*set_rc_piu)(unsigned long node, unsigned long index);
-	int (*check_pci_linkup)(unsigned long node, unsigned long index);
-	void (*set_intx)(unsigned long node, unsigned long index,
-			unsigned long int_conf);
+	void (*set_rc_piu)(struct pci_controller *hose);
+	int (*check_pci_linkup)(struct pci_controller *hose);
 };
 
 
@@ -43,6 +40,13 @@ extern struct sw64_chip_ops *sw64_chip;
 extern struct sw64_chip_init_ops *sw64_chip_init;
 #ifdef CONFIG_PM
 extern struct syscore_ops io_syscore_ops;
+
+#define PME_CLEAR	0
+#define PME_WFW		1	/* wait for wake */
+#define	PME_PENDING	2
+
+extern int pme_state;
+
 #endif
 
 DECLARE_PER_CPU(unsigned long, hard_node_id);

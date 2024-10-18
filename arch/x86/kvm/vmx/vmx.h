@@ -94,6 +94,7 @@ union vmx_exit_reason {
 	u32 full;
 };
 
+void intel_pmu_cross_mapped_check(struct kvm_pmu *pmu);
 /*
  * The nested_vmx structure is part of vcpu_vmx, and holds information we need
  * for correct emulation of VMX (i.e., nested VMX) on this vcpu.

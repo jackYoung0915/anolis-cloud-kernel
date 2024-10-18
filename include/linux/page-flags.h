@@ -607,7 +607,7 @@ __PAGEFLAG(Inited, inited, PF_NO_COMPOUND)
  * Different with flags above, this flag is used only for fsdax mode.  It
  * indicates that this page->mapping is now under reflink case.
  */
-#define PAGE_MAPPING_DAX_SHARED	((void *)0x1)
+#define PAGE_MAPPING_DAX_SHARED	0x1UL
 
 
 static __always_inline int PageMappingFlags(struct page *page)

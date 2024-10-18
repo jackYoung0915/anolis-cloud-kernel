@@ -348,6 +348,7 @@ static ssize_t write_dyn_isolcpus(struct file *file, const char __user *buf,
 	update_wilds_cpumask(new_allowed, old_allowed);
 
 	rebuild_sched_domains();
+	update_group_balancer_root_cpumask();
 	workqueue_set_unbound_cpumask(new_allowed);
 
 free_all:

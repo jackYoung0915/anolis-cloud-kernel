@@ -489,6 +489,10 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, const struct qstr *name
 		goto out_put_forget;
 	if (fuse_invalid_attr(&outarg->attr))
 		goto out_put_forget;
+	if (outarg->nodeid == FUSE_ROOT_ID && outarg->generation != 0) {
+		pr_warn_once("root generation should be zero\n");
+		outarg->generation = 0;
+	}
 
 	*inode = fuse_iget(sb, outarg->nodeid, outarg->generation,
 			   &outarg->attr, entry_attr_timeout(outarg),
@@ -1335,7 +1339,7 @@ static int fuse_perm_getattr(struct inode *inode, int mask)
  *
  * 1) Local access checking ('default_permissions' mount option) based
  * on file mode.  This is the plain old disk filesystem permission
- * modell.
+ * model.
  *
  * 2) "Remote" access checking, where server is responsible for
  * checking permission in each inode operation.  An exception to this

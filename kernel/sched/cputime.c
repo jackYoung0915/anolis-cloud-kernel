@@ -21,14 +21,29 @@ DEFINE_PER_CPU(struct irqtime, cpu_irqtime);
 
 static int sched_clock_irqtime;
 
+static int no_sched_clock_irqtime;
+
+static int __init irqtime_account_setup(char *str)
+{
+	if (!strcmp(str, "off")) {
+		no_sched_clock_irqtime = 1;
+		pr_info("The irqtime account is currently disabled!");
+	}
+	return 1;
+}
+
+__setup("irqtime_account=", irqtime_account_setup);
+
 void enable_sched_clock_irqtime(void)
 {
-	sched_clock_irqtime = 1;
+	if (!no_sched_clock_irqtime)
+		sched_clock_irqtime = 1;
 }
 
 void disable_sched_clock_irqtime(void)
 {
-	sched_clock_irqtime = 0;
+	if (!no_sched_clock_irqtime)
+		sched_clock_irqtime = 0;
 }
 
 static void irqtime_account_delta(struct irqtime *irqtime, u64 delta,
@@ -607,6 +622,12 @@ void cputime_adjust(struct task_cputime *curr, struct prev_cputime *prev,
 	}
 
 	stime = mul_u64_u64_div_u64(stime, rtime, stime + utime);
+	/*
+	 * Because mul_u64_u64_div_u64() can approximate on some
+	 * achitectures; enforce the constraint that: a*b/(b+c) <= a.
+	 */
+	if (unlikely(stime > rtime))
+		stime = rtime;
 
 update:
 	/*

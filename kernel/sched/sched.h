@@ -87,6 +87,9 @@
 
 struct rq;
 struct cpuidle_state;
+#ifdef CONFIG_GROUP_BALANCER
+struct group_balancer_sched_domain;
+#endif
 
 /* task_struct::on_rq states: */
 #define TASK_ON_RQ_QUEUED	1
@@ -380,9 +383,8 @@ extern void __setparam_dl(struct task_struct *p, const struct sched_attr *attr);
 extern void __getparam_dl(struct task_struct *p, struct sched_attr *attr);
 extern bool __checkparam_dl(const struct sched_attr *attr);
 extern bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr);
-extern int  dl_task_can_attach(struct task_struct *p, const struct cpumask *cs_cpus_allowed);
 extern int  dl_cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpumask *trial);
-extern bool dl_cpu_busy(unsigned int cpu);
+extern int  dl_bw_check_overflow(int cpu);
 
 #ifdef CONFIG_CGROUP_SCHED
 
@@ -548,7 +550,19 @@ struct task_group {
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 	unsigned int		ht_ratio;
 #endif
-	CK_KABI_USE(1, long priority)
+#ifdef CONFIG_GROUP_BALANCER
+	const cpumask_t		*soft_cpus_allowed_ptr;
+	cpumask_t		soft_cpus_allowed;
+	int			soft_cpus_version;
+	int			specs_ratio;
+	struct rb_node		gb_node;
+	struct group_balancer_sched_domain *gb_sd;
+	struct group_balancer_sched_domain *prev_gb_sd;
+	bool			group_balancer;
+#endif
+	long			priority;
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -598,7 +612,7 @@ extern void unregister_fair_sched_group(struct task_group *tg);
 extern void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 			struct sched_entity *se, int cpu,
 			struct sched_entity *parent);
-extern void init_cfs_bandwidth(struct cfs_bandwidth *cfs_b);
+extern void init_cfs_bandwidth(struct cfs_bandwidth *cfs_b, struct cfs_bandwidth *parent);
 
 extern void start_cfs_bandwidth(struct cfs_bandwidth *cfs_b, int init);
 extern void unthrottle_cfs_rq(struct cfs_rq *cfs_rq);
@@ -688,11 +702,11 @@ struct cfs_rq {
 
 #ifdef CONFIG_GROUP_IDENTITY
 	unsigned int		nr_tasks;
+	unsigned int		h_nr_expel_immune;
 	u64			min_under_vruntime;
-#ifdef CONFIG_SCHED_SMT
 	u64			expel_spread;
 	u64			expel_start;
-	unsigned int		h_nr_expel_immune;
+#ifdef CONFIG_SCHED_SMT
 	struct list_head	expel_list;
 #endif
 	struct rb_root_cached	under_timeline;
@@ -778,16 +792,12 @@ struct cfs_rq {
 	unsigned long		nr_uninterruptible;
 
 #ifdef CONFIG_SMP
-	CK_KABI_USE(1, 2, struct list_head throttled_csd_list)
-#else
+	struct list_head	throttled_csd_list;
+#endif
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
-#endif
-#if defined(CONFIG_GROUP_IDENTITY) && !defined(CONFIG_SCHED_SMT)
-	CK_KABI_USE(3, unsigned int h_nr_expel_immune)
-#else
 	CK_KABI_RESERVE(3)
-#endif
 	CK_KABI_RESERVE(4)
 	CK_KABI_RESERVE(5)
 	CK_KABI_RESERVE(6)
@@ -1323,6 +1333,7 @@ struct rq {
 	unsigned int		core_forceidle_seq;
 	unsigned int		core_sibidle_occupation;
 	u64			core_sibidle_start;
+	u64			core_sibidle_start_task;
 	unsigned int		core_id;
 	unsigned int		core_sibidle_count;
 	bool			in_forceidle;
@@ -1330,35 +1341,48 @@ struct rq {
 #endif
 
 #ifdef CONFIG_SCHED_ACPU
-	u64 acpu_idle_sum;
-	u64 sibidle_sum;
-	u64 last_acpu_update_time;
+	/* acpu_idle_sum is the snapshot of sibling's sibidle_sum. */
+	u64			acpu_idle_sum;
+	/* sibidle_sum is the time that this rq is busy while its sibling is idle. */
+	u64			sibidle_sum;
+	/*
+	 * last_acpu_update_time is the timestamp of rq_clock() that update_acpu() is called
+	 * last time.
+	 */
+	u64			last_acpu_update_time;
+	/* acpu_idle_task_sum is the snapshot of sibling's sibidle_task_sum. */
+	u64			acpu_idle_task_sum;
+	/*
+	 * sibidle_task_sum is the time that this rq is busy while its sibiling is busy,
+	 * excluding irq time.
+	 */
+	u64			sibidle_task_sum;
+	/*
+	 * last_acpu_update_time_task is the timestamp of rq_clock_task() that update_acpu()
+	 * is called last time.
+	 */
+	u64			last_acpu_update_time_task;
 #endif
 
 #if defined(CONFIG_CFS_BANDWIDTH) && defined(CONFIG_SMP)
-	CK_KABI_USE(1, 2, struct list_head cfsb_csd_list)
-#else
-	CK_KABI_RESERVE(1)
-	CK_KABI_RESERVE(2)
+	call_single_data_t      cfsb_csd;
+	struct list_head	cfsb_csd_list;
 #endif
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) && defined(CONFIG_ARM64)
-	CK_KABI_USE(3, u64 prev_irq_time);
-#else
+	u64			prev_irq_time;
+#endif
+
+#ifdef CONFIG_GROUP_BALANCER
+	struct group_balancer_sched_domain *gb_sd;
+#endif
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
-#endif
-#ifdef CONFIG_SCHED_CORE
-	CK_KABI_USE(4, u64 core_sibidle_start_task)
-#else
 	CK_KABI_RESERVE(4)
-#endif
-#ifdef CONFIG_SCHED_ACPU
-	CK_KABI_USE(5, u64 sibidle_task_sum)
-	CK_KABI_USE(6, u64 last_acpu_update_time_task)
-#else
 	CK_KABI_RESERVE(5)
 	CK_KABI_RESERVE(6)
-#endif
 	CK_KABI_RESERVE(7)
 	CK_KABI_RESERVE(8)
 };
@@ -1412,11 +1436,6 @@ DECLARE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 #define task_rq(p)		cpu_rq(task_cpu(p))
 #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
 #define raw_rq()		raw_cpu_ptr(&runqueues)
-
-#if defined(CONFIG_CFS_BANDWIDTH) && defined(CONFIG_SMP)
-DECLARE_PER_CPU_SHARED_ALIGNED(call_single_data_t, cfsb_csd);
-#define cpu_cfsb_csd(cpu)	(&per_cpu(cfsb_csd, (cpu)))
-#endif
 
 struct sched_group;
 #ifdef CONFIG_SCHED_CORE
@@ -1521,6 +1540,9 @@ static inline u64 get_forceidled_sum(struct rq *rq)
 	const int cpu = cpu_of(rq);
 	const struct cpumask *smt_mask = cpu_smt_mask(cpu);
 	int i;
+
+	if (unlikely(!smt_mask))
+		return 0;
 
 	/* We assume smt == 2 here. */
 	for_each_cpu(i, smt_mask) {
@@ -2626,7 +2648,7 @@ extern void init_sched_dl_class(void);
 extern void init_sched_rt_class(void);
 extern void init_sched_fair_class(void);
 
-extern void reweight_task(struct task_struct *p, int prio);
+extern void reweight_task(struct task_struct *p, const struct load_weight *lw);
 
 extern void resched_curr(struct rq *rq);
 extern void resched_cpu(int cpu);
@@ -3092,6 +3114,23 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags) {}
 #ifdef CONFIG_UCLAMP_TASK
 unsigned long uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id);
 
+static inline unsigned long uclamp_rq_get(struct rq *rq,
+					  enum uclamp_id clamp_id)
+{
+	return READ_ONCE(rq->uclamp[clamp_id].value);
+}
+
+static inline void uclamp_rq_set(struct rq *rq, enum uclamp_id clamp_id,
+				 unsigned int value)
+{
+	WRITE_ONCE(rq->uclamp[clamp_id].value, value);
+}
+
+static inline bool uclamp_rq_is_idle(struct rq *rq)
+{
+	return rq->uclamp_flags & UCLAMP_FLAG_IDLE;
+}
+
 /**
  * uclamp_rq_util_with - clamp @util with @rq and @p effective uclamp values.
  * @rq:		The rq to clamp against. Must not be NULL.
@@ -3127,12 +3166,12 @@ unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 		 * Ignore last runnable task's max clamp, as this task will
 		 * reset it. Similarly, no need to read the rq's min clamp.
 		 */
-		if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
+		if (uclamp_rq_is_idle(rq))
 			goto out;
 	}
 
-	min_util = max_t(unsigned long, min_util, READ_ONCE(rq->uclamp[UCLAMP_MIN].value));
-	max_util = max_t(unsigned long, max_util, READ_ONCE(rq->uclamp[UCLAMP_MAX].value));
+	min_util = max_t(unsigned long, min_util, uclamp_rq_get(rq, UCLAMP_MIN));
+	max_util = max_t(unsigned long, max_util, uclamp_rq_get(rq, UCLAMP_MAX));
 out:
 	/*
 	 * Since CPU's {min,max}_util clamps are MAX aggregated considering
@@ -3158,6 +3197,15 @@ static inline bool uclamp_is_used(void)
 	return static_branch_likely(&sched_uclamp_used);
 }
 #else /* CONFIG_UCLAMP_TASK */
+static inline unsigned long uclamp_eff_value(struct task_struct *p,
+					     enum uclamp_id clamp_id)
+{
+	if (clamp_id == UCLAMP_MIN)
+		return 0;
+
+	return SCHED_CAPACITY_SCALE;
+}
+
 static inline
 unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 				  struct task_struct *p)
@@ -3166,6 +3214,25 @@ unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 }
 
 static inline bool uclamp_is_used(void)
+{
+	return false;
+}
+
+static inline unsigned long uclamp_rq_get(struct rq *rq,
+					  enum uclamp_id clamp_id)
+{
+	if (clamp_id == UCLAMP_MIN)
+		return 0;
+
+	return SCHED_CAPACITY_SCALE;
+}
+
+static inline void uclamp_rq_set(struct rq *rq, enum uclamp_id clamp_id,
+				 unsigned int value)
+{
+}
+
+static inline bool uclamp_rq_is_idle(struct rq *rq)
 {
 	return false;
 }
@@ -3367,10 +3434,55 @@ long tg_get_cfs_quota(struct task_group *tg);
 long tg_get_cfs_period(struct task_group *tg);
 #endif
 
-void swake_up_all_locked(struct swait_queue_head *q);
-void __prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait);
-
 #ifdef CONFIG_HT_STABLE
 extern void wake_up_idle_ht(struct rq *rq);
 extern bool need_ht_stable(void);
+#endif
+extern void swake_up_all_locked(struct swait_queue_head *q);
+extern void __prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait);
+
+#ifdef CONFIG_PREEMPT_DYNAMIC
+extern int preempt_dynamic_mode;
+extern int sched_dynamic_mode(const char *str);
+extern void sched_dynamic_update(int mode);
+#endif
+
+#ifdef CONFIG_GROUP_BALANCER
+extern bool group_balancer_enabled(void);
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
+{
+	if (group_balancer_enabled()) {
+		struct task_group *tg = task_group(p);
+
+		if (unlikely(p->soft_cpus_version != tg->soft_cpus_version)) {
+			cpumask_and(&p->cpus_allowed_alt, p->cpus_ptr,
+				    tg->soft_cpus_allowed_ptr);
+			p->soft_cpus_version = tg->soft_cpus_version;
+		}
+		if (!cpumask_empty(&p->cpus_allowed_alt))
+			return &p->cpus_allowed_alt;
+	}
+	return p->cpus_ptr;
+}
+
+static inline void tg_inc_soft_cpus_version(struct task_group *tg)
+{
+	tg->soft_cpus_version++;
+	if (unlikely(tg->soft_cpus_version < 0))
+		tg->soft_cpus_version = 0;
+}
+
+extern void sched_init_group_balancer_sched_domains(void);
+extern void sched_clear_group_balancer_sched_domains(void);
+extern void tg_set_specs_ratio(struct task_group *tg);
+extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg);
+extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg);
+extern void update_group_balancer_root_cpumask(void);
+#else
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
+{
+	return p->cpus_ptr;
+}
+static inline void tg_set_specs_ratio(struct task_group *tg) { }
+static inline void update_group_balancer_root_cpumask(void) { }
 #endif

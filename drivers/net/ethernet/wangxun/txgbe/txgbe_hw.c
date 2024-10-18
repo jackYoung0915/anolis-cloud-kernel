@@ -603,7 +603,7 @@ s32 txgbe_led_off(struct txgbe_hw *hw, u32 index)
 static s32 txgbe_get_eeprom_semaphore(struct txgbe_hw *hw)
 {
 	s32 status = TXGBE_ERR_EEPROM;
-	u32 timeout = 2000;
+	u32 timeout = 4000;
 	u32 i;
 	u32 swsm;
 
@@ -3143,6 +3143,7 @@ s32 txgbe_init_ops(struct txgbe_hw *hw)
 	phy->ops.read_i2c_byte = txgbe_read_i2c_byte;
 	phy->ops.read_i2c_sff8472 = txgbe_read_i2c_sff8472;
 	phy->ops.read_i2c_eeprom = txgbe_read_i2c_eeprom;
+	phy->ops.read_i2c_sfp_phy = txgbe_read_i2c_sfp_phy;
 	phy->ops.identify_sfp = txgbe_identify_module;
 	phy->ops.check_overtemp = txgbe_check_overtemp;
 	phy->ops.identify = txgbe_identify_phy;
@@ -5853,6 +5854,22 @@ s32 txgbe_check_mac_link(struct txgbe_hw *hw, u32 *speed,
 			*link_up = true;
 		else
 			*link_up = false;
+	}
+
+	if (hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core0 ||
+	    hw->phy.sfp_type == txgbe_sfp_type_1g_cu_core1) {
+		*link_up = hw->f2c_mod_status;
+
+		if (*link_up) {
+			/* recover led configure when link up */
+			wr32(hw, TXGBE_CFG_LED_CTL, 0);
+		} else {
+			/* over write led when link down */
+			hw->mac.ops.led_off(hw, TXGBE_LED_LINK_UP |
+								TXGBE_LED_LINK_10G |
+								TXGBE_LED_LINK_1G |
+								TXGBE_LED_LINK_ACTIVE);
+		}
 	}
 
 	if (*link_up) {

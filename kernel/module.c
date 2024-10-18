@@ -68,6 +68,72 @@
 #define ARCH_SHF_SMALL 0
 #endif
 
+#ifdef CONFIG_MODULE_SIG
+static char *sig_enforce_subsys = "";
+
+module_param(sig_enforce_subsys, charp, 0644);
+MODULE_PARM_DESC(sig_enforce_subsys, "Enforce subsys modules signature check");
+
+enum modules_subsys {
+	MODULE_SUBSYS_GPU,
+	MODULE_SUBSYS_BLOCK,
+	MODULE_SUBSYS_NET,
+};
+
+static void set_module_subsys(struct load_info *info, const char *name)
+{
+	char *key_intf_blk = "device_add_disk";
+	char *key_intf_scsi = "scsi_host_alloc";
+	char *key_intf_net = "register_netdev";
+	char *key_intf_gpu = "drm_";
+
+	if (info->subsys)
+		return;
+
+	if (!strncmp(name, key_intf_gpu, strlen(key_intf_gpu)))
+		set_bit(MODULE_SUBSYS_GPU, &info->subsys);
+
+	if (!strncmp(name, key_intf_blk, strlen(key_intf_blk)) ||
+	    !strncmp(name, key_intf_scsi, strlen(key_intf_scsi)))
+		set_bit(MODULE_SUBSYS_BLOCK, &info->subsys);
+
+	/* register_netdev or register_netdevice */
+	if (!strncmp(name, key_intf_net, strlen(key_intf_net)))
+		set_bit(MODULE_SUBSYS_NET, &info->subsys);
+}
+
+static int force_subsys_sig_check(struct load_info *info)
+{
+	if (info->sig_ok)
+		return 0;
+
+	if (test_bit(MODULE_SUBSYS_GPU, &info->subsys) &&
+	    parse_option_str(sig_enforce_subsys, "gpu"))
+		goto err;
+
+	if (test_bit(MODULE_SUBSYS_BLOCK, &info->subsys) &&
+	    parse_option_str(sig_enforce_subsys, "block"))
+		goto err;
+
+	if (test_bit(MODULE_SUBSYS_NET, &info->subsys) &&
+	    parse_option_str(sig_enforce_subsys, "net"))
+		goto err;
+
+	return 0;
+err:
+	pr_notice("%s: Loading is rejected, because of wrong signature or key missing!\n",
+		  info->name);
+	return -EKEYREJECTED;
+}
+#else
+static void set_module_subsys(struct load_info *info, const char *name) {}
+
+static int force_subsys_sig_check(struct load_info *info)
+{
+	return 0;
+}
+#endif
+
 /*
  * Modules' sections will be aligned on page boundaries
  * to ensure complete separation of code and data, but
@@ -298,6 +364,29 @@ EXPORT_SYMBOL(is_module_sig_enforced);
 /* Block module loading/unloading? */
 int modules_disabled = 0;
 core_param(nomodule, modules_disabled, bint, 0);
+
+unsigned int oot_page_limit = -1;
+module_param(oot_page_limit, uint, 0600);
+
+char oot_list[256];
+
+static int set_oot_list(const char *list, const struct kernel_param *kp)
+{
+	strncpy((char *)kp->arg, list, 255);
+
+	return 0;
+}
+
+static int get_oot_list(char *buffer, const struct kernel_param *kp)
+{
+	return sprintf(buffer, "%s\n", (char *)kp->arg);
+}
+
+static const struct kernel_param_ops oot_list_param_ops = {
+	.set = set_oot_list,
+	.get = get_oot_list,
+};
+module_param_cb(oot_list, &oot_list_param_ops, oot_list, 0600);
 
 /* Waiting for a module to finish initializing? */
 static DECLARE_WAIT_QUEUE_HEAD(module_wq);
@@ -589,6 +678,57 @@ static bool find_exported_symbol_in_section(const struct symsearch *syms,
 		return true;
 
 	return false;
+}
+
+#define OOT_POOL_NUM	16
+
+struct redirect_sym {
+	char *src_name;
+	char *dst_name[OOT_POOL_NUM];
+};
+
+#define DEFINE_REDIRECT_SYM(__src_name, __dst_name)			\
+{									\
+	.src_name = __src_name,						\
+	.dst_name = {							\
+		__dst_name "_0",					\
+		__dst_name "_1",					\
+		__dst_name "_2",					\
+		__dst_name "_3",					\
+		__dst_name "_4",					\
+		__dst_name "_5",					\
+		__dst_name "_6",					\
+		__dst_name "_7",					\
+		__dst_name "_8",					\
+		__dst_name "_9",					\
+		__dst_name "_10",					\
+		__dst_name "_11",					\
+		__dst_name "_12",					\
+		__dst_name "_13",					\
+		__dst_name "_14",					\
+		__dst_name "_15",					\
+	}								\
+}
+
+static struct redirect_sym redirect_syms[] = {
+	DEFINE_REDIRECT_SYM("kmalloc_caches", "oot_kmalloc_caches"),
+	DEFINE_REDIRECT_SYM("__kmalloc", "oot___kmalloc"),
+	DEFINE_REDIRECT_SYM("__kmalloc_node", "oot___kmalloc_node"),
+	{},
+};
+
+static const char *find_true_name(const char *name, struct module *mod)
+{
+	struct redirect_sym *rsym;
+
+	if (likely(mod->oot_isolation_index == -1))
+		return name;
+
+	for (rsym = redirect_syms; rsym->src_name; rsym++)
+		if (!strcmp(name, rsym->src_name))
+			return rsym->dst_name[mod->oot_isolation_index];
+
+	return name;
 }
 
 /* Find an exported symbol and return it, along with, (optional) crc and
@@ -1330,7 +1470,7 @@ static int check_version(const struct load_info *info,
 	for (i = 0; i < num_versions; i++) {
 		u32 crcval;
 
-		if (strcmp(versions[i].name, symname) != 0)
+		if (strcmp(versions[i].name, find_true_name(symname, mod)) != 0)
 			continue;
 
 		if (IS_ENABLED(CONFIG_MODULE_REL_CRCS))
@@ -1476,7 +1616,7 @@ static const struct kernel_symbol *resolve_symbol(struct module *mod,
 	 */
 	sched_annotate_sleep();
 	mutex_lock(&module_mutex);
-	sym = find_symbol(name, &owner, &crc, &license,
+	sym = find_symbol(find_true_name(name, mod), &owner, &crc, &license,
 			  !(mod->taints & (1 << TAINT_PROPRIETARY_MODULE)), true);
 	if (!sym)
 		goto unlock;
@@ -2229,6 +2369,61 @@ void __weak module_arch_freeing_init(struct module *mod)
 {
 }
 
+
+struct module *oot_table[OOT_POOL_NUM];
+
+static void get_oot_mempool(struct module *mod)
+{
+	int i;
+	char *s, *token, *tmp;
+	bool in_list = false;
+
+	mod->oot_isolation_index = -1;
+
+	s = kstrdup(oot_list, GFP_KERNEL);
+	if (!s)
+		return;
+
+	tmp = strstrip(s);
+	for (token = strsep(&tmp, ","); token != NULL;
+						token = strsep(&tmp, ",")) {
+		if (!strcmp(token, mod->name)) {
+			in_list = true;
+			break;
+		}
+	}
+	kfree(s);
+
+	if (!in_list)
+		return;
+
+	mutex_lock(&module_mutex);
+	for (i = 0; i < OOT_POOL_NUM; i++) {
+		if (!oot_table[i]) {
+			oot_table[i] = mod;
+			mod->oot_isolation_index = i;
+			pr_info("Module %s use oot-kmalloc-%d.\n", mod->name, i);
+			break;
+		}
+	}
+	mutex_unlock(&module_mutex);
+	if (mod->oot_isolation_index == -1)
+		pr_info("Module %s can't use oot-kmalloc because pool exhausted.\n", mod->name);
+}
+
+static void put_oot_mempool(struct module *mod)
+{
+	if (mod->oot_isolation_index == -1)
+		return;
+
+	mutex_lock(&module_mutex);
+	if (oot_table[mod->oot_isolation_index] == mod)
+		oot_table[mod->oot_isolation_index] = NULL;
+	else
+		WARN_ON("oot mempool dismatch with owner!!!\n");
+	mutex_unlock(&module_mutex);
+}
+
 /* Free a module, remove from lists, etc. */
 static void free_module(struct module *mod)
 {
@@ -2241,6 +2436,8 @@ static void free_module(struct module *mod)
 	mutex_lock(&module_mutex);
 	mod->state = MODULE_STATE_UNFORMED;
 	mutex_unlock(&module_mutex);
+
+	put_oot_mempool(mod);
 
 	/* Remove dynamic debug info */
 	ddebug_remove_module(mod->name);
@@ -2360,7 +2557,7 @@ static bool ignore_undef_symbol(Elf_Half emachine, const char *name)
 }
 
 /* Change all symbols so that st_value encodes the pointer directly. */
-static int simplify_symbols(struct module *mod, const struct load_info *info)
+static int simplify_symbols(struct module *mod, struct load_info *info)
 {
 	Elf_Shdr *symsec = &info->sechdrs[info->index.sym];
 	Elf_Sym *sym = (void *)symsec->sh_addr;
@@ -2400,6 +2597,7 @@ static int simplify_symbols(struct module *mod, const struct load_info *info)
 			ksym = resolve_symbol_wait(mod, info, name);
 			/* Ok if resolved.  */
 			if (ksym && !IS_ERR(ksym)) {
+				set_module_subsys(info, name);
 				sym[i].st_value = kernel_symbol_value(ksym);
 				break;
 			}
@@ -4048,8 +4246,14 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	/* Set up MODINFO_ATTR fields */
 	setup_modinfo(mod, info);
 
+	get_oot_mempool(mod);
+
 	/* Fix up syms, so that st_value is a pointer to location. */
 	err = simplify_symbols(mod, info);
+	if (err < 0)
+		goto free_modinfo;
+
+	err = force_subsys_sig_check(info);
 	if (err < 0)
 		goto free_modinfo;
 
@@ -4138,6 +4342,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
  free_arch_cleanup:
 	module_arch_cleanup(mod);
  free_modinfo:
+	put_oot_mempool(mod);
 	free_modinfo(mod);
  free_unload:
 	module_unload_free(mod);

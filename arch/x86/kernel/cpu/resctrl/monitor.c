@@ -22,6 +22,7 @@
 
 #include <asm/cpu_device_id.h>
 #include <asm/resctrl.h>
+#include <asm/intel-family.h>
 
 #include "internal.h"
 
@@ -105,6 +106,7 @@ static struct arch_mbm_state *get_arch_mbm_state(struct rdt_hw_domain *hw_dom,
 {
 	switch (eventid) {
 	case QOS_L3_OCCUP_EVENT_ID:
+	case QOS_MC_MBM_BPS_EVENT_ID:
 		return NULL;
 	case QOS_L3_MBM_TOTAL_EVENT_ID:
 		return &hw_dom->arch_mbm_total[rmid];
@@ -128,6 +130,23 @@ void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
 	am = get_arch_mbm_state(hw_dom, rmid, eventid);
 	if (am)
 		memset(am, 0, sizeof(*am));
+}
+
+/*
+ * Assumes that hardware counters are also reset and thus that there is
+ * no need to record initial non-zero counts.
+ */
+void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d)
+{
+	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+
+	if (resctrl_arch_is_mbm_total_enabled())
+		memset(hw_dom->arch_mbm_total, 0,
+		       sizeof(*hw_dom->arch_mbm_total) * r->mon.num_rmid);
+
+	if (resctrl_arch_is_mbm_local_enabled())
+		memset(hw_dom->arch_mbm_local, 0,
+		       sizeof(*hw_dom->arch_mbm_local) * r->mon.num_rmid);
 }
 
 static u64 mbm_overflow_count(u64 prev_msr, u64 cur_msr, unsigned int width)
@@ -242,10 +261,11 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	unsigned int mbm_offset = boot_cpu_data.x86_cache_mbm_width_offset;
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 	unsigned int threshold;
+	u32 eax, ebx, ecx, edx;
 
 	resctrl_rmid_realloc_limit = boot_cpu_data.x86_cache_size * 1024;
 	hw_res->mon_scale = boot_cpu_data.x86_cache_occ_scale;
-	r->num_rmid = boot_cpu_data.x86_cache_max_rmid + 1;
+	r->mon.num_rmid = boot_cpu_data.x86_cache_max_rmid + 1;
 	hw_res->mbm_width = MBM_CNTR_WIDTH_BASE;
 
 	if (mbm_offset > 0 && mbm_offset <= MBM_CNTR_WIDTH_OFFSET_MAX)
@@ -253,14 +273,42 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	else if (mbm_offset > MBM_CNTR_WIDTH_OFFSET_MAX)
 		pr_warn("Ignoring impossible MBM counter offset\n");
 
-	/*
-	 * A reasonable upper limit on the max threshold is the number
-	 * of lines tagged per RMID if all RMIDs have the same number of
-	 * lines tagged in the LLC.
-	 *
-	 * For a 35MB LLC and 56 RMIDs, this is ~1.8% of the LLC.
-	 */
-	threshold = resctrl_rmid_realloc_limit / r->num_rmid;
+	if (boot_cpu_data.x86_model == INTEL_FAM6_SKYLAKE_X &&
+	    boot_cpu_data.x86_stepping <= 4) {
+		/*
+		 * Due to tests on Skylake server, in some cases the
+		 * RMIDs are always marked busy because the occupancy values never drop
+		 * to less than cache occupancy threshold. This may lead to unexpected
+		 * out of RMIDs.
+		 *
+		 * Workaround: set default cache occupancy threshold as cache size on
+		 * Skylake server. When a RMID is freed, the RMID entry added to limbo
+		 * list will never be marked busy. It will be moved to free list
+		 * immediately.
+		 */
+		threshold = resctrl_rmid_realloc_limit;
+	} else {
+		/*
+		 * A reasonable upper limit on the max threshold is the number
+		 * of lines tagged per RMID if all RMIDs have the same number of
+		 * lines tagged in the LLC.
+		 *
+		 * For a 35MB LLC and 56 RMIDs, this is ~1.8% of the LLC.
+		 */
+		threshold = resctrl_rmid_realloc_limit / r->mon.num_rmid;
+	}
+
+	if (rdt_cpu_has(X86_FEATURE_ABMC)) {
+		r->mon.mbm_cntr_assignable = true;
+		/*
+		 * Query CPUID_Fn80000020_EBX_x05 for number of
+		 * ABMC counters.
+		 */
+		cpuid_count(0x80000020, 5, &eax, &ebx, &ecx, &edx);
+		r->mon.num_mbm_cntrs = (ebx & 0xFFFF) + 1;
+		if (WARN_ON(r->mon.num_mbm_cntrs > 64))
+			r->mon.num_mbm_cntrs = 64;
+	}
 
 	/*
 	 * Because num_rmid may not be a power of two, round the value
@@ -272,6 +320,32 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	r->mon_capable = true;
 
 	return 0;
+}
+
+void resctrl_mbm_evt_config_init(struct rdt_hw_domain *hw_dom)
+{
+	unsigned int index;
+	u64 msrval;
+
+	/*
+	 * Read the configuration registers QOS_EVT_CFG_n, where <n> is
+	 * the BMEC event number (EvtID).
+	 */
+	if (resctrl_arch_is_mbm_total_configurable()) {
+		index = mon_event_config_index_get(QOS_L3_MBM_TOTAL_EVENT_ID);
+		rdmsrl(MSR_IA32_EVT_CFG_BASE + index, msrval);
+		hw_dom->mbm_total_cfg = msrval & MAX_EVT_CONFIG_BITS;
+	} else {
+		hw_dom->mbm_total_cfg = INVALID_CONFIG_VALUE;
+	}
+
+	if (resctrl_arch_is_mbm_local_configurable()) {
+		index = mon_event_config_index_get(QOS_L3_MBM_LOCAL_EVENT_ID);
+		rdmsrl(MSR_IA32_EVT_CFG_BASE + index, msrval);
+		hw_dom->mbm_local_cfg = msrval & MAX_EVT_CONFIG_BITS;
+	} else {
+		hw_dom->mbm_total_cfg = INVALID_CONFIG_VALUE;
+	}
 }
 
 void __init intel_rdt_mbm_apply_quirk(void)

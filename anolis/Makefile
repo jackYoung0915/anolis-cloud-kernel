@@ -26,7 +26,7 @@ dist-genrpmtree: dist-check
 dist-rpms: dist-genrpmtree dist-check
 	sh buildpkg.sh
 
-DIST_CONFIG_TARGETS := dist-defconfig dist-debug-defconfig dist-configs dist-configs-update dist-configs-move dist-configs-import dist-configs-export dist-configs-help
+DIST_CONFIG_TARGETS := dist-defconfig dist-debug-defconfig dist-configs dist-configs-update dist-configs-move dist-configs-import dist-configs-export dist-configs-modify dist-configs-check dist-configs-help
 
 $(DIST_CONFIG_TARGETS):
 	make -C configs/ $@
@@ -79,10 +79,11 @@ help:
 	@echo 'the environment variables that could override:'
 	@echo '    DIST                 - the distribution suffix, eg: .an7, .an8, .an23'
 	@echo '    DIST_OUTPUT          - the output directory, default: $(DIST_SHORT_OUTPUT)'
-	@echo '    DIST_BUILD_MODE      - the build mode. optional: official/nightly/devel/diy'
+	@echo '    DIST_BUILD_MODE      - the build mode. optional: official/nightly/gcov/devel/diy'
 	@echo '                           !!! NOTE: BE CAUTIOUS ABOUT USING official BUILD !!!'
 	@echo '                             - official build. kernel version: $(DIST_KERNELVERSION)-$(DIST_OFFICIAL_PKGRELEASEVERION), with srpm'
 	@echo '                             - nightly build. kernel version: $(DIST_KERNELVERSION)-$(DIST_UNOFFICIAL_PKGRELEASEVERION), with srpm'
+	@echo '                             - gcov build. kernel version: $(DIST_KERNELVERSION)-$(DIST_GCOV_PKGRELEASEVERION), with srpm'
 	@echo '                             - devel build. kernel version: $(DIST_KERNELVERSION)-$(DIST_UNOFFICIAL_PKGRELEASEVERION), without srpm'
 	@echo '                             - diy build. kernel version: $(DIST_KERNELVERSION)-$(DIST_DIY_PKGRELEASEVERION), with srpm'
 	@echo '    DIST_BUILD_NUMBER    - the build number for unofficial build, eg: 1/2'

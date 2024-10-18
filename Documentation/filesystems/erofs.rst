@@ -87,6 +87,9 @@ cache_strategy=%s      Select a strategy for cached decompression from now on:
                                    It still does in-place I/O decompression
                                    for the rest compressed physical clusters.
 		       ==========  =============================================
+dax={always,never}     Use direct access (no page cache).  See
+                       Documentation/filesystems/dax.rst.
+dax                    A legacy option which is an alias for ``dax=always``.
 device=%s              Specify a path to an extra device to be used together.
 ===================    =========================================================
 

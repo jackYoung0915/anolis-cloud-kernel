@@ -87,6 +87,8 @@ static inline bool constraint_match(struct event_constraint *c, u64 ecode)
 #define PERF_X86_EVENT_PEBS_STLAT	0x08000 /* st+stlat data address sampling */
 #define PERF_X86_EVENT_AMD_BRS		0x10000 /* AMD Branch Sampling */
 #define PERF_X86_EVENT_PEBS_LAT_HYBRID	0x20000 /* ld and st lat for hybrid */
+#define PERF_X86_EVENT_NEEDS_BRANCH_STACK	0x40000 /* require branch stack setup */
+#define PERF_X86_EVENT_BRANCH_COUNTERS	0x80000 /* logs the counters in the extra space of each branch */
 
 static inline bool is_topdown_count(struct perf_event *event)
 {
@@ -110,6 +112,11 @@ static inline bool is_slots_event(struct perf_event *event)
 static inline bool is_topdown_event(struct perf_event *event)
 {
 	return is_metric_event(event) || is_slots_event(event);
+}
+
+static inline bool is_branch_counters_group(struct perf_event *event)
+{
+	return event->group_leader->hw.flags & PERF_X86_EVENT_BRANCH_COUNTERS;
 }
 
 struct amd_nb {
@@ -279,6 +286,7 @@ struct cpu_hw_events {
 	int				lbr_pebs_users;
 	struct perf_branch_stack	lbr_stack;
 	struct perf_branch_entry	lbr_entries[MAX_LBR_ENTRIES];
+	u64				lbr_counters[MAX_LBR_ENTRIES]; /* branch stack extra */
 	union {
 		struct er_account		*lbr_sel;
 		struct er_account		*lbr_ctl;
@@ -831,7 +839,8 @@ struct x86_pmu {
 			pebs_prec_dist		:1,
 			pebs_no_tlb		:1,
 			pebs_no_isolation	:1,
-			pebs_block		:1;
+			pebs_block		:1,
+			pebs_ept		:1;
 	int		pebs_record_size;
 	int		pebs_buffer_size;
 	int		max_pebs_events;
@@ -841,6 +850,7 @@ struct x86_pmu {
 	u64		(*pebs_latency_data)(struct perf_event *event, u64 status);
 	unsigned long	large_pebs_flags;
 	u64		rtm_abort_event;
+	u64		pebs_capable;
 
 	/*
 	 * Intel LBR
@@ -870,6 +880,7 @@ struct x86_pmu {
 	unsigned int	lbr_mispred:1;
 	unsigned int	lbr_timed_lbr:1;
 	unsigned int	lbr_br_type:1;
+	unsigned int	lbr_counters:4;
 
 	void		(*lbr_reset)(void);
 	void		(*lbr_read)(struct cpu_hw_events *cpuc);
@@ -911,7 +922,7 @@ struct x86_pmu {
 	/*
 	 * Intel host/guest support (KVM)
 	 */
-	struct perf_guest_switch_msr *(*guest_get_msrs)(int *nr);
+	struct perf_guest_switch_msr *(*guest_get_msrs)(int *nr, void *data);
 
 	/*
 	 * Check period value for PERF_EVENT_IOC_PERIOD ioctl.
@@ -996,6 +1007,7 @@ do {									\
 #define PMU_FL_INSTR_LATENCY	0x80 /* Support Instruction Latency in PEBS Memory Info Record */
 #define PMU_FL_MEM_LOADS_AUX	0x100 /* Require an auxiliary event for the complete memory info */
 #define PMU_FL_RETIRE_LATENCY	0x200 /* Support Retire Latency in PEBS */
+#define PMU_FL_BR_CNTR		0x400 /* Support branch counter logging */
 
 #define EVENT_VAR(_id)  event_attr_##_id
 #define EVENT_PTR(_id) &event_attr_##_id.attr.attr
@@ -1207,6 +1219,70 @@ static inline void set_linear_ip(struct pt_regs *regs, unsigned long ip)
 	regs->ip = ip;
 }
 
+/*
+ * x86control flow change classification
+ * x86control flow changes include branches, interrupts, traps, faults
+ */
+enum {
+	X86_BR_NONE		= 0,      /* unknown */
+
+	X86_BR_USER		= 1 << 0, /* branch target is user */
+	X86_BR_KERNEL		= 1 << 1, /* branch target is kernel */
+
+	X86_BR_CALL		= 1 << 2, /* call */
+	X86_BR_RET		= 1 << 3, /* return */
+	X86_BR_SYSCALL		= 1 << 4, /* syscall */
+	X86_BR_SYSRET		= 1 << 5, /* syscall return */
+	X86_BR_INT		= 1 << 6, /* sw interrupt */
+	X86_BR_IRET		= 1 << 7, /* return from interrupt */
+	X86_BR_JCC		= 1 << 8, /* conditional */
+	X86_BR_JMP		= 1 << 9, /* jump */
+	X86_BR_IRQ		= 1 << 10,/* hw interrupt or trap or fault */
+	X86_BR_IND_CALL		= 1 << 11,/* indirect calls */
+	X86_BR_ABORT		= 1 << 12,/* transaction abort */
+	X86_BR_IN_TX		= 1 << 13,/* in transaction */
+	X86_BR_NO_TX		= 1 << 14,/* not in transaction */
+	X86_BR_ZERO_CALL	= 1 << 15,/* zero length call */
+	X86_BR_CALL_STACK	= 1 << 16,/* call stack */
+	X86_BR_IND_JMP		= 1 << 17,/* indirect jump */
+
+	X86_BR_TYPE_SAVE	= 1 << 18,/* indicate to save branch type */
+
+};
+
+#define X86_BR_PLM (X86_BR_USER | X86_BR_KERNEL)
+#define X86_BR_ANYTX (X86_BR_NO_TX | X86_BR_IN_TX)
+
+#define X86_BR_ANY       \
+	(X86_BR_CALL    |\
+	 X86_BR_RET     |\
+	 X86_BR_SYSCALL |\
+	 X86_BR_SYSRET  |\
+	 X86_BR_INT     |\
+	 X86_BR_IRET    |\
+	 X86_BR_JCC     |\
+	 X86_BR_JMP	 |\
+	 X86_BR_IRQ	 |\
+	 X86_BR_ABORT	 |\
+	 X86_BR_IND_CALL |\
+	 X86_BR_IND_JMP  |\
+	 X86_BR_ZERO_CALL)
+
+#define X86_BR_ALL (X86_BR_PLM | X86_BR_ANY)
+
+#define X86_BR_ANY_CALL		 \
+	(X86_BR_CALL		|\
+	 X86_BR_IND_CALL	|\
+	 X86_BR_ZERO_CALL	|\
+	 X86_BR_SYSCALL		|\
+	 X86_BR_IRQ		|\
+	 X86_BR_INT)
+
+int common_branch_type(int type);
+int branch_type(unsigned long from, unsigned long to, int abort);
+int branch_type_fused(unsigned long from, unsigned long to, int abort,
+		      int *offset);
+
 ssize_t x86_event_sysfs_show(char *page, u64 config, u64 event);
 ssize_t intel_event_sysfs_show(char *page, u64 config);
 
@@ -1229,7 +1305,20 @@ static inline bool fixed_counter_disabled(int i, struct pmu *pmu)
 
 int amd_pmu_init(void);
 
+int amd_pmu_lbr_init(void);
+void amd_pmu_lbr_reset(void);
+void amd_pmu_lbr_read(void);
+void amd_pmu_lbr_add(struct perf_event *event);
+void amd_pmu_lbr_del(struct perf_event *event);
+void amd_pmu_lbr_sched_task(struct perf_event_context *ctx, bool sched_in);
+void amd_pmu_lbr_enable_all(void);
+void amd_pmu_lbr_disable_all(void);
+int amd_pmu_lbr_hw_config(struct perf_event *event);
+
 #ifdef CONFIG_PERF_EVENTS_AMD_BRS
+
+#define AMD_FAM19H_BRS_EVENT 0xc4 /* RETIRED_TAKEN_BRANCH_INSTRUCTIONS */
+
 int amd_brs_init(void);
 void amd_brs_disable(void);
 void amd_brs_enable(void);
@@ -1237,8 +1326,7 @@ void amd_brs_enable_all(void);
 void amd_brs_disable_all(void);
 void amd_brs_drain(void);
 void amd_brs_lopwr_init(void);
-void amd_brs_disable_all(void);
-int amd_brs_setup_filter(struct perf_event *event);
+int amd_brs_hw_config(struct perf_event *event);
 void amd_brs_reset(void);
 
 static inline void amd_pmu_brs_add(struct perf_event *event)
@@ -1274,7 +1362,7 @@ static inline void amd_brs_enable(void) {}
 static inline void amd_brs_drain(void) {}
 static inline void amd_brs_lopwr_init(void) {}
 static inline void amd_brs_disable_all(void) {}
-static inline int amd_brs_setup_filter(struct perf_event *event)
+static inline int amd_brs_hw_config(struct perf_event *event)
 {
 	return 0;
 }
@@ -1438,6 +1526,10 @@ void intel_pmu_auto_reload_read(struct perf_event *event);
 void intel_pmu_store_pebs_lbrs(struct lbr_entry *lbr);
 
 void intel_ds_init(void);
+
+void intel_pmu_lbr_save_brstack(struct perf_sample_data *data,
+				struct cpu_hw_events *cpuc,
+				struct perf_event *event);
 
 void intel_pmu_lbr_swap_task_ctx(struct perf_event_context *prev,
 				 struct perf_event_context *next);

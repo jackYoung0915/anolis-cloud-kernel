@@ -94,10 +94,11 @@ static pte_t get_and_clear(struct mm_struct *mm,
 	return orig_pte;
 }
 
-static void clear_flush(struct mm_struct *mm, unsigned long addr,
+static pte_t get_clear_contig_flush(struct mm_struct *mm, unsigned long addr,
 			pte_t *ptep, unsigned long pgsize,
 			unsigned long ncontig)
 {
+	pte_t orig_pte = get_and_clear(mm, addr, ptep, pgsize, ncontig);
 	struct vm_area_struct vma = TLB_FLUSH_VMA(mm, 0);
 	unsigned long i, saddr = addr;
 
@@ -105,6 +106,7 @@ static void clear_flush(struct mm_struct *mm, unsigned long addr,
 		pte_clear(mm, addr, ptep);
 
 	flush_tlb_range(&vma, saddr, addr);
+	return orig_pte;
 }
 
 pte_t *huge_pte_alloc(struct mm_struct *mm,
@@ -284,19 +286,18 @@ pte_t huge_ptep_get_and_clear(struct mm_struct *mm,
 	return get_and_clear(mm, addr, ptep, pgsize, ncontig);
 }
 
-void huge_ptep_clear_flush(struct vm_area_struct *vma,
+pte_t huge_ptep_clear_flush(struct vm_area_struct *vma,
 			unsigned long addr, pte_t *ptep)
 {
+	struct mm_struct *mm = vma->vm_mm;
 	size_t pgsize;
 	int ncontig;
 
-	if (!pte_cont(READ_ONCE(*ptep))) {
-		ptep_clear_flush(vma, addr, ptep);
-		return;
-	}
+	if (!pte_cont(READ_ONCE(*ptep)))
+		return ptep_clear_flush(vma, addr, ptep);
 
 	ncontig = CONT_PMDS;
-	clear_flush(vma->vm_mm, addr, ptep, pgsize, ncontig);
+	return get_clear_contig_flush(mm, addr, ptep, pgsize, ncontig);
 }
 
 static int __cont_access_flags_changed(pte_t *ptep, pte_t pte, int ncontig)

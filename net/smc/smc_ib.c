@@ -266,13 +266,18 @@ int smc_ib_find_route(struct net *net, __be32 saddr, __be32 daddr,
 	if (IS_ERR(rt))
 		goto out;
 	if (rt->rt_uses_gateway && rt->rt_gw_family != AF_INET)
-		goto out;
-	neigh = rt->dst.ops->neigh_lookup(&rt->dst, NULL, &fl4.daddr);
-	if (neigh) {
-		memcpy(nexthop_mac, neigh->ha, ETH_ALEN);
-		*uses_gateway = rt->rt_uses_gateway;
-		return 0;
-	}
+		goto out_rt;
+	neigh = dst_neigh_lookup(&rt->dst, &fl4.daddr);
+	if (!neigh)
+		goto out_rt;
+	memcpy(nexthop_mac, neigh->ha, ETH_ALEN);
+	*uses_gateway = rt->rt_uses_gateway;
+	neigh_release(neigh);
+	ip_rt_put(rt);
+	return 0;
+
+out_rt:
+	ip_rt_put(rt);
 out:
 	return -ENOENT;
 }
@@ -305,29 +310,35 @@ static int smc_ib_determine_gid_rcu(const struct net_device *ndev,
 	 */
 	if (smcrv2 && attr->gid_type == IB_GID_TYPE_IB) {
 		struct in_device *in_dev = __in_dev_get_rcu(ndev);
+		const struct in_ifaddr *ifa, *ifa_prefer = NULL;
 		struct net *net = dev_net(ndev);
-		const struct in_ifaddr *ifa;
-		bool subnet_match = false;
 
 		if (!in_dev)
 			goto out;
+		/* the one with the same subnet as smcrv2->saddr is
+		 * perferred, otherwise the first one is selected.
+		 */
 		in_dev_for_each_ifa_rcu(ifa, in_dev) {
-			if (!inet_ifa_match(smcrv2->saddr, ifa))
+			if (ifa->ifa_address == cpu_to_be32(INADDR_NONE))
 				continue;
-			subnet_match = true;
-			break;
+			if (!ifa_prefer)
+				ifa_prefer = ifa;
+			if (inet_ifa_match(smcrv2->saddr, ifa)) {
+				ifa_prefer = ifa;
+				break;
+			}
 		}
-		if (!subnet_match ||
-		    ifa->ifa_address == cpu_to_be32(INADDR_NONE))
+		if (!ifa_prefer)
 			goto out;
-		if (smcrv2->daddr && smc_ib_find_route(net, ifa->ifa_address,
+		if (smcrv2->daddr && smc_ib_find_route(net,
+						       ifa_prefer->ifa_address,
 						       smcrv2->daddr,
 						       smcrv2->nexthop_mac,
 						       &smcrv2->uses_gateway))
 			goto out;
-
 		if (gid)
-			ipv6_addr_set_v4mapped(ifa->ifa_address, (struct in6_addr *)gid);
+			ipv6_addr_set_v4mapped(ifa_prefer->ifa_address,
+					       (struct in6_addr *)gid);
 		if (sgid_index)
 			*sgid_index = attr->index;
 

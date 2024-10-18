@@ -68,6 +68,7 @@
 #include <net/ip.h>
 #include "slab.h"
 #include <linux/proc_fs.h>
+#include <linux/pre_oom.h>
 
 #include <linux/uaccess.h>
 #ifdef CONFIG_TEXT_UNEVICTABLE
@@ -2751,11 +2752,13 @@ static void reclaim_wmark(struct mem_cgroup *memcg)
 	 * simply record the whole duration of reclaim_wmark work for the
 	 * overhead-accuracy trade-off.
 	 */
+	pre_oom_enter();
 	start = ktime_get_ns();
 	psi_memstall_enter(&pflags);
 	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, true);
 	psi_memstall_leave(&pflags);
 	duration = ktime_get_ns() - start;
+	pre_oom_leave();
 
 	if (!css_tryget_online(&memcg->css))
 		return;
@@ -2791,10 +2794,12 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 
 		memcg_memory_event(memcg, MEMCG_HIGH);
 
+		pre_oom_enter();
 		psi_memstall_enter(&pflags);
 		nr_reclaimed += try_to_free_mem_cgroup_pages(memcg, nr_pages,
 							     gfp_mask, true);
 		psi_memstall_leave(&pflags);
+		pre_oom_leave();
 	} while ((memcg = parent_mem_cgroup(memcg)) &&
 		 !mem_cgroup_is_root(memcg));
 
@@ -3121,12 +3126,14 @@ retry:
 
 	memcg_memory_event(mem_over_limit, MEMCG_MAX);
 
+	pre_oom_enter();
 	memcg_lat_stat_start(&start);
 	psi_memstall_enter(&pflags);
 	nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages,
 						    gfp_mask, may_swap);
 	psi_memstall_leave(&pflags);
 	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
+	pre_oom_leave();
 
 	if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
 		goto retry;
@@ -3348,7 +3355,8 @@ static void commit_charge(struct page *page, struct mem_cgroup *memcg)
  * Moreover, it should not come from DMA buffer and is not readily
  * reclaimable. So those GFP bits should be masked off.
  */
-#define OBJCGS_CLEAR_MASK	(__GFP_DMA | __GFP_RECLAIMABLE | __GFP_ACCOUNT)
+#define OBJCGS_CLEAR_MASK	(__GFP_DMA | __GFP_RECLAIMABLE | \
+				 __GFP_ACCOUNT | __GFP_NOFAIL)
 
 int memcg_alloc_page_obj_cgroups(struct page *page, struct kmem_cache *s,
 				 gfp_t gfp)
@@ -4916,6 +4924,13 @@ static const unsigned int memcg1_stats[] = {
 	NR_FILE_DIRTY,
 	NR_WRITEBACK,
 	MEMCG_SWAP,
+	WORKINGSET_REFAULT_ANON,
+	WORKINGSET_REFAULT_FILE,
+	WORKINGSET_ACTIVATE_ANON,
+	WORKINGSET_ACTIVATE_FILE,
+	WORKINGSET_RESTORE_ANON,
+	WORKINGSET_RESTORE_FILE,
+	WORKINGSET_NODERECLAIM,
 };
 
 static const char *const memcg1_stat_names[] = {
@@ -4929,6 +4944,13 @@ static const char *const memcg1_stat_names[] = {
 	"dirty",
 	"writeback",
 	"swap",
+	"workingset_refault_anon",
+	"workingset_refault_file",
+	"workingset_activate_anon",
+	"workingset_activate_file",
+	"workingset_restore_anon",
+	"workingset_restore_file",
+	"workingset_nodereclaim",
 };
 
 /* Universal VM events cgroup1 shows, original sort order */
@@ -6710,6 +6732,29 @@ static int memcg_pgtable_misplaced_write(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_PGTABLE_BIND */
 
+#ifdef CONFIG_PRE_OOM
+static u64 memcg_pre_oom_read(struct cgroup_subsys_state *css,
+				   struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return READ_ONCE(memcg->pre_oom);
+}
+
+static int memcg_pre_oom_write(struct cgroup_subsys_state *css,
+				    struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val)
+		memcg->pre_oom = true;
+	else
+		memcg->pre_oom = false;
+
+	return 0;
+}
+#endif /* CONFIG_PRE_OOM */
+
 #ifdef CONFIG_LRU_GEN
 static bool mglru_size_valid_check(struct mem_cgroup *memcg)
 {
@@ -6872,6 +6917,7 @@ static inline char *strsep_s(char **s, const char *ct)
 	return NULL;
 }
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static int memcg_thp_reclaim_ctrl_show(struct seq_file *m, void *v)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
@@ -6883,6 +6929,7 @@ static int memcg_thp_reclaim_ctrl_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+#endif
 
 static inline int get_thp_reclaim_ctrl_value(char *buf, int *value)
 {
@@ -6957,6 +7004,7 @@ static ssize_t memcg_thp_reclaim_ctrl_write(struct kernfs_open_file *of,
 }
 #endif
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static int thp_reclaim_proactive_memcg_init;
 static int __init setup_thp_reclaim_proactive_init(char *str)
 {
@@ -6985,7 +7033,6 @@ out:
 }
 __setup("tr.proactive=", setup_thp_reclaim_proactive_init);
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static int memcg_thp_control_show(struct seq_file *m, void *v)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
@@ -7384,6 +7431,13 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.name = "pgtable_misplaced",
 		.write_u64 = memcg_pgtable_misplaced_write,
 		.read_u64 = memcg_pgtable_misplaced_read,
+	},
+#endif
+#ifdef CONFIG_PRE_OOM
+	{
+		.name = "pre_oom",
+		.write_u64 = memcg_pre_oom_write,
+		.read_u64 = memcg_pre_oom_read,
 	},
 #endif
 	{ },	/* terminate */
@@ -10204,8 +10258,10 @@ struct mem_cgroup *rich_container_get_memcg(void)
 #else
 	if (sysctl_rich_container_source == 1)
 		css = NULL;
-	else
+	else if (sysctl_rich_container_source == 0)
 		css = task_css(current, memory_cgrp_id);
+	else
+		css = task_css(current, memory_cgrp_id)->parent;
 #endif
 
 	if (css) {
@@ -10230,7 +10286,6 @@ void memcg_meminfo(struct mem_cgroup *memcg,
 	unsigned long pagecache, memcg_wmark, swap_size;
 	int i;
 
-	ext->cached = memcg_page_state(memcg, NR_FILE_PAGES);
 	ext->file_dirty = memcg_page_state(memcg, NR_FILE_DIRTY);
 	ext->writeback = memcg_page_state(memcg, NR_WRITEBACK);
 	ext->anon_mapped = memcg_page_state(memcg, NR_ANON_MAPPED);
@@ -10294,5 +10349,20 @@ void memcg_meminfo(struct mem_cgroup *memcg,
 	ext->available = info->freeram + pagecache;
 	ext->available += ext->slab_reclaimable -
 		min(ext->slab_reclaimable / 2, memcg_wmark);
+	ext->cached = usage - ext->lrupages[LRU_INACTIVE_ANON] -
+				  ext->lrupages[LRU_ACTIVE_ANON];
+}
+#endif
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+void reclaim_coldpgs_stats_mlock_refault(void)
+{
+	struct mem_cgroup *memcg;
+	unsigned int index = RECLIMA_COLDPGS_STAT_MLOCK_REFAULT;
+
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(current);
+	__this_cpu_add(memcg->coldpgs_stats->counts[index], PAGE_SIZE);
+	rcu_read_unlock();
 }
 #endif

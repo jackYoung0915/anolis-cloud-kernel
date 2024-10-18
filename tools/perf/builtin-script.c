@@ -30,6 +30,7 @@
 #include "util/thread-stack.h"
 #include "util/time-utils.h"
 #include "util/path.h"
+#include "util/event.h"
 #include "ui/ui.h"
 #include "print_binary.h"
 #include "archinsn.h"
@@ -115,6 +116,8 @@ enum perf_output_field {
 	PERF_OUTPUT_SRCCODE	    = 1ULL << 30,
 	PERF_OUTPUT_IPC             = 1ULL << 31,
 	PERF_OUTPUT_TOD             = 1ULL << 32,
+	PERF_OUTPUT_DATA_PAGE_SIZE  = 1ULL << 33,
+	PERF_OUTPUT_CODE_PAGE_SIZE  = 1ULL << 34,
 };
 
 struct perf_script {
@@ -179,6 +182,8 @@ struct output_option {
 	{.str = "srccode", .field = PERF_OUTPUT_SRCCODE},
 	{.str = "ipc", .field = PERF_OUTPUT_IPC},
 	{.str = "tod", .field = PERF_OUTPUT_TOD},
+	{.str = "data_page_size", .field = PERF_OUTPUT_DATA_PAGE_SIZE},
+	{.str = "code_page_size", .field = PERF_OUTPUT_CODE_PAGE_SIZE},
 };
 
 enum {
@@ -251,7 +256,8 @@ static struct {
 			      PERF_OUTPUT_SYM | PERF_OUTPUT_SYMOFFSET |
 			      PERF_OUTPUT_DSO | PERF_OUTPUT_PERIOD |
 			      PERF_OUTPUT_ADDR | PERF_OUTPUT_DATA_SRC |
-			      PERF_OUTPUT_WEIGHT | PERF_OUTPUT_PHYS_ADDR,
+			      PERF_OUTPUT_WEIGHT | PERF_OUTPUT_PHYS_ADDR |
+			      PERF_OUTPUT_DATA_PAGE_SIZE | PERF_OUTPUT_CODE_PAGE_SIZE,
 
 		.invalid_fields = PERF_OUTPUT_TRACE | PERF_OUTPUT_BPF_OUTPUT,
 	},
@@ -295,8 +301,7 @@ static inline struct evsel_script *evsel_script(struct evsel *evsel)
 	return (struct evsel_script *)evsel->priv;
 }
 
-static struct evsel_script *perf_evsel_script__new(struct evsel *evsel,
-							struct perf_data *data)
+static struct evsel_script *evsel_script__new(struct evsel *evsel, struct perf_data *data)
 {
 	struct evsel_script *es = zalloc(sizeof(*es));
 
@@ -316,7 +321,7 @@ out_free:
 	return NULL;
 }
 
-static void perf_evsel_script__delete(struct evsel_script *es)
+static void evsel_script__delete(struct evsel_script *es)
 {
 	zfree(&es->filename);
 	fclose(es->fp);
@@ -324,7 +329,7 @@ static void perf_evsel_script__delete(struct evsel_script *es)
 	free(es);
 }
 
-static int perf_evsel_script__fprintf(struct evsel_script *es, FILE *fp)
+static int evsel_script__fprintf(struct evsel_script *es, FILE *fp)
 {
 	struct stat st;
 
@@ -497,6 +502,14 @@ static int evsel__check_attr(struct evsel *evsel, struct perf_session *session)
 
 	if (PRINT_FIELD(PHYS_ADDR) &&
 	    evsel__check_stype(evsel, PERF_SAMPLE_PHYS_ADDR, "PHYS_ADDR", PERF_OUTPUT_PHYS_ADDR))
+		return -EINVAL;
+
+	if (PRINT_FIELD(DATA_PAGE_SIZE) &&
+	    evsel__check_stype(evsel, PERF_SAMPLE_DATA_PAGE_SIZE, "DATA_PAGE_SIZE", PERF_OUTPUT_DATA_PAGE_SIZE))
+		return -EINVAL;
+
+	if (PRINT_FIELD(CODE_PAGE_SIZE) &&
+	    evsel__check_stype(evsel, PERF_SAMPLE_CODE_PAGE_SIZE, "CODE_PAGE_SIZE", PERF_OUTPUT_CODE_PAGE_SIZE))
 		return -EINVAL;
 
 	return 0;
@@ -1921,6 +1934,7 @@ static void process_event(struct perf_script *script,
 	unsigned int type = output_type(attr->type);
 	struct evsel_script *es = evsel->priv;
 	FILE *fp = es->fp;
+	char str[PAGE_SIZE_NAME_LEN];
 
 	if (output[type].fields == 0)
 		return;
@@ -2008,6 +2022,12 @@ static void process_event(struct perf_script *script,
 
 	if (PRINT_FIELD(PHYS_ADDR))
 		fprintf(fp, "%16" PRIx64, sample->phys_addr);
+
+	if (PRINT_FIELD(DATA_PAGE_SIZE))
+		fprintf(fp, " %s", get_page_size_name(sample->data_page_size, str));
+
+	if (PRINT_FIELD(CODE_PAGE_SIZE))
+		fprintf(fp, " %s", get_page_size_name(sample->code_page_size, str));
 
 	perf_sample__fprintf_ipc(sample, attr, fp);
 
@@ -2148,6 +2168,9 @@ out_put:
 	return 0;
 }
 
+// Used when scr->per_event_dump is not set
+static struct evsel_script es_stdout;
+
 static int process_attr(struct perf_tool *tool, union perf_event *event,
 			struct evlist **pevlist)
 {
@@ -2156,7 +2179,6 @@ static int process_attr(struct perf_tool *tool, union perf_event *event,
 	struct evsel *evsel, *pos;
 	u64 sample_type;
 	int err;
-	static struct evsel_script *es;
 
 	err = perf_event__process_attr(tool, event, pevlist);
 	if (err)
@@ -2167,14 +2189,12 @@ static int process_attr(struct perf_tool *tool, union perf_event *event,
 
 	if (!evsel->priv) {
 		if (scr->per_event_dump) {
-			evsel->priv = perf_evsel_script__new(evsel,
-						scr->session->data);
-		} else {
-			es = zalloc(sizeof(*es));
-			if (!es)
+			evsel->priv = evsel_script__new(evsel, scr->session->data);
+			if (!evsel->priv)
 				return -ENOMEM;
-			es->fp = stdout;
-			evsel->priv = es;
+		} else { // Replicate what is done in perf_script__setup_per_event_dump()
+			es_stdout.fp = stdout;
+			evsel->priv = &es_stdout;
 		}
 	}
 
@@ -2423,7 +2443,7 @@ static void perf_script__fclose_per_event_dump(struct perf_script *script)
 	evlist__for_each_entry(evlist, evsel) {
 		if (!evsel->priv)
 			break;
-		perf_evsel_script__delete(evsel->priv);
+		evsel_script__delete(evsel->priv);
 		evsel->priv = NULL;
 	}
 }
@@ -2443,7 +2463,7 @@ static int perf_script__fopen_per_event_dump(struct perf_script *script)
 		if (evsel->priv != NULL)
 			continue;
 
-		evsel->priv = perf_evsel_script__new(evsel, script->session->data);
+		evsel->priv = evsel_script__new(evsel, script->session->data);
 		if (evsel->priv == NULL)
 			goto out_err_fclose;
 	}
@@ -2458,7 +2478,6 @@ out_err_fclose:
 static int perf_script__setup_per_event_dump(struct perf_script *script)
 {
 	struct evsel *evsel;
-	static struct evsel_script es_stdout;
 
 	if (script->per_event_dump)
 		return perf_script__fopen_per_event_dump(script);
@@ -2478,8 +2497,8 @@ static void perf_script__exit_per_event_dump_stats(struct perf_script *script)
 	evlist__for_each_entry(script->session->evlist, evsel) {
 		struct evsel_script *es = evsel->priv;
 
-		perf_evsel_script__fprintf(es, stdout);
-		perf_evsel_script__delete(es);
+		evsel_script__fprintf(es, stdout);
+		evsel_script__delete(es);
 		evsel->priv = NULL;
 	}
 }
@@ -3512,8 +3531,9 @@ int cmd_script(int argc, const char **argv)
 		     "Valid types: hw,sw,trace,raw,synth. "
 		     "Fields: comm,tid,pid,time,cpu,event,trace,ip,sym,dso,"
 		     "addr,symoff,srcline,period,iregs,uregs,brstack,"
-		     "brstacksym,flags,bpf-output,brstackinsn,brstackoff,"
-		     "callindent,insn,insnlen,synth,phys_addr,metric,misc,ipc,tod",
+		     "brstacksym,flags,data_src,weight,bpf-output,brstackinsn,"
+		     "brstackoff,callindent,insn,insnlen,synth,phys_addr,metric,"
+		     "misc,srccode,ipc,tod,data_page_size,code_page_size",
 		     parse_output_fields),
 	OPT_BOOLEAN('a', "all-cpus", &system_wide,
 		    "system-wide collection from all CPUs"),

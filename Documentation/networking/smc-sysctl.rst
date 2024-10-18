@@ -85,3 +85,13 @@ smcr_max_conns_per_lgr - INTEGER
 	acceptable value ranges from 16 to 255. Only for SMC-R v2.1 and later.
 
 	Default: 32
+
+autosplit_size - INTEGER
+	Setting SMC autosplit size. Autosplit is used to split sending data into
+	several segments when application sending data and the data size is larger
+	than autosplit size. Autosplit helps performing pipeline sending and pipeline
+	receiving for better latency performance when sending/receiving large size
+	data.
+	Autosplit_size ranges from 32KiB to 512MiB.
+
+	Default: 128KiB

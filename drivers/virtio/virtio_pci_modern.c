@@ -151,6 +151,32 @@ static u64 vp_get_features(struct virtio_device *vdev)
 	return features;
 }
 
+static int vp_modern_get_queue_reset(struct virtio_pci_device *vp_dev, u16 index)
+{
+       struct virtio_pci_modern_common_cfg __iomem *cfg;
+
+       cfg = (struct virtio_pci_modern_common_cfg __iomem *)vp_dev->common;
+
+       vp_iowrite16(index, &cfg->cfg.queue_select);
+       return vp_ioread16(&cfg->queue_reset);
+}
+
+static void vp_modern_set_queue_reset(struct virtio_pci_device *vp_dev, u16 index)
+{
+       struct virtio_pci_modern_common_cfg __iomem *cfg;
+
+       cfg = (struct virtio_pci_modern_common_cfg __iomem *)vp_dev->common;
+
+       vp_iowrite16(index, &cfg->cfg.queue_select);
+       vp_iowrite16(1, &cfg->queue_reset);
+
+       while (vp_ioread16(&cfg->queue_reset))
+               msleep(1);
+
+       while (vp_ioread16(&cfg->cfg.queue_enable))
+               msleep(1);
+}
+
 static void vp_transport_features(struct virtio_device *vdev, u64 features)
 {
 	struct virtio_pci_device *vp_dev = to_vp_device(vdev);
@@ -159,6 +185,9 @@ static void vp_transport_features(struct virtio_device *vdev, u64 features)
 	if ((features & BIT_ULL(VIRTIO_F_SR_IOV)) &&
 			pci_find_ext_capability(pci_dev, PCI_EXT_CAP_ID_SRIOV))
 		__virtio_set_bit(vdev, VIRTIO_F_SR_IOV);
+
+	if (features & BIT_ULL(VIRTIO_F_RING_RESET))
+		__virtio_set_bit(vdev, VIRTIO_F_RING_RESET);
 }
 
 /* virtio config->finalize_features() implementation */
@@ -295,6 +324,132 @@ static void vp_reset(struct virtio_device *vdev)
 	vp_synchronize_vectors(vdev);
 }
 
+
+static u16 vp_modern_queue_vector(struct virtio_pci_device *vp_dev,
+			   u16 index, u16 vector)
+{
+	struct virtio_pci_common_cfg __iomem *cfg = vp_dev->common;
+
+	vp_iowrite16(index, &cfg->queue_select);
+	vp_iowrite16(vector, &cfg->queue_msix_vector);
+	/* Flush the write out to device */
+	return vp_ioread16(&cfg->queue_msix_vector);
+}
+
+static int vp_active_vq(struct virtqueue *vq, u16 msix_vec)
+{
+	struct virtio_pci_common_cfg __iomem *cfg;
+	struct virtio_pci_device *vp_dev = to_vp_device(vq->vdev);
+	unsigned long index;
+
+	cfg = (struct virtio_pci_common_cfg __iomem *)vp_dev->common;
+
+	index = vq->index;
+
+	/* activate the queue */
+	vp_iowrite16(virtqueue_get_vring_size(vq), &cfg->queue_size);
+	vp_iowrite64_twopart(virtqueue_get_desc_addr(vq),
+			     &cfg->queue_desc_lo, &cfg->queue_desc_hi);
+	vp_iowrite64_twopart(virtqueue_get_avail_addr(vq),
+			     &cfg->queue_avail_lo, &cfg->queue_avail_hi);
+	vp_iowrite64_twopart(virtqueue_get_used_addr(vq),
+			     &cfg->queue_used_lo, &cfg->queue_used_hi);
+
+	if (msix_vec != VIRTIO_MSI_NO_VECTOR) {
+		msix_vec = vp_modern_queue_vector(vp_dev, index, msix_vec);
+		if (msix_vec == VIRTIO_MSI_NO_VECTOR)
+			return -EBUSY;
+	}
+
+	return 0;
+}
+
+static int vp_modern_disable_vq_and_reset(struct virtqueue *vq)
+{
+	struct virtio_pci_device *vp_dev = to_vp_device(vq->vdev);
+	struct virtio_pci_vq_info *info;
+	unsigned long flags;
+
+	if (!virtio_has_feature(vq->vdev, VIRTIO_F_RING_RESET))
+		return -ENOENT;
+
+	vp_modern_set_queue_reset(vp_dev, vq->index);
+
+	info = vp_dev->vqs[vq->index];
+
+	/* delete vq from irq handler */
+	spin_lock_irqsave(&vp_dev->lock, flags);
+	list_del(&info->node);
+	spin_unlock_irqrestore(&vp_dev->lock, flags);
+
+	INIT_LIST_HEAD(&info->node);
+
+	/* For the case where vq has an exclusive irq, call synchronize_irq() to
+	 * wait for completion.
+	 *
+	 * note: We can't use disable_irq() since it conflicts with the affinity
+	 * managed IRQ that is used by some drivers.
+	 */
+	if (vp_dev->per_vq_vectors && info->msix_vector != VIRTIO_MSI_NO_VECTOR)
+		synchronize_irq(pci_irq_vector(vp_dev->pci_dev, info->msix_vector));
+
+	vq->reset = true;
+
+	return 0;
+}
+
+static void vp_modern_set_queue_enable(struct virtio_pci_device *vp_dev,
+				u16 index, bool enable)
+{
+	vp_iowrite16(index, &vp_dev->common->queue_select);
+	vp_iowrite16(enable, &vp_dev->common->queue_enable);
+}
+
+static bool vp_modern_get_queue_enable(struct virtio_pci_device *vp_dev,
+				u16 index)
+{
+	vp_iowrite16(index, &vp_dev->common->queue_select);
+
+	return vp_ioread16(&vp_dev->common->queue_enable);
+}
+
+static int vp_modern_enable_vq_after_reset(struct virtqueue *vq)
+{
+	struct virtio_pci_device *vp_dev = to_vp_device(vq->vdev);
+	struct virtio_pci_vq_info *info;
+	unsigned long flags, index;
+	int err;
+
+	if (!vq->reset)
+		return -EBUSY;
+
+	index = vq->index;
+	info = vp_dev->vqs[index];
+
+	if (vp_modern_get_queue_reset(vp_dev, index))
+		return -EBUSY;
+
+	if (vp_modern_get_queue_enable(vp_dev, index))
+		return -EBUSY;
+
+	err = vp_active_vq(vq, info->msix_vector);
+	if (err)
+		return err;
+
+	if (vq->callback) {
+		spin_lock_irqsave(&vp_dev->lock, flags);
+		list_add(&info->node, &vp_dev->virtqueues);
+		spin_unlock_irqrestore(&vp_dev->lock, flags);
+	} else {
+		INIT_LIST_HEAD(&info->node);
+	}
+
+	vp_modern_set_queue_enable(vp_dev, index, true);
+	vq->reset = false;
+
+	return 0;
+}
+
 static u16 vp_config_vector(struct virtio_pci_device *vp_dev, u16 vector)
 {
 	/* Setup the vector used for configuration events */
@@ -345,6 +500,8 @@ static struct virtqueue *setup_vq(struct virtio_pci_device *vp_dev,
 				    vp_notify, callback, name);
 	if (!vq)
 		return ERR_PTR(-ENOMEM);
+
+	vq->num_max = num;
 
 	/* activate the queue */
 	vp_iowrite16(virtqueue_get_vring_size(vq), &cfg->queue_size);
@@ -552,6 +709,8 @@ static const struct virtio_config_ops virtio_pci_config_nodev_ops = {
 	.set_vq_affinity = vp_set_vq_affinity,
 	.get_vq_affinity = vp_get_vq_affinity,
 	.get_shm_region  = vp_get_shm_region,
+	.disable_vq_and_reset = vp_modern_disable_vq_and_reset,
+	.enable_vq_after_reset = vp_modern_enable_vq_after_reset,
 };
 
 static const struct virtio_config_ops virtio_pci_config_ops = {
@@ -569,6 +728,8 @@ static const struct virtio_config_ops virtio_pci_config_ops = {
 	.set_vq_affinity = vp_set_vq_affinity,
 	.get_vq_affinity = vp_get_vq_affinity,
 	.get_shm_region  = vp_get_shm_region,
+	.disable_vq_and_reset = vp_modern_disable_vq_and_reset,
+	.enable_vq_after_reset = vp_modern_enable_vq_after_reset,
 };
 
 /**
@@ -745,7 +906,7 @@ int virtio_pci_modern_probe(struct virtio_pci_device *vp_dev)
 	err = -EINVAL;
 	vp_dev->common = map_capability(pci_dev, common,
 					sizeof(struct virtio_pci_common_cfg), 4,
-					0, sizeof(struct virtio_pci_common_cfg),
+					0, sizeof(struct virtio_pci_modern_common_cfg),
 					NULL);
 	if (!vp_dev->common)
 		goto err_map_common;

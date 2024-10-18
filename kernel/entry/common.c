@@ -2,6 +2,7 @@
 
 #include <linux/context_tracking.h>
 #include <linux/entry-common.h>
+#include <linux/jump_label.h>
 #include <linux/livepatch.h>
 #include <linux/audit.h>
 
@@ -354,7 +355,7 @@ noinstr irqentry_state_t irqentry_enter(struct pt_regs *regs)
 	return ret;
 }
 
-void irqentry_exit_cond_resched(void)
+void raw_irqentry_exit_cond_resched(void)
 {
 	if (!preempt_count()) {
 		/* Sanity check RCU and thread stack */
@@ -393,6 +394,7 @@ noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
 		instrumentation_begin();
 		if (IS_ENABLED(CONFIG_PREEMPTION))
 			irqentry_exit_cond_resched();
+
 		/* Covers both tracing and lockdep */
 		trace_hardirqs_on();
 		instrumentation_end();

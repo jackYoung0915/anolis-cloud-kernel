@@ -20,6 +20,7 @@
 #include <net/inet_connection_sock.h>
 #include <net/inet_timewait_sock.h>
 #include <uapi/linux/tcp.h>
+#include <linux/ck_kabi.h>
 
 static inline struct tcphdr *tcp_hdr(const struct sk_buff *skb)
 {
@@ -135,6 +136,9 @@ struct tcp_request_sock {
 						  * after data-in-SYN.
 						  */
 	u8				syn_tos;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)
@@ -265,7 +269,7 @@ struct tcp_sock {
 	u32	packets_out;	/* Packets which are "in flight"	*/
 	u32	retrans_out;	/* Retransmitted packets out		*/
 	u32	max_packets_out;  /* max packets_out in last window */
-	u32	max_packets_seq;  /* right edge of max_packets_out flight */
+	u32	cwnd_usage_seq;  /* right edge of cwnd usage tracking flight */
 
 	u16	urg_data;	/* Saved octet of OOB data and control flags */
 	u8	ecn_flags;	/* ECN status bits.			*/
@@ -396,6 +400,7 @@ struct tcp_sock {
 #if IS_ENABLED(CONFIG_SMC)
 	bool	(*smc_hs_congested)(const struct sock *sk);
 	bool	syn_smc;	/* SYN includes SMC */
+	bool	is_smc;
 #endif
 
 #ifdef CONFIG_TCP_MD5SIG
@@ -413,6 +418,11 @@ struct tcp_sock {
 	 */
 	struct request_sock __rcu *fastopen_rsk;
 	struct saved_syn *saved_syn;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 enum tsq_enum {

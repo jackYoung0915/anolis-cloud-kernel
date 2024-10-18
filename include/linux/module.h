@@ -535,7 +535,7 @@ struct module {
 	struct error_injection_entry *ei_funcs;
 	unsigned int num_ei_funcs;
 #endif
-
+	unsigned int	oot_isolation_index;
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)

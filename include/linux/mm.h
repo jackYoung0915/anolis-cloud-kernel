@@ -222,6 +222,9 @@ int overcommit_policy_handler(struct ctl_table *, int, void *, size_t *,
 /* to align the pointer to the (next) page boundary */
 #define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
 
+/* to align the pointer to the (prev) page boundary */
+#define PAGE_ALIGN_DOWN(addr) ALIGN_DOWN(addr, PAGE_SIZE)
+
 /* test whether an address (unsigned long or pointer) is aligned to PAGE_SIZE */
 #define PAGE_ALIGNED(addr)	IS_ALIGNED((unsigned long)(addr), PAGE_SIZE)
 
@@ -298,6 +301,12 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_HUGEPAGE	0x20000000	/* MADV_HUGEPAGE marked this vma */
 #define VM_NOHUGEPAGE	0x40000000	/* MADV_NOHUGEPAGE marked this vma */
 #define VM_MERGEABLE	0x80000000	/* KSM may merge identical pages */
+
+#ifdef CONFIG_ARCH_USES_HIGH_VMA_FLAGS	/* vma->vm_pgoff == pfn */
+    #define VM_PGOFF_IS_PFN   BIT(62)
+#else
+    #define VM_PGOFF_IS_PFN   VM_NONE
+#endif
 
 #ifdef CONFIG_ARCH_USES_HIGH_VMA_FLAGS
 #define VM_HIGH_ARCH_BIT_0	32	/* bit only usable on 64-bit architectures */
@@ -563,10 +572,10 @@ struct vm_fault {
 					 * atomic context.
 					 */
 #ifdef CONFIG_PAGETABLE_SHARE
-	CK_KABI_USE(1, struct vm_area_struct *orig_vma) /* Original VMA */
-#else
-	CK_KABI_RESERVE(1)
+	struct vm_area_struct *orig_vma; /* Original VMA */
 #endif
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -3538,6 +3547,26 @@ static inline void fixup_vma(struct vm_area_struct *vma)
 	fast_reflink_fixup_vma(vma);
 	async_fork_fixup_vma(vma);
 }
+
+#ifdef CONFIG_UNACCEPTED_MEMORY
+
+bool range_contains_unaccepted_memory(phys_addr_t start, phys_addr_t end);
+
+void accept_memory(phys_addr_t start, phys_addr_t end);
+
+#else
+
+static inline bool range_contains_unaccepted_memory(phys_addr_t start,
+						    phys_addr_t end)
+{
+	return false;
+}
+
+static inline void accept_memory(phys_addr_t start, phys_addr_t end)
+{
+}
+
+#endif
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

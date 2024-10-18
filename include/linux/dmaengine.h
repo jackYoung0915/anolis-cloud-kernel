@@ -713,12 +713,16 @@ static inline struct dma_async_tx_descriptor *txd_next(struct dma_async_tx_descr
 /**
  * struct dma_tx_state - filled in to report the status of
  * a transfer.
+ * @last: last completed DMA cookie
+ * @used: last issued DMA cookie (i.e. the one in progress)
  * @residue: the remaining number of bytes left to transmit
  *	on the selected transfer for states DMA_IN_PROGRESS and
  *	DMA_PAUSED if this is implemented in the driver, else 0
  * @in_flight_bytes: amount of data in bytes cached by the DMA.
  */
 struct dma_tx_state {
+	dma_cookie_t last;
+	dma_cookie_t used;
 	u32 residue;
 	u32 in_flight_bytes;
 };
@@ -1427,13 +1431,47 @@ static inline void dma_async_issue_pending(struct dma_chan *chan)
  * dma_async_is_tx_complete - poll for transaction completion
  * @chan: DMA channel
  * @cookie: transaction identifier to check status of
+ * @last: returns last completed cookie, can be NULL
+ * @used: returns last issued cookie, can be NULL
+ *
+ * If @last and @used are passed in, upon return they reflect the driver
+ * internal state and can be used with dma_async_is_complete() to check
+ * the status of multiple cookies without re-checking hardware state.
  */
 static inline enum dma_status dma_async_is_tx_complete(struct dma_chan *chan,
-	dma_cookie_t cookie)
+	dma_cookie_t cookie, dma_cookie_t *last, dma_cookie_t *used)
 {
 	struct dma_tx_state state;
+	enum dma_status status;
 
-	return chan->device->device_tx_status(chan, cookie, &state);
+	status = chan->device->device_tx_status(chan, cookie, &state);
+	if (last)
+		*last = state.last;
+	if (used)
+		*used = state.used;
+	return status;
+}
+
+/**
+ * dma_async_is_complete - test a cookie against chan state
+ * @cookie: transaction identifier to test status of
+ * @last_complete: last know completed transaction
+ * @last_used: last cookie value handed out
+ *
+ * dma_async_is_complete() is used in dma_async_is_tx_complete()
+ * the test logic is separated for lightweight testing of multiple cookies
+ */
+static inline enum dma_status dma_async_is_complete(dma_cookie_t cookie,
+			dma_cookie_t last_complete, dma_cookie_t last_used)
+{
+	if (last_complete <= last_used) {
+		if ((cookie <= last_complete) || (cookie > last_used))
+			return DMA_COMPLETE;
+	} else {
+		if ((cookie <= last_complete) && (cookie > last_used))
+			return DMA_COMPLETE;
+	}
+	return DMA_IN_PROGRESS;
 }
 
 #ifdef CONFIG_DMA_ENGINE

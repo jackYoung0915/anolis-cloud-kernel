@@ -531,7 +531,7 @@ static int metricgroup__sys_event_iter(const struct pmu_event *pe,
 
 	while ((pmu = perf_pmu__scan(pmu))) {
 
-		if (!pmu->id || strcmp(pmu->id, pe->compat))
+		if (!pmu->id || !pmu_uncore_identifier_match(pe->compat, pmu->id))
 			continue;
 
 		return d->fn(pe, table, d->data);

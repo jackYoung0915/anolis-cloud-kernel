@@ -84,9 +84,11 @@ extern const struct kmalloc_info_struct {
 /* Kmalloc array related functions */
 void setup_kmalloc_cache_index_table(void);
 void create_kmalloc_caches(slab_flags_t);
+void create_oot_kmalloc_caches(slab_flags_t flags);
 
 /* Find the kmalloc slab corresponding for a certain size */
 struct kmem_cache *kmalloc_slab(size_t, gfp_t);
+struct kmem_cache *oot_kmalloc_slab(int i, size_t size, gfp_t flags);
 #endif
 
 gfp_t kmalloc_fix_flags(gfp_t flags);
@@ -164,7 +166,8 @@ static inline slab_flags_t kmem_cache_flags(unsigned int object_size,
 			      SLAB_NOLEAKTRACE | \
 			      SLAB_RECLAIM_ACCOUNT | \
 			      SLAB_TEMPORARY | \
-			      SLAB_ACCOUNT)
+			      SLAB_ACCOUNT | \
+			      SLAB_OOT)
 
 bool __kmem_cache_empty(struct kmem_cache *);
 int __kmem_cache_shutdown(struct kmem_cache *);
@@ -211,9 +214,11 @@ static inline int cache_vmstat_idx(struct kmem_cache *s)
 #ifdef CONFIG_KIDLED
 static inline bool kidled_available_slab(struct page *page, struct kmem_cache *s)
 {
+#ifdef CONFIG_KFENCE
 	/* Do not monitor kfence memory. */
 	if (unlikely(PageKfence(page)))
 		return false;
+#endif
 
 	if (!strcmp(s->name, "inode_cache") ||
 		!strcmp(s->name, "ext4_inode_cache") ||

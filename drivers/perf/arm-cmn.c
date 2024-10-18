@@ -1430,7 +1430,7 @@ static void arm_cmn_init_counter(struct perf_event *event)
 	struct arm_cmn *cmn = to_cmn(event->pmu);
 	struct arm_cmn_hw_event *hw = to_cmn_hw(event);
 	u64 count;
-	unsigned int i, idx;
+	int i, idx;
 
 	for_each_hw_dtc_idx(hw, i, idx) {
 		writel_relaxed(CMN_COUNTER_INIT, cmn->dtc[i].base + CMN_DT_PMEVCNT(idx));
@@ -1447,7 +1447,7 @@ static void arm_cmn_event_read(struct perf_event *event)
 	struct arm_cmn_hw_event *hw = to_cmn_hw(event);
 	u64 delta, new, prev;
 	unsigned long flags;
-	unsigned int i, idx;
+	int i, idx;
 
 	if (CMN_EVENT_TYPE(event) == CMN_TYPE_DTC) {
 		delta = arm_cmn_read_cc(cmn->dtc + hw->dtc_idx[0]);
@@ -1770,7 +1770,7 @@ static void arm_cmn_event_clear(struct arm_cmn *cmn, struct perf_event *event,
 {
 	struct arm_cmn_hw_event *hw = to_cmn_hw(event);
 	enum cmn_node_type type = CMN_EVENT_TYPE(event);
-	unsigned int j, idx;
+	int j, idx;
 
 	while (i--) {
 		struct arm_cmn_dtm *dtm = &cmn->dtms[hw->dn[i].dtm] + hw->dtm_offset;
@@ -1797,7 +1797,8 @@ static int arm_cmn_event_add(struct perf_event *event, int flags)
 	struct arm_cmn_hw_event *hw = to_cmn_hw(event);
 	struct arm_cmn_node *dn;
 	enum cmn_node_type type = CMN_EVENT_TYPE(event);
-	unsigned int input_sel, i = 0, j, idx;
+	unsigned int input_sel, i = 0;
+	int j, idx;
 
 	if (type == CMN_TYPE_DTC) {
 		while (cmn->dtc[i].cycles)

@@ -137,6 +137,12 @@ union ccp_function {
 		u16 mode:3;
 	} sm2;
 	struct {
+		u16 rand:1;
+		u16 rsvd:10;
+		u16 mode:3;
+		u16 ecc_mode:1;
+	} sm2_ecc;
+	struct {
 		u16 rsvd:10;
 		u16 type:4;
 		u16 rsvd2:1;
@@ -175,6 +181,9 @@ union ccp_function {
 #define	CCP_ECC_AFFINE(p)	((p)->ecc.one)
 #define	CCP_SM2_RAND(p)		((p)->sm2.rand)
 #define	CCP_SM2_MODE(p)		((p)->sm2.mode)
+#define CCP_SM2_ECC_RAND(p)	((p)->sm2_ecc.rand)
+#define CCP_SM2_ECC_MODE(p)	((p)->sm2_ecc.mode)
+#define CCP_SM2_ECC_ECC_MODE(p)	((p)->sm2_ecc.ecc_mode)
 #define	CCP_SM3_TYPE(p)		((p)->sm3.type)
 #define	CCP_SM4_ENCRYPT(p)	((p)->sm4.encrypt)
 #define	CCP_SM4_MODE(p)		((p)->sm4.mode)
@@ -226,6 +235,52 @@ union ccp_function {
 #define CCP5_CMD_DW7(p)		((p)->dw7)
 #define CCP5_CMD_KEY_HI(p)	((p)->dw7.key_hi)
 #define CCP5_CMD_KEY_MEM(p)	((p)->dw7.key_mem)
+
+/**
+ * Hygon CCP from 4th generation support both sm2 & ecc,
+ * but its input content is different from previous version.
+ * the previous requries only one src buffer which include
+ * hash + key. Now, hash and key should passed separately. To
+ * compatible with previous driver, we parse hash and key
+ * from src buffer which same as previous input
+ */
+#define SM2_ECC_OPERAND_LEN				32
+#define SM2_ECC_KG_SRC_SIZE				32
+#define SM2_ECC_LP_SRC_SIZE				32
+#define SM2_ECC_SIGN_SRC_SIZE			64
+#define SM2_ECC_VERIFY_SRC_SIZE			96
+
+static inline int ccp5_get_keyinfo(struct ccp_op *op, dma_addr_t *kaddr, u32 *slen)
+{
+	struct ccp_dma_info *sinfo = &op->src.u.dma;
+	dma_addr_t saddr = sinfo->address + sinfo->offset;
+	int ret = 0;
+
+	switch (op->u.sm2.mode) {
+	case CCP_SM2_MODE_SIGN:
+		*kaddr = saddr + SM2_ECC_OPERAND_LEN;
+		*slen = SM2_ECC_SIGN_SRC_SIZE;
+		break;
+	case CCP_SM2_MODE_VERIFY:
+		*kaddr = saddr + SM2_ECC_VERIFY_SRC_SIZE;
+		*slen = SM2_ECC_VERIFY_SRC_SIZE;
+		break;
+	case CCP_SM2_MODE_KG:
+		*kaddr = 0; /* unused for KG */
+		*slen = SM2_ECC_KG_SRC_SIZE;
+		break;
+	case CCP_SM2_MODE_LP:
+		*kaddr = saddr + SM2_ECC_OPERAND_LEN;
+		*slen = SM2_ECC_LP_SRC_SIZE;
+		break;
+	default:
+		pr_err("Invalid sm2 operation, mode = %d\n", op->u.sm2.mode);
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
 
 static inline unsigned int command_per_queue(void)
 {
@@ -706,6 +761,9 @@ static int ccp5_perform_sm2(struct ccp_op *op)
 	union ccp_function function;
 	struct ccp_dma_info *saddr = &op->src.u.dma;
 	struct ccp_dma_info *daddr = &op->dst.u.dma;
+	dma_addr_t kaddr;
+	unsigned int slen = saddr->length;
+	int ret = 0;
 
 	op->cmd_q->total_sm2_ops++;
 
@@ -720,12 +778,28 @@ static int ccp5_perform_sm2(struct ccp_op *op)
 	CCP5_CMD_PROT(&desc) = 0;
 
 	function.raw = 0;
-	CCP_SM2_RAND(&function) = op->u.sm2.rand;
-	CCP_SM2_MODE(&function) = op->u.sm2.mode;
+
+	/*
+	 * ccp support both sm2 and ecc, the rand,mode filed are different
+	 * with previous, and run on ecc or sm2 also should be indicated
+	 */
+	if (op->cmd_q->ccp->support_sm2_ecc) {
+		ret = ccp5_get_keyinfo(op, &kaddr, &slen);
+		if (ret)
+			return ret;
+
+		CCP_SM2_ECC_RAND(&function) = op->u.sm2.rand;
+		CCP_SM2_ECC_MODE(&function) = op->u.sm2.mode;
+		CCP_SM2_ECC_ECC_MODE(&function) = 0; /* 0: SM2 1: ECC */
+	} else {
+		CCP_SM2_RAND(&function) = op->u.sm2.rand;
+		CCP_SM2_MODE(&function) = op->u.sm2.mode;
+	}
+
 	CCP5_CMD_FUNCTION(&desc) = function.raw;
 
 	/* Length of source data must match with mode */
-	CCP5_CMD_LEN(&desc) = saddr->length;
+	CCP5_CMD_LEN(&desc) = slen;
 	CCP5_CMD_SRC_LO(&desc) = ccp_addr_lo(saddr);
 	CCP5_CMD_SRC_HI(&desc) = ccp_addr_hi(saddr);
 	CCP5_CMD_SRC_MEM(&desc) = CCP_MEMTYPE_SYSTEM;
@@ -733,6 +807,13 @@ static int ccp5_perform_sm2(struct ccp_op *op)
 	CCP5_CMD_DST_LO(&desc) = ccp_addr_lo(daddr);
 	CCP5_CMD_DST_HI(&desc) = ccp_addr_hi(daddr);
 	CCP5_CMD_DST_MEM(&desc) = CCP_MEMTYPE_SYSTEM;
+
+	if (op->cmd_q->ccp->support_sm2_ecc
+			&& op->u.sm2.mode != CCP_SM2_MODE_KG){
+		CCP5_CMD_KEY_LO(&desc) = low_address(kaddr);
+		CCP5_CMD_KEY_HI(&desc) = high_address(kaddr);
+		CCP5_CMD_KEY_MEM(&desc) = CCP_MEMTYPE_SYSTEM;
+	}
 
 	return ccp5_do_cmd(&desc, op->cmd_q);
 }
@@ -1073,6 +1154,14 @@ static int ccp5_init(struct ccp_device *ccp)
 		dev_notice(dev, "ccp: unable to access the device: you might be running a broken BIOS.\n");
 		return 1;
 	}
+
+#ifdef CONFIG_HYGON_GM
+	/*  check if ccp support both sm2 and ecc. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		ccp->support_sm2_ecc =
+			!!(ioread32(ccp->io_regs + CMD5_PSP_CCP_VERSION) & RI_ECC_PRESENT);
+	}
+#endif
 
 	command_per_q = command_per_queue();
 	queue_size_val = QUEUE_SIZE_VAL(command_per_q);

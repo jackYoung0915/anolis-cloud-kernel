@@ -648,6 +648,9 @@ struct txgbe_thermal_sensor_data {
 #define TXGBE_RDB_PL_CFG_TUN_TUNHDR     0x10
 #define TXGBE_RDB_PL_CFG_RSS_PL_MASK    0x7
 #define TXGBE_RDB_PL_CFG_RSS_PL_SHIFT   29
+#define TXGBE_RDB_PL_CFG_RSS_EN         0x1000000
+#define TXGBE_RDB_PL_CFG_RSS_MASK       0xFF0000
+
 /* RQTC Bit Masks and Shifts */
 #define TXGBE_RDB_RSS_TC_SHIFT_TC(_i)   ((_i) * 4)
 #define TXGBE_RDB_RSS_TC_TC0_MASK       (0x7 << 0)
@@ -717,6 +720,7 @@ enum {
 #define TXGBE_RDB_PB_CTL_DISABLED       0x1
 
 #define TXGBE_RDB_RA_CTL_RSS_EN         0x00000004U /* RSS Enable */
+#define TXGBE_RDB_RA_CTL_MULTI_RSS      0x00000001U /* VF RSS Hash Rule Enable */
 #define TXGBE_RDB_RA_CTL_RSS_MASK       0xFFFF0000U
 #define TXGBE_RDB_RA_CTL_RSS_IPV4_TCP   0x00010000U
 #define TXGBE_RDB_RA_CTL_RSS_IPV4       0x00020000U
@@ -846,7 +850,7 @@ enum txgbe_fdir_pballoc_type {
 /* etype switcher 1st stage */
 #define TXGBE_PSR_ETYPE_SWC(_i) (0x15128 + ((_i) * 4)) /* EType Queue Filter */
 /* ETYPE Queue Filter/Select Bit Masks */
-#define TXGBE_MAX_PSR_ETYPE_SWC_FILTERS         8
+#define TXGBE_MAX_PSR_ETYPE_SWC_FILTERS         2
 #define TXGBE_PSR_ETYPE_SWC_FCOE                0x08000000U /* bit 27 */
 #define TXGBE_PSR_ETYPE_SWC_TX_ANTISPOOF        0x20000000U /* bit 29 */
 #define TXGBE_PSR_ETYPE_SWC_1588                0x40000000U /* bit 30 */
@@ -1892,8 +1896,8 @@ enum txgbe_l2_ptypes {
 #define TXGBE_TXD_TUNNEL_GRE            (0x1ULL << TXGBE_TXD_TUNNEL_TYPE_SHIFT)
 
 /* Number of Transmit and Receive Descriptors must be a multiple of 8 */
-#define TXGBE_REQ_TX_DESCRIPTOR_MULTIPLE        8
-#define TXGBE_REQ_RX_DESCRIPTOR_MULTIPLE        8
+#define TXGBE_REQ_TX_DESCRIPTOR_MULTIPLE        128
+#define TXGBE_REQ_RX_DESCRIPTOR_MULTIPLE        128
 
 /* Transmit Descriptor */
 union txgbe_tx_desc {
@@ -2025,6 +2029,22 @@ union txgbe_atr_hash_dword {
 	} port;
 	__be16 flex_bytes;
 	__be32 dword;
+};
+
+struct txgbe_ethertype_filter {
+	u16 rule_idx;
+	u64 action;
+	u16 ethertype;
+	u32 etqf;
+	u32 etqs;
+};
+
+/* Structure to store ethertype filters' info. */
+struct txgbe_etype_filter_info {
+	int count;
+	u8 ethertype_mask;  /* Bit mask for every used ethertype filter */
+	/* store used ethertype filters */
+	struct txgbe_ethertype_filter etype_filters[TXGBE_MAX_PSR_ETYPE_SWC_FILTERS];
 };
 
 /****************** Manageablility Host Interface defines ********************/
@@ -2557,6 +2577,7 @@ struct txgbe_phy_operations {
 				u8 *sff8472_data);
 	s32 (*read_i2c_eeprom)(struct txgbe_hw *hw, u8 byte_offset,
 			       u8 *eeprom_data);
+	s32 (*read_i2c_sfp_phy)(struct txgbe_hw *hw, u16 byte_offset, u16 *data);
 	s32 (*check_overtemp)(struct txgbe_hw *hw);
 };
 
@@ -2678,6 +2699,7 @@ struct txgbe_hw {
 	u16 tpid[8];
 	u16 oem_ssid;
 	u16 oem_svid;
+	bool f2c_mod_status;
 };
 
 struct txgbe_hic_write_lldp {

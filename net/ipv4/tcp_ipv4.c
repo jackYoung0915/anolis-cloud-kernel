@@ -57,6 +57,7 @@
 #include <linux/init.h>
 #include <linux/times.h>
 #include <linux/slab.h>
+#include <linux/sched.h>
 
 #include <net/net_namespace.h>
 #include <net/icmp.h>
@@ -2350,6 +2351,8 @@ static void *established_get_first(struct seq_file *seq)
 		struct hlist_nulls_node *node;
 		spinlock_t *lock = inet_ehash_lockp(&tcp_hashinfo, st->bucket);
 
+		cond_resched();
+
 		/* Lockless fast path for the common case of empty buckets */
 		if (empty_bucket(st))
 			continue;
@@ -2792,6 +2795,7 @@ struct proto tcp_prot = {
 	.shutdown		= tcp_shutdown,
 	.setsockopt		= tcp_setsockopt,
 	.getsockopt		= tcp_getsockopt,
+	.bpf_bypass_getsockopt	= tcp_bpf_bypass_getsockopt,
 	.keepalive		= tcp_set_keepalive,
 	.recvmsg		= tcp_recvmsg,
 	.sendmsg		= tcp_sendmsg,

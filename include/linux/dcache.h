@@ -229,6 +229,10 @@ struct dentry_operations {
 #define DCACHE_DENTRY_CURSOR		0x20000000
 #define DCACHE_NORCU			0x40000000 /* No RCU delay for freeing */
 
+#ifdef CONFIG_KIDLED
+#define DCACHE_KIDLED_YOUNG		0x80000000 /* Mark the dentry is young for kidled */
+#endif
+
 extern seqlock_t rename_lock;
 
 /*

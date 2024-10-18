@@ -718,6 +718,7 @@ struct ngbe_msg {
 };
 
 extern char ngbe_driver_name[];
+extern const char ngbe_driver_version[];
 
 static inline struct net_device *ngbe_hw_to_netdev(const struct ngbe_hw *hw)
 {

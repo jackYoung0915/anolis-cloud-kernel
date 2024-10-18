@@ -52,6 +52,8 @@ struct netns_sysctl_ipv6 {
 	int max_hbh_opts_len;
 	int seg6_flowlabel;
 	bool skip_notify_on_dev_down;
+
+	CK_KABI_RESERVE(1)
 };
 
 struct netns_ipv6 {

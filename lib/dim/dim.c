@@ -64,13 +64,15 @@ void dim_calc_stats(struct dim_sample *start, struct dim_sample *end,
 			     start->byte_ctr);
 	u32 ncomps = BIT_GAP(BITS_PER_TYPE(u32), end->comp_ctr,
 			     start->comp_ctr);
+	u16 nevents = BIT_GAP(BITS_PER_TYPE(u16), end->event_ctr,
+			      start->event_ctr);
 
 	if (!delta_us)
 		return;
 
 	curr_stats->ppms = DIV_ROUND_UP(npkts * USEC_PER_MSEC, delta_us);
 	curr_stats->bpms = DIV_ROUND_UP(nbytes * USEC_PER_MSEC, delta_us);
-	curr_stats->epms = DIV_ROUND_UP(DIM_NEVENTS * USEC_PER_MSEC,
+	curr_stats->epms = DIV_ROUND_UP(nevents * USEC_PER_MSEC,
 					delta_us);
 	curr_stats->cpms = DIV_ROUND_UP(ncomps * USEC_PER_MSEC, delta_us);
 	if (curr_stats->epms != 0)
@@ -81,3 +83,6 @@ void dim_calc_stats(struct dim_sample *start, struct dim_sample *end,
 
 }
 EXPORT_SYMBOL(dim_calc_stats);
+
+MODULE_DESCRIPTION("Dynamic Interrupt Moderation (DIM) library");
+MODULE_LICENSE("Dual BSD/GPL");

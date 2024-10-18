@@ -23,7 +23,7 @@ void kvm_page_track_free_memslot(struct kvm_memory_slot *slot)
 	int i;
 
 	for (i = 0; i < KVM_PAGE_TRACK_MAX; i++) {
-		kvfree(slot->arch.gfn_track[i]);
+		vfree(slot->arch.gfn_track[i]);
 		slot->arch.gfn_track[i] = NULL;
 	}
 }
@@ -35,7 +35,7 @@ int kvm_page_track_create_memslot(struct kvm_memory_slot *slot,
 
 	for (i = 0; i < KVM_PAGE_TRACK_MAX; i++) {
 		slot->arch.gfn_track[i] =
-			kvcalloc(npages, sizeof(*slot->arch.gfn_track[i]),
+			__vcalloc(npages, sizeof(*slot->arch.gfn_track[i]),
 				 GFP_KERNEL_ACCOUNT);
 		if (!slot->arch.gfn_track[i])
 			goto track_free;

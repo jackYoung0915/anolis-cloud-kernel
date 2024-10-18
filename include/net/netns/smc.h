@@ -28,7 +28,9 @@ struct netns_smc {
 	int				sysctl_wmem;
 	int				sysctl_rmem;
 	int				sysctl_tcp2smc;
-	CK_KABI_USE_SPLIT(1, int sysctl_max_links_per_lgr, int sysctl_max_conns_per_lgr)
+	int				sysctl_max_links_per_lgr;
+	int				sysctl_max_conns_per_lgr;
+	CK_KABI_USE_SPLIT(1, unsigned int sysctl_autosplit_size)
 
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)

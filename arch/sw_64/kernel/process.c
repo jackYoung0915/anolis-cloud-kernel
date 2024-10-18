@@ -33,12 +33,13 @@ flush_thread(void)
 	/* Arrange for each exec'ed process to start off with a clean slate
 	 * with respect to the FPU.  This is all exceptions disabled.
 	 */
-	current_thread_info()->ieee_state = 0;
-#ifdef	CONFIG_SUBARCH_C3B
-	wrfpcr(FPCR_INIT | ieee_swcr_to_fpcr(0));
-#else
-	wrfpcr(FPCR_INIT | FPCR_DNOE | ieee_swcr_to_fpcr(0));
+	unsigned int *ieee_state = &current_thread_info()->ieee_state;
+
+	*ieee_state = 0;
+#ifndef CONFIG_SUBARCH_C3B
+	*ieee_state |= IEEE_HARD_DM;
 #endif
+	wrfpcr(FPCR_INIT | ieee_swcr_to_fpcr(*ieee_state));
 
 	/* Clean slate for TLS.  */
 	current_thread_info()->pcb.tp = 0;
@@ -76,9 +77,9 @@ copy_thread(unsigned long clone_flags, unsigned long usp,
 	struct pt_regs *childregs = task_pt_regs(p);
 	struct pt_regs *regs = current_pt_regs();
 
-	p->thread.sp = (unsigned long) childregs;
+	p->thread.sp = (unsigned long) childregs - STACKFRAME_SIZE;
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(p->flags & (PF_KTHREAD | PF_IO_WORKER))) {
 		/* kernel thread */
 		memset(childregs, 0, sizeof(struct pt_regs));
 		p->thread.ra = (unsigned long) ret_from_kernel_thread;

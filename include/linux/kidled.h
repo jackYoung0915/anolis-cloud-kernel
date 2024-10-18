@@ -378,7 +378,6 @@ static inline void kidled_mark_slab_scanned(void *object, unsigned long scan_rou
 
 extern const int kidled_default_buckets[NUM_KIDLED_BUCKETS];
 
-bool kidled_use_hierarchy(void);
 #ifdef CONFIG_MEMCG
 void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
 				  struct mem_cgroup *to,

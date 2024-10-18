@@ -587,6 +587,8 @@ struct kmem_cache *__init create_kmalloc_cache(const char *name,
 
 	create_boot_cache(s, name, size, flags, useroffset, usersize);
 	list_add(&s->list, &slab_caches);
+	INIT_LIST_HEAD(&s->oot_page_list);
+	spin_lock_init(&s->oot_lock);
 	s->refcount = 1;
 	return s;
 }
@@ -595,6 +597,52 @@ struct kmem_cache *
 kmalloc_caches[NR_KMALLOC_TYPES][KMALLOC_SHIFT_HIGH + 1] __ro_after_init =
 { /* initialization for https://bugs.llvm.org/show_bug.cgi?id=42570 */ };
 EXPORT_SYMBOL(kmalloc_caches);
+
+#define OOT_KMALLOC_CACHES(index)	oot_kmalloc_caches_ ## index
+#define OOT_KMALLOC_INFO(index)		oot_kmalloc_info_ ## index
+
+#define DEFINE_OOT_KMALLOC_CACHES(index)			\
+struct kmem_cache *						\
+OOT_KMALLOC_CACHES(index)[NR_KMALLOC_TYPES][KMALLOC_SHIFT_HIGH + 1] \
+__ro_after_init = {};							\
+EXPORT_SYMBOL(OOT_KMALLOC_CACHES(index))
+
+
+DEFINE_OOT_KMALLOC_CACHES(0);
+DEFINE_OOT_KMALLOC_CACHES(1);
+DEFINE_OOT_KMALLOC_CACHES(2);
+DEFINE_OOT_KMALLOC_CACHES(3);
+DEFINE_OOT_KMALLOC_CACHES(4);
+DEFINE_OOT_KMALLOC_CACHES(5);
+DEFINE_OOT_KMALLOC_CACHES(6);
+DEFINE_OOT_KMALLOC_CACHES(7);
+DEFINE_OOT_KMALLOC_CACHES(8);
+DEFINE_OOT_KMALLOC_CACHES(9);
+DEFINE_OOT_KMALLOC_CACHES(10);
+DEFINE_OOT_KMALLOC_CACHES(11);
+DEFINE_OOT_KMALLOC_CACHES(12);
+DEFINE_OOT_KMALLOC_CACHES(13);
+DEFINE_OOT_KMALLOC_CACHES(14);
+DEFINE_OOT_KMALLOC_CACHES(15);
+
+struct kmem_cache *(*oot_kmalloc_caches[])[NR_KMALLOC_TYPES][KMALLOC_SHIFT_HIGH + 1] = {
+	&OOT_KMALLOC_CACHES(0),
+	&OOT_KMALLOC_CACHES(1),
+	&OOT_KMALLOC_CACHES(2),
+	&OOT_KMALLOC_CACHES(3),
+	&OOT_KMALLOC_CACHES(4),
+	&OOT_KMALLOC_CACHES(5),
+	&OOT_KMALLOC_CACHES(6),
+	&OOT_KMALLOC_CACHES(7),
+	&OOT_KMALLOC_CACHES(8),
+	&OOT_KMALLOC_CACHES(9),
+	&OOT_KMALLOC_CACHES(10),
+	&OOT_KMALLOC_CACHES(11),
+	&OOT_KMALLOC_CACHES(12),
+	&OOT_KMALLOC_CACHES(13),
+	&OOT_KMALLOC_CACHES(14),
+	&OOT_KMALLOC_CACHES(15),
+};
 
 /*
  * Conversion table for small slabs sizes / 8 to the index in the
@@ -656,6 +704,24 @@ struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
 	return kmalloc_caches[kmalloc_type(flags)][index];
 }
 
+struct kmem_cache *oot_kmalloc_slab(int i, size_t size, gfp_t flags)
+{
+	unsigned int index;
+
+	if (size <= 192) {
+		if (!size)
+			return ZERO_SIZE_PTR;
+
+		index = size_index[size_index_elem(size)];
+	} else {
+		if (WARN_ON_ONCE(size > KMALLOC_MAX_CACHE_SIZE))
+			return NULL;
+		index = fls(size - 1);
+	}
+
+	return (*oot_kmalloc_caches[i])[kmalloc_type(flags)][index];
+}
+
 #ifdef CONFIG_ZONE_DMA
 #define INIT_KMALLOC_INFO(__size, __short_size)			\
 {								\
@@ -672,6 +738,60 @@ struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
 	.size = __size,						\
 }
 #endif
+
+#define INIT_OOT_KMALLOC_INFO(__index, __size, __short_size)		\
+{								\
+	.name[KMALLOC_NORMAL]  = "oot-kmalloc-" #__index "-" #__short_size,	\
+	.size = __size,						\
+}
+
+#define DEFINE_OOT_KMALLOC_INFO(index)		\
+const struct kmalloc_info_struct OOT_KMALLOC_INFO(index)[] __initconst = { \
+	INIT_OOT_KMALLOC_INFO(index, 0, 0),				\
+	INIT_OOT_KMALLOC_INFO(index, 96, 96),				\
+	INIT_OOT_KMALLOC_INFO(index, 192, 192),			\
+	INIT_OOT_KMALLOC_INFO(index, 8, 8),				\
+	INIT_OOT_KMALLOC_INFO(index, 16, 16),				\
+	INIT_OOT_KMALLOC_INFO(index, 32, 32),				\
+	INIT_OOT_KMALLOC_INFO(index, 64, 64),				\
+	INIT_OOT_KMALLOC_INFO(index, 128, 128),			\
+	INIT_OOT_KMALLOC_INFO(index, 256, 256),			\
+	INIT_OOT_KMALLOC_INFO(index, 512, 512),			\
+	INIT_OOT_KMALLOC_INFO(index, 1024, 1k),			\
+	INIT_OOT_KMALLOC_INFO(index, 2048, 2k),			\
+	INIT_OOT_KMALLOC_INFO(index, 4096, 4k),			\
+	INIT_OOT_KMALLOC_INFO(index, 8192, 8k),			\
+	INIT_OOT_KMALLOC_INFO(index, 16384, 16k),			\
+	INIT_OOT_KMALLOC_INFO(index, 32768, 32k),			\
+	INIT_OOT_KMALLOC_INFO(index, 65536, 64k),			\
+	INIT_OOT_KMALLOC_INFO(index, 131072, 128k),			\
+	INIT_OOT_KMALLOC_INFO(index, 262144, 256k),			\
+	INIT_OOT_KMALLOC_INFO(index, 524288, 512k),			\
+	INIT_OOT_KMALLOC_INFO(index, 1048576, 1M),			\
+	INIT_OOT_KMALLOC_INFO(index, 2097152, 2M),			\
+	INIT_OOT_KMALLOC_INFO(index, 4194304, 4M),			\
+	INIT_OOT_KMALLOC_INFO(index, 8388608, 8M),			\
+	INIT_OOT_KMALLOC_INFO(index, 16777216, 16M),			\
+	INIT_OOT_KMALLOC_INFO(index, 33554432, 32M),			\
+	INIT_OOT_KMALLOC_INFO(index, 67108864, 64M)			\
+}
+
+DEFINE_OOT_KMALLOC_INFO(0);
+DEFINE_OOT_KMALLOC_INFO(1);
+DEFINE_OOT_KMALLOC_INFO(2);
+DEFINE_OOT_KMALLOC_INFO(3);
+DEFINE_OOT_KMALLOC_INFO(4);
+DEFINE_OOT_KMALLOC_INFO(5);
+DEFINE_OOT_KMALLOC_INFO(6);
+DEFINE_OOT_KMALLOC_INFO(7);
+DEFINE_OOT_KMALLOC_INFO(8);
+DEFINE_OOT_KMALLOC_INFO(9);
+DEFINE_OOT_KMALLOC_INFO(10);
+DEFINE_OOT_KMALLOC_INFO(11);
+DEFINE_OOT_KMALLOC_INFO(12);
+DEFINE_OOT_KMALLOC_INFO(13);
+DEFINE_OOT_KMALLOC_INFO(14);
+DEFINE_OOT_KMALLOC_INFO(15);
 
 /*
  * kmalloc_info[] is to make slub_debug=,kmalloc-xx option work at boot time.
@@ -765,6 +885,59 @@ new_kmalloc_cache(int idx, enum kmalloc_cache_type type, slab_flags_t flags)
 					kmalloc_info[idx].name[type],
 					kmalloc_info[idx].size, flags, 0,
 					kmalloc_info[idx].size);
+}
+
+#define CREATE_OOT_KMALLOC_CACHES(index, flags)			\
+do {									\
+	int __i;							\
+	enum kmalloc_cache_type __type = KMALLOC_NORMAL;		\
+	memcpy(OOT_KMALLOC_CACHES(index), kmalloc_caches, sizeof(kmalloc_caches));	\
+										\
+	for (__i = 0; __i <= KMALLOC_SHIFT_HIGH; __i++)		\
+		OOT_KMALLOC_CACHES(index)[__type][__i] = NULL;		\
+										\
+	for (__i = KMALLOC_SHIFT_LOW; __i <= KMALLOC_SHIFT_HIGH; __i++) {	\
+		if (!OOT_KMALLOC_CACHES(index)[__type][__i]) {			\
+			OOT_KMALLOC_CACHES(index)[__type][__i] = create_kmalloc_cache(	\
+					OOT_KMALLOC_INFO(index)[__i].name[__type],	\
+					OOT_KMALLOC_INFO(index)[__i].size, flags, 0,	\
+					OOT_KMALLOC_INFO(index)[__i].size);		\
+		}									\
+		if (KMALLOC_MIN_SIZE <= 32 && __i == 6 &&					\
+				!OOT_KMALLOC_CACHES(index)[__type][1]) {			\
+			OOT_KMALLOC_CACHES(index)[__type][1] = create_kmalloc_cache(	\
+					OOT_KMALLOC_INFO(index)[1].name[__type],		\
+					OOT_KMALLOC_INFO(index)[1].size, flags, 0,	\
+					OOT_KMALLOC_INFO(index)[1].size);		\
+		}									\
+		if (KMALLOC_MIN_SIZE <= 64 && __i == 7 &&					\
+				!OOT_KMALLOC_CACHES(index)[__type][2]) {			\
+			OOT_KMALLOC_CACHES(index)[__type][2] = create_kmalloc_cache(	\
+					OOT_KMALLOC_INFO(index)[2].name[__type],		\
+					OOT_KMALLOC_INFO(index)[2].size, flags, 0,	\
+					OOT_KMALLOC_INFO(index)[2].size);		\
+		}									\
+	}										\
+} while (0)
+
+void __init create_oot_kmalloc_caches(slab_flags_t flags)
+{
+	CREATE_OOT_KMALLOC_CACHES(0, flags);
+	CREATE_OOT_KMALLOC_CACHES(1, flags);
+	CREATE_OOT_KMALLOC_CACHES(2, flags);
+	CREATE_OOT_KMALLOC_CACHES(3, flags);
+	CREATE_OOT_KMALLOC_CACHES(4, flags);
+	CREATE_OOT_KMALLOC_CACHES(5, flags);
+	CREATE_OOT_KMALLOC_CACHES(6, flags);
+	CREATE_OOT_KMALLOC_CACHES(7, flags);
+	CREATE_OOT_KMALLOC_CACHES(8, flags);
+	CREATE_OOT_KMALLOC_CACHES(9, flags);
+	CREATE_OOT_KMALLOC_CACHES(10, flags);
+	CREATE_OOT_KMALLOC_CACHES(11, flags);
+	CREATE_OOT_KMALLOC_CACHES(12, flags);
+	CREATE_OOT_KMALLOC_CACHES(13, flags);
+	CREATE_OOT_KMALLOC_CACHES(14, flags);
+	CREATE_OOT_KMALLOC_CACHES(15, flags);
 }
 
 /*

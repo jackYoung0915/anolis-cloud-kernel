@@ -93,6 +93,7 @@ enum transparent_hugepage_flag {
 #ifdef CONFIG_HUGETEXT
 	TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
 	TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
+	TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 #endif
 };
 
@@ -193,6 +194,10 @@ static inline bool transhuge_vma_enabled(struct vm_area_struct *vma,
 	(transparent_hugepage_flags &		\
 	 (1<<TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG))
 
+#define hugetext_file_direct_enabled()		\
+	(transparent_hugepage_flags &		\
+	 (1<<TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG))
+
 #define hugetext_anon_enabled()			\
 	(transparent_hugepage_flags &		\
 	 (1<<TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG))
@@ -206,9 +211,11 @@ extern inline bool __khugepaged_max_nr_hugetext(void);
 extern unsigned long hugetext_get_unmapped_area(struct file *filp,
 		unsigned long addr, unsigned long len, unsigned long pgoff,
 		unsigned long flags);
+extern void hugetext_add_file_collapse_work(unsigned long haddr);
 #else
 #define hugetext_enabled()	false
 #define hugetext_file_enabled()	false
+#define hugetext_file_direct_enabled() false
 #define hugetext_anon_enabled()	false
 #define hugetext_padding_enabled()	false
 
@@ -219,6 +226,8 @@ static inline unsigned long hugetext_get_unmapped_area(struct file *filp,
 	BUILD_BUG();
 	return 0;
 }
+
+static inline void hugetext_add_file_collapse_work(unsigned long haddr) {}
 #endif /* CONFIG_HUGETEXT */
 
 static inline bool vma_is_hugetext_file(struct vm_area_struct *vma,

@@ -113,9 +113,6 @@ void watchdog_hardlockup_check(struct pt_regs *regs)
 		return;
 	}
 
-	if (!watchdog_check_timestamp())
-		return;
-
 	/* check for a hardlockup
 	 * This is done by making sure our timer interrupt
 	 * is incrementing.  The timer interrupt should have
@@ -179,6 +176,9 @@ static void watchdog_overflow_callback(struct perf_event *event,
 {
 	/* Ensure the watchdog never gets throttled */
 	event->hw.interrupts = 0;
+
+	if (!watchdog_check_timestamp())
+		return;
 
 	watchdog_hardlockup_check(regs);
 }

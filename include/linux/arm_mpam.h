@@ -18,11 +18,22 @@ enum mpam_class_types {
 	MPAM_CLASS_UNKNOWN,     /* Everything else, e.g. SMMU */
 };
 
+enum mpam_machine_type {
+	MPAM_DEFAULT_MACHINE,
+	MPAM_YITIAN710,
+
+	MPAM_NUM_MACHINE_TYPES,
+};
+
+/* Machine identifier which can be used for vendor-specific MPAM features */
+extern enum mpam_machine_type mpam_current_machine;
+
 #ifdef CONFIG_ACPI_MPAM
 /* Parse the ACPI description of resources entries for this MSC. */
 int acpi_mpam_parse_resources(struct mpam_msc *msc,
 			      struct acpi_table_mpam_msc *tbl_msc);
 int acpi_mpam_count_msc(void);
+enum mpam_machine_type acpi_mpam_get_machine_type(void);
 #else
 static inline int acpi_mpam_parse_resources(struct mpam_msc *msc,
 					    struct acpi_table_mpam_msc *tbl_msc)
@@ -30,6 +41,10 @@ static inline int acpi_mpam_parse_resources(struct mpam_msc *msc,
 	return -EINVAL;
 }
 static inline int acpi_mpam_count_msc(void) { return -EINVAL; }
+static inline enum mpam_machine_type acpi_mpam_get_machine_type(void)
+{
+	return MPAM_DEFAULT_MACHINE;
+}
 #endif
 
 int mpam_register_requestor(u16 partid_max, u8 pmg_max);
@@ -48,12 +63,11 @@ static inline bool resctrl_arch_event_is_free_running(enum resctrl_event_id evt)
 		return true;
 	case QOS_L3_MBM_TOTAL_EVENT_ID:
 	case QOS_L3_MBM_LOCAL_EVENT_ID:
+	case QOS_MC_MBM_BPS_EVENT_ID:
 		return mpam_monitors_free_runing;
+	default:
+		return false;
 	}
-
-	unreachable();
-
-	return false;
 }
 
 static inline unsigned int resctrl_arch_round_mon_val(unsigned int val)
@@ -65,6 +79,7 @@ bool resctrl_arch_alloc_capable(void);
 bool resctrl_arch_mon_capable(void);
 bool resctrl_arch_is_llc_occupancy_enabled(void);
 bool resctrl_arch_is_mbm_local_enabled(void);
+bool resctrl_arch_is_mbm_bps_enabled(void);
 
 static inline bool resctrl_arch_is_mbm_total_enabled(void)
 {
@@ -81,6 +96,56 @@ static inline int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level ignored,
 	return hwdrc_mb ? -EINVAL : 0;
 }
 
+static inline bool resctrl_arch_is_mbm_total_configurable(void)
+{
+	return false;
+}
+
+static inline bool resctrl_arch_is_mbm_local_configurable(void)
+{
+	return false;
+}
+
+static inline void resctrl_arch_mondata_config_read(void *dom, void *info) { }
+
+static inline int resctrl_arch_mbm_config_write_domain(void *rdt_resource, void *dom,
+						       u32 evtid, u32 val)
+{
+	return 0;
+}
+
+static inline bool resctrl_arch_get_abmc_enabled(void)
+{
+	return false;
+}
+
+static inline int resctrl_arch_mbm_cntr_assign_enable(void)
+{
+	return -EINVAL;
+}
+
+static inline void resctrl_arch_mbm_cntr_assign_disable(void) { }
+
+static inline bool resctrl_arch_get_mbm_cntr_assign_enable(void)
+{
+	return false;
+}
+
+static inline void resctrl_arch_event_config_set(void *info) { }
+static inline u32 resctrl_arch_event_config_get(void *dom,
+						enum resctrl_event_id eventid)
+{
+	return INVALID_CONFIG_VALUE;
+}
+
+static inline int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
+			     u32 rmid, u32 cntr_id, u32 closid, bool assign)
+{
+	return -EINVAL;
+}
+
+static inline void resctrl_arch_mbm_cntr_assign_configure(void) { }
+
 /* reset cached configurations, then all devices */
 void resctrl_arch_reset_resources(void);
 
@@ -91,7 +156,7 @@ bool resctrl_arch_match_rmid(struct task_struct *tsk, u32 closid, u32 rmid);
 void resctrl_arch_set_cpu_default_closid(int cpu, u32 closid);
 void resctrl_arch_set_closid_rmid(struct task_struct *tsk, u32 closid, u32 rmid);
 void resctrl_arch_set_cpu_default_closid_rmid(int cpu, u32 closid, u32 pmg);
-void resctrl_sched_in(void);
+void resctrl_sched_in(struct task_struct *tsk);
 u32 resctrl_arch_rmid_idx_encode(u32 closid, u32 rmid);
 void resctrl_arch_rmid_idx_decode(u32 idx, u32 *closid, u32 *rmid);
 u32 resctrl_arch_system_num_rmid_idx(void);

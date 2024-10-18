@@ -504,6 +504,16 @@ setup_e820(struct boot_params *params, struct setup_data *e820ext, u32 e820ext_s
 			e820_type = E820_TYPE_PMEM;
 			break;
 
+		case EFI_UNACCEPTED_MEMORY:
+			if (!IS_ENABLED(CONFIG_UNACCEPTED_MEMORY)) {
+				efi_warn_once(
+"The system has unaccepted memory,  but kernel does not support it\nConsider enabling CONFIG_UNACCEPTED_MEMORY\n");
+				continue;
+			}
+			e820_type = E820_TYPE_RAM;
+			process_unaccepted_memory(d->phys_addr,
+						  d->phys_addr + PAGE_SIZE * d->num_pages);
+			break;
 		default:
 			continue;
 		}
@@ -572,28 +582,27 @@ static efi_status_t allocate_e820(struct boot_params *params,
 				  struct setup_data **e820ext,
 				  u32 *e820ext_size)
 {
-	unsigned long map_size, desc_size, map_key;
+	struct efi_boot_memmap *map;
 	efi_status_t status;
-	__u32 nr_desc, desc_version;
+	__u32 nr_desc;
 
-	/* Only need the size of the mem map and size of each mem descriptor */
-	map_size = 0;
-	status = efi_bs_call(get_memory_map, &map_size, NULL, &map_key,
-			     &desc_size, &desc_version);
-	if (status != EFI_BUFFER_TOO_SMALL)
-		return (status != EFI_SUCCESS) ? status : EFI_UNSUPPORTED;
+	status = efi_get_memory_map(&map, false);
+	if (status != EFI_SUCCESS)
+		return status;
 
-	nr_desc = map_size / desc_size + EFI_MMAP_NR_SLACK_SLOTS;
-
-	if (nr_desc > ARRAY_SIZE(params->e820_table)) {
-		u32 nr_e820ext = nr_desc - ARRAY_SIZE(params->e820_table);
+	nr_desc = map->map_size / map->desc_size;
+	if (nr_desc > ARRAY_SIZE(params->e820_table) - EFI_MMAP_NR_SLACK_SLOTS) {
+		u32 nr_e820ext = nr_desc - ARRAY_SIZE(params->e820_table) +
+				 EFI_MMAP_NR_SLACK_SLOTS;
 
 		status = alloc_e820ext(nr_e820ext, e820ext, e820ext_size);
-		if (status != EFI_SUCCESS)
-			return status;
 	}
 
-	return EFI_SUCCESS;
+	if (IS_ENABLED(CONFIG_UNACCEPTED_MEMORY) && status == EFI_SUCCESS)
+		status = allocate_unaccepted_bitmap(nr_desc, map);
+
+	efi_bs_call(free_pool, map);
+	return status;
 }
 
 struct exit_boot_struct {
@@ -613,32 +622,22 @@ static efi_status_t exit_boot_func(struct efi_boot_memmap *map,
 
 	efi_set_u64_split((unsigned long)efi_system_table,
 			  &p->efi->efi_systab, &p->efi->efi_systab_hi);
-	p->efi->efi_memdesc_size	= *map->desc_size;
-	p->efi->efi_memdesc_version	= *map->desc_ver;
-	efi_set_u64_split((unsigned long)*map->map,
+	p->efi->efi_memdesc_size	= map->desc_size;
+	p->efi->efi_memdesc_version	= map->desc_ver;
+	efi_set_u64_split((unsigned long)map->map,
 			  &p->efi->efi_memmap, &p->efi->efi_memmap_hi);
-	p->efi->efi_memmap_size		= *map->map_size;
+	p->efi->efi_memmap_size		= map->map_size;
 
 	return EFI_SUCCESS;
 }
 
 static efi_status_t exit_boot(struct boot_params *boot_params, void *handle)
 {
-	unsigned long map_sz, key, desc_size, buff_size;
-	efi_memory_desc_t *mem_map;
 	struct setup_data *e820ext = NULL;
 	__u32 e820ext_size = 0;
 	efi_status_t status;
-	__u32 desc_version;
-	struct efi_boot_memmap map;
 	struct exit_boot_struct priv;
 
-	map.map			= &mem_map;
-	map.map_size		= &map_sz;
-	map.desc_size		= &desc_size;
-	map.desc_ver		= &desc_version;
-	map.key_ptr		= &key;
-	map.buff_size		= &buff_size;
 	priv.boot_params	= boot_params;
 	priv.efi		= &boot_params->efi_info;
 
@@ -647,7 +646,7 @@ static efi_status_t exit_boot(struct boot_params *boot_params, void *handle)
 		return status;
 
 	/* Might as well exit boot services now */
-	status = efi_exit_boot_services(handle, &map, &priv, exit_boot_func);
+	status = efi_exit_boot_services(handle, &priv, exit_boot_func);
 	if (status != EFI_SUCCESS)
 		return status;
 

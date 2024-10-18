@@ -2874,6 +2874,7 @@ static bool hswep_has_limit_sbox(unsigned int device)
 		return false;
 
 	pci_read_config_dword(dev, HSWEP_PCU_CAPID4_OFFET, &capid4);
+	pci_dev_put(dev);
 	if (!hswep_get_chop(capid4))
 		return true;
 
@@ -3688,12 +3689,19 @@ static inline u8 skx_iio_stack(struct intel_uncore_pmu *pmu, int die)
 }
 
 static umode_t
-skx_iio_mapping_visible(struct kobject *kobj, struct attribute *attr, int die)
+pmu_iio_mapping_visible(struct kobject *kobj, struct attribute *attr,
+			 int die, int zero_bus_pmu)
 {
 	struct intel_uncore_pmu *pmu = dev_to_uncore_pmu(kobj_to_dev(kobj));
 
-	/* Root bus 0x00 is valid only for die 0 AND pmu_idx = 0. */
-	return (!skx_iio_stack(pmu, die) && pmu->pmu_idx) ? 0 : attr->mode;
+	return (!skx_iio_stack(pmu, die) && pmu->pmu_idx != zero_bus_pmu) ? 0 : attr->mode;
+}
+
+static umode_t
+skx_iio_mapping_visible(struct kobject *kobj, struct attribute *attr, int die)
+{
+	/* Root bus 0x00 is valid only for pmu_idx = 0. */
+	return pmu_iio_mapping_visible(kobj, attr, die, 0);
 }
 
 static ssize_t skx_iio_mapping_show(struct device *dev,
@@ -3785,7 +3793,8 @@ static const struct attribute_group *skx_iio_attr_update[] = {
 	NULL,
 };
 
-static int skx_iio_set_mapping(struct intel_uncore_type *type)
+static int
+pmu_iio_set_mapping(struct intel_uncore_type *type, struct attribute_group *ag)
 {
 	char buf[64];
 	int ret;
@@ -3793,8 +3802,8 @@ static int skx_iio_set_mapping(struct intel_uncore_type *type)
 	struct attribute **attrs = NULL;
 	struct dev_ext_attribute *eas = NULL;
 
-	ret = skx_iio_get_topology(type);
-	if (ret)
+	ret = type->get_topology(type);
+	if (ret < 0)
 		goto clear_attr_update;
 
 	ret = -ENOMEM;
@@ -3820,7 +3829,7 @@ static int skx_iio_set_mapping(struct intel_uncore_type *type)
 		eas[die].var = (void *)die;
 		attrs[die] = &eas[die].attr.attr;
 	}
-	skx_iio_mapping_group.attrs = attrs;
+	ag->attrs = attrs;
 
 	return 0;
 err:
@@ -3834,6 +3843,11 @@ clear_topology:
 clear_attr_update:
 	type->attr_update = NULL;
 	return ret;
+}
+
+static int skx_iio_set_mapping(struct intel_uncore_type *type)
+{
+	return pmu_iio_set_mapping(type, &skx_iio_mapping_group);
 }
 
 static void skx_iio_cleanup_mapping(struct intel_uncore_type *type)
@@ -3866,6 +3880,7 @@ static struct intel_uncore_type skx_uncore_iio = {
 	.ops			= &skx_uncore_iio_ops,
 	.format_group		= &skx_uncore_iio_format_group,
 	.attr_update		= skx_iio_attr_update,
+	.get_topology		= skx_iio_get_topology,
 	.set_mapping		= skx_iio_set_mapping,
 	.cleanup_mapping	= skx_iio_cleanup_mapping,
 };
@@ -4732,6 +4747,8 @@ static int snr_uncore_mmio_map(struct intel_uncore_box *box,
 
 	addr += box_ctl;
 
+	pci_dev_put(pdev);
+
 	box->io_addr = ioremap(addr, type->mmio_map_size);
 	if (!box->io_addr) {
 		pr_warn("perf uncore: Failed to ioremap for %s.\n", type->name);
@@ -5417,10 +5434,11 @@ static int spr_cha_hw_config(struct intel_uncore_box *box, struct perf_event *ev
 	struct hw_perf_event_extra *reg1 = &event->hw.extra_reg;
 	bool tie_en = !!(event->hw.config & SPR_CHA_PMON_CTL_TID_EN);
 	struct intel_uncore_type *type = box->pmu->type;
+	int id = intel_uncore_find_discovery_unit_id(type->boxes, -1, box->pmu->pmu_idx);
 
 	if (tie_en) {
 		reg1->reg = SPR_C0_MSR_PMON_BOX_FILTER0 +
-			    HSWEP_CBO_MSR_OFFSET * type->box_ids[box->pmu->pmu_idx];
+			    HSWEP_CBO_MSR_OFFSET * id;
 		reg1->config = event->attr.config1 & SPR_CHA_PMON_BOX_FILTER_TID;
 		reg1->idx = 0;
 	}
@@ -5607,7 +5625,55 @@ static struct intel_uncore_type spr_uncore_mdf = {
 	.name			= "mdf",
 };
 
-#define UNCORE_SPR_NUM_UNCORE_TYPES		12
+static void spr_uncore_mmio_offs8_init_box(struct intel_uncore_box *box)
+{
+	__set_bit(UNCORE_BOX_FLAG_CTL_OFFS8, &box->flags);
+	intel_generic_uncore_mmio_init_box(box);
+}
+
+static struct intel_uncore_ops spr_uncore_mmio_offs8_ops = {
+	.init_box		= spr_uncore_mmio_offs8_init_box,
+	.exit_box		= uncore_mmio_exit_box,
+	.disable_box		= intel_generic_uncore_mmio_disable_box,
+	.enable_box		= intel_generic_uncore_mmio_enable_box,
+	.disable_event		= intel_generic_uncore_mmio_disable_event,
+	.enable_event		= spr_uncore_mmio_enable_event,
+	.read_counter		= uncore_mmio_read_counter,
+};
+
+#define SPR_UNCORE_MMIO_OFFS8_COMMON_FORMAT()			\
+	SPR_UNCORE_COMMON_FORMAT(),				\
+	.ops			= &spr_uncore_mmio_offs8_ops
+
+static struct event_constraint spr_uncore_cxlcm_constraints[] = {
+	UNCORE_EVENT_CONSTRAINT(0x02, 0x0f),
+	UNCORE_EVENT_CONSTRAINT(0x05, 0x0f),
+	UNCORE_EVENT_CONSTRAINT(0x40, 0xf0),
+	UNCORE_EVENT_CONSTRAINT(0x41, 0xf0),
+	UNCORE_EVENT_CONSTRAINT(0x42, 0xf0),
+	UNCORE_EVENT_CONSTRAINT(0x43, 0xf0),
+	UNCORE_EVENT_CONSTRAINT(0x4b, 0xf0),
+	UNCORE_EVENT_CONSTRAINT(0x52, 0xf0),
+	EVENT_CONSTRAINT_END
+};
+
+static struct intel_uncore_type spr_uncore_cxlcm = {
+	SPR_UNCORE_MMIO_OFFS8_COMMON_FORMAT(),
+	.name			= "cxlcm",
+	.constraints		= spr_uncore_cxlcm_constraints,
+};
+
+static struct intel_uncore_type spr_uncore_cxldp = {
+	SPR_UNCORE_MMIO_OFFS8_COMMON_FORMAT(),
+	.name			= "cxldp",
+};
+
+static struct intel_uncore_type spr_uncore_hbm = {
+	SPR_UNCORE_COMMON_FORMAT(),
+	.name			= "hbm",
+};
+
+#define UNCORE_SPR_NUM_UNCORE_TYPES		15
 #define UNCORE_SPR_CHA				0
 #define UNCORE_SPR_IIO				1
 #define UNCORE_SPR_IMC				6
@@ -5631,6 +5697,9 @@ static struct intel_uncore_type *spr_uncores[UNCORE_SPR_NUM_UNCORE_TYPES] = {
 	NULL,
 	NULL,
 	&spr_uncore_mdf,
+	&spr_uncore_cxlcm,
+	&spr_uncore_cxldp,
+	&spr_uncore_hbm,
 };
 
 /*
@@ -5643,6 +5712,24 @@ static u64 spr_upi_pci_offsets[SPR_UNCORE_UPI_NUM_BOXES] = {
 	0, 0x8000, 0x10000, 0x18000
 };
 
+static void spr_extra_boxes_cleanup(struct intel_uncore_type *type)
+{
+	struct intel_uncore_discovery_unit *pos;
+	struct rb_node *node;
+
+	if (!type->boxes)
+		return;
+
+	while (!RB_EMPTY_ROOT(type->boxes)) {
+		node = rb_first(type->boxes);
+		pos = rb_entry(node, struct intel_uncore_discovery_unit, node);
+		rb_erase(node, type->boxes);
+		kfree(pos);
+	}
+	kfree(type->boxes);
+	type->boxes = NULL;
+}
+
 static struct intel_uncore_type spr_uncore_upi = {
        SPR_UNCORE_PCI_COMMON_FORMAT(),
        .name                   = "upi",
@@ -5650,10 +5737,11 @@ static struct intel_uncore_type spr_uncore_upi = {
        .num_counters           = 4,
        .num_boxes              = SPR_UNCORE_UPI_NUM_BOXES,
        .perf_ctr_bits          = 48,
-       .perf_ctr               = ICX_UPI_PCI_PMON_CTR0,
-       .event_ctl              = ICX_UPI_PCI_PMON_CTL0,
+       .perf_ctr               = ICX_UPI_PCI_PMON_CTR0 - ICX_UPI_PCI_PMON_BOX_CTL,
+       .event_ctl              = ICX_UPI_PCI_PMON_CTL0 - ICX_UPI_PCI_PMON_BOX_CTL,
        .box_ctl                = ICX_UPI_PCI_PMON_BOX_CTL,
        .pci_offsets            = spr_upi_pci_offsets,
+       .cleanup_extra_boxes    = spr_extra_boxes_cleanup,
 };
 
 static struct intel_uncore_type spr_uncore_m3upi = {
@@ -5663,11 +5751,12 @@ static struct intel_uncore_type spr_uncore_m3upi = {
        .num_counters           = 4,
        .num_boxes              = SPR_UNCORE_UPI_NUM_BOXES,
        .perf_ctr_bits          = 48,
-       .perf_ctr               = ICX_M3UPI_PCI_PMON_CTR0,
-       .event_ctl              = ICX_M3UPI_PCI_PMON_CTL0,
+       .perf_ctr               = ICX_M3UPI_PCI_PMON_CTR0 - ICX_M3UPI_PCI_PMON_BOX_CTL,
+       .event_ctl              = ICX_M3UPI_PCI_PMON_CTL0 - ICX_M3UPI_PCI_PMON_BOX_CTL,
        .box_ctl                = ICX_M3UPI_PCI_PMON_BOX_CTL,
        .pci_offsets            = spr_upi_pci_offsets,
        .constraints            = icx_uncore_m3upi_constraints,
+       .cleanup_extra_boxes    = spr_extra_boxes_cleanup,
 };
 
 enum perf_uncore_spr_iio_freerunning_type_id {
@@ -5892,18 +5981,21 @@ uncore_find_type_by_id(struct intel_uncore_type **types, int type_id)
 static int uncore_type_max_boxes(struct intel_uncore_type **types,
 				 int type_id)
 {
+	struct intel_uncore_discovery_unit *unit;
 	struct intel_uncore_type *type;
-	int i, max = 0;
+	struct rb_node *node;
+	int max = 0;
 
 	type = uncore_find_type_by_id(types, type_id);
 	if (!type)
 		return 0;
 
-	for (i = 0; i < type->num_boxes; i++) {
-		if (type->box_ids[i] > max)
-			max = type->box_ids[i];
-	}
+	for (node = rb_first(type->boxes); node; node = rb_next(node)) {
+		unit = rb_entry(node, struct intel_uncore_discovery_unit, node);
 
+		if (unit->id > max)
+			max = unit->id;
+	}
 	return max + 1;
 }
 
@@ -5945,10 +6037,11 @@ void spr_uncore_cpu_init(void)
 
 static void spr_update_device_location(int type_id)
 {
+	struct intel_uncore_discovery_unit *unit;
 	struct intel_uncore_type *type;
 	struct pci_dev *dev = NULL;
+	struct rb_root *root;
 	u32 device, devfn;
-	u64 *ctls;
 	int die;
 
 	if (type_id == UNCORE_SPR_UPI) {
@@ -5962,27 +6055,35 @@ static void spr_update_device_location(int type_id)
 	} else
 		return;
 
-	ctls = kcalloc(__uncore_max_dies, sizeof(u64), GFP_KERNEL);
-	if (!ctls) {
+	root = kzalloc(sizeof(struct rb_root), GFP_KERNEL);
+	if (!root) {
 		type->num_boxes = 0;
 		return;
 	}
+	*root = RB_ROOT;
 
 	while ((dev = pci_get_device(PCI_VENDOR_ID_INTEL, device, dev)) != NULL) {
-		if (devfn != dev->devfn)
-			continue;
 
 		die = uncore_device_to_die(dev);
 		if (die < 0)
 			continue;
 
-		ctls[die] = pci_domain_nr(dev->bus) << UNCORE_DISCOVERY_PCI_DOMAIN_OFFSET |
-			    dev->bus->number << UNCORE_DISCOVERY_PCI_BUS_OFFSET |
-			    devfn << UNCORE_DISCOVERY_PCI_DEVFN_OFFSET |
-			    type->box_ctl;
+		unit = kzalloc(sizeof(*unit), GFP_KERNEL);
+		if (!unit)
+			continue;
+		unit->die = die;
+		unit->id = PCI_SLOT(dev->devfn) - PCI_SLOT(devfn);
+		unit->addr = pci_domain_nr(dev->bus) << UNCORE_DISCOVERY_PCI_DOMAIN_OFFSET |
+			     dev->bus->number << UNCORE_DISCOVERY_PCI_BUS_OFFSET |
+			     devfn << UNCORE_DISCOVERY_PCI_DEVFN_OFFSET |
+			     type->box_ctl;
+
+		unit->pmu_idx = unit->id;
+
+		uncore_find_add_unit(unit, root, NULL);
 	}
 
-	type->box_ctls = ctls;
+	type->boxes = root;
 }
 
 int spr_uncore_pci_init(void)
@@ -6055,7 +6156,7 @@ static struct intel_uncore_type gnr_uncore_b2cmi = {
 };
 
 static struct intel_uncore_type gnr_uncore_b2cxl = {
-	SPR_UNCORE_MMIO_COMMON_FORMAT(),
+	SPR_UNCORE_MMIO_OFFS8_COMMON_FORMAT(),
 	.name			= "b2cxl",
 };
 

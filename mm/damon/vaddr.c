@@ -418,6 +418,7 @@ void damon_va_update(struct damon_ctx *ctx)
 
 static bool damon_pmdp_mknone(pmd_t *pmd, struct mm_walk *walk, unsigned long addr)
 {
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	bool preserve_write;
 	pmd_t entry = *pmd;
 	int *flush_enalbe = walk->private;
@@ -436,6 +437,7 @@ static bool damon_pmdp_mknone(pmd_t *pmd, struct mm_walk *walk, unsigned long ad
 		++*flush_enalbe;
 		return true;
 	}
+#endif
 	return false;
 }
 

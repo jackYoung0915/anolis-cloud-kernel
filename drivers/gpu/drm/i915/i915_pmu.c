@@ -446,7 +446,7 @@ static u64 count_interrupts(struct drm_i915_private *i915)
 		return 0;
 
 	for_each_possible_cpu(cpu)
-		sum += *per_cpu_ptr(desc->kstat_irqs, cpu);
+		sum += per_cpu(desc->kstat_irqs->cnt, cpu);
 
 	return sum;
 }

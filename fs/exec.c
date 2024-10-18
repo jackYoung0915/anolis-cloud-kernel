@@ -888,6 +888,7 @@ int transfer_args_to_stack(struct linux_binprm *bprm,
 			goto out;
 	}
 
+	bprm->exec += *sp_location - MAX_ARG_PAGES * PAGE_SIZE;
 	*sp_location = sp;
 
 out:
@@ -1204,11 +1205,11 @@ static int unshare_sighand(struct task_struct *me)
 			return -ENOMEM;
 
 		refcount_set(&newsighand->count, 1);
-		memcpy(newsighand->action, oldsighand->action,
-		       sizeof(newsighand->action));
 
 		write_lock_irq(&tasklist_lock);
 		spin_lock(&oldsighand->siglock);
+		memcpy(newsighand->action, oldsighand->action,
+		       sizeof(newsighand->action));
 		rcu_assign_pointer(me->sighand, newsighand);
 		spin_unlock(&oldsighand->siglock);
 		write_unlock_irq(&tasklist_lock);
@@ -1266,6 +1267,11 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 * Make this the only thread in the thread group.
 	 */
 	retval = de_thread(me);
+	if (retval)
+		goto out;
+
+	/* Ensure the files table is not shared. */
+	retval = unshare_files();
 	if (retval)
 		goto out;
 
@@ -1398,6 +1404,9 @@ int begin_new_exec(struct linux_binprm * bprm)
 
 out_unlock:
 	up_write(&me->signal->exec_update_lock);
+	if (!bprm->cred)
+		mutex_unlock(&me->signal->cred_guard_mutex);
+
 out:
 	return retval;
 }
@@ -1585,6 +1594,7 @@ static void bprm_fill_uid(struct linux_binprm *bprm, struct file *file)
 	unsigned int mode;
 	kuid_t uid;
 	kgid_t gid;
+	int err;
 
 	if (!mnt_may_suid(file->f_path.mnt))
 		return;
@@ -1600,11 +1610,16 @@ static void bprm_fill_uid(struct linux_binprm *bprm, struct file *file)
 	/* Be careful if suid/sgid is set */
 	inode_lock(inode);
 
-	/* reload atomically mode/uid/gid now that lock held */
+	/* Atomically reload and check mode/uid/gid now that lock held. */
 	mode = inode->i_mode;
 	uid = inode->i_uid;
 	gid = inode->i_gid;
+	err = inode_permission(inode, MAY_EXEC);
 	inode_unlock(inode);
+
+	/* Did the exec bit vanish out from under us? Give up. */
+	if (err)
+		return;
 
 	/* We ignore suid/sgid if there are no mappings for them in the ns */
 	if (!kuid_has_mapping(bprm->cred->user_ns, uid) ||
@@ -1791,7 +1806,6 @@ static int bprm_execve(struct linux_binprm *bprm,
 		       int fd, struct filename *filename, int flags)
 {
 	struct file *file;
-	struct files_struct *displaced;
 	int retval;
 
 	/*
@@ -1799,13 +1813,9 @@ static int bprm_execve(struct linux_binprm *bprm,
 	 */
 	io_uring_task_cancel();
 
-	retval = unshare_files(&displaced);
-	if (retval)
-		return retval;
-
 	retval = prepare_bprm_creds(bprm);
 	if (retval)
-		goto out_files;
+		return retval;
 
 	check_unsafe_exec(bprm);
 	current->in_execve = 1;
@@ -1820,11 +1830,14 @@ static int bprm_execve(struct linux_binprm *bprm,
 	bprm->file = file;
 	/*
 	 * Record that a name derived from an O_CLOEXEC fd will be
-	 * inaccessible after exec. Relies on having exclusive access to
-	 * current->files (due to unshare_files above).
+	 * inaccessible after exec.  This allows the code in exec to
+	 * choose to fail when the executable is not mmaped into the
+	 * interpreter and an open file descriptor is not passed to
+	 * the interpreter.  This makes for a better user experience
+	 * than having the interpreter start and then immediately fail
+	 * when it finds the executable is inaccessible.
 	 */
-	if (bprm->fdpath &&
-	    close_on_exec(fd, rcu_dereference_raw(current->files->fdt)))
+	if (bprm->fdpath && get_close_on_exec(fd))
 		bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
 
 	/* Set the unchanging part of bprm->cred */
@@ -1842,8 +1855,6 @@ static int bprm_execve(struct linux_binprm *bprm,
 	rseq_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);
-	if (displaced)
-		put_files_struct(displaced);
 	return retval;
 
 out:
@@ -1859,10 +1870,6 @@ out:
 out_unmark:
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
-
-out_files:
-	if (displaced)
-		reset_files_struct(displaced);
 
 	return retval;
 }

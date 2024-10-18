@@ -26,6 +26,7 @@
 #include <asm/kvm_mmu.h>
 #include <asm/perf_event.h>
 #include <asm/sysreg.h>
+#include <asm/mpam.h>
 
 #include <trace/events/kvm.h>
 
@@ -87,6 +88,8 @@ static bool __vcpu_read_sys_reg_from_cpu(int reg, u64 *val)
 	case AFSR1_EL1:		*val = read_sysreg_s(SYS_AFSR1_EL12);	break;
 	case FAR_EL1:		*val = read_sysreg_s(SYS_FAR_EL12);	break;
 	case MAIR_EL1:		*val = read_sysreg_s(SYS_MAIR_EL12);	break;
+	case MPAM1_EL1:		*val = read_sysreg_s(SYS_MPAM1_EL12);	break;
+	case MPAM0_EL1:		*val = read_sysreg_s(SYS_MPAM0_EL1);	break;
 	case VBAR_EL1:		*val = read_sysreg_s(SYS_VBAR_EL12);	break;
 	case CONTEXTIDR_EL1:	*val = read_sysreg_s(SYS_CONTEXTIDR_EL12);break;
 	case TPIDR_EL0:		*val = read_sysreg_s(SYS_TPIDR_EL0);	break;
@@ -127,6 +130,8 @@ static bool __vcpu_write_sys_reg_to_cpu(u64 val, int reg)
 	case AFSR1_EL1:		write_sysreg_s(val, SYS_AFSR1_EL12);	break;
 	case FAR_EL1:		write_sysreg_s(val, SYS_FAR_EL12);	break;
 	case MAIR_EL1:		write_sysreg_s(val, SYS_MAIR_EL12);	break;
+	case MPAM1_EL1:		write_sysreg_s(val, SYS_MPAM1_EL12);	break;
+	case MPAM0_EL1:		write_sysreg_s(val, SYS_MPAM0_EL1);	break;
 	case VBAR_EL1:		write_sysreg_s(val, SYS_VBAR_EL12);	break;
 	case CONTEXTIDR_EL1:	write_sysreg_s(val, SYS_CONTEXTIDR_EL12);break;
 	case TPIDR_EL0:		write_sysreg_s(val, SYS_TPIDR_EL0);	break;
@@ -360,13 +365,17 @@ static bool trap_loregion(struct kvm_vcpu *vcpu,
 	return trap_raz_wi(vcpu, p, r);
 }
 
-static bool trap_mpam(struct kvm_vcpu *vcpu,
-		      struct sys_reg_params *p,
-		      const struct sys_reg_desc *r)
+static bool trap_mpamidr(struct kvm_vcpu *vcpu,
+			 struct sys_reg_params *p,
+			 const struct sys_reg_desc *r)
 {
-	kvm_inject_undefined(vcpu);
-
-	return false;
+	if (p->is_write)
+		return ignore_write(vcpu, p);
+	else {
+		p->regval = read_sysreg_s(SYS_MPAMIDR_EL1);
+		p->regval &= ~MPAMIDR_HAS_HCR;
+		return true;
+	}
 }
 
 static bool trap_oslsr_el1(struct kvm_vcpu *vcpu,
@@ -643,6 +652,48 @@ static void reset_amair_el1(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
 {
 	u64 amair = read_sysreg(amair_el1);
 	vcpu_write_sys_reg(vcpu, amair, AMAIR_EL1);
+}
+
+static int set_mpam0_el1(struct kvm_vcpu *vcpu, const struct sys_reg_desc *rd,
+		const struct kvm_one_reg *reg, void __user *uaddr)
+{
+	__u64 *r = &vcpu->arch.mpam0_el1;
+
+	if (copy_from_user(r, uaddr, KVM_REG_SIZE(reg->id)) != 0)
+		return -EFAULT;
+
+	r = &__vcpu_sys_reg(vcpu, rd->reg);
+
+	if (copy_from_user(r, uaddr, KVM_REG_SIZE(reg->id)) != 0)
+		return -EFAULT;
+
+	return 0;
+}
+
+static int set_mpam1_el1(struct kvm_vcpu *vcpu, const struct sys_reg_desc *rd,
+		const struct kvm_one_reg *reg, void __user *uaddr)
+{
+	__u64 *r = &vcpu->arch.mpam1_el1;
+
+	if (copy_from_user(r, uaddr, KVM_REG_SIZE(reg->id)) != 0)
+		return -EFAULT;
+
+	r = &__vcpu_sys_reg(vcpu, rd->reg);
+
+	if (copy_from_user(r, uaddr, KVM_REG_SIZE(reg->id)) != 0)
+		return -EFAULT;
+
+	return 0;
+}
+
+static void reset_mpam0_el1(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
+{
+	vcpu_write_sys_reg(vcpu, vcpu->arch.mpam0_el1, MPAM0_EL1);
+}
+
+static void reset_mpam1_el1(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
+{
+	vcpu_write_sys_reg(vcpu, vcpu->arch.mpam1_el1, MPAM1_EL1);
 }
 
 static void reset_actlr(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
@@ -1121,20 +1172,54 @@ static bool access_arch_timer(struct kvm_vcpu *vcpu,
 	return true;
 }
 
+static struct id_reg_info *kvm_id_reg(struct kvm_vcpu *vcpu, u64 id)
+{
+	int i;
+
+	for (i = 0; i < vcpu->arch.idregs.num; ++i) {
+		if (vcpu->arch.idregs.regs[i].sys_id == id)
+			return &vcpu->arch.idregs.regs[i];
+	}
+	return NULL;
+}
+
+static u64 kvm_get_id_reg(struct kvm_vcpu *vcpu, u64 id)
+{
+	struct id_reg_info *ri = kvm_id_reg(vcpu, id);
+
+	if (!ri) {
+		WARN_ON(1);
+		return 0;
+	}
+	return ri->sys_val;
+}
+
+static void kvm_set_id_reg(struct kvm_vcpu *vcpu, u64 id, u64 value)
+{
+	struct id_reg_info *ri = kvm_id_reg(vcpu, id);
+
+	if (!ri) {
+		WARN_ON(1);
+		return;
+	}
+	ri->sys_val = value;
+}
+
 /* Read a sanitised cpufeature ID register by sys_reg_desc */
-static u64 read_id_reg(const struct kvm_vcpu *vcpu,
+static u64 read_id_reg(struct kvm_vcpu *vcpu,
 		struct sys_reg_desc const *r, bool raz)
 {
 	u32 id = sys_reg((u32)r->Op0, (u32)r->Op1,
 			 (u32)r->CRn, (u32)r->CRm, (u32)r->Op2);
-	u64 val = raz ? 0 : read_sanitised_ftr_reg(id);
+	u64 val = raz ? 0 : kvm_get_id_reg(vcpu, id);
 
 	if (id == SYS_ID_AA64PFR0_EL1) {
 		if (!vcpu_has_sve(vcpu))
 			val &= ~(0xfUL << ID_AA64PFR0_SVE_SHIFT);
 		val &= ~(0xfUL << ID_AA64PFR0_AMU_SHIFT);
 		val &= ~(0xfUL << ID_AA64PFR0_CSV2_SHIFT);
-		val &= ~(0xfUL << ID_AA64PFR0_MPAM_SHIFT);
+		if (!has_vhe() || !mpam_cpus_have_mpam_hcr())
+			val &= ~(0xfUL << ID_AA64PFR0_MPAM_SHIFT);
 		val |= ((u64)vcpu->kvm->arch.pfr0_csv2 << ID_AA64PFR0_CSV2_SHIFT);
 	} else if (id == SYS_ID_AA64PFR1_EL1) {
 		val &= ~(0xfUL << ID_AA64PFR1_MTE_SHIFT);
@@ -1226,6 +1311,8 @@ static int set_id_aa64pfr0_el1(struct kvm_vcpu *vcpu,
 	int err;
 	u64 val;
 	u8 csv2;
+	u32 reg_id = sys_reg((u32)rd->Op0, (u32)rd->Op1, (u32)rd->CRn,
+				(u32)rd->CRm, (u32)rd->Op2);
 
 	err = reg_from_user(&val, uaddr, id);
 	if (err)
@@ -1241,25 +1328,16 @@ static int set_id_aa64pfr0_el1(struct kvm_vcpu *vcpu,
 	    (csv2 && arm64_get_spectre_v2_state() != SPECTRE_UNAFFECTED))
 		return -EINVAL;
 
-	/* We can only differ with CSV2, and anything else is an error */
-	val ^= read_id_reg(vcpu, rd, false);
-	val &= ~(0xFUL << ID_AA64PFR0_CSV2_SHIFT);
-	if (val)
-		return -EINVAL;
-
 	vcpu->kvm->arch.pfr0_csv2 = csv2;
+	kvm_set_id_reg(vcpu, reg_id, val);
 
 	return 0;
 }
 
 /*
  * cpufeature ID register user accessors
- *
- * For now, these registers are immutable for userspace, so no values
- * are stored, and for set_id_reg() we don't allow the effective value
- * to be changed.
  */
-static int __get_id_reg(const struct kvm_vcpu *vcpu,
+static int __get_id_reg(struct kvm_vcpu *vcpu,
 			const struct sys_reg_desc *rd, void __user *uaddr,
 			bool raz)
 {
@@ -1269,7 +1347,7 @@ static int __get_id_reg(const struct kvm_vcpu *vcpu,
 	return reg_to_user(uaddr, &val, id);
 }
 
-static int __set_id_reg(const struct kvm_vcpu *vcpu,
+static int __set_id_reg(struct kvm_vcpu *vcpu,
 			const struct sys_reg_desc *rd, void __user *uaddr,
 			bool raz)
 {
@@ -1281,9 +1359,14 @@ static int __set_id_reg(const struct kvm_vcpu *vcpu,
 	if (err)
 		return err;
 
-	/* This is what we mean by invariant: you can't change it. */
-	if (val != read_id_reg(vcpu, rd, raz))
-		return -EINVAL;
+	if (raz) {
+		if (val != read_id_reg(vcpu, rd, raz))
+			return -EINVAL;
+	} else {
+		u32 reg_id = sys_reg((u32)rd->Op0, (u32)rd->Op1, (u32)rd->CRn,
+					(u32)rd->CRm, (u32)rd->Op2);
+		kvm_set_id_reg(vcpu, reg_id, val);
+	}
 
 	return 0;
 }
@@ -1591,11 +1674,13 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	{ SYS_DESC(SYS_LOREA_EL1), trap_loregion },
 	{ SYS_DESC(SYS_LORN_EL1), trap_loregion },
 	{ SYS_DESC(SYS_LORC_EL1), trap_loregion },
-	{ SYS_DESC(SYS_MPAMIDR_EL1), trap_mpam },
+	{ SYS_DESC(SYS_MPAMIDR_EL1), trap_mpamidr },
 	{ SYS_DESC(SYS_LORID_EL1), trap_loregion },
 
-	{ SYS_DESC(SYS_MPAM1_EL1), trap_mpam },
-	{ SYS_DESC(SYS_MPAM0_EL1), trap_mpam },
+	{ SYS_DESC(SYS_MPAM1_EL1), undef_access, reset_mpam1_el1, MPAM1_EL1,
+	  .set_user = set_mpam1_el1 },
+	{ SYS_DESC(SYS_MPAM0_EL1), undef_access, reset_mpam0_el1, MPAM0_EL1,
+	  .set_user = set_mpam0_el1 },
 
 	{ SYS_DESC(SYS_VBAR_EL1), NULL, reset_val, VBAR_EL1, 0 },
 	{ SYS_DESC(SYS_DISR_EL1), NULL, reset_val, DISR_EL1, 0 },

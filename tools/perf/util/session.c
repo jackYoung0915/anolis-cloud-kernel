@@ -32,6 +32,7 @@
 #include "ui/progress.h"
 #include "../perf.h"
 #include "arch/common.h"
+#include "units.h"
 #include <internal/lib.h>
 
 #ifdef HAVE_ZSTD_SUPPORT
@@ -1119,9 +1120,13 @@ static void callchain__printf(struct evsel *evsel,
 		       i, callchain->ips[i]);
 }
 
-static void branch_stack__printf(struct perf_sample *sample, bool callstack)
+static void branch_stack__printf(struct perf_sample *sample,
+				 struct evsel *evsel)
 {
 	struct branch_entry *entries = perf_sample__branch_entries(sample);
+	bool callstack = evsel__has_branch_callstack(evsel);
+	u64 *branch_stack_cntr = sample->branch_stack_cntr;
+	struct perf_env *env = evsel__env(evsel);
 	uint64_t i;
 
 	printf("%s: nr:%" PRIu64 "\n",
@@ -1144,6 +1149,13 @@ static void branch_stack__printf(struct perf_sample *sample, bool callstack)
 			printf("..... %2"PRIu64": %016" PRIx64 "\n",
 				i, i > 0 ? e->from : e->to);
 		}
+	}
+
+	if (branch_stack_cntr) {
+		printf("... branch stack counters: nr:%" PRIu64 " (counter width: %u max counter nr:%u)\n",
+			sample->branch_stack->nr, env->br_cntr_width, env->br_cntr_nr);
+		for (i = 0; i < sample->branch_stack->nr; i++)
+			printf("..... %2"PRIu64": %016" PRIx64 "\n", i, branch_stack_cntr[i]);
 	}
 }
 
@@ -1276,10 +1288,19 @@ static void dump_event(struct evlist *evlist, union perf_event *event,
 	       event->header.size, perf_event__name(event->header.type));
 }
 
+char *get_page_size_name(u64 size, char *str)
+{
+	if (!size || !unit_number__scnprintf(str, PAGE_SIZE_NAME_LEN, size))
+		snprintf(str, PAGE_SIZE_NAME_LEN, "%s", "N/A");
+
+	return str;
+}
+
 static void dump_sample(struct evsel *evsel, union perf_event *event,
 			struct perf_sample *sample)
 {
 	u64 sample_type;
+	char str[PAGE_SIZE_NAME_LEN];
 
 	if (!dump_trace)
 		return;
@@ -1294,7 +1315,7 @@ static void dump_sample(struct evsel *evsel, union perf_event *event,
 		callchain__printf(evsel, sample);
 
 	if (evsel__has_br_stack(evsel))
-		branch_stack__printf(sample, evsel__has_branch_callstack(evsel));
+		branch_stack__printf(sample, evsel);
 
 	if (sample_type & PERF_SAMPLE_REGS_USER)
 		regs_user__printf(sample);
@@ -1317,6 +1338,12 @@ static void dump_sample(struct evsel *evsel, union perf_event *event,
 
 	if (sample_type & PERF_SAMPLE_PHYS_ADDR)
 		printf(" .. phys_addr: 0x%"PRIx64"\n", sample->phys_addr);
+
+	if (sample_type & PERF_SAMPLE_DATA_PAGE_SIZE)
+		printf(" .. data page size: %s\n", get_page_size_name(sample->data_page_size, str));
+
+	if (sample_type & PERF_SAMPLE_CODE_PAGE_SIZE)
+		printf(" .. code page size: %s\n", get_page_size_name(sample->code_page_size, str));
 
 	if (sample_type & PERF_SAMPLE_TRANSACTION)
 		printf("... transaction: %" PRIx64 "\n", sample->transaction);

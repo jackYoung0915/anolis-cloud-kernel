@@ -8,6 +8,7 @@
 set -e
 
 SCRIPT_DIR=$(realpath $(dirname $0))
+BASE_CONFIG_DIR=$(realpath ${SCRIPT_DIR}/..)
 
 function die() {
     echo ""
@@ -37,7 +38,10 @@ function check_args() {
 }
 
 function do_move() {
-    python3 ${SCRIPT_DIR}/anolis_kconfig.py move --old "$OLD" "$C" "$L"
+    python3 ${SCRIPT_DIR}/anolis_kconfig.py move \
+        --top_dir ${BASE_CONFIG_DIR} \
+        --dist ${DIST_CONFIG_KERNEL_NAME} \
+        --old "$OLD" "$C" "$L"
 }
 
 check_args

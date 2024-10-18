@@ -1824,54 +1824,6 @@ xfs_qm_vop_chown(
 	return prevdq;
 }
 
-/*
- * Quota reservations for setattr(AT_UID|AT_GID|AT_PROJID).
- */
-int
-xfs_qm_vop_chown_reserve(
-	struct xfs_trans	*tp,
-	struct xfs_inode	*ip,
-	struct xfs_dquot	*udqp,
-	struct xfs_dquot	*gdqp,
-	struct xfs_dquot	*pdqp,
-	uint			flags)
-{
-	struct xfs_mount	*mp = ip->i_mount;
-	unsigned int		blkflags;
-	struct xfs_dquot	*udq_delblks = NULL;
-	struct xfs_dquot	*gdq_delblks = NULL;
-	struct xfs_dquot	*pdq_delblks = NULL;
-
-	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL|XFS_ILOCK_SHARED));
-	ASSERT(XFS_IS_QUOTA_RUNNING(mp));
-
-	blkflags = XFS_IS_REALTIME_INODE(ip) ?
-			XFS_QMOPT_RES_RTBLKS : XFS_QMOPT_RES_REGBLKS;
-
-	if (XFS_IS_UQUOTA_ON(mp) && udqp &&
-	    i_uid_read(VFS_I(ip)) != udqp->q_id)
-		udq_delblks = udqp;
-
-	if (XFS_IS_GQUOTA_ON(ip->i_mount) && gdqp &&
-	    i_gid_read(VFS_I(ip)) != gdqp->q_id)
-		gdq_delblks = gdqp;
-
-	if (XFS_IS_PQUOTA_ON(ip->i_mount) && pdqp &&
-	    ip->i_d.di_projid != pdqp->q_id)
-		pdq_delblks = pdqp;
-
-	/*
-	 * Reserve enough quota to handle blocks on disk and reserved for a
-	 * delayed allocation.  We'll actually transfer the delalloc
-	 * reservation between dquots at chown time, even though that part is
-	 * only semi-transactional.
-	 */
-	return xfs_trans_reserve_quota_bydquots(tp, ip->i_mount, udq_delblks,
-			gdq_delblks, pdq_delblks,
-			ip->i_d.di_nblocks + ip->i_delayed_blks,
-			1, blkflags | flags);
-}
-
 int
 xfs_qm_vop_rename_dqattach(
 	struct xfs_inode	**i_tab)
@@ -1938,3 +1890,37 @@ xfs_qm_vop_create_dqattach(
 	}
 }
 
+/* Decide if this inode's dquot is near an enforcement boundary. */
+bool
+xfs_inode_near_dquot_enforcement(
+	struct xfs_inode	*ip,
+	xfs_dqtype_t		type)
+{
+	struct xfs_dquot	*dqp;
+	int64_t			freesp;
+
+	/* We only care for quotas that are enabled and enforced. */
+	dqp = xfs_inode_dquot(ip, type);
+	if (!dqp || !xfs_dquot_is_enforced(dqp))
+		return false;
+
+	if (xfs_dquot_res_over_limits(&dqp->q_ino) ||
+	    xfs_dquot_res_over_limits(&dqp->q_rtb))
+		return true;
+
+	/* For space on the data device, check the various thresholds. */
+	if (!dqp->q_prealloc_hi_wmark)
+		return false;
+
+	if (dqp->q_blk.reserved < dqp->q_prealloc_lo_wmark)
+		return false;
+
+	if (dqp->q_blk.reserved >= dqp->q_prealloc_hi_wmark)
+		return true;
+
+	freesp = dqp->q_prealloc_hi_wmark - dqp->q_blk.reserved;
+	if (freesp < dqp->q_low_space[XFS_QLOWSP_5_PCNT])
+		return true;
+
+	return false;
+}

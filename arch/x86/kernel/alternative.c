@@ -75,186 +75,30 @@ do {									\
 	}								\
 } while (0)
 
-/*
- * Each GENERIC_NOPX is of X bytes, and defined as an array of bytes
- * that correspond to that nop. Getting from one nop to the next, we
- * add to the array the offset that is equal to the sum of all sizes of
- * nops preceding the one we are after.
- *
- * Note: The GENERIC_NOP5_ATOMIC is at the end, as it breaks the
- * nice symmetry of sizes of the previous nops.
- */
-#if defined(GENERIC_NOP1) && !defined(CONFIG_X86_64)
-static const unsigned char intelnops[] =
+const unsigned char x86nops[] =
 {
-	GENERIC_NOP1,
-	GENERIC_NOP2,
-	GENERIC_NOP3,
-	GENERIC_NOP4,
-	GENERIC_NOP5,
-	GENERIC_NOP6,
-	GENERIC_NOP7,
-	GENERIC_NOP8,
-	GENERIC_NOP5_ATOMIC
+	BYTES_NOP1,
+	BYTES_NOP2,
+	BYTES_NOP3,
+	BYTES_NOP4,
+	BYTES_NOP5,
+	BYTES_NOP6,
+	BYTES_NOP7,
+	BYTES_NOP8,
 };
-static const unsigned char * const intel_nops[ASM_NOP_MAX+2] =
+
+const unsigned char * const x86_nops[ASM_NOP_MAX+1] =
 {
 	NULL,
-	intelnops,
-	intelnops + 1,
-	intelnops + 1 + 2,
-	intelnops + 1 + 2 + 3,
-	intelnops + 1 + 2 + 3 + 4,
-	intelnops + 1 + 2 + 3 + 4 + 5,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
+	x86nops,
+	x86nops + 1,
+	x86nops + 1 + 2,
+	x86nops + 1 + 2 + 3,
+	x86nops + 1 + 2 + 3 + 4,
+	x86nops + 1 + 2 + 3 + 4 + 5,
+	x86nops + 1 + 2 + 3 + 4 + 5 + 6,
+	x86nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
 };
-#endif
-
-#ifdef K8_NOP1
-static const unsigned char k8nops[] =
-{
-	K8_NOP1,
-	K8_NOP2,
-	K8_NOP3,
-	K8_NOP4,
-	K8_NOP5,
-	K8_NOP6,
-	K8_NOP7,
-	K8_NOP8,
-	K8_NOP5_ATOMIC
-};
-static const unsigned char * const k8_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	k8nops,
-	k8nops + 1,
-	k8nops + 1 + 2,
-	k8nops + 1 + 2 + 3,
-	k8nops + 1 + 2 + 3 + 4,
-	k8nops + 1 + 2 + 3 + 4 + 5,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-#if defined(K7_NOP1) && !defined(CONFIG_X86_64)
-static const unsigned char k7nops[] =
-{
-	K7_NOP1,
-	K7_NOP2,
-	K7_NOP3,
-	K7_NOP4,
-	K7_NOP5,
-	K7_NOP6,
-	K7_NOP7,
-	K7_NOP8,
-	K7_NOP5_ATOMIC
-};
-static const unsigned char * const k7_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	k7nops,
-	k7nops + 1,
-	k7nops + 1 + 2,
-	k7nops + 1 + 2 + 3,
-	k7nops + 1 + 2 + 3 + 4,
-	k7nops + 1 + 2 + 3 + 4 + 5,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-#ifdef P6_NOP1
-static const unsigned char p6nops[] =
-{
-	P6_NOP1,
-	P6_NOP2,
-	P6_NOP3,
-	P6_NOP4,
-	P6_NOP5,
-	P6_NOP6,
-	P6_NOP7,
-	P6_NOP8,
-	P6_NOP5_ATOMIC
-};
-static const unsigned char * const p6_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	p6nops,
-	p6nops + 1,
-	p6nops + 1 + 2,
-	p6nops + 1 + 2 + 3,
-	p6nops + 1 + 2 + 3 + 4,
-	p6nops + 1 + 2 + 3 + 4 + 5,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-/* Initialize these to a safe default */
-#ifdef CONFIG_X86_64
-const unsigned char * const *ideal_nops = p6_nops;
-#else
-const unsigned char * const *ideal_nops = intel_nops;
-#endif
-
-void __init arch_init_ideal_nops(void)
-{
-	switch (boot_cpu_data.x86_vendor) {
-	case X86_VENDOR_INTEL:
-		/*
-		 * Due to a decoder implementation quirk, some
-		 * specific Intel CPUs actually perform better with
-		 * the "k8_nops" than with the SDM-recommended NOPs.
-		 */
-		if (boot_cpu_data.x86 == 6 &&
-		    boot_cpu_data.x86_model >= 0x0f &&
-		    boot_cpu_data.x86_model != 0x1c &&
-		    boot_cpu_data.x86_model != 0x26 &&
-		    boot_cpu_data.x86_model != 0x27 &&
-		    boot_cpu_data.x86_model < 0x30) {
-			ideal_nops = k8_nops;
-		} else if (boot_cpu_has(X86_FEATURE_NOPL)) {
-			   ideal_nops = p6_nops;
-		} else {
-#ifdef CONFIG_X86_64
-			ideal_nops = k8_nops;
-#else
-			ideal_nops = intel_nops;
-#endif
-		}
-		break;
-
-	case X86_VENDOR_HYGON:
-		ideal_nops = p6_nops;
-		return;
-
-	case X86_VENDOR_AMD:
-		if (boot_cpu_data.x86 > 0xf) {
-			ideal_nops = p6_nops;
-			return;
-		}
-
-		fallthrough;
-
-	default:
-#ifdef CONFIG_X86_64
-		ideal_nops = k8_nops;
-#else
-		if (boot_cpu_has(X86_FEATURE_K8))
-			ideal_nops = k8_nops;
-		else if (boot_cpu_has(X86_FEATURE_K7))
-			ideal_nops = k7_nops;
-		else
-			ideal_nops = intel_nops;
-#endif
-	}
-}
 
 /* Use this to add nops to a buffer, then text_poke the whole buffer. */
 static void __init_or_module add_nops(void *insns, unsigned int len)
@@ -263,7 +107,7 @@ static void __init_or_module add_nops(void *insns, unsigned int len)
 		unsigned int noplen = len;
 		if (noplen > ASM_NOP_MAX)
 			noplen = ASM_NOP_MAX;
-		memcpy(insns, ideal_nops[noplen], noplen);
+		memcpy(insns, x86_nops[noplen], noplen);
 		insns += noplen;
 		len -= noplen;
 	}
@@ -424,6 +268,17 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 	u8 insn_buff[MAX_PATCH_LEN];
 
 	DPRINTK("alt table %px, -> %px", start, end);
+
+	/*
+	 * In the case CONFIG_X86_5LEVEL=y, KASAN_SHADOW_START is defined using
+	 * cpu_feature_enabled(X86_FEATURE_LA57) and is therefore patched here.
+	 * During the process, KASAN becomes confused seeing partial LA57
+	 * conversion and triggers a false-positive out-of-bound report.
+	 *
+	 * Disable KASAN until the patching is complete.
+	 */
+	kasan_disable_current();
+
 	/*
 	 * The scan order should be from start to end. A later scanned
 	 * alternative code can overwrite previously scanned alternative code.
@@ -491,6 +346,8 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 next:
 		optimize_nops(instr, a->instrlen);
 	}
+
+	kasan_enable_current();
 }
 
 #if defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION)
@@ -663,6 +520,7 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
 }
 
 #ifdef CONFIG_RETHUNK
+
 /*
  * Rewrite the compiler generated return thunk tail-calls.
  *
@@ -678,14 +536,18 @@ static int patch_return(void *addr, struct insn *insn, u8 *bytes)
 {
 	int i = 0;
 
-	if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
-		return -1;
+	if (cpu_feature_enabled(X86_FEATURE_RETHUNK)) {
+		if (x86_return_thunk == __x86_return_thunk)
+			return -1;
 
-	bytes[i++] = RET_INSN_OPCODE;
+		i = JMP32_INSN_SIZE;
+		__text_gen_insn(bytes, JMP32_INSN_OPCODE, addr, x86_return_thunk, i);
+	} else {
+		bytes[i++] = RET_INSN_OPCODE;
+	}
 
 	for (; i < insn->length;)
 		bytes[i++] = INT3_INSN_OPCODE;
-
 	return i;
 }
 
@@ -1084,8 +946,8 @@ void __init_or_module text_poke_early(void *addr, const void *opcode,
 	} else {
 		local_irq_save(flags);
 		memcpy(addr, opcode, len);
-		local_irq_restore(flags);
 		sync_core();
+		local_irq_restore(flags);
 
 		/*
 		 * Could also do a CLFLUSH here to speed up CPU recovery; but
@@ -1334,22 +1196,23 @@ struct bp_patching_desc {
 	atomic_t refs;
 };
 
-static struct bp_patching_desc *bp_desc;
+static struct bp_patching_desc bp_desc;
 
 static __always_inline
-struct bp_patching_desc *try_get_desc(struct bp_patching_desc **descp)
+struct bp_patching_desc *try_get_desc(void)
 {
-	/* rcu_dereference */
-	struct bp_patching_desc *desc = __READ_ONCE(*descp);
+	struct bp_patching_desc *desc = &bp_desc;
 
-	if (!desc || !arch_atomic_inc_not_zero(&desc->refs))
+	if (!arch_atomic_inc_not_zero(&desc->refs))
 		return NULL;
 
 	return desc;
 }
 
-static __always_inline void put_desc(struct bp_patching_desc *desc)
+static __always_inline void put_desc(void)
 {
+	struct bp_patching_desc *desc = &bp_desc;
+
 	smp_mb__before_atomic();
 	arch_atomic_dec(&desc->refs);
 }
@@ -1382,15 +1245,15 @@ noinstr int poke_int3_handler(struct pt_regs *regs)
 
 	/*
 	 * Having observed our INT3 instruction, we now must observe
-	 * bp_desc:
+	 * bp_desc with non-zero refcount:
 	 *
-	 *	bp_desc = desc			INT3
+	 *	bp_desc.refs = 1		INT3
 	 *	WMB				RMB
-	 *	write INT3			if (desc)
+	 *	write INT3			if (bp_desc.refs != 0)
 	 */
 	smp_rmb();
 
-	desc = try_get_desc(&bp_desc);
+	desc = try_get_desc();
 	if (!desc)
 		return 0;
 
@@ -1444,7 +1307,7 @@ noinstr int poke_int3_handler(struct pt_regs *regs)
 	ret = 1;
 
 out_put:
-	put_desc(desc);
+	put_desc();
 	return ret;
 }
 
@@ -1475,18 +1338,30 @@ static int tp_vec_nr;
  */
 static void text_poke_bp_batch(struct text_poke_loc *tp, unsigned int nr_entries)
 {
-	struct bp_patching_desc desc = {
-		.vec = tp,
-		.nr_entries = nr_entries,
-		.refs = ATOMIC_INIT(1),
-	};
 	unsigned char int3 = INT3_INSN_OPCODE;
 	unsigned int i;
 	int do_sync;
 
 	lockdep_assert_held(&text_mutex);
 
-	smp_store_release(&bp_desc, &desc); /* rcu_assign_pointer */
+	bp_desc.vec = tp;
+	bp_desc.nr_entries = nr_entries;
+
+	/*
+	 * Corresponds to the implicit memory barrier in try_get_desc() to
+	 * ensure reading a non-zero refcount provides up to date bp_desc data.
+	 */
+	atomic_set_release(&bp_desc.refs, 1);
+
+	/*
+	 * Function tracing can enable thousands of places that need to be
+	 * updated. This can take quite some time, and with full kernel debugging
+	 * enabled, this could cause the softlockup watchdog to trigger.
+	 * This function gets called every 256 entries added to be patched.
+	 * Call cond_resched() here to make sure that other tasks can get scheduled
+	 * while processing all the functions being patched.
+	 */
+	cond_resched();
 
 	/*
 	 * Corresponding read barrier in int3 notifier for making sure the
@@ -1574,12 +1449,10 @@ static void text_poke_bp_batch(struct text_poke_loc *tp, unsigned int nr_entries
 		text_poke_sync();
 
 	/*
-	 * Remove and synchronize_rcu(), except we have a very primitive
-	 * refcount based completion.
+	 * Remove and wait for refs to be zero.
 	 */
-	WRITE_ONCE(bp_desc, NULL); /* RCU_INIT_POINTER */
-	if (!atomic_dec_and_test(&desc.refs))
-		atomic_cond_read_acquire(&desc.refs, !VAL);
+	if (!atomic_dec_and_test(&bp_desc.refs))
+		atomic_cond_read_acquire(&bp_desc.refs, !VAL);
 }
 
 static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
@@ -1630,13 +1503,13 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 	default: /* assume NOP */
 		switch (len) {
 		case 2: /* NOP2 -- emulate as JMP8+0 */
-			BUG_ON(memcmp(emulate, ideal_nops[len], len));
+			BUG_ON(memcmp(emulate, x86_nops[len], len));
 			tp->opcode = JMP8_INSN_OPCODE;
 			tp->disp = 0;
 			break;
 
 		case 5: /* NOP5 -- emulate as JMP32+0 */
-			BUG_ON(memcmp(emulate, ideal_nops[NOP_ATOMIC5], len));
+			BUG_ON(memcmp(emulate, x86_nops[len], len));
 			tp->opcode = JMP32_INSN_OPCODE;
 			tp->disp = 0;
 			break;

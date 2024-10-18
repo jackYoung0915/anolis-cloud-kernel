@@ -2864,10 +2864,10 @@ static void raid5_end_write_request(struct bio *bi)
 	if (!test_and_clear_bit(R5_DOUBLE_LOCKED, &sh->dev[i].flags))
 		clear_bit(R5_LOCKED, &sh->dev[i].flags);
 	set_bit(STRIPE_HANDLE, &sh->state);
-	raid5_release_stripe(sh);
 
 	if (sh->batch_head && sh != sh->batch_head)
 		raid5_release_stripe(sh->batch_head);
+	raid5_release_stripe(sh);
 }
 
 static void raid5_error(struct mddev *mddev, struct md_rdev *rdev)
@@ -3936,7 +3936,7 @@ static void handle_stripe_fill(struct stripe_head *sh,
 		 * back cache (prexor with orig_page, and then xor with
 		 * page) in the read path
 		 */
-		if (s->injournal && s->failed) {
+		if (s->to_read && s->injournal && s->failed) {
 			if (test_bit(STRIPE_R5C_CACHING, &sh->state))
 				r5c_make_stripe_write_out(sh);
 			goto out;
@@ -6482,6 +6482,9 @@ static void raid5d(struct md_thread *thread)
 		struct bio *bio;
 		int batch_size, released;
 		unsigned int offset;
+
+		if (test_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags))
+			break;
 
 		released = release_stripe_list(conf, conf->temp_inactive_list);
 		if (released)

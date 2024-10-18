@@ -26,13 +26,11 @@ void fix_jm585_reset(void)
 	pdev = pci_get_device(PCI_VENDOR_ID_JMICRON,
 				0x0585, NULL);
 	if (pdev) {
-		hose = (struct pci_controller *)pdev->sysdata;
-		val = read_rc_conf(hose->node, hose->index,
-				RC_PORT_LINK_CTL);
-		write_rc_conf(hose->node, hose->index,
-				RC_PORT_LINK_CTL, val | 0x8);
-		write_rc_conf(hose->node, hose->index,
-		RC_PORT_LINK_CTL, val);
+		hose = pci_bus_to_pci_controller(pdev->bus);
+		val = readl(hose->rc_config_space_base + RC_PORT_LINK_CTL);
+		writel((val | 0x8), (hose->rc_config_space_base + RC_PORT_LINK_CTL));
+		writel(val, (hose->rc_config_space_base + RC_PORT_LINK_CTL));
+
 	}
 
 }

@@ -35,6 +35,7 @@ enum idxd_dev_type {
 	IDXD_DEV_GROUP,
 	IDXD_DEV_ENGINE,
 	IDXD_DEV_CDEV,
+	IDXD_DEV_CDEV_FILE,
 	IDXD_DEV_MAX_TYPE,
 };
 
@@ -135,6 +136,12 @@ struct idxd_pmu {
 
 #define IDXD_MAX_PRIORITY	0xf
 
+enum {
+	COUNTER_FAULTS = 0,
+	COUNTER_FAULT_FAILS,
+	COUNTER_MAX
+};
+
 enum idxd_wq_state {
 	IDXD_WQ_DISABLED = 0,
 	IDXD_WQ_ENABLED,
@@ -145,6 +152,7 @@ enum idxd_wq_flag {
 	WQ_FLAG_DEDICATED = 0,
 	WQ_FLAG_BLOCK_ON_FAULT,
 	WQ_FLAG_ATS_DISABLE,
+	WQ_FLAG_PRS_DISABLE,
 	WQ_FLAG_MODE_1,
 };
 
@@ -196,6 +204,7 @@ struct idxd_wq {
 	struct idxd_dev idxd_dev;
 	struct idxd_cdev *idxd_cdev;
 	struct wait_queue_head err_queue;
+	struct workqueue_struct *wq;
 	struct idxd_device *idxd;
 	int id;
 	struct idxd_irq_entry ie;
@@ -229,6 +238,10 @@ struct idxd_wq {
 
 	struct list_head vdcm_list;
 	void *private_data;
+
+	/* Lock to protect upasid_xa access. */
+	struct mutex uc_lock;
+	struct xarray upasid_xa;
 };
 
 struct idxd_engine {
@@ -276,6 +289,32 @@ struct idxd_driver_data {
 	struct device_type *dev_type;
 	int compl_size;
 	int align;
+	int evl_cr_off;
+	int cr_status_off;
+	int cr_result_off;
+};
+
+struct idxd_evl {
+	/* Lock to protect event log access. */
+	spinlock_t lock;
+	void *log;
+	dma_addr_t dma;
+	/* Total size of event log = number of entries * entry size. */
+	unsigned int log_size;
+	/* The number of entries in the event log. */
+	u16 size;
+	u16 head;
+	unsigned long *bmap;
+	bool batch_fail[IDXD_MAX_BATCH_IDENT];
+};
+
+struct idxd_evl_fault {
+	struct work_struct work;
+	struct idxd_wq *wq;
+	u8 status;
+
+	/* make this last member always */
+	struct __evl_entry entry[];
 };
 
 struct idxd_device {
@@ -339,7 +378,23 @@ struct idxd_device {
 	bool mdev_host_init;
 
 	unsigned long *opcap_bmap;
+	struct idxd_evl *evl;
+	struct kmem_cache *evl_cache;
+
+	struct dentry *dbgfs_dir;
+	struct dentry *dbgfs_evl_file;
 };
+
+static inline unsigned int evl_ent_size(struct idxd_device *idxd)
+{
+	return idxd->hw.gen_cap.evl_support ?
+	       (32 * (1 << idxd->hw.gen_cap.evl_support)) : 0;
+}
+
+static inline unsigned int evl_size(struct idxd_device *idxd)
+{
+	return idxd->evl->size * evl_ent_size(idxd);
+}
 
 /**
  * IDXD batch field for SW Batch descriptor
@@ -392,6 +447,7 @@ enum idxd_completion_status {
 #define engine_confdev(engine) &engine->idxd_dev.conf_dev
 #define group_confdev(group) &group->idxd_dev.conf_dev
 #define cdev_dev(cdev) &cdev->idxd_dev.conf_dev
+#define user_ctx_dev(ctx) (&(ctx)->idxd_dev.conf_dev)
 
 #define confdev_to_idxd_dev(dev) container_of(dev, struct idxd_dev, conf_dev)
 #define idxd_dev_to_idxd(idxd_dev) container_of(idxd_dev, struct idxd_device, idxd_dev)
@@ -722,6 +778,9 @@ void idxd_cdev_remove(void);
 int idxd_cdev_get_major(struct idxd_device *idxd);
 int idxd_wq_add_cdev(struct idxd_wq *wq);
 void idxd_wq_del_cdev(struct idxd_wq *wq);
+int idxd_copy_cr(struct idxd_wq *wq, ioasid_t pasid, unsigned long addr,
+		 void *buf, int len);
+void idxd_user_counter_increment(struct idxd_wq *wq, u32 pasid, int index);
 
 /* perfmon */
 #if IS_ENABLED(CONFIG_INTEL_IDXD_PERFMON)
@@ -737,5 +796,11 @@ static inline void perfmon_counter_overflow(struct idxd_device *idxd) {}
 static inline void perfmon_init(void) {}
 static inline void perfmon_exit(void) {}
 #endif
+
+/* debugfs */
+int idxd_device_init_debugfs(struct idxd_device *idxd);
+void idxd_device_remove_debugfs(struct idxd_device *idxd);
+int idxd_init_debugfs(void);
+void idxd_remove_debugfs(void);
 
 #endif

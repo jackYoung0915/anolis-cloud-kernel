@@ -29,6 +29,8 @@ extern unsigned long efi_fw_vendor, efi_config_table;
 
 #define ARCH_EFI_IRQ_FLAGS_MASK	X86_EFLAGS_IF
 
+#define EFI_UNACCEPTED_UNIT_SIZE PMD_SIZE
+
 /*
  * The EFI services are called through variadic functions in many cases. These
  * functions are implemented in assembler and support only a fixed number of

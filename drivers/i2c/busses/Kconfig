@@ -325,7 +325,7 @@ config I2C_VIAPRO
 
 config I2C_ZHAOXIN
 	tristate "Zhaoxin I2C controller driver"
-	depends on PCI
+	depends on PCI && (CPU_SUP_CENTAUR || CPU_SUP_ZHAOXIN)
 	select I2C_ALGOBIT
 	help
 	  If you say yes to this option, support will be included for the

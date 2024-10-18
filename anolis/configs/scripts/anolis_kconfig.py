@@ -7,473 +7,706 @@
 # Copyright (C) 2023 Qiao Ma <mqaio@linux.alibaba.com>
 
 import argparse, re, os, glob, shutil, copy
-from typing import List, Dict, Type
+from typing import List, Dict, Type, Callable, Tuple
 import json
+from collections import Counter
+import fnmatch
 import functools
 
 def die(*args, **kwargs):
     print(*args, **kwargs)
     exit(1)
 
-class ConfigRule():
-    var_levels: List[str]
-    var_levels = None
-
-    @staticmethod
-    def __get_env(env_name: str):
-        value = os.getenv(env_name)
-        if value == None:
-            die(f"cannot find variable {env_name}")
-        return value
-
+class Rules():
     @staticmethod
     def levels() -> List[str]:
-        if ConfigRule.var_levels == None:
-            ConfigRule.var_levels = ConfigRule.__get_env("DIST_LEVELS").split()
-        return ConfigRule.var_levels
+        return ["L0-MANDATORY", "L1-RECOMMEND", "L2-OPTIONAL", "UNKNOWN"]
 
     @staticmethod
-    def lookup_order(arch: str) -> List[str]:
-        return {
-            "x86": ["x86", "default"],
-            "x86-debug": ["x86-debug", "x86", "default"],
-            "arm64": ["arm64", "default"],
-            "arm64-debug": ["arm64-debug", "arm64", "default"],
-        }[arch]
+    def base_dist():
+        return "ANCK"
 
     @staticmethod
-    def kernel_version() -> str:
-        return ConfigRule.__get_env("DIST_KERNELVERSION")
+    def as_config_text(name: str, value: str) -> str:
+        if value is None or value == "n":
+            return f"# {name} is not set\n"
+        else:
+            return f"{name}={value}\n"
+
+class PathIterContext():
+    dist: str
+    level: str
+    arch: str
+    subarch: str
+    name: str
+    path: str
+    data: any
+
+    def __init__(self, data: any, dist: str, level: str, arch: str, subarch: str, name: str, path: str) -> None:
+        self.data = data
+        self.dist = dist
+        self.level = level
+        self.arch = arch
+        self.subarch = subarch
+        self.name = name
+        self.path = path
+
+class PathManager():
+    @staticmethod
+    def dists(top_dir: str, dists: List[str] = None) -> List[str]:
+        dist_list = [Rules.base_dist()]
+        override_dir = os.path.join(top_dir, "OVERRIDE")
+        if os.path.exists(override_dir):
+            dist_list.extend(os.listdir(override_dir))
+
+        if dists is None:
+            return dist_list
+        return list(set(dist_list).intersection(set(dists)))
 
     @staticmethod
-    def dist_dependencies(dist: str) -> List[str]:
-        return ConfigRule.__get_env(f"DIST_CONFIG_KERNEL_DEPENDENCIES_{dist}").split()
+    def dist_to_path(top_dir: str, dist: str) -> str:
+        if dist == Rules.base_dist():
+            return top_dir
+        return os.path.join(top_dir, "OVERRIDE", dist)
 
     @staticmethod
-    def arch_list(dist: str) -> List[str]:
-        return ConfigRule.__get_env(f"DIST_CONFIG_KERNEL_ARCHS_{dist}").split()
+    def levels(dist_dir: str, levels: List[str] = None) -> List[str]:
+        all_levels = []
+        for d in os.listdir(dist_dir):
+            if not os.path.isdir(os.path.join(dist_dir, d)):
+                continue
+            if not re.match('^L[0-9].*|UNKNOWN', d):
+                continue
+            all_levels.append(d)
+
+        if levels is None:
+            return all_levels
+        return list(set(all_levels).intersection(set(levels)))
 
     @staticmethod
-    def default_dist() -> str:
-        return ConfigRule.__get_env("DIST_CONFIG_KERNEL_NAME")
+    def archs(variant_dir: str, archs: List[str] = None) -> List[str]:
+        all_archs = os.listdir(variant_dir)
+        return all_archs if archs is None else list(set(all_archs).intersection(set(archs)))
 
     @staticmethod
-    def is_override(dist: str) -> bool:
-        return dist != "ANCK"
+    def __for_each_arch(level_dir: str, data: any, func: Callable[[PathIterContext], None], dist: str, level: str, archs: List[str] = None, subarchs: List[str] = None):
+        for arch_dir in os.listdir(level_dir):
+            if "-" in arch_dir:
+                arch, subarch = arch_dir.split("-", maxsplit=1)
+            else:
+                arch = arch_dir
+                subarch = None
+            if archs is not None and arch not in archs:
+                continue
+            if subarchs is not None and subarch is not None and subarch not in subarchs:
+                continue
+            full_arch_dir = os.path.join(level_dir, arch_dir)
+            for conf in os.listdir(full_arch_dir):
+                path = os.path.join(full_arch_dir, conf)
+                context = PathIterContext(data, dist, level, arch, subarch, conf, path)
+                func(context)
 
-class ConfigValue():
-    """ store config values"""
-    def __init__(self, name: str, value: str) -> None:
+    @staticmethod
+    def for_each(top_dir: str, data: any, func: Callable[[PathIterContext], None], dists: List[str] = None, levels: List[str] = None, archs: List[str] = None, subarchs: List[str] = None):
+        for dist in PathManager.dists(top_dir, dists):
+            dist_dir = PathManager.dist_to_path(top_dir, dist)
+            for level in PathManager.levels(dist_dir, levels):
+                level_dir = os.path.join(dist_dir, level)
+                if level != "UNKNOWN":
+                    PathManager.__for_each_arch(level_dir, data, func, dist, level, archs, subarchs)
+                else:
+                    for conf in os.listdir(level_dir):
+                        PathManager.__for_each_arch(os.path.join(level_dir, conf), data, func, dist, level, archs, subarchs)
+
+    @staticmethod
+    def as_level_dir(top_dir: str, dist: str, level: str):
+        path = PathManager.dist_to_path(top_dir, dist)
+        path = os.path.join(path, level)
+        return path
+
+    @staticmethod
+    def as_path(top_dir: str, dist: str, level: str, arch: str, subarch: str, name: str):
+        path = PathManager.as_level_dir(top_dir, dist, level)
+        if level == "UNKNOWN":
+            path = os.path.join(path, name)
+        if subarch is None:
+            path = os.path.join(path, arch, name)
+        else:
+            path = os.path.join(path, f"{arch}-{subarch}", name)
+        return path
+
+
+def default_args_func(args):
+    pass
+
+class LevelInfo():
+    info: Dict[str, str]
+
+    def __init__(self) -> None:
+        self.info = {}
+
+    def get(self, conf: str) -> str:
+        return self.info.get(conf, "UNKNOWN")
+
+    def merge_with_base(self, base: Type["LevelInfo"]):
+        if base is None:
+            return
+        for name, level in base.info.items():
+            if name not in self.info:
+                self.info[name] = level
+
+    @staticmethod
+    def __collect_info(ctx: PathIterContext):
+        level_info: Dict[str, str] = ctx.data
+        level_info[ctx.name] = ctx.level
+
+    @staticmethod
+    def build(path: str, dist: str) -> Type["LevelInfo"]:
+        info = LevelInfo()
+        PathManager.for_each(path, info.info, LevelInfo.__collect_info, dists=[dist])
+        return info
+
+    @staticmethod
+    def load(file: str):
+        info = LevelInfo()
+        with open(file) as f:
+            info.info = json.loads(f.read())
+        return info
+
+class Config():
+    name: str
+    value: str
+    arch: str
+    subarch: str
+    level: str
+    dist: str
+
+    def __init__(self, name: str, value: str, dist: str = None, level: str = "UNKNOWN", arch: str = None, subarch: str = None) -> None:
         self.name = name
         self.value = value
+        self.dist = dist
+        self.level = level
+        self.arch = arch
+        self.subarch = subarch
 
     @staticmethod
-    def from_text(line: str) -> Type["ConfigValue"] :
+    def from_text(line: str, dist: str, arch: str, subarch: str) -> Type["Config"] :
         RE_CONFIG_SET = r'^(CONFIG_\w+)=(.*)$'
         RE_CONFIG_NOT_SET = r'^# (CONFIG_\w+) is not set$'
 
         if re.match(RE_CONFIG_SET, line):
             obj = re.match(RE_CONFIG_SET, line)
-            return ConfigValue(obj.group(1), obj.group(2))
+            return Config(name=obj.group(1), value=obj.group(2), dist=dist, arch=arch, subarch=subarch)
         elif re.match(RE_CONFIG_NOT_SET, line):
             obj = re.match(RE_CONFIG_NOT_SET, line)
-            return ConfigValue(obj.group(1), "n")
+            return Config(name=obj.group(1), value="n", dist=dist, arch=arch, subarch=subarch)
         return None
 
-    def as_string(self) -> str:
-        if self.value == None or self.value == "n":
-            return f"# {self.name} is not set\n"
-        return f"{self.name}={self.value}\n"
+    def as_text(self) -> str:
+        return Rules.as_config_text(self.name, self.value)
 
-    def equal(self, another) -> bool:
-        return self.value == another.value
+    def as_path(self, top_dir: str) -> str:
+        return PathManager.as_path(top_dir, self.dist, self.level, self.arch, self.subarch, self.name)
 
-    def is_empty(self) -> bool:
-        return self.value == None
+    def as_file(self, top_dir: str):
+        text = self.as_text()
+        path = self.as_path(top_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
 
-class ConfigValues():
-    values: List[ConfigValue]
+class ConfigList():
+    arch: str
+    dist: str
+    subarch: str
+    configs: Dict[str, Config]
 
-    def __init__(self) -> None:
-        self.values = []
+    def __init__(self, dist: str, arch: str, subarch: str = None) -> None:
+        self.dist = dist
+        self.arch = arch
+        self.subarch = subarch
+        self.configs = {}
 
-    def add_value(self, value: ConfigValue):
-        self.values.append(value)
+    def lists(self) -> List[Config]:
+        return list(self.configs.values())
+
+    def diff_to_base(self, base: Type["ConfigList"], level_info: LevelInfo):
+        same_configs = []
+        for name, conf in self.configs.items():
+            if name not in base.configs:
+                continue
+            if conf.value != base.configs[name].value:
+                continue
+            same_configs.append(name)
+
+        for name in base.configs:
+            if name not in self.configs:
+                self.configs[name] = Config(name, value=None, dist=self.dist, arch=self.arch, level=level_info.get(name))
+
+        for name in same_configs:
+            del self.configs[name]
+
+    def merge_with_base(self, base: Type["ConfigList"]):
+        if base is None:
+            return
+        for name, conf in base.configs.items():
+            if name not in self.configs:
+                self.configs[name] = conf
+
+    def dump_as_file(self, top_dir: str):
+        for conf in self.configs.values():
+            conf.as_file(top_dir)
+
+    def as_text(self):
+        text = ""
+        for conf in self.configs.values():
+            text = text + conf.as_text()
+        return text
 
     @staticmethod
-    def from_config_file(path: str) -> Type["ConfigValues"]:
-        configs = ConfigValues()
+    def from_path(path: str, dist: str, arch: str, subarch: str = None, level_info: LevelInfo = None, level: str = None) -> Type["ConfigList"]:
+        if level_info is not None and level is not None:
+            die("the argument level_info and level cannot be passed together")
+        if level_info is None and level is None:
+            level = "UNKNOWN"
+
+        conflist = ConfigList(dist, arch, subarch)
         with open(path) as f:
             for line in f.readlines():
-                value = ConfigValue.from_text(line)
-                if value is None:
+                conf = Config.from_text(line, dist, arch, subarch)
+                if conf is None:
                     continue
-                configs.add_value(value)
-        return configs
+                if level_info is not None:
+                    conf.level = level_info.get(conf.name)
+                else:
+                    conf.level = level
+                conflist.configs[conf.name] = conf
+        return conflist
 
-class SortRefs():
-    order: Dict[str, int]
-
-    def __init__(self, path_list: List[str]) -> None:
-        self.order = {}
-        for path in path_list:
-            self.__add(path)
-
-    def __add(self, path: str):
-        values = ConfigValues.from_config_file(path)
-
-        for value in values.values:
-            if value.name not in self.order:
-                self.order[value.name] = len(self.order) + 1
-
-    def compare(self, a: str, b: str):
-        #try compare config name with order
-        if a in self.order and b in self.order:
-            return (self.order[a] > self.order[b]) - (self.order[a] < self.order[b])
-        if a in self.order:
-            return -1
-        if b in self.order:
-            return 1
-        #fallback to string compare
-        return (a > b) - (a < b)
-
-class Config():
-    name: str
-    level: str
-    values: Dict[str, ConfigValue]
-
-    def __init__(self, name: str, level: str) -> None:
-        self.name = name
-        self.level = level
-        self.values = {}
-
-    def add_value(self, arch: str, value: str):
-        self.values[arch] = value
-
-    def get_value(self, arch: str):
-        for arch in ConfigRule.lookup_order(arch):
-            if arch in self.values:
-                return self.values[arch]
-        return None
-
-    def __collapse_value(self, full_arch_list: List[str], collapse_archs: List[str], arch_new: str = None):
-        base_value = None
-
-        # for downstream distributions, the arch like arm64 may not be supported, ignore it
-        final_archs = []
-        for arch in collapse_archs:
-            if arch in full_arch_list:
-                final_archs.append(arch)
-
-        if len(final_archs) == 0:
-            return
-
-        for arch in final_archs:
-            if arch not in self.values:
-                return
-            if base_value == None:
-                base_value = self.values[arch]
-            elif not base_value.equal(self.values[arch]):
-                return
-
-        if arch_new == None:
-            arch_new = final_archs[0]
-
-        for arch in final_archs:
-            del self.values[arch]
-
-        self.values[arch_new] = base_value
-
-    def __remove_empty_values(self, arch_list: List[str]):
-        for arch in arch_list:
-            if arch in self.values and f"{arch}-debug" not in self.values:
-                if self.values[arch].is_empty():
-                    del self.values[arch]
-
-    def collapse_values(self, all_archs: List[str]):
-        self.__collapse_value(all_archs, ["x86", "x86-debug"])
-        self.__collapse_value(all_archs, ["arm64", "arm64-debug"])
-        self.__collapse_value(all_archs, ["x86", "arm64"], "default")
-        if "default" not in self.values:
-            # Optimization for such case:
-            # CONFIG_ARM_GIC_V3 only appears in arch arm64,
-            # it is unnecessary to place related file in x86 arch,
-            # so just remove it
-            self.__remove_empty_values(["x86", "arm64"])
-        elif self.values["default"].is_empty():
-            # Optimization for such case:
-            # CONFIG_FAILSLAB does not appear in x86, arm64,
-            # it only appears in x86-debug, arm64-debug configs,
-            # which finally causes a default file exists, but has its value like:
-            # > # CONFIG_FAILSLAB is not appear
-            # which looks ugly.
-            del self.values["default"]
-
-    def expand_values(self, all_archs: List[str]):
-        new_values: Dict[str, ConfigValue] = {}
-        for arch in all_archs:
-            value = self.get_value(arch)
-            if value != None:
-                new_values[arch] = copy.deepcopy(value)
-            else:
-                new_values[arch] = ConfigValue(self.name, None)
-        self.values = new_values
-
-    def set_default_values(self, all_archs: List[str]):
-        for arch in all_archs:
-            if arch not in self.values:
-                self.values[arch] = ConfigValue(self.name, None)
-
-    def write_split_files(self, top_dir: str):
-        for arch, value in self.values.items():
-            if self.level != "UNKNOWN":
-                filename = os.path.join(top_dir, self.level, arch, self.name)
-            else:
-                filename = os.path.join(top_dir, self.level, self.name, arch, self.name)
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
-            with open(filename, "w") as f:
-                f.write(value.as_string())
-
-    def is_all_empty(self, archs: List[str]) -> bool:
-        for arch in archs:
-            if arch not in self.values:
-                continue
-            if self.values[arch].value == None:
-                continue
-            return False
-        return True
-
-    def diff_to_base(self, base: Type["Config"]) -> bool:
-        for arch,value in self.values.items():
-            if arch not in base.values:
-                continue
-            if not value.equal(base.values[arch]):
-                return True
-        return False
-
-    def as_json(self):
-        data = {
-            "name": self.name,
-            "desc": None,
-            "level": self.level
-        }
-        for arch, value in self.values.items():
-            data[arch] = value.value
-        return data
-
+class LevelCollector():
     @staticmethod
-    def empty_instance(name: str, level: str):
-        conf = Config(name, level)
-        conf.add_value("default", ConfigValue(name, None))
-        return conf
+    def do_collect(args):
+        info = LevelInfo.build(args.top_dir, args.dist)
+        if args.base is not None:
+            base_info = None
+            for base in args.base:
+                cur_base = LevelInfo.build(args.top_dir, base)
+                cur_base.merge_with_base(base_info)
+                base_info = cur_base
+            info.merge_with_base(base_info)
+        print(json.dumps(info.info, ensure_ascii=False, indent=2))
 
-    def dump(self):
-        print(f"{self.name}  {self.level}")
-
-class Configs():
-    configs: Dict[str, Config]
-    dist: str
-    archs: set
-
-    def __init__(self, dist: str):
-        self.configs = {}
-        self.dist = dist
-
-    def add_value(self, value: ConfigValue, level: str, arch: str):
-        name = value.name
-        if name not in self.configs:
-            self.configs[name] = Config(name, level)
-        self.configs[name].add_value(arch, value)
-
-    def add_values(self, values: ConfigValues, level: str, arch: str):
-        for value in values.values:
-            self.add_value(value, level, arch)
-
-    def expand_values(self):
-        for config in self.configs.values():
-            config.expand_values(ConfigRule.arch_list(self.dist))
-
-    def collapse_values(self):
-        for config in self.configs.values():
-            config.collapse_values(ConfigRule.arch_list(self.dist))
-
-    def set_default_values(self):
-        for config in self.configs.values():
-            config.set_default_values(ConfigRule.arch_list(self.dist))
-
-    def level_of(self, conf_name: str) -> str:
-        if conf_name in self.configs:
-            return self.configs[conf_name].level
-        return "UNKNOWN"
-
-    def write_split_files(self, top_dir: str):
-        for config in self.configs.values():
-            config.write_split_files(top_dir)
-
-    def dump(self):
-        for config in self.configs.values():
-            config.dump()
-
-    def merge_with_override(self, override: Type["Configs"]):
-        for config in override.configs.values():
-            self.configs[config.name] = copy.deepcopy(config)
-        self.dist = override.dist
-
-    def diff_to_base(self, base_configs: Type["Configs"]):
-        same_configs: List[Config] = []
-
-        # diff from override to base
-        for config in self.configs.values():
-            if config.name not in base_configs.configs:
-                continue
-            if not config.diff_to_base(base_configs.configs[config.name]):
-                same_configs.append(config)
-
-        # diff from base to override
-        for config in base_configs.configs.values():
-            if config.name in self.configs:
-                continue
-            # avoid write files for follow case:
-            # ANCK base: x86 x86-debug are empty, but arm64 arm64-debug has values
-            # downstream: only support x86 x86-debug, and they are empty, too
-            if config.is_all_empty(ConfigRule.arch_list(self.dist)):
-                continue
-            self.configs[config.name] = Config.empty_instance(config.name, config.level)
-
-        for config in same_configs:
-            del self.configs[config.name]
-
-    def as_json(self, sort_refs: List[str]):
-        data_list = []
-        for config in self.configs.values():
-            data_list.append(config.as_json())
-
-        sort_ref = SortRefs(sort_refs)
-        data_list.sort(key=functools.cmp_to_key(lambda a,b: sort_ref.compare(a["name"], b["name"])))
-        return data_list
-
-class Merger():
-    """merge all splited files"""
+class Importer():
     @staticmethod
-    def __merge_from_arch_dirs(top_dir: str, level: str, configs: Configs):
-        for arch in os.listdir(top_dir):
-            arch_dir = os.path.join(top_dir, arch)
-            for conf_name in os.listdir(arch_dir):
-                conf_path = os.path.join(arch_dir, conf_name)
-                values = ConfigValues.from_config_file(conf_path)
-                configs.add_values(values, level, arch)
-
-    @staticmethod
-    def __load_configs(path: str, dist: str) -> Configs:
-        configs = Configs(dist)
-        for level in ConfigRule.levels():
-            if ConfigRule.is_override(dist):
-                level_dir = os.path.join(path, "OVERRIDE", dist, level)
-            else:
-                level_dir = os.path.join(path, level)
-            if not os.path.exists(level_dir):
-                continue
-            if level != "UNKNOWN":
-                Merger.__merge_from_arch_dirs(level_dir, level, configs)
-            else:
-                for conf in os.listdir(level_dir):
-                    Merger.__merge_from_arch_dirs(os.path.join(level_dir, conf), level, configs)
-        return configs
-
-    @staticmethod
-    def from_path(path: str, dist: str) -> Configs:
-        dist_list = ConfigRule.dist_dependencies(dist)
-        dist_list.append(dist)
-
-        configs = None
-        for dist in dist_list:
-            dist_configs = Merger.__load_configs(path, dist)
-            if configs == None:
-                configs = dist_configs
-            else:
-                configs.merge_with_override(dist_configs)
-
-        configs.expand_values()
-        return configs
+    def do_import(args):
+        level_info = LevelInfo.load(args.level_info)
+        conflist = ConfigList.from_path(path=args.config, dist=args.dist, arch=args.arch, subarch=args.subarch, level_info=level_info)
+        conflist.dump_as_file(args.top_dir)
 
 class Generator():
-    """generate all config files to build kernel"""
     @staticmethod
-    def generate(configs: Configs, top_dir: str, dist: str, arch_list: List[str]):
-        kernel_version = ConfigRule.kernel_version()
-        for arch in arch_list:
-            file_name = f"kernel-{kernel_version}-{arch}-{dist}.config"
-            with open(os.path.join(top_dir, file_name), "w") as f:
-                for conf_name in sorted(configs.configs):
-                    config = configs.configs[conf_name]
-                    value = config.get_value(arch)
-                    if value is None:
-                        continue
-                    f.write(value.as_string())
-            print(f"* {file_name} generated in {top_dir}")
+    def collect_config(ctx: PathIterContext):
+        conflist : ConfigList = ctx.data
+        cur_conf = ConfigList.from_path(path=ctx.path, dist=ctx.dist, arch=ctx.arch, subarch=ctx.subarch)
+        conflist.merge_with_base(cur_conf)
 
     @staticmethod
     def do_generate(args):
-        dist = ConfigRule.default_dist()
-        input_dir = args.input_dir
-        output_dir = args.output_dir
-        arch_list = args.archs
+        dist = args.dist
+        archdir = args.archdir
+        if "-" in archdir:
+            arch, subarch = archdir.split("-", maxsplit=1)
+        else:
+            arch, subarch = archdir, None
+        conflist = ConfigList(dist, arch, subarch)
+        subarchs = None if subarch is None else [subarch]
+        PathManager.for_each(args.top_dir, conflist, Generator.collect_config, dists=[dist], archs=[arch], subarchs=subarchs)
+        print(conflist.as_text())
 
-        configs = Merger.from_path(input_dir, dist)
-        Generator.generate(configs, output_dir, dist, arch_list)
-
-class Spliter():
-    """split config files into splited files"""
+class Merger():
     @staticmethod
-    def __parse_configs(config_files: List[str], arch_list: List[str], dist: str, old_configs: Configs) -> Configs:
-        configs = Configs(dist)
-        for i, file in enumerate(config_files):
-            values = ConfigValues.from_config_file(file)
-            for value in values.values:
-                configs.add_value(value, old_configs.level_of(value.name), arch_list[i])
+    def do_merge(args):
+        conflist = None
+        for file in args.file:
+            cur_conflist = ConfigList.from_path(file, dist="", arch="")
+            cur_conflist.merge_with_base(conflist)
+            conflist = cur_conflist
 
-        configs.set_default_values()
-        return configs
+        print(conflist.as_text())
 
-    @staticmethod
-    def split(config_files: List[str], arch_list: List[str], old_top_dir: str, output_top_dir: str, dist: str):
-        base_dist = ConfigRule.dist_dependencies(dist)
-        old_dist_configs = Merger.from_path(old_top_dir, dist)
-        configs = Spliter.__parse_configs(config_files, arch_list, dist, old_dist_configs)
+class Collapser():
+    # for configs, the keys are: conf_name, arch
+    configs: Dict[str, Dict[str, Config]]
+    archs: set
 
-        if len(base_dist) != 0:
-            base_configs = Merger.from_path(old_top_dir, base_dist[-1])
-            configs.diff_to_base(base_configs)
-
-        configs.set_default_values()
-        configs.collapse_values()
-        configs.write_split_files(output_top_dir)
+    def __init__(self) -> None:
+        self.configs = {}
+        self.archs = set()
 
     @staticmethod
-    def do_split(args):
-        old_top_dir = args.old_top_dir
-        output_top_dir = args.output_top_dir
-        config_files = args.config_files
-        dist = ConfigRule.default_dist()
-        kernel_version = ConfigRule.kernel_version()
+    def __do_collect_info(ctx: PathIterContext):
+        c: Collapser = ctx.data
+        configs: Dict[str, Dict[str, Config]] = c.configs
+        archs = c.archs
 
-        archs = []
-        for file in config_files:
-            file = os.path.basename(file)
-            pattern=f'^kernel-{kernel_version}-(.*)-{dist}.config$'
-            if not re.match(pattern, file):
-                print(f"config file name is illegal: {file}")
-                exit(1)
-            obj = re.match(pattern, file)
-            archs.append(obj.group(1))
-        Spliter.split(config_files, archs, old_top_dir, output_top_dir, dist)
+        full_arch = ctx.arch
+        if ctx.subarch is not None:
+            full_arch = f"{ctx.arch}-{ctx.subarch}"
+        archs.add(full_arch)
+
+        conflist = ConfigList.from_path(path=ctx.path, dist=ctx.dist, arch=ctx.arch, subarch=ctx.subarch, level=ctx.level)
+        for conf in conflist.lists():
+            if conf.name not in configs:
+                configs[conf.name] = {}
+            configs[conf.name][full_arch] = conf
+
+    @staticmethod
+    def __collapse_one_config(arch_confs: Dict[str, Config], archs: set, top_dir: str):
+        # the default value is only depends on arch x86 and arm64.
+        # For example:
+        # 1. the configs "x86 y, arm64 y, sw_64 m/n" will be collpased to "default y, sw_64 m/n"
+        # 2. the configs "x86 y, arm64 y, sw_64 y" will be collpased to "default y"
+        # 3. the configs "x86 y, arm64 m, sw_64 y" will not be collpased
+        if "x86" not in arch_confs or "arm64" not in arch_confs:
+            return
+        if arch_confs["x86"].value != arch_confs["arm64"].value:
+            return
+        common_conf = copy.deepcopy(arch_confs["x86"])
+        common_conf.arch = "default"
+        common_conf.subarch = None
+
+        for arch in archs:
+            if arch in arch_confs:
+                conf = arch_confs[arch]
+                if conf.value == common_conf.value:
+                    os.remove(conf.as_path(top_dir))
+            else:
+                miss_conf = copy.deepcopy(common_conf)
+                miss_conf.arch = arch
+                miss_conf.subarch = None
+                miss_conf.value = "n"
+                miss_conf.as_file(top_dir)
+        common_conf.as_file(top_dir)
+
+    @staticmethod
+    def do_collapse(args):
+        c = Collapser()
+        PathManager.for_each(args.top_dir, c, Collapser.__do_collect_info, dists=[args.dist])
+
+        for arch_confs in c.configs.values():
+            Collapser.__collapse_one_config(arch_confs, c.archs, args.top_dir)
+
+class Striper():
+    configs: Dict[str, List[str]]
+    file_list: List[str]
+
+    def __init__(self, file_list: List[str]) -> None:
+        self.configs = {}
+        self.file_list = file_list
+
+        for i, path in enumerate(file_list):
+            conflist = ConfigList.from_path(path, dist="", arch="")
+            for conf in conflist.lists():
+                name = conf.name
+                if name not in self.configs:
+                    self.configs[name] = [None]*i
+                self.configs[name].append(conf.value)
+            for conf_values in self.configs.values():
+                if len(conf_values) != i+1:
+                    conf_values.append(None)
+
+    def strip(self, base: Type["Striper"]):
+        disappear_confs = []
+        same_confs = []
+        for name, conf_values in base.configs.items():
+            if name not in self.configs:
+                disappear_confs.append(name)
+                continue
+            if conf_values == self.configs[name]:
+                same_confs.append(name)
+
+        for name in same_confs:
+            del self.configs[name]
+
+        num_files = len(self.file_list)
+        for name in disappear_confs:
+            self.configs[name] = [None]*num_files
+
+    def override_files(self):
+        for i, path in enumerate(self.file_list):
+            with open(path, "w") as f:
+                for name, values in self.configs.items():
+                    f.write(Rules.as_config_text(name, values[i]))
+
+    @staticmethod
+    def do_strip(args):
+        if len(args.base) != len(args.target):
+            die("the target config files do not match base")
+        base = Striper(args.base)
+        target = Striper(args.target)
+        target.strip(base)
+        target.override_files()
+
+class ImportOpTranslater():
+    files: Dict[str, str]
+    files_info: Dict[Tuple[str, str, str, str], str]
+    level_info_path: str
+    input_dir: str
+    output_dir: str
+    src_root: str
+
+    def __init__(self, input_dir: str, output_dir: str, src_root: str) -> None:
+        self.files = {}
+        self.files_info = {}
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.src_root = src_root
+        self.level_info_path = ""
+
+    def __cmd(self, cmd: str):
+        return f"python3 {__file__} {cmd} "
+
+    def __op_file(self, args: str):
+        # FILE dist arch variant file_path REFRESH/NOREFRESH
+        dist, arch, subarch, path, refresh = args.split()
+        new_path = os.path.join(self.output_dir, os.path.basename(path))
+        if subarch != "null":
+            self.files[f"{dist}-{arch}-{subarch}"] = new_path
+            self.files_info[(dist, arch, subarch)] = new_path
+        else:
+            self.files[f"{dist}-{arch}"] = new_path
+            self.files_info[(dist, arch, None)] = new_path
+        cmd = f"cp {path} {new_path}\n"
+        if refresh == "REFRESH":
+            cmd += f"make KCONFIG_CONFIG={new_path} ARCH={arch} CROSS_COMPILE=scripts/dummy-tools/ "
+            cmd += f"PAHOLE=scripts/dummy-tools/pahole "
+            cmd += f"-C {self.src_root} olddefconfig > /dev/null\n"
+            cmd += f"rm -f {new_path}.old \n"
+        return cmd
+
+    def __op_levelinfo(self, args: str):
+        #LEVELINFO target_dist [base_dist [base_dist ...]]
+        target_dist, base_dists = args.split(maxsplit=1)
+        cmd = self.__cmd("collect_level")
+        cmd += f"--dist {target_dist} --top_dir {self.input_dir} "
+        for base in base_dists.split():
+            if base == "null":
+                continue
+            cmd += f"--base {base} "
+        self.level_info_path = os.path.join(self.output_dir, "level_info")
+        cmd += f"> {self.level_info_path}"
+        return cmd
+
+    def __op_import(self, args: str):
+        # IMPORT file
+        file = args
+        subarch = None
+        dist, arch = file.split("-", maxsplit=1)
+        if "-" in arch:
+            arch, subarch = arch.split("-", maxsplit=1)
+
+        cmd = self.__cmd("import")
+        cmd += f"--dist {dist} --arch {arch} "
+        if subarch is not None:
+            cmd += f"--subarch {subarch} "
+        cmd += f"--level_info {self.level_info_path} --top_dir {self.output_dir} "
+        cmd += f"{self.files[file]} "
+        return cmd
+
+    def __op_collapse(self, args: str):
+        # COLLAPSE dist
+        dist = args
+        cmd = self.__cmd("collapse")
+        cmd += f"--dist {dist} --top_dir {self.output_dir}"
+        return cmd
+
+    def __op_strip(self, args: str):
+        # STRIP target_dist base_dist
+        target_dist, base_dist = args.split()
+        copy_cmd = ""
+        cmd = self.__cmd("strip")
+        for (dist, arch, subarch), target_path in self.files_info.items():
+            if dist != target_dist:
+                continue
+            try:
+                copy_cmd += f"cp {target_path} {target_path}.bak\n"
+                base_path = self.files_info[(base_dist, arch, subarch)]
+            except:
+                full_arch = arch
+                if subarch is not None:
+                    full_arch = f"{arch}-{subarch}"
+                die(f"strip error. cannot find file {base_dist}-{full_arch} to match {target_dist}-{full_arch}")
+            cmd += f"--base {base_path} --target {target_path} "
+        return copy_cmd + cmd
+
+    def __translate_one(self, op:str, args: str):
+        cmd = ""
+        if op == "FILE":
+            cmd = self.__op_file(args)
+        elif op == "LEVELINFO":
+            cmd = self.__op_levelinfo(args)
+        elif op == "IMPORT":
+            cmd = self.__op_import(args)
+        elif op == "COLLAPSE":
+            cmd = self.__op_collapse(args)
+        elif op == "STRIP":
+            cmd = self.__op_strip(args)
+        else:
+            die(f"unknown op {op}")
+        print(cmd)
+
+    @staticmethod
+    def do_translate(args):
+        t = ImportOpTranslater(input_dir=args.input_dir, output_dir=args.output_dir, src_root=args.src_root)
+        with open(args.path) as f:
+            for i, line in enumerate(f.readlines()):
+                line = line.strip()
+                if line.startswith("#") or line == "":
+                    continue
+                (op, action_args) = line.split(maxsplit=1)
+                try:
+                    t.__translate_one(op, action_args)
+                except:
+                    die(f"parse error in {args.path}:{i+1}\n> {line}")
+
+class KconfigLayoutEntry():
+    name: str
+    dist: str
+    arch: str
+    subarch: str
+    base_dist: str
+    base_name: str
+    # (dist, variant, arch)
+    layout_list: List[Tuple[str, str, str]]
+
+    def __init__(self, name: str, dist: str, arch: str, base_dist: str, base_name: str) -> None:
+        self.name = name
+        self.dist = dist
+        self.arch = arch
+        self.base_dist = base_dist
+        self.base_name = base_name
+        self.layout_list = []
+
+    @staticmethod
+    def from_text(line: str):
+        cur, arch, base, layouts = line.split()
+        dist, name = cur.split("/")
+        if base == "null":
+            base_dist = None
+            base_name = None
+        else:
+            base_dist, base_name = base.split("/")
+        entry = KconfigLayoutEntry(name, dist, arch,base_dist, base_name)
+        for l in layouts.split(";"):
+            variant, arch = l.split("/")
+            entry.layout_list.append((dist, variant, arch))
+        return entry
+
+class KconfigLayout():
+    # (dist, file_name)
+    layouts: Dict[Tuple[str, str], KconfigLayoutEntry]
+
+    def __init__(self) -> None:
+        self.layouts = {}
+
+    @staticmethod
+    def from_path(path: str) -> Type["KconfigLayout"]:
+        l = KconfigLayout()
+        with open(path) as f:
+            for line in f.readlines():
+                line = line.strip()
+                if line.startswith("#") or line == "":
+                    continue
+                e = KconfigLayoutEntry.from_text(line)
+                l.layouts[(e.dist, e.name)] = e
+
+                if e.base_dist is None:
+                    continue
+                if (e.base_dist, e.base_name) not in l.layouts:
+                    die(f"cannot find {e.base_dist}/{e.base_name} while parsing {e.dist}/{e.name}")
+                e.layout_list = l.layouts[(e.base_dist, e.base_name)].layout_list + e.layout_list
+        return l
+
+class GenerateTranslater():
+    input_dir: str
+    output_dir: str
+    src_root: str
+
+    def __init__(self, args) -> None:
+        self.input_dir = args.input_dir
+        self.output_dir = args.output_dir
+        self.src_root = args.src_root
+
+    def __cmd(self, cmd: str):
+        return f"python3 {__file__} {cmd} "
+
+    def __translate_one(self, e: KconfigLayoutEntry, tmp_dir: str):
+        files = []
+        cmd = ""
+        for dist, variant, arch in e.layout_list:
+            if variant == "generic":
+                # for geneic configs, generate them
+                file = os.path.join(tmp_dir, f"kernel-partial-{dist}-{variant}-{arch}.config")
+                cmd += self.__cmd("generate")
+                cmd += f"--top_dir {self.input_dir} --dist {dist} --archdir {arch}"
+                cmd += f"> {file} \n"
+                files.append(file)
+            else:
+                dist_path = PathManager.dist_to_path(self.input_dir, dist)
+                file = os.path.join(dist_path, "custom-overrides", variant, f"{arch}.config")
+                if os.path.exists(file):
+                    files.append(file)
+
+        # merge all partial configs
+        final_path = os.path.join(self.output_dir, f"kernel-{e.dist}-{e.name}.config")
+        cmd += self.__cmd("merge")
+        cmd += " ".join(files)
+        cmd += f" > {final_path} \n"
+
+        # refresh configs
+        cmd += f"echo \"* generated file: {final_path}\"\n"
+        cmd += f"make KCONFIG_CONFIG={final_path} ARCH={e.arch} CROSS_COMPILE=scripts/dummy-tools/ "
+        cmd += f"PAHOLE=scripts/dummy-tools/pahole "
+        cmd += f"-C {self.src_root} olddefconfig > /dev/null\n"
+        cmd += f"rm -f {final_path}.old \n"
+        cmd += f"echo \"* processed file: {final_path}\"\n"
+
+        return cmd
+
+    @staticmethod
+    def do_translate(args):
+        cmd = ""
+        t = GenerateTranslater(args)
+        l = KconfigLayout.from_path(args.layout)
+
+        tmp_dir = os.path.join(args.output_dir, "tmp")
+        cmd += f"mkdir -p {tmp_dir}\n"
+        if args.target is not None:
+            dist, file_name = args.target.split("/", maxsplit=1)
+            if (dist, file_name) not in l.layouts:
+                die(f"cannot find config layout info for {dist}/{file_name}")
+            cmd += t.__translate_one(l.layouts[((dist, file_name))], tmp_dir)
+        else:
+            for e in l.layouts.values():
+                cmd += t.__translate_one(e, tmp_dir)
+        cmd += f"rm -rf {tmp_dir}"
+        print(cmd)
 
 class Mover():
     """move configs from old level to new level"""
+    config_patterns: List[str]
+    new_level: str
+    top_dir: str
+
+    def __init__(self, top_dir: str, new_level: str, config_patterns: List[str]) -> None:
+        self.top_dir = top_dir
+        self.new_level = new_level
+        self.config_patterns = config_patterns
+
     @staticmethod
     def get_level(level: str) -> str:
         target_level = ""
-        for l in ConfigRule.levels():
+        for l in Rules.levels():
             if l.startswith(level):
                 if target_level != "":
                     die(f"the level {level} is ambiguous")
@@ -483,100 +716,138 @@ class Mover():
             die(f"unkonw level {level}")
         return target_level
 
-    def conf_name_of(path: str) -> str:
-        return os.path.basename(path)
-
-    def conf_arch_of(path: str) -> str:
-        return os.path.basename(os.path.dirname(path))
-
-    def is_empty_dir(path: str) -> bool:
-        for path in glob.glob(f"{path}/**/*", recursive=True):
-            if os.path.isfile(path):
-                return False
-        return True
+    @staticmethod
+    def __move(ctx: PathIterContext):
+        m : Mover = ctx.data
+        for config_pattern in m.config_patterns:
+            if fnmatch.fnmatch(ctx.name, config_pattern):
+                new_path = PathManager.as_path(m.top_dir, ctx.dist, m.new_level, ctx.arch, ctx.subarch, ctx.name)
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                shutil.move(ctx.path, new_path)
+                print("* move: {} -> {}".format(ctx.path.replace(m.top_dir, "", 1), new_path.replace(m.top_dir, "", 1)))
+                return
 
     @staticmethod
-    def move(old_level: str, new_level: str, conf_patterns: List[str]):
-        dist = ConfigRule.default_dist()
-        old_level = Mover.get_level(old_level)
-        new_level = Mover.get_level(new_level)
-        if old_level == new_level:
-            exit(0)
-        if new_level == "UNKNOWN":
-            die("move configs into UNKONWN level is prohibited")
-
-        config_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
-        if ConfigRule.is_override(dist):
-            config_dir = os.path.join(config_dir, "OVERRIDE", dist)
-
-        level_dir = os.path.join(config_dir, old_level)
-        for conf_pattern in conf_patterns:
-            config_files = glob.glob(f"{level_dir}/**/{conf_pattern}", recursive=True)
-            for conf in config_files:
-                if not os.path.isfile(conf):
-                    continue
-                conf_name = Mover.conf_name_of(conf)
-                conf_arch = Mover.conf_arch_of(conf)
-                new_path = os.path.join(config_dir, new_level, conf_arch, conf_name)
-                print(f"{conf} -> {new_path}")
-                shutil.move(conf, new_path)
-                if old_level == "UNKNOWN":
-                    specific_conf_dir = os.path.join(level_dir, conf_name)
-                    if Mover.is_empty_dir(specific_conf_dir):
-                        shutil.rmtree(specific_conf_dir)
+    def __remove_empty_dirs(dir_path: str):
+        for root, dirs, _ in os.walk(dir_path, topdown=False):
+            for name in dirs:
+                cur_dir_path = os.path.join(root, name)
+                if len(os.listdir(cur_dir_path)) == 0:
+                    os.rmdir(cur_dir_path)
 
     @staticmethod
     def do_move(args):
-        Mover.move(args.old, args.new_level, args.config_name)
+        old_level = Mover.get_level(args.old)
+        new_level = Mover.get_level(args.new_level)
+        m = Mover(args.top_dir, new_level, args.config_name)
+        PathManager.for_each(args.top_dir, m, Mover.__move, dists=[args.dist], levels=[old_level])
+        level_dir = PathManager.as_level_dir(args.top_dir, args.dist, args.old)
+        Mover.__remove_empty_dirs(level_dir)
 
 class Exporter():
-    @staticmethod
-    def __save_as_xlsx(output: str, data):
+    # conf_name, file_name, value
+    configs: Dict[str, Dict[str, str]]
+
+    def __init__(self) -> None:
+        self.configs = {}
+
+    def __save_as_xlsx(self, columns: List[str], output: str):
         import pandas
+        if not output.endswith(".xlsx"):
+            output+=".xlsx"
+
         writer = pandas.ExcelWriter(output, engine="openpyxl")
-        data = pandas.DataFrame(data)
-        data.to_excel(writer)
+        data = pandas.DataFrame.from_dict(list(self.configs.values()))
+        data = data[columns]
+        data.to_excel(writer, index=False)
         writer.save()
 
     @staticmethod
     def do_export(args):
-        dist = ConfigRule.default_dist()
-        configs = Merger.from_path(args.input_dir, dist)
-        configs.expand_values()
-        data = configs.as_json(args.sort_refs)
-        Exporter.__save_as_xlsx(args.output, data)
-
-def default_args_func(args):
-    pass
+        e = Exporter()
+        levelinfo = LevelInfo.load(args.level_info)
+        columns = ["name", "level"]
+        for file in args.files:
+            file_name = os.path.basename(file)
+            columns.append(file_name)
+            with open(file) as f:
+                conf_list = ConfigList.from_path(file, dist="", arch="", level_info=levelinfo)
+                for c in conf_list.lists():
+                    if c.name not in e.configs:
+                        e.configs[c.name] = {}
+                    e.configs[c.name][file_name] = c.value
+                    e.configs[c.name]["level"] = c.level
+                    e.configs[c.name]["name"] = c.name
+        e.__save_as_xlsx(columns, args.output)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='process configs')
     parser.set_defaults(func=default_args_func)
     subparsers = parser.add_subparsers()
 
-    generator = subparsers.add_parser('generate', description="generate all files")
-    generator.add_argument("--input_dir", required=True, help="the top dir of splited configs")
-    generator.add_argument("--output_dir", required=True, help="the output dir to store config files")
-    generator.add_argument("archs", nargs="+", help="the archs, eg: x86/x86-debug/arm64/arm64-debug")
+    level_collector = subparsers.add_parser('collect_level', description="collect level information")
+    level_collector.add_argument("--dist", required=True, help="the dist")
+    level_collector.add_argument("--top_dir", required=True, help="the dist")
+    level_collector.add_argument("--base", nargs="*", help="the base dist level info")
+    level_collector.set_defaults(func=LevelCollector.do_collect)
+
+    importer = subparsers.add_parser('import', description="import new configs")
+    importer.add_argument("--dist", required=True, help="the dist")
+    importer.add_argument("--arch", required=True, help="the arch")
+    importer.add_argument("--subarch", help="the subarch")
+    importer.add_argument("--level_info", required=True, help="the level info ouputed by subcmd collect_level")
+    importer.add_argument("--top_dir", required=True, help="the output top dir")
+    importer.add_argument("config", help="the config file")
+    importer.set_defaults(func=Importer.do_import)
+
+    generator = subparsers.add_parser("generate", description="generate configs")
+    generator.add_argument("--top_dir", required=True, help="the top dir to store configs")
+    generator.add_argument("--dist", help="the dist")
+    generator.add_argument("--archdir", help="the arch directory, be like \{arch\}-\{subarch\}")
     generator.set_defaults(func=Generator.do_generate)
 
-    spliter = subparsers.add_parser('split', description="split configs files into different small files")
-    spliter.add_argument("--old_top_dir", required=True, help="the old splited files top dir")
-    spliter.add_argument("--output_top_dir", required=True, help="the output new splited files top dir")
-    spliter.add_argument("config_files", nargs="+", help="the config files generated by generate cmd")
-    spliter.set_defaults(func=Spliter.do_split)
+    merger = subparsers.add_parser("merge", description="merge with configs")
+    merger.add_argument("file", nargs="+", help="the config files")
+    merger.set_defaults(func=Merger.do_merge)
+
+    collapser = subparsers.add_parser("collapse", description="collapse configs")
+    collapser.add_argument("--dist", required=True, help="the dist")
+    collapser.add_argument("--top_dir", required=True, help="the top dir to store configs")
+    collapser.set_defaults(func=Collapser.do_collapse)
+
+    striper = subparsers.add_parser("strip", description="strip repeated configs")
+    striper.add_argument("--base", action='append', default=[], help="the base config files")
+    striper.add_argument("--target", action='append', default=[], help="the target config files")
+    striper.set_defaults(func=Striper.do_strip)
+
+    import_translater = subparsers.add_parser("import_tanslate", description="import operations translater")
+    import_translater.add_argument("--input_dir", required=True, help="the dir to store old configs, used for collect level infos")
+    import_translater.add_argument("--output_dir", required=True, help="the dir to store new configs")
+    import_translater.add_argument("--src_root", required=True, help="the dir of kernel source")
+    import_translater.add_argument("path", help="the import scripts")
+    import_translater.set_defaults(func=ImportOpTranslater.do_translate)
+
+    generate_translater = subparsers.add_parser("generate_translate", description="generate operations translater")
+    generate_translater.add_argument("--input_dir", required=True, help="the dir to store old configs, used for collect level infos")
+    generate_translater.add_argument("--output_dir", required=True, help="the dir to store new configs")
+    generate_translater.add_argument("--src_root", required=True, help="the dir of kernel source")
+    generate_translater.add_argument("--target", help="the target config file, like: <dist>/<file_name>")
+    generate_translater.add_argument("layout", help="the kconfig layout file")
+    generate_translater.set_defaults(func=GenerateTranslater.do_translate)
 
     mover = subparsers.add_parser("move", description="move configs to new level")
     mover.add_argument("--old", default="UNKNOWN", help="the config's old level dir, default is UNKNOWN")
+    mover.add_argument("--dist", required=True, help="the dist")
+    mover.add_argument("--top_dir", required=True, help="the top dir to store configs")
     mover.add_argument("config_name", nargs="+", help="the config name")
     mover.add_argument("new_level", help="the new level")
     mover.set_defaults(func=Mover.do_move)
 
-    generator = subparsers.add_parser('export', description="export to excel format")
-    generator.add_argument("--input_dir", required=True, help="the top dir of splited configs")
-    generator.add_argument("--output", required=True, help="the output name")
-    generator.add_argument("sort_refs", nargs="+", help="the config file used for sorting reference")
-    generator.set_defaults(func=Exporter.do_export)
+    exporter = subparsers.add_parser('export', description="export to excel format")
+    exporter.add_argument("files", nargs="+", help="the config files")
+    exporter.add_argument("--output", required=True, help="the output name")
+    exporter.add_argument("--level_info", required=True, help="the level info")
+    exporter.set_defaults(func=Exporter.do_export)
 
     args = parser.parse_args()
     args.func(args)

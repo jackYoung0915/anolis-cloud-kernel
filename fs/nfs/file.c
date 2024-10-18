@@ -31,6 +31,7 @@
 #include <linux/swap.h>
 
 #include <linux/uaccess.h>
+#include <linux/sched/mm.h>
 
 #include "delegation.h"
 #include "internal.h"
@@ -428,8 +429,13 @@ static int nfs_release_page(struct page *page, gfp_t gfp)
 	dfprintk(PAGECACHE, "NFS: release_page(%p)\n", page);
 
 	/* If PagePrivate() is set, then the page is not freeable */
-	if (PagePrivate(page))
-		return 0;
+	if (PagePrivate(page)) {
+		if ((current_gfp_context(gfp) & GFP_KERNEL) != GFP_KERNEL ||
+		    current_is_kswapd())
+			return 0;
+		if (nfs_wb_page(page_file_mapping(page)->host, page) < 0)
+			return 0;
+	}
 	return nfs_fscache_release_page(page, gfp);
 }
 
@@ -487,8 +493,9 @@ static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
 {
 	unsigned long blocks;
 	long long isize;
-	struct rpc_clnt *clnt = NFS_CLIENT(file->f_mapping->host);
-	struct inode *inode = file->f_mapping->host;
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
 
 	spin_lock(&inode->i_lock);
 	blocks = inode->i_blocks;
@@ -501,14 +508,22 @@ static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
 
 	*span = sis->pages;
 
+
+	if (cl->rpc_ops->enable_swap)
+		cl->rpc_ops->enable_swap(inode);
+
 	return rpc_clnt_swap_activate(clnt);
 }
 
 static void nfs_swap_deactivate(struct file *file)
 {
-	struct rpc_clnt *clnt = NFS_CLIENT(file->f_mapping->host);
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
 
 	rpc_clnt_swap_deactivate(clnt);
+	if (cl->rpc_ops->disable_swap)
+		cl->rpc_ops->disable_swap(file_inode(file));
 }
 
 const struct address_space_operations nfs_file_aops = {

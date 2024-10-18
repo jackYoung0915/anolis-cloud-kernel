@@ -84,25 +84,33 @@ static inline void __activate_traps_fpsimd32(struct kvm_vcpu *vcpu)
 
 static inline void  __activate_traps_mpam(struct kvm_vcpu *vcpu)
 {
-	u64 r = MPAM_SYSREG_TRAP_MPAM0_EL1 | MPAM_SYSREG_TRAP_MPAM1_EL1;
+	u64 r;
 
-	if (!mpam_cpus_have_feature() || !static_branch_likely(&mpam_enabled))
+	if (!IS_ENABLED(CONFIG_ARM64_MPAM) || !mpam_cpus_have_feature() ||
+	    !static_branch_likely(&mpam_enabled))
 		return;
 
 	/* trap guest access to MPAMIDR_EL1 */
 	if (mpam_cpus_have_mpam_hcr()) {
-		write_sysreg_s(MPAMHCR_TRAP_MPAMIDR, SYS_MPAMHCR_EL2);
+		/*
+		 * If MPAM virtualization is enabled, only trap guest access to
+		 * MPAMIDR_EL1.
+		 */
+		r = MPAMHCR_EL0_VPMEN | MPAMHCR_EL1_VPMEN;
+		r |= MPAMHCR_TRAP_MPAMIDR;
+		write_sysreg_s(r, SYS_MPAMHCR_EL2);
 	} else {
 		/* From v1.1 TIDR can trap MPAMIDR, set it unconditionally */
+		r = MPAM_SYSREG_TRAP_MPAM0_EL1 | MPAM_SYSREG_TRAP_MPAM1_EL1;
 		r |= MPAM_SYSREG_TRAP_IDR;
+		write_sysreg_s(r, SYS_MPAM2_EL2);
 	}
-
-	write_sysreg_s(r, SYS_MPAM2_EL2);
 }
 
 static inline void __deactivate_traps_mpam(void)
 {
-	if (!mpam_cpus_have_feature() || !static_branch_likely(&mpam_enabled))
+	if (!IS_ENABLED(CONFIG_ARM64_MPAM) || !mpam_cpus_have_feature() ||
+	    !static_branch_likely(&mpam_enabled))
 		return;
 
 	write_sysreg_s(0, SYS_MPAM2_EL2);

@@ -39,6 +39,9 @@
 /** Maximum of max_pages received in init_out */
 #define FUSE_MAX_MAX_PAGES 1024
 
+/** Maximum number of outstanding background requests */
+#define FUSE_DEFAULT_MAX_BACKGROUND 12
+
 /** Bias for fi->writectr, meaning new writepages must not be sent */
 #define FUSE_NOWRITE INT_MIN
 
@@ -46,7 +49,18 @@
 #define FUSE_NAME_MAX 1024
 
 /** Number of dentries for each connection in the control filesystem */
-#define FUSE_CTL_NUM_DENTRIES 11
+#define FUSE_CTL_NUM_DENTRIES 14
+
+#define FUSE_QUOTA_PER_BGQUEUE	2
+#define FUSE_BG_HASH_BITS	7
+#define FUSE_BG_HASH_SIZE	(1 << FUSE_BG_HASH_BITS)
+#define FUSE_BG_HASH_MASK	(FUSE_BG_HASH_SIZE - 1)
+
+enum fuse_bgqueue_type {
+	FUSE_BG_DEFAULT,	/* Opcodes other than FUSE_WRITE */
+	FUSE_BG_WRITE,
+	FUSE_BG_TYPES
+};
 
 /** List of active connections */
 extern struct list_head fuse_conn_list;
@@ -181,6 +195,10 @@ struct fuse_inode {
 	 */
 	struct fuse_inode_dax *dax;
 #endif
+
+#define FUSE_BG_INDEX_NONE	(-1)
+	int bg_queue_index[FUSE_BG_TYPES];
+	unsigned int bg_queue_active[FUSE_BG_TYPES];
 };
 
 /** FUSE inode state bits */
@@ -303,9 +321,14 @@ struct fuse_args {
 	bool page_zeroing:1;
 	bool page_replace:1;
 	bool may_block:1;
+	bool is_pinned:1;
+	bool invalidate_vmap:1;
 	struct fuse_in_arg in_args[3];
 	struct fuse_arg out_args[2];
 	void (*end)(struct fuse_mount *fm, struct fuse_args *args, int error);
+	struct fuse_inode *fi;
+	/* Used for kvec iter backed by vmalloc address */
+	void *vmap_base;
 };
 
 struct fuse_args_pages {
@@ -370,6 +393,7 @@ enum fuse_req_flag {
 	FR_FINISHED,
 	FR_PRIVATE,
 	FR_ASYNC,
+	FR_RESERVED_QUOTA,
 };
 
 /**
@@ -419,6 +443,8 @@ struct fuse_req {
 
 	/** fuse_mount this request belongs to */
 	struct fuse_mount *fm;
+
+	unsigned int bg_queue_index;
 };
 
 struct fuse_iqueue;
@@ -433,22 +459,19 @@ struct fuse_iqueue;
  */
 struct fuse_iqueue_ops {
 	/**
-	 * Signal that a forget has been queued
+	 * Send one forget
 	 */
-	void (*wake_forget_and_unlock)(struct fuse_iqueue *fiq)
-		__releases(fiq->lock);
+	void (*send_forget)(struct fuse_iqueue *fiq, struct fuse_forget_link *link);
 
 	/**
-	 * Signal that an INTERRUPT request has been queued
+	 * Send interrupt for request
 	 */
-	void (*wake_interrupt_and_unlock)(struct fuse_iqueue *fiq)
-		__releases(fiq->lock);
+	void (*send_interrupt)(struct fuse_iqueue *fiq, struct fuse_req *req);
 
 	/**
-	 * Signal that a request has been queued
+	 * Send one request
 	 */
-	void (*wake_pending_and_unlock)(struct fuse_iqueue *fiq)
-		__releases(fiq->lock);
+	void (*send_req)(struct fuse_iqueue *fiq, struct fuse_req *req);
 
 	/**
 	 * Clean up when fuse_iqueue is destroyed
@@ -544,6 +567,7 @@ struct fuse_fs_context {
 	unsigned int rootmode;
 	kuid_t user_id;
 	kgid_t group_id;
+	kuid_t rescue_uid;
 	bool is_bdev:1;
 	bool fd_present:1;
 	bool tag_present:1;
@@ -556,6 +580,7 @@ struct fuse_fs_context {
 	bool no_control:1;
 	bool no_force_umount:1;
 	bool legacy_opts_show:1;
+	bool rescue_uid_present:1;
 	enum fuse_dax_mode dax_mode;
 	unsigned int max_read;
 	unsigned int blksize;
@@ -574,6 +599,36 @@ struct fuse_fs_context {
 struct fuse_stats {
 	atomic64_t req_time[FUSE_OP_MAX];
 	atomic64_t req_cnts[FUSE_OP_MAX];
+};
+
+struct fuse_bg_queue {
+	struct list_head	queue;
+	unsigned int		active;
+	unsigned int		pending;
+};
+
+/* Separate background queue for background requests. */
+struct fuse_bg_table {
+	/* The list of background requests */
+	struct fuse_bg_queue bg_queue[FUSE_BG_HASH_SIZE];
+
+	/* Number of background requests */
+	unsigned int active_background;
+
+	/* The next background queue to use the shared quota */
+	unsigned int next_queue_index;
+
+	/* Maximum number of background requests */
+	unsigned int max_background;
+
+	/* Maximum number of reserved quota for each background queue */
+	unsigned int reserved_background;
+
+	/* Total size of inflight background requests in pages */
+	unsigned int active_background_pages;
+
+	/* Maximum total size of outstanding background requests in pages */
+	unsigned int max_background_pages;
 };
 
 /**
@@ -601,6 +656,9 @@ struct fuse_conn {
 	/** The group id for this mount */
 	kgid_t group_id;
 
+	/* The expected user id of the fuse server */
+	kuid_t rescue_uid;
+
 	/** The pid namespace for this mount */
 	struct pid_namespace *pid_ns;
 
@@ -612,6 +670,9 @@ struct fuse_conn {
 
 	/** Maximum write size */
 	unsigned max_write;
+
+	/* Maxmum number of pages that write request should be aligned with */
+	unsigned int write_align_pages;
 
 	/** Maxmum number of pages that can be used in a single request */
 	unsigned int max_pages;
@@ -642,6 +703,9 @@ struct fuse_conn {
 
 	/** The list of background requests set aside for later queuing */
 	struct list_head bg_queue;
+
+	/* The separate background queue when FUSE_SEPARATE_BACKGROUND enabled */
+	struct fuse_bg_table bg_table[FUSE_BG_TYPES];
 
 	/** Protects: max_background, congestion_threshold, num_background,
 	 * active_background, bg_queue, blocked */
@@ -840,13 +904,28 @@ struct fuse_conn {
 	/* Relax restrictions to allow shared mmap in FOPEN_DIRECT_IO mode */
 	unsigned int direct_io_allow_mmap:1;
 
+	/* separate background queue for WRITE requests and the others */
+	unsigned int separate_background:1;
+
+	/** Support for fuse server recovery */
+	unsigned int recovery:1;
+
+	/* Is rescue_uid specified? */
+	unsigned int rescue_uid_present:1;
+
+	/* write reques is aligned on max_write boundary */
+	unsigned int write_alignment:1;
+
+	/* Use pages instead of pointer for kernel I/O */
+	unsigned int kvec_pages:1;
+
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;
 
 	/** Negotiated minor version */
 	unsigned minor;
 
-	/** Entry on the fuse_mount_list */
+	/** Entry on the fuse_conn_list */
 	struct list_head entry;
 
 	/** Device ID from the root super block */
@@ -986,7 +1065,6 @@ static inline bool fuse_stale_inode(const struct inode *inode, int generation,
 
 static inline void fuse_make_bad(struct inode *inode)
 {
-	remove_inode_hash(inode);
 	set_bit(FUSE_I_BAD, &get_fuse_inode(inode)->state);
 }
 
@@ -1065,14 +1143,6 @@ void fuse_queue_forget(struct fuse_conn *fc, struct fuse_forget_link *forget,
 		       u64 nodeid, u64 nlookup);
 
 struct fuse_forget_link *fuse_alloc_forget(void);
-
-struct fuse_forget_link *fuse_dequeue_forget(struct fuse_iqueue *fiq,
-					     unsigned int max,
-					     unsigned int *countp);
-/**
- * Send FUSE_INIT command
- */
-void fuse_queue_init(struct fuse_iqueue *fiq, struct fuse_req *req);
 
 /*
  * Initialize READ or READDIR request
@@ -1221,11 +1291,6 @@ void fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
  * Release reference to fuse_conn
  */
 void fuse_conn_put(struct fuse_conn *fc);
-
-/**
- * Acquire reference to fuse_mount
- */
-struct fuse_mount *fuse_mount_get(struct fuse_mount *fm);
 
 /**
  * Release reference to fuse_mount

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0
+
+menuconfig USING_FPU_IN_KERNEL_NONATOMIC
+	bool "Hygon large memory copy support"
+
+if USING_FPU_IN_KERNEL_NONATOMIC
+
+choice
+	prompt "X86_HYGON_LMC"
+	depends on X86_64 && CPU_SUP_HYGON
+	default X86_HYGON_LMC_SSE2_ON
+
+config X86_HYGON_LMC_SSE2_ON
+	bool "Using sse2 nt copy for large memory copy"
+	help
+	  When this feature is enabled, we will using copy_user_sse2_nt_string
+	  for lagre memory copy.
+
+config X86_HYGON_LMC_AVX2_ON
+	bool "Using avx2 nt copy for large memory copy"
+	help
+	  When this feature is enabled, we will using copy_user_avx2_nt_string
+	  for lagre memory copy.
+
+endchoice
+endif

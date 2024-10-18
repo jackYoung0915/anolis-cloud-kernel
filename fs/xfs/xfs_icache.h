@@ -15,16 +15,8 @@ struct xfs_eofblocks {
 	kgid_t		eof_gid;
 	prid_t		eof_prid;
 	__u64		eof_min_file_size;
+	int		icw_scan_limit;
 };
-
-/*
- * tags for inode radix tree
- */
-#define XFS_ICI_NO_TAG		(-1)	/* special flag for an untagged lookup
-					   in xfs_inode_walk */
-#define XFS_ICI_RECLAIM_TAG	0	/* inode is to be reclaimed */
-#define XFS_ICI_EOFBLOCKS_TAG	1	/* inode has blocks beyond EOF */
-#define XFS_ICI_COWBLOCKS_TAG	2	/* inode can have cow blocks to gc */
 
 /*
  * Flags for xfs_iget()
@@ -33,11 +25,6 @@ struct xfs_eofblocks {
 #define XFS_IGET_UNTRUSTED	0x2
 #define XFS_IGET_DONTCACHE	0x4
 #define XFS_IGET_INCORE		0x8	/* don't read from disk or reinit */
-
-/*
- * flags for AG inode iterator
- */
-#define XFS_INODE_WALK_INEW_WAIT	0x1	/* wait on new inodes */
 
 int xfs_iget(struct xfs_mount *mp, struct xfs_trans *tp, xfs_ino_t ino,
 	     uint flags, uint lock_flags, xfs_inode_t **ipp);
@@ -52,30 +39,42 @@ void xfs_reclaim_inodes(struct xfs_mount *mp);
 int xfs_reclaim_inodes_count(struct xfs_mount *mp);
 long xfs_reclaim_inodes_nr(struct xfs_mount *mp, int nr_to_scan);
 
-void xfs_inode_set_reclaim_tag(struct xfs_inode *ip);
+void xfs_inode_mark_reclaimable(struct xfs_inode *ip);
+
+int xfs_blockgc_free_dquots(struct xfs_mount *mp, struct xfs_dquot *udqp,
+		struct xfs_dquot *gdqp, struct xfs_dquot *pdqp,
+		unsigned int eof_flags);
+int xfs_blockgc_free_quota(struct xfs_inode *ip, unsigned int eof_flags);
+int xfs_blockgc_free_space(struct xfs_mount *mp, struct xfs_eofblocks *eofb);
+void xfs_blockgc_flush_all(struct xfs_mount *mp);
 
 void xfs_inode_set_eofblocks_tag(struct xfs_inode *ip);
 void xfs_inode_clear_eofblocks_tag(struct xfs_inode *ip);
-int xfs_icache_free_eofblocks(struct xfs_mount *, struct xfs_eofblocks *);
-int xfs_inode_free_quota_eofblocks(struct xfs_inode *ip);
-void xfs_eofblocks_worker(struct work_struct *);
-void xfs_queue_eofblocks(struct xfs_mount *);
 
 void xfs_inode_set_cowblocks_tag(struct xfs_inode *ip);
 void xfs_inode_clear_cowblocks_tag(struct xfs_inode *ip);
-int xfs_icache_free_cowblocks(struct xfs_mount *, struct xfs_eofblocks *);
-int xfs_inode_free_quota_cowblocks(struct xfs_inode *ip);
-void xfs_cowblocks_worker(struct work_struct *);
-void xfs_queue_cowblocks(struct xfs_mount *);
 
-int xfs_inode_walk(struct xfs_mount *mp, int iter_flags,
-	int (*execute)(struct xfs_inode *ip, void *args),
-	void *args, int tag);
+void xfs_inodegc_inactivate(struct xfs_inode *ip);
+void xfs_blockgc_worker(struct work_struct *work);
+
+#ifdef CONFIG_XFS_QUOTA
+int xfs_dqrele_all_inodes(struct xfs_mount *mp, unsigned int qflags);
+#else
+# define xfs_dqrele_all_inodes(mp, qflags)	(0)
+#endif
 
 int xfs_icache_inode_is_allocated(struct xfs_mount *mp, struct xfs_trans *tp,
 				  xfs_ino_t ino, bool *inuse);
 
-void xfs_stop_block_reaping(struct xfs_mount *mp);
-void xfs_start_block_reaping(struct xfs_mount *mp);
+void xfs_blockgc_stop(struct xfs_mount *mp);
+void xfs_blockgc_start(struct xfs_mount *mp);
+
+void xfs_inodegc_reflink_opt_worker(struct work_struct *work);
+void xfs_inodegc_worker(struct work_struct *work);
+void xfs_inodegc_flush(struct xfs_mount *mp);
+void xfs_inodegc_stop(struct xfs_mount *mp);
+void xfs_inodegc_start(struct xfs_mount *mp);
+void xfs_inodegc_cpu_dead(struct xfs_mount *mp, unsigned int cpu);
+int xfs_inodegc_register_shrinker(struct xfs_mount *mp);
 
 #endif

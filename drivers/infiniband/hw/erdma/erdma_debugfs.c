@@ -62,7 +62,7 @@ static ssize_t cap_read(struct file *filp, char __user *buf, size_t count,
 {
 	struct erdma_cmdq_query_ext_attr_resp resp;
 	struct erdma_dev *dev;
-	char cbuf[40];
+	char cbuf[20];
 	int ret;
 
 	dev = filp->private_data;

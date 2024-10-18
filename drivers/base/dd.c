@@ -884,6 +884,11 @@ static int __device_attach_driver(struct device_driver *drv, void *_data)
 		dev_dbg(dev, "Device match requests probe deferral\n");
 		dev->can_match = true;
 		driver_deferred_probe_add(dev);
+		/*
+		 * Device can't match with a driver right now, so don't attempt
+		 * to match or bind with other drivers on the bus.
+		 */
+		return ret;
 	} else if (ret < 0) {
 		dev_dbg(dev, "Bus failed to match device: %d\n", ret);
 		return ret;
@@ -1101,6 +1106,7 @@ static void __driver_attach_async_helper(void *_dev, async_cookie_t cookie)
 static int __driver_attach(struct device *dev, void *data)
 {
 	struct device_driver *drv = data;
+	bool async = false;
 	int ret;
 
 	/*
@@ -1121,9 +1127,18 @@ static int __driver_attach(struct device *dev, void *data)
 		dev_dbg(dev, "Device match requests probe deferral\n");
 		dev->can_match = true;
 		driver_deferred_probe_add(dev);
+		/*
+		 * Driver could not match with device, but may match with
+		 * another device on the bus.
+		 */
+		return 0;
 	} else if (ret < 0) {
 		dev_dbg(dev, "Bus failed to match device: %d\n", ret);
-		return ret;
+		/*
+		 * Driver could not match with device, but may match with
+		 * another device on the bus.
+		 */
+		return 0;
 	} /* ret > 0 means positive match */
 
 	if (driver_allows_async_probing(drv)) {
@@ -1139,9 +1154,11 @@ static int __driver_attach(struct device *dev, void *data)
 		if (!dev->driver) {
 			get_device(dev);
 			dev->p->async_driver = drv;
-			async_schedule_dev(__driver_attach_async_helper, dev);
+			async = true;
 		}
 		device_unlock(dev);
+		if (async)
+			async_schedule_dev(__driver_attach_async_helper, dev);
 		return 0;
 	}
 
@@ -1213,8 +1230,6 @@ static void __device_release_driver(struct device *dev, struct device *parent)
 		else if (drv->remove)
 			drv->remove(dev);
 
-		device_links_driver_cleanup(dev);
-
 		devres_release_all(dev);
 		arch_teardown_dma_ops(dev);
 		kfree(dev->dma_range_map);
@@ -1225,6 +1240,8 @@ static void __device_release_driver(struct device *dev, struct device *parent)
 			dev->pm_domain->dismiss(dev);
 		pm_runtime_reinit(dev);
 		dev_pm_set_driver_flags(dev, 0);
+
+		device_links_driver_cleanup(dev);
 
 		klist_remove(&dev->p->knode_driver);
 		device_pm_check_callbacks(dev);

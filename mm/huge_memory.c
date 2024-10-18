@@ -345,6 +345,8 @@ static ssize_t hugetext_enabled_show(struct kobject *kobj,
 		val |= 0x01;
 	if (test_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG, &transparent_hugepage_flags))
 		val |= 0x02;
+	if (test_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG, &transparent_hugepage_flags))
+		val |= 0x04;
 
 	return sprintf(buf, "%d\n", val);
 }
@@ -359,7 +361,11 @@ static ssize_t hugetext_enabled_store(struct kobject *kobj,
 		return -EINVAL;
 
 	ret = kstrtoul(buf, 0, &val);
-	if (ret < 0 || val > 3)
+	if (ret < 0 || val > 7)
+		return -EINVAL;
+
+	/* FILE_TEXT_DIRECT depends on FILE_TEXT_ENABLED */
+	if ((val & 0x4) && !(val & 0x1))
 		return -EINVAL;
 
 	ret = count;
@@ -375,6 +381,13 @@ static ssize_t hugetext_enabled_store(struct kobject *kobj,
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
+			  &transparent_hugepage_flags);
+
+	if (val & 0x04)
+		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
+			  &transparent_hugepage_flags);
+	else
+		clear_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 			  &transparent_hugepage_flags);
 
 	if (ret > 0) {
@@ -739,8 +752,14 @@ static int __init setup_hugetext(char *str)
 		goto out;
 
 	err = kstrtoul(str, 0, &val);
-	if (err < 0 || val > 3)
+	if (err < 0 || val > 7)
 		goto out;
+
+	/* FILE_TEXT_DIRECT depends on FILE_TEXT_ENABLED */
+	if ((val & 0x4) && !(val & 0x1)) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	if (val & 0x01)
 		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_ENABLED_FLAG,
@@ -754,6 +773,13 @@ static int __init setup_hugetext(char *str)
 			  &transparent_hugepage_flags);
 	else
 		clear_bit(TRANSPARENT_HUGEPAGE_ANON_TEXT_ENABLED_FLAG,
+			  &transparent_hugepage_flags);
+
+	if (val & 0x04)
+		set_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
+			  &transparent_hugepage_flags);
+	else
+		clear_bit(TRANSPARENT_HUGEPAGE_FILE_TEXT_DIRECT_FLAG,
 			  &transparent_hugepage_flags);
 
 out:
@@ -2008,7 +2034,7 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
 
 			VM_BUG_ON(!is_pmd_migration_entry(orig_pmd));
 			entry = pmd_to_swp_entry(orig_pmd);
-			page = pfn_to_page(swp_offset(entry));
+			page = migration_entry_to_page(entry);
 			flush_needed = 0;
 		} else
 			WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
@@ -2311,7 +2337,7 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 {
 	struct mm_struct *mm = vma->vm_mm;
 	pgtable_t pgtable;
-	pmd_t _pmd;
+	pmd_t _pmd, old_pmd;
 	int i;
 
 	/*
@@ -2322,7 +2348,7 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 	 *
 	 * See Documentation/vm/mmu_notifier.rst
 	 */
-	pmdp_huge_clear_flush(vma, haddr, pmd);
+	old_pmd = pmdp_huge_clear_flush(vma, haddr, pmd);
 
 	pgtable = pgtable_trans_huge_withdraw(mm, pmd);
 	pmd_populate(mm, &_pmd, pgtable);
@@ -2331,6 +2357,8 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 		pte_t *pte, entry;
 		entry = pfn_pte(my_zero_pfn(haddr), vma->vm_page_prot);
 		entry = pte_mkspecial(entry);
+		if (pmd_uffd_wp(old_pmd))
+			entry = pte_mkuffd_wp(entry);
 		pte = pte_offset_map(&_pmd, haddr);
 		VM_BUG_ON(!pte_none(*pte));
 		set_pte_at(mm, haddr, pte, entry);
@@ -2427,7 +2455,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		swp_entry_t entry;
 
 		entry = pmd_to_swp_entry(old_pmd);
-		page = pfn_to_page(swp_offset(entry));
+		page = migration_entry_to_page(entry);
 		write = is_write_migration_entry(entry);
 		young = false;
 		soft_dirty = pmd_swp_soft_dirty(old_pmd);
@@ -2996,10 +3024,16 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 	struct address_space *mapping = NULL;
 	int extra_pins, ret;
 	pgoff_t end;
+	bool is_hzp;
 
-	VM_BUG_ON_PAGE(is_huge_zero_page(head), head);
 	VM_BUG_ON_PAGE(!PageLocked(head), head);
 	VM_BUG_ON_PAGE(!PageCompound(head), head);
+
+	is_hzp = is_huge_zero_page(head);
+	if (is_hzp) {
+		pr_warn_ratelimited("Called split_huge_page for huge zero page\n");
+		return -EBUSY;
+	}
 
 #ifdef CONFIG_MEMCG
 	tr_del_hugepage(page);
@@ -3159,6 +3193,9 @@ void deferred_split_huge_page(struct page *page)
 	 * swap cache before calling try_to_unmap().
 	 */
 	if (PageSwapCache(page))
+		return;
+
+	if (!list_empty(page_deferred_list(page)))
 		return;
 
 	spin_lock_irqsave(&ds_queue->split_queue_lock, flags);

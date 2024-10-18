@@ -3,8 +3,10 @@
 #define _ASM_SW64_HW_INIT_H
 #include <linux/numa.h>
 #include <linux/jump_label.h>
+#include <linux/cpumask.h>
 
-#define MMSIZE		__va(0x2040)
+#define MM_SIZE		__va(0x2040)
+#define VPCR_SHIFT	44
 
 /*
  * Descriptor for a cache
@@ -89,16 +91,24 @@ static inline void update_cpu_freq(unsigned long khz)
 }
 
 #define EMUL_FLAG	(0x1UL << 63)
-#define MMSIZE_MASK	(EMUL_FLAG - 1)
+#define MM_SIZE_MASK	(EMUL_FLAG - 1)
 
 DECLARE_STATIC_KEY_TRUE(run_mode_host_key);
 DECLARE_STATIC_KEY_FALSE(run_mode_guest_key);
 DECLARE_STATIC_KEY_FALSE(run_mode_emul_key);
 
+DECLARE_STATIC_KEY_FALSE(hw_una_enabled);
+DECLARE_STATIC_KEY_FALSE(junzhang_v1_key);
+DECLARE_STATIC_KEY_FALSE(junzhang_v2_key);
+DECLARE_STATIC_KEY_FALSE(junzhang_v3_key);
+
 #define is_in_host()		static_branch_likely(&run_mode_host_key)
 #define is_in_guest()		static_branch_unlikely(&run_mode_guest_key)
 #define is_in_emul()		static_branch_unlikely(&run_mode_emul_key)
 #define is_guest_or_emul()	!static_branch_likely(&run_mode_host_key)
+#define is_junzhang_v1()	static_branch_unlikely(&junzhang_v1_key)
+#define is_junzhang_v2()	static_branch_likely(&junzhang_v2_key)
+#define is_junzhang_v3()	static_branch_unlikely(&junzhang_v3_key)
 
 #define CPU_SW3231		0x31
 #define CPU_SW831		0x32

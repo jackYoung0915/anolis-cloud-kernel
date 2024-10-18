@@ -99,4 +99,5 @@
 #define PPC_CMM_MAGIC		0xc7571590
 #define SECRETMEM_MAGIC		0x5345434d	/* "SECM" */
 
+#define GROUP_BALANCER_MAGIC	0x26262626
 #endif /* __LINUX_MAGIC_H__ */

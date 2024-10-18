@@ -103,7 +103,7 @@ static int __dma_page_copy_sg(struct scatterlist *src, struct scatterlist *dst,
 			err = -EIO;
 			goto unmap_sg;
 		}
-		status = dma_async_is_tx_complete(dma_copy_chan, cookie);
+		status = dma_async_is_tx_complete(dma_copy_chan, cookie, NULL, NULL);
 		if (status != DMA_COMPLETE)
 			err = -EIO;
 	}

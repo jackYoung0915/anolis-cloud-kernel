@@ -78,10 +78,10 @@ enum {
 #define IPPROTO_ETHERNET	IPPROTO_ETHERNET
   IPPROTO_RAW = 255,		/* Raw IP packets			*/
 #define IPPROTO_RAW		IPPROTO_RAW
+	IPPROTO_SMC = 256,	/* Shared Memory Communications */
+#define IPPROTO_SMC		IPPROTO_SMC
   IPPROTO_MPTCP = 262,		/* Multipath TCP connection		*/
 #define IPPROTO_MPTCP		IPPROTO_MPTCP
-	IPPROTO_SMC = 263,		/* Shared Memory Communications */
-#define IPPROTO_SMC		IPPROTO_SMC
   IPPROTO_MAX
 };
 #endif
@@ -193,11 +193,22 @@ struct ip_mreq_source {
 };
 
 struct ip_msfilter {
-	__be32		imsf_multiaddr;
-	__be32		imsf_interface;
-	__u32		imsf_fmode;
-	__u32		imsf_numsrc;
-	__be32		imsf_slist[1];
+	union {
+		struct {
+			__be32		imsf_multiaddr_aux;
+			__be32		imsf_interface_aux;
+			__u32		imsf_fmode_aux;
+			__u32		imsf_numsrc_aux;
+			__be32		imsf_slist[1];
+		};
+		struct {
+			__be32		imsf_multiaddr;
+			__be32		imsf_interface;
+			__u32		imsf_fmode;
+			__u32		imsf_numsrc;
+			__be32		imsf_slist_flex[];
+		};
+	};
 };
 
 #define IP_MSFILTER_SIZE(numsrc) \
@@ -216,11 +227,22 @@ struct group_source_req {
 };
 
 struct group_filter {
-	__u32				 gf_interface;	/* interface index */
-	struct __kernel_sockaddr_storage gf_group;	/* multicast address */
-	__u32				 gf_fmode;	/* filter mode */
-	__u32				 gf_numsrc;	/* number of sources */
-	struct __kernel_sockaddr_storage gf_slist[1];	/* interface index */
+	union {
+		struct {
+			__u32				 gf_interface_aux; /* interface index */
+			struct __kernel_sockaddr_storage gf_group_aux;	   /* multicast address */
+			__u32				 gf_fmode_aux;	   /* filter mode */
+			__u32				 gf_numsrc_aux;	   /* number of sources */
+			struct __kernel_sockaddr_storage gf_slist[1];	   /* interface index */
+		};
+		struct {
+			__u32				 gf_interface;	  /* interface index */
+			struct __kernel_sockaddr_storage gf_group;	  /* multicast address */
+			__u32				 gf_fmode;	  /* filter mode */
+			__u32				 gf_numsrc;	  /* number of sources */
+			struct __kernel_sockaddr_storage gf_slist_flex[]; /* interface index */
+		};
+	};
 };
 
 #define GROUP_FILTER_SIZE(numsrc) \

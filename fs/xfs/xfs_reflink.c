@@ -344,37 +344,14 @@ xfs_find_trim_cow_extent(
 	return 0;
 }
 
-struct xfs_rmap_info {
-	bool			found;		/* output */
-	uint64_t		owner;		/* intput */
-	xfs_agblock_t		startblock;	/* input */;
-	struct xfs_rmap_irec	rec;		/* output */
-};
-
-STATIC int
-xfs_reflink_query_rmap_owner_helper(
-	struct xfs_btree_cur	*cur,
-	struct xfs_rmap_irec	*rec,
-	void			*priv)
-{
-	struct xfs_rmap_info *info = priv;
-
-	if ((rec->rm_owner != info->owner) &&
-	    (info->startblock >= rec->rm_startblock) &&
-	    (info->startblock < (rec->rm_startblock + rec->rm_blockcount))) {
-		info->rec = *rec;
-		info->found = true;
-		return -ECANCELED;
-	}
-	return 0;
-}
-
+#ifdef CONFIG_FS_DAX
 STATIC int
 xfs_reflink_unshare_range(
-	struct xfs_mount	*mp,
+	struct xfs_inode	*src,
 	struct xfs_bmbt_irec	*oimap,
-	struct xfs_rmap_irec	*rmap)
+	bool			*secondary_evicting)
 {
+	struct xfs_mount	*mp = src->i_mount;
 	struct xfs_inode	*ip;
 	xfs_fileoff_t		offset_fsb = oimap->br_startoff;
 	xfs_filblks_t		count_fsb = oimap->br_blockcount;
@@ -387,9 +364,14 @@ xfs_reflink_unshare_range(
 	struct xfs_bmbt_irec	imap = *oimap;
 	struct xfs_bmbt_irec	cmap;
 
-	error = xfs_iget(mp, NULL, rmap->rm_owner, 0, 0, &ip);
-	if (error < 0)
-		return error;
+	mutex_lock(&mp->m_reflink_opt_lock);
+	ip = src->i_reflink_opt_ip;
+	if (!ip || !igrab(VFS_I(ip))) {
+		mutex_unlock(&mp->m_reflink_opt_lock);
+		*secondary_evicting = true;
+		return 0;
+	}
+	mutex_unlock(&mp->m_reflink_opt_lock);
 
 	xfs_ilock(ip, lockmode);
 	xfs_flush_unmap_range(ip, XFS_FSB_TO_B(mp, imap.br_startoff),
@@ -430,8 +412,7 @@ xfs_reflink_unshare_range(
 		goto convert;
 	}
 
-	error = xfs_trans_reserve_quota_nblks(tp, ip, resblks, 0,
-			XFS_QMOPT_RES_REGBLKS);
+	error = xfs_trans_reserve_quota_nblks(tp, ip, resblks, 0, false);
 	if (error)
 		goto out_trans_cancel;
 
@@ -442,7 +423,7 @@ xfs_reflink_unshare_range(
 	error = xfs_bmapi_write(tp, ip, imap.br_startoff, imap.br_blockcount,
 			XFS_BMAPI_COWFORK | XFS_BMAPI_ZERO, resblks, &cmap, &nimaps);
 	if (error)
-		goto out_unreserve;
+		goto out_trans_cancel;
 
 	xfs_inode_set_cowblocks_tag(ip);
 	error = xfs_trans_commit(tp);
@@ -476,9 +457,6 @@ convert:
 	xfs_irele(ip);
 	return error;
 
-out_unreserve:
-	xfs_trans_unreserve_quota_nblks(tp, ip, (long)resblks, 0,
-			XFS_QMOPT_RES_REGBLKS);
 out_trans_cancel:
 	xfs_trans_cancel(tp);
 
@@ -487,81 +465,16 @@ error:
 	xfs_irele(ip);
 	return error;
 }
-
+#else
 STATIC int
-xfs_reflink_query_rmap_owner(
-	struct xfs_inode	*ip,
-	struct xfs_mount	*mp,
-	struct xfs_bmbt_irec	*imap,
-	struct xfs_rmap_info	*info)
+xfs_reflink_unshare_range(
+	struct xfs_inode	*src,
+	struct xfs_bmbt_irec	*oimap,
+	bool			*secondary_evicting)
 {
-	struct xfs_trans	*tp = NULL;
-	struct xfs_btree_cur	*cur = NULL;
-	struct xfs_rmap_irec	rmap_low, rmap_high;
-	struct xfs_buf		*agf_bp = NULL;
-	xfs_fsblock_t		fsbno = imap->br_startblock;
-	xfs_filblks_t		bcnt = imap->br_blockcount;
-	xfs_agnumber_t		agno = XFS_FSB_TO_AGNO(mp, fsbno);
-	xfs_agblock_t		agbno = XFS_FSB_TO_AGBNO(mp, fsbno);
-	int			error = 0;
-
-	error = xfs_trans_alloc_empty(mp, &tp);
-	if (error)
-		return error;
-
-	error = xfs_alloc_read_agf(mp, tp, agno, 0, &agf_bp);
-	if (error)
-		goto out_cancel_tp;
-
-	cur = xfs_rmapbt_init_cursor(mp, tp, agf_bp, agno);
-
-	/* Construct a range for rmap query */
-	memset(&rmap_low, 0, sizeof(rmap_low));
-	memset(&rmap_high, 0xFF, sizeof(rmap_high));
-	rmap_low.rm_startblock = rmap_high.rm_startblock = agbno;
-	rmap_low.rm_blockcount = rmap_high.rm_blockcount = bcnt;
-
-	error = xfs_rmap_query_range(cur, &rmap_low, &rmap_high,
-			xfs_reflink_query_rmap_owner_helper, info);
-	if (error == -ECANCELED)
-		error = 0;
-
-	xfs_btree_del_cursor(cur, error);
-	xfs_trans_brelse(tp, agf_bp);
-
-out_cancel_tp:
-	xfs_trans_cancel(tp);
-	return error;
-}
-
-STATIC int
-xfs_reflink_unshare_other_owners(
-	struct xfs_inode	*ip,
-	struct xfs_mount	*mp,
-	struct xfs_bmbt_irec	*imap)
-{
-	int			error;
-	struct xfs_rmap_info	info;
-	int i = 0;
-
-	do {
-		info.found = false;
-		info.owner = ip->i_ino;
-		info.startblock = XFS_FSB_TO_AGBNO(mp, imap->br_startblock);
-		error = xfs_reflink_query_rmap_owner(ip, mp, imap, &info);
-		if (error < 0 || !info.found)
-			return error;
-
-		xfs_reflink_unshare_range(mp, imap, &info.rec);
-		/*
-		 * FIXME: 64 is chosen as limition intentionally, in case there
-		 * are too many snapshot files, unshare operations here will take
-		 * too much time, needs a better solution.
-		 */
-	} while (++i <= 64);
-
 	return 0;
 }
+#endif
 
 /* Allocate all CoW reservations covering a range of blocks in a file. */
 int
@@ -579,6 +492,7 @@ xfs_reflink_allocate_cow(
 	struct xfs_trans	*tp;
 	int			nimaps, error = 0;
 	bool			found;
+	bool			secondary_evicting = false;
 	xfs_filblks_t		resaligned;
 	xfs_extlen_t		resblks = 0;
 
@@ -599,20 +513,24 @@ xfs_reflink_allocate_cow(
 	resblks = XFS_DIOSTRAT_SPACE_RES(mp, resaligned);
 
 	xfs_iunlock(ip, *lockmode);
+	*lockmode = 0;
 
-	if (ip->i_reflink_flags & XFS_REFLINK_PRIMARY)
-		xfs_reflink_unshare_other_owners(ip, mp, imap);
+	if (ip->i_reflink_flags & XFS_REFLINK_PRIMARY) {
+		error = xfs_reflink_unshare_range(ip, imap,
+					&secondary_evicting);
+		if (error) {
+			xfs_warn(mp, "failed to unshare secondary range @ ino %llu",
+				 ip->i_ino);
+		}
+		ASSERT(xfs_isilocked(ip, XFS_MMAPLOCK_SHARED));
+	}
 
-	error = xfs_trans_alloc(mp, &M_RES(mp)->tr_write, resblks, 0, 0, &tp);
-	*lockmode = XFS_ILOCK_EXCL;
-	xfs_ilock(ip, *lockmode);
-
+	error = xfs_trans_alloc_inode(ip, &M_RES(mp)->tr_write, resblks, 0,
+			false, &tp);
 	if (error)
 		return error;
 
-	error = xfs_qm_dqattach_locked(ip, false);
-	if (error)
-		goto out_trans_cancel;
+	*lockmode = XFS_ILOCK_EXCL;
 
 	/*
 	 * Check for an overlapping extent again now that we dropped the ilock.
@@ -625,12 +543,16 @@ xfs_reflink_allocate_cow(
 		goto convert;
 	}
 
-	error = xfs_trans_reserve_quota_nblks(tp, ip, resblks, 0,
-			XFS_QMOPT_RES_REGBLKS);
-	if (error)
+	if (secondary_evicting) {
+		/*
+		 * It's impossible to have another reflink here (racing with
+		 * FICLONE) since ip takes XFS_MMAPLOCK_SHARED lock and FICLONE
+		 * needs XFS_MMAPLOCK_EXEC.
+		 */
+		ASSERT(xfs_isilocked(ip, XFS_MMAPLOCK_SHARED));
+		*shared = false;
 		goto out_trans_cancel;
-
-	xfs_trans_ijoin(tp, ip, 0);
+	}
 
 	/* Allocate the entire reservation as unwritten blocks. */
 	nimaps = 1;
@@ -638,7 +560,7 @@ xfs_reflink_allocate_cow(
 			XFS_BMAPI_COWFORK | XFS_BMAPI_PREALLOC, 0, cmap,
 			&nimaps);
 	if (error)
-		goto out_unreserve;
+		goto out_trans_cancel;
 
 	xfs_inode_set_cowblocks_tag(ip);
 	error = xfs_trans_commit(tp);
@@ -666,9 +588,6 @@ convert:
 		cmap->br_state = XFS_EXT_NORM;
 	return error;
 
-out_unreserve:
-	xfs_trans_unreserve_quota_nblks(tp, ip, (long)resblks, 0,
-			XFS_QMOPT_RES_REGBLKS);
 out_trans_cancel:
 	xfs_trans_cancel(tp);
 	return error;
@@ -741,9 +660,8 @@ xfs_reflink_cancel_cow_blocks(
 			xfs_bmap_del_extent_cow(ip, &icur, &got, &del);
 
 			/* Remove the quota reservation */
-			error = xfs_trans_reserve_quota_nblks(NULL, ip,
-					-(long)del.br_blockcount, 0,
-					XFS_QMOPT_RES_REGBLKS);
+			error = xfs_quota_unreserve_blkres(ip,
+					del.br_blockcount);
 			if (error)
 				break;
 		} else {
@@ -1242,21 +1160,45 @@ xfs_reflink_remap_extent(
 	struct xfs_mount	*mp = ip->i_mount;
 	struct xfs_trans	*tp;
 	xfs_off_t		newlen;
-	int64_t			qres, qdelta;
+	int64_t			qdelta = 0;
 	unsigned int		resblks;
+	bool			quota_reserved = true;
 	bool			smap_real;
 	bool			dmap_written = xfs_bmap_is_written_extent(dmap);
 	int			nimaps;
 	int			error;
 
-	/* Start a rolling transaction to switch the mappings */
+	/*
+	 * Start a rolling transaction to switch the mappings.
+	 *
+	 * Adding a written extent to the extent map can cause a bmbt split,
+	 * and removing a mapped extent from the extent can cause a bmbt split.
+	 * The two operations cannot both cause a split since they operate on
+	 * the same index in the bmap btree, so we only need a reservation for
+	 * one bmbt split if either thing is happening.  However, we haven't
+	 * locked the inode yet, so we reserve assuming this is the case.
+	 *
+	 * The first allocation call tries to reserve enough space to handle
+	 * mapping dmap into a sparse part of the file plus the bmbt split.  We
+	 * haven't locked the inode or read the existing mapping yet, so we do
+	 * not know for sure that we need the space.  This should succeed most
+	 * of the time.
+	 *
+	 * If the first attempt fails, try again but reserving only enough
+	 * space to handle a bmbt split.  This is the hard minimum requirement,
+	 * and we revisit quota reservations later when we know more about what
+	 * we're remapping.
+	 */
 	resblks = XFS_EXTENTADD_SPACE_RES(mp, XFS_DATA_FORK);
-	error = xfs_trans_alloc(mp, &M_RES(mp)->tr_write, resblks, 0, 0, &tp);
+	error = xfs_trans_alloc_inode(ip, &M_RES(mp)->tr_write,
+			resblks + dmap->br_blockcount, 0, false, &tp);
+	if (error == -EDQUOT || error == -ENOSPC) {
+		quota_reserved = false;
+		error = xfs_trans_alloc_inode(ip, &M_RES(mp)->tr_write,
+				resblks, 0, false, &tp);
+	}
 	if (error)
 		goto out;
-
-	xfs_ilock(ip, XFS_ILOCK_EXCL);
-	xfs_trans_ijoin(tp, ip, 0);
 
 	/*
 	 * Read what's currently mapped in the destination file into smap.
@@ -1305,14 +1247,8 @@ xfs_reflink_remap_extent(
 	}
 
 	/*
-	 * Compute quota reservation if we think the quota block counter for
+	 * Increase quota reservation if we think the quota block counter for
 	 * this file could increase.
-	 *
-	 * Adding a written extent to the extent map can cause a bmbt split,
-	 * and removing a mapped extent from the extent can cause a bmbt split.
-	 * The two operations cannot both cause a split since they operate on
-	 * the same index in the bmap btree, so we only need a reservation for
-	 * one bmbt split if either thing is happening.
 	 *
 	 * If we are mapping a written extent into the file, we need to have
 	 * enough quota block count reservation to handle the blocks in that
@@ -1326,15 +1262,15 @@ xfs_reflink_remap_extent(
 	 * count.  This is suboptimal, but the VFS flushed the dest range
 	 * before we started.  That should have removed all the delalloc
 	 * reservations, but we code defensively.
+	 *
+	 * xfs_trans_alloc_inode above already tried to grab an even larger
+	 * quota reservation, and kicked off a blockgc scan if it couldn't.
+	 * If we can't get a potentially smaller quota reservation now, we're
+	 * done.
 	 */
-	qres = qdelta = 0;
-	if (smap_real || dmap_written)
-		qres = XFS_EXTENTADD_SPACE_RES(mp, XFS_DATA_FORK);
-	if (!smap_real && dmap_written)
-		qres += dmap->br_blockcount;
-	if (qres > 0) {
-		error = xfs_trans_reserve_quota_nblks(tp, ip, qres, 0,
-				XFS_QMOPT_RES_REGBLKS);
+	if (!quota_reserved && !smap_real && dmap_written) {
+		error = xfs_trans_reserve_quota_nblks(tp, ip,
+				dmap->br_blockcount, 0, false);
 		if (error)
 			goto out_cancel;
 	}
@@ -1551,6 +1487,18 @@ xfs_reflink_remap_prep(
 	/* Don't share DAX file data with non-DAX file. */
 	if (IS_DAX(inode_in) != IS_DAX(inode_out))
 		goto out_unlock;
+
+	if (src->i_reflink_flags & XFS_REFLINK_PRIMARY) {
+		if (!(dest->i_reflink_flags & XFS_REFLINK_SECONDARY))
+			goto out_unlock;
+		if (pos_in != pos_out)
+			goto out_unlock;
+		if (src->i_reflink_opt_ip || dest->i_reflink_opt_ip) {
+			xfs_warn(src->i_mount,
+				 "src(XFS_REFLINK_PRIMARY) and/or dest(XFS_REFLINK_SECONDARY) is already paired with FICLONE");
+			goto out_unlock;
+		}
+	}
 
 	/*
 	 * For inodes flagged with XFS_REFLINK_{PRIMARY, SECONDARY},

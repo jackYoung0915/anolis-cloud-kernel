@@ -101,9 +101,10 @@ struct dev_pagemap_ops {
 	 * When this is not implemented, or it returns -EOPNOTSUPP, the caller
 	 * will fall back to a common handler called mf_generic_kill_procs().
 	 */
-	CK_KABI_USE(1,
-		int (*memory_failure)(struct dev_pagemap *pgmap, unsigned long pfn,
-			      unsigned long nr_pages, int mf_flags));
+	int (*memory_failure)(struct dev_pagemap *pgmap, unsigned long pfn,
+			      unsigned long nr_pages, int mf_flags);
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 };
 

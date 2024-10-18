@@ -19,7 +19,8 @@
 
 /* ld/ldx fields */
 #define BPF_DW		0x18	/* double word (64-bit) */
-#define BPF_XADD	0xc0	/* exclusive add */
+#define BPF_ATOMIC	0xc0	/* atomic memory ops - op type in immediate */
+#define BPF_XADD	0xc0	/* exclusive add - legacy name */
 
 /* alu/jmp fields */
 #define BPF_MOV		0xb0	/* mov reg to reg */
@@ -42,6 +43,11 @@
 #define BPF_JSLE	0xd0	/* SLE is signed, '<=' */
 #define BPF_CALL	0x80	/* function call */
 #define BPF_EXIT	0x90	/* function return */
+
+/* atomic op type fields (stored in immediate) */
+#define BPF_FETCH	0x01	/* not an opcode on its own, used to build others */
+#define BPF_XCHG	(0xe0 | BPF_FETCH)	/* atomic exchange */
+#define BPF_CMPXCHG	(0xf0 | BPF_FETCH)	/* atomic compare-and-write */
 
 /* Register numbers */
 enum {
@@ -1546,7 +1552,8 @@ union bpf_attr {
  * 		Pull in non-linear data in case the *skb* is non-linear and not
  * 		all of *len* are part of the linear section. Make *len* bytes
  * 		from *skb* readable and writable. If a zero value is passed for
- * 		*len*, then the whole length of the *skb* is pulled.
+ *		*len*, then all bytes in the linear part of *skb* will be made
+ *		readable and writable.
  *
  * 		This helper is only needed for reading and writing with direct
  * 		packet access.
@@ -2465,7 +2472,7 @@ union bpf_attr {
  *		running simultaneously.
  *
  *		A user should care about the synchronization by himself.
- *		For example, by using the **BPF_STX_XADD** instruction to alter
+ *		For example, by using the **BPF_ATOMIC** instructions to alter
  *		the shared data.
  *	Return
  *		A pointer to the local storage area.
@@ -3445,6 +3452,8 @@ union bpf_attr {
  * long bpf_get_task_stack(struct task_struct *task, void *buf, u32 size, u64 flags)
  *	Description
  *		Return a user or a kernel stack in bpf program provided buffer.
+ *		Note: the user stack will only be populated if the *task* is
+ *		the current task; all other tasks will return -EOPNOTSUPP.
  *		To achieve this, the helper needs *task*, which is a valid
  *		pointer to **struct task_struct**. To store the stacktrace, the
  *		bpf program provides *buf* with a nonnegative *size*.
@@ -3456,6 +3465,7 @@ union bpf_attr {
  *
  *		**BPF_F_USER_STACK**
  *			Collect a user space stack instead of a kernel stack.
+ *			The *task* must be the current task.
  *		**BPF_F_USER_BUILD_ID**
  *			Collect buildid+offset instead of ips for user stack,
  *			only valid if **BPF_F_USER_STACK** is also specified.
@@ -5491,6 +5501,8 @@ enum {
 					 * socket transition to LISTEN state.
 					 */
 	BPF_SOCK_OPS_RTT_CB,		/* Called on every RTT.
+					 * Arg1: measured RTT input (mrtt)
+					 * Arg2: updated srtt
 					 */
 	BPF_SOCK_OPS_PARSE_HDR_OPT_CB,	/* Parse the header option.
 					 * It will be called to handle
@@ -5800,6 +5812,10 @@ struct bpf_line_info {
 struct bpf_spin_lock {
 	__u32	val;
 };
+
+struct bpf_timer {
+	__u64 __opaque[2];
+} __attribute__((aligned(8)));
 
 struct bpf_sysctl {
 	__u32	write;		/* Sysctl is being read (= 0) or written (= 1).

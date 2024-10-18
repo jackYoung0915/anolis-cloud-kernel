@@ -21,6 +21,8 @@
 #define PCI_DEVICE_ID_IOHUB_BLOCK_1	0x1001
 #define PCI_DEVICE_ID_IOHUB_NETWORK_2	0x5002
 #define PCI_DEVICE_ID_IOHUB_BLOCK_2	0x5003
+#define PCI_DEVICE_ID_IOHUB_NVME	0x5004
+#define PCI_DEVICE_ID_IOHUB_ERDMA	0x5007
 
 static int
 xdragon_sriov_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
@@ -105,6 +107,18 @@ static struct pci_device_id xdragon_pci_ids[] = {
 	{
 		.vendor =	PCI_VENDOR_ID_ALIBABA,
 		.device =	PCI_DEVICE_ID_IOHUB_BLOCK_2,
+		.subvendor = PCI_ANY_ID,
+		.subdevice = PCI_ANY_ID,
+	},
+	{
+		.vendor =	PCI_VENDOR_ID_ALIBABA,
+		.device =	PCI_DEVICE_ID_IOHUB_NVME,
+		.subvendor = PCI_ANY_ID,
+		.subdevice = PCI_ANY_ID,
+	},
+	{
+		.vendor =	PCI_VENDOR_ID_ALIBABA,
+		.device =	PCI_DEVICE_ID_IOHUB_ERDMA,
 		.subvendor = PCI_ANY_ID,
 		.subdevice = PCI_ANY_ID,
 	},

@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: BSD-3-Clause
+/*
  * Copyright (c) 2022 HYGON Corporation . All rights reserved.
  * Author: Ge Yang <yangge@hygon.cn>
  */
@@ -23,16 +24,30 @@
 #include <linux/ctype.h>
 #include <linux/file.h>
 #include <linux/pagemap.h>
-#include <linux/mdev.h>
 #include <linux/pci.h>
 #include <linux/kfifo.h>
 #include <linux/eventfd.h>
+#include <linux/mem_encrypt.h>
+#if IS_ENABLED(CONFIG_VFIO_MDEV)
+#include <linux/mdev.h>
+#endif
+
+/**
+ * VERSION_STRING modification instructions:
+ * 0.1 -- support hct/mdev mode.
+ * 0.2 -- supoort qemu virtualization.
+ * 0.3 -- support host-noiommu mode memory encryption function,
+ *        and performance optimization in virtual machines (enable caching).
+ * 0.4 -- support compiling hct.ko when mdev module is disabled.
+ * 0.5 -- change the maximum number of supported ccps from 16 to 48.
+ */
 
 #undef  pr_fmt
 #define pr_fmt(fmt)				"hct: " fmt
 
-#define VERSION_STRING				"0.1"
+#define VERSION_STRING				"0.5"
 #define DRIVER_AUTHOR				"HYGON Corporation"
+#define VERSION_SIZE				16
 
 #define MCCP_CLASS_NAME				"hct"
 #define MCCP_NAME				"hct"
@@ -51,8 +66,16 @@
 #define MCCP_SHARE_IOC_TYPE			'C'
 #define MCCP_SHARE_OP				0x01
 #define MCCP_SHARE_OP_DMA_MAP			0x01
-#define MCCP_SHARE_OP_DMA_UNMAP			0x02
+#define MCCP_SHARE_OP_DMA_UNMAP_ALL		0x02
 #define MCCP_SHARE_OP_GET_ID			0x03
+#define MCCP_SHARE_OP_GET_PASID			0x04
+#define MCCP_SHARE_OP_DMA_UNMAP			0x05
+#define MCCP_SHARE_OP_GET_VERSION		0x06
+
+#define MCCP_NOIOMMU_IOC_TYPE			MCCP_SHARE_IOC_TYPE
+#define MCCP_NOIOMMU_OP				MCCP_SHARE_OP
+#define MCCP_NOIOMMU_SET_MEMORY_WB		0x01
+#define MCCP_NOIOMMU_GET_SME_ACTIVE		0x02
 
 #define MCCP_SHARE_IOMMU_MAGIC			0x3d6a9c5728633b9e
 
@@ -62,17 +85,18 @@
 /* fixed iova range for ccp dma. */
 #define MCCP_DMA_IOVA_OFFSET			0
 #define MCCP_DMA_IOVA_SIZE			(1ul << 30)
-/* maximum pages allowded to be locked */
-#define MCCP_DMA_LOCKED_LIMIT                   0x20000ul
 
 #define MCCP_INSTANCE_MAX			1024
 #define MCCP_INSTANCE_OFFSET			8
 #define MCCP_INSTANCE_MASK			(~((1u << MCCP_INSTANCE_OFFSET) - 1))
-#define CCP_IOVA_MAX_SLOT			1024
-#define MCCP_DEV_MAX				16
+#define MCCP_PASID_SIZE                         (1 << 8)
+#define MCCP_IOVA_MAX_SLOT			1024
+#define MCCP_DEV_MAX				48
 #define MCCP_DEV_QUEUE_MAX			8
+#define MCCP_DEV_QUEUE                          5
 #define MCCP_QUEUES_MAX				(MCCP_DEV_MAX * MCCP_DEV_QUEUE_MAX)
 #define MCCP_QUEUE_NEED_INIT			0x01
+#define MCCP_SHARED_SIZE                        (MCCP_DEV_MAX * PAGE_SIZE)
 
 #define MCCP_MSIX_ENTRY_SIZE                    2
 #define MCCP_NTB_VECTOR_NUM                     1
@@ -101,25 +125,31 @@
 #define PHY_ADDR_MASK                           0x7FFFFFFFFFFF
 
 struct hct_shared_cfg {
-	unsigned int iova_slot[CCP_IOVA_MAX_SLOT];
+	unsigned int iova_slot[MCCP_IOVA_MAX_SLOT];
 	unsigned int ccp_queue_state[MCCP_QUEUES_MAX];
 	unsigned int ccps_ref[MCCP_DEV_MAX];
 	unsigned int ccps_ref_lock;
-	int rsvd1[15];
+	int rsvd[15];
 	u64 qidx[MCCP_QUEUES_MAX];
 	unsigned int ccp_state[MCCP_DEV_MAX];
-} __attribute__((__aligned__(PAGE_SIZE)));
+} __aligned(PAGE_SIZE);
 
 struct hct_dev_ctrl {
 	unsigned char op;
 	unsigned char rsvd[3];
 	union {
+		unsigned char version[VERSION_SIZE];
+		unsigned int id;
+		unsigned long sme_mask;
 		struct {
 			unsigned long vaddr;
 			unsigned long iova;
 			unsigned long size;
 		};
-		unsigned int id;
+		struct {
+			unsigned long vt_addr;
+			unsigned int nr_pages;
+		};
 	};
 };
 
@@ -130,8 +160,10 @@ struct hct_dma {
 	size_t size;
 	struct page **pages;
 	unsigned long npages;
+	unsigned int pfnmap_flag;
 };
 
+/* record the register address related to interrupt */
 struct hct_cmd_queue {
 	void __iomem *reg_control;
 	void __iomem *reg_tail_lo;
@@ -148,7 +180,7 @@ struct hct_dev_ctx {
 	struct hct_cmd_queue cmd_q[MCCP_DEV_QUEUE_MAX];
 	struct tasklet_struct irq_tasklet;
 	char devname[MCCP_STRING_LEN];
-	void __iomem *io_regs;
+	void __iomem *io_regs; /* for BAR2 memory address */
 	u32 q_count;
 	int irq;
 } ____cacheline_aligned;
@@ -162,6 +194,7 @@ struct hct_iommu {
 	unsigned long ref;
 };
 
+#if IS_ENABLED(CONFIG_VFIO_MDEV)
 static struct hct_data {
 	struct hct_iommu iommu[MCCP_DEV_MAX];
 	struct mutex lock;
@@ -178,6 +211,8 @@ static struct hct_data {
 static struct hct_share_cfg {
 	long ref;
 	struct mutex lock;
+	struct page *pages[MCCP_DEV_MAX];
+	u64 pagecount;
 	void *vaddr;
 	u64 size;
 } hct_share;
@@ -239,6 +274,7 @@ static void hct_cmd_queue_intr_task(unsigned long data)
 		status = ioread32(cmd_q->reg_interrupt_status);
 		if (status) {
 			if (status & INT_ERROR) {
+				/* print interrupt numbers for debug */
 				ioread32(cmd_q->reg_int_status);
 				err = ioread32(cmd_q->reg_status);
 				pr_err("Irq fail, errcode = %d.\n", MCMD_Q_ERROR(err));
@@ -293,6 +329,7 @@ static int hct_dev_cmd_queue_init(struct pci_dev *pdev, struct hct_dev_ctx *dev_
 
 	snprintf(dev_ctx->devname, MCCP_STRING_LEN, "hct-ccp-%d", idx);
 	dev_ctx->irq = pci_irq_vector(pdev, retval - 1);
+	/* The fourth parameter dev_name must be global variable or static variable. */
 	ret = request_irq(dev_ctx->irq, hct_cmd_queue_intr_handler, 0, dev_ctx->devname, dev_ctx);
 	if (ret) {
 		pci_free_irq_vectors(pdev);
@@ -303,6 +340,10 @@ static int hct_dev_cmd_queue_init(struct pci_dev *pdev, struct hct_dev_ctx *dev_
 	tasklet_init(&dev_ctx->irq_tasklet, hct_cmd_queue_intr_task, (unsigned long)dev_ctx);
 
 	qmr = ioread32(dev_ctx->io_regs + Q_MASK_REG);
+	if (qmr == 0) {
+		iowrite32(0x1f, dev_ctx->io_regs + Q_MASK_REG);
+		qmr = ioread32(dev_ctx->io_regs + Q_MASK_REG);
+	}
 	for (i = 0; i < MCCP_DEV_QUEUE_MAX; i++) {
 		if (!(qmr & (1 << i)))
 			continue;
@@ -568,44 +609,38 @@ static int hct_reset(struct mdev_device *mdev)
 }
 
 static ssize_t hct_read(struct mdev_device *mdev, char __user *buf,
-			 size_t count, loff_t *ppos)
+			size_t count, loff_t *ppos)
 {
 	unsigned int done = 0;
 	int ret;
+	u32 val;
+	size_t filled;
 
 	while (count) {
-		size_t filled;
-
 		if (count >= 4 && !(*ppos % 4)) {
-			u32 val;
-
-			ret =  hct_access(mdev, (u8 *)&val, sizeof(val), *ppos, false);
+			ret = hct_access(mdev, (u8 *)&val, sizeof(u32), *ppos, false);
 			if (ret <= 0)
 				goto read_err;
 
-			if (copy_to_user(buf, &val, sizeof(val)))
+			if (copy_to_user(buf, &val, sizeof(u32)))
 				goto read_err;
 
 			filled = 4;
 		} else if (count >= 2 && !(*ppos % 2)) {
-			u16 val;
-
-			ret = hct_access(mdev, (u8 *)&val, sizeof(val), *ppos, false);
+			ret = hct_access(mdev, (u8 *)&val, sizeof(u16), *ppos, false);
 			if (ret <= 0)
 				goto read_err;
 
-			if (copy_to_user(buf, &val, sizeof(val)))
+			if (copy_to_user(buf, &val, sizeof(u16)))
 				goto read_err;
 
 			filled = 2;
 		} else {
-			u8 val;
-
-			ret = hct_access(mdev, (u8 *)&val, sizeof(val), *ppos, false);
+			ret = hct_access(mdev, (u8 *)&val, sizeof(u8), *ppos, false);
 			if (ret <= 0)
 				goto read_err;
 
-			if (copy_to_user(buf, &val, sizeof(val)))
+			if (copy_to_user(buf, &val, sizeof(u8)))
 				goto read_err;
 
 			filled = 1;
@@ -628,6 +663,8 @@ static ssize_t hct_write(struct mdev_device *mdev, const char __user *buf,
 {
 	unsigned int done = 0;
 	int ret;
+	u64 val;
+	u8 idx;
 
 	while (count) {
 		size_t filled;
@@ -636,14 +673,13 @@ static ssize_t hct_write(struct mdev_device *mdev, const char __user *buf,
 			struct mdev_state *mdev_state;
 			struct hct_dev_ctx *dev_ctx;
 			struct hct_cmd_queue *cmd_q;
-			u64 val;
-			u8 idx;
+
 
 			mdev_state = mdev_get_drvdata(mdev);
 			if (!mdev_state)
 				goto write_err;
 
-			if (copy_from_user(&val, buf, sizeof(val)) ||
+			if (copy_from_user(&val, buf, sizeof(u64)) ||
 					val >= MCCP_DEV_QUEUE_MAX ||
 					val < mdev_state->efd_start)
 				goto write_err;
@@ -659,34 +695,28 @@ static ssize_t hct_write(struct mdev_device *mdev, const char __user *buf,
 
 			filled = MCCP_DEV_ID_SIZE;
 		} else if (count >= 4 && !(*ppos % 4)) {
-			u32 val;
-
-			if (copy_from_user(&val, buf, sizeof(val)))
+			if (copy_from_user(&val, buf, sizeof(u32)))
 				goto write_err;
 
-			ret = hct_access(mdev, (u8 *)&val, sizeof(val), *ppos, true);
+			ret = hct_access(mdev, (u8 *)&val, sizeof(u32), *ppos, true);
 			if (ret <= 0)
 				goto write_err;
 
 			filled = 4;
 		} else if (count >= 2 && !(*ppos % 2)) {
-			u16 val;
-
-			if (copy_from_user(&val, buf, sizeof(val)))
+			if (copy_from_user(&val, buf, sizeof(u16)))
 				goto write_err;
 
-			ret = hct_access(mdev, (u8 *)&val, sizeof(val), *ppos, true);
+			ret = hct_access(mdev, (u8 *)&val, sizeof(u16), *ppos, true);
 			if (ret <= 0)
 				goto write_err;
 
 			filled = 2;
 		} else {
-			u8 val;
-
-			if (copy_from_user(&val, buf, sizeof(val)))
+			if (copy_from_user(&val, buf, sizeof(u8)))
 				goto write_err;
 
-			ret = hct_access(mdev, (u8 *)&val, sizeof(val), *ppos, true);
+			ret = hct_access(mdev, (u8 *)&val, sizeof(u8), *ppos, true);
 			if (ret <= 0)
 				goto write_err;
 
@@ -789,6 +819,7 @@ static int hct_get_device_info(struct mdev_device *mdev,
 	return 0;
 }
 
+/* each ccp vq corresponding to one eventfd */
 static int hct_set_irq_efds(struct mdev_device *mdev,
 			struct vfio_irq_set *hdr,
 			void *data)
@@ -1176,24 +1207,23 @@ static int hct_mmap(struct mdev_device *mdev, struct vm_area_struct *vma)
 }
 
 static const struct mdev_parent_ops hct_mdev_fops = {
-	.owner = THIS_MODULE,
-	.dev_attr_groups = hct_dev_groups,
-	.mdev_attr_groups = hct_mdev_groups,
-	.supported_type_groups = hct_type_groups,
-	.create = hct_create,
-	.remove = hct_remove,
-	.open = hct_open,
-	.release = hct_close,
-	.read = hct_read,
-	.write = hct_write,
-	.ioctl = hct_ioctl,
-	.mmap = hct_mmap,
+	.owner			= THIS_MODULE,
+	.dev_attr_groups	= hct_dev_groups,
+	.mdev_attr_groups	= hct_mdev_groups,
+	.supported_type_groups	= hct_type_groups,
+	.create			= hct_create,
+	.remove			= hct_remove,
+	.open			= hct_open,
+	.release		= hct_close,
+	.read			= hct_read,
+	.write			= hct_write,
+	.ioctl			= hct_ioctl,
+	.mmap			= hct_mmap,
 };
 
 struct hct_private {
 	struct list_head head;
 	struct mutex lock;
-	unsigned long pages_locked;
 	unsigned int id;
 };
 
@@ -1208,7 +1238,6 @@ static int hct_share_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 
 	mutex_lock(&hct_data.lock);
-	bitmap_set(hct_data.ids, 0, 1);
 	id = (unsigned int)find_first_zero_bit(hct_data.ids, MCCP_INSTANCE_MAX);
 	if (id < MCCP_INSTANCE_MAX)
 		bitmap_set(hct_data.ids, id, 1);
@@ -1219,14 +1248,94 @@ static int hct_share_open(struct inode *inode, struct file *file)
 		return -EBUSY;
 	}
 
-	private->id = id << MCCP_INSTANCE_OFFSET;
 	mutex_lock(&hct_share.lock);
 	hct_share.ref++;
+	hct_share.pagecount = MCCP_DEV_MAX;
 	mutex_unlock(&hct_share.lock);
 
 	file->private_data = private;
+	/*
+	 * At user space, each process is assigned a different number
+	 * which cannot be 0, as the identifier for the process.
+	 * The number is assigned by id, so the value of id needs to
+	 * start from 1, and cannot be 0.
+	 */
+	private->id = (++id) << MCCP_INSTANCE_OFFSET;
 	INIT_LIST_HEAD(&private->head);
 	mutex_init(&private->lock);
+
+	return ret;
+}
+
+static bool is_invalid_reserved_pfn(unsigned long pfn)
+{
+	if (pfn_valid(pfn))
+		return PageReserved(pfn_to_page(pfn));
+
+	return true;
+}
+
+static int follow_fault_pfn(struct vm_area_struct *vma, struct mm_struct *mm,
+				unsigned long vaddr, unsigned long *pfn,
+				bool write_fault)
+{
+	int ret;
+
+	ret = follow_pfn(vma, vaddr, pfn);
+	if (ret) {
+		bool unlocked = false;
+
+		ret = fixup_user_fault(mm, vaddr,
+					FAULT_FLAG_REMOTE |
+					(write_fault ?  FAULT_FLAG_WRITE : 0),
+					&unlocked);
+		if (unlocked)
+			return -EAGAIN;
+
+		if (ret)
+			return ret;
+
+		ret = follow_pfn(vma, vaddr, pfn);
+	}
+
+	return ret;
+}
+
+static int vaddr_get_pfn(struct mm_struct *mm, unsigned long vaddr,
+			 int prot, unsigned long *pfn)
+{
+	struct page *page[1];
+	struct vm_area_struct *vma;
+	unsigned int flags = 0;
+	int ret;
+
+	if (prot & IOMMU_WRITE)
+		flags |= FOLL_WRITE;
+
+	mmap_read_lock(mm);
+	ret = pin_user_pages_remote(mm, vaddr, 1, flags | FOLL_LONGTERM,
+				    page, NULL, NULL);
+	if (ret == 1) {
+		*pfn = page_to_pfn(page[0]);
+		ret = 0;
+		goto done;
+	}
+
+	vaddr = untagged_addr(vaddr);
+
+retry:
+	vma = find_vma_intersection(mm, vaddr, vaddr + 1);
+
+	if (vma && vma->vm_flags & VM_PFNMAP) {
+		ret = follow_fault_pfn(vma, mm, vaddr, pfn, prot & IOMMU_WRITE);
+		if (ret == -EAGAIN)
+			goto retry;
+
+		if (!ret && !is_invalid_reserved_pfn(*pfn))
+			ret = -EFAULT;
+	}
+done:
+	mmap_read_unlock(mm);
 
 	return ret;
 }
@@ -1236,7 +1345,6 @@ struct page **hct_pin_memory(struct hct_private *private, unsigned long uaddr,
 {
 	unsigned long npages, size;
 	int npinned;
-	unsigned long locked;
 	struct page **pages;
 	unsigned long first, last;
 
@@ -1246,13 +1354,6 @@ struct page **hct_pin_memory(struct hct_private *private, unsigned long uaddr,
 	first = (uaddr & PAGE_MASK) >> PAGE_SHIFT;
 	last = ((uaddr + ulen - 1) & PAGE_MASK) >> PAGE_SHIFT;
 	npages = (last - first + 1);
-
-	locked = private->pages_locked + npages;
-	if (locked > MCCP_DMA_LOCKED_LIMIT && !capable(CAP_IPC_LOCK)) {
-		pr_err("%lu locked pages exceed the lock limit of %lu.\n",
-				locked, MCCP_DMA_LOCKED_LIMIT);
-		return NULL;
-	}
 
 	if (WARN_ON_ONCE(npages > INT_MAX))
 		return NULL;
@@ -1268,19 +1369,15 @@ struct page **hct_pin_memory(struct hct_private *private, unsigned long uaddr,
 
 	/* Pin the user virtual address. */
 	npinned = pin_user_pages_fast(uaddr, npages, FOLL_WRITE, pages);
-	if (npinned != npages) {
-		pr_err("Failure locking %lu pages.\n", npages);
+	if (npinned != npages)
 		goto err;
-	}
 
 	*n = npages;
-	private->pages_locked = locked;
 	return pages;
 
 err:
 	if (npinned > 0)
 		unpin_user_pages(pages, npinned);
-
 	kvfree(pages);
 	return NULL;
 }
@@ -1290,7 +1387,6 @@ static void hct_unpin_memory(struct hct_private *private, struct page **pages,
 {
 	unpin_user_pages(pages, npages);
 	kvfree(pages);
-	private->pages_locked -= npages;
 }
 
 static inline int is_dma_share(dma_addr_t dma_iova, size_t dma_size)
@@ -1358,8 +1454,8 @@ static int hct_iommu_iova_check_unsafe(dma_addr_t dma_iova, size_t dma_size,
 		phys = iommu_iova_to_phys(domain, iova);
 		if (phys) {
 			if ((phys_addr & PHY_ADDR_MASK) != (phys & PHY_ADDR_MASK)) {
-				pr_err("phy addr check failed, phys_addr=0x%llx, phys=0x%llx\n",
-					phys_addr, phys);
+				pr_err("iova=0x%llx phys_addr=0x%llx phys=0x%llx, check fail.\n",
+							iova, phys_addr, phys);
 				ret = -1;
 				break;
 			}
@@ -1436,6 +1532,54 @@ static int map_try_harder(struct iommu_domain *domain, dma_addr_t iova,
 	return ret;
 }
 
+/*
+ * only handle io-memory [vm_flags | VM_PFNMAP == true]
+ */
+static int hct_iommu_pfnmap(struct hct_private *private, struct hct_dma *dma)
+{
+	unsigned long pfn;
+	unsigned long vaddr;
+	dma_addr_t iova;
+	size_t mapped_size = 0;
+	size_t size;
+	int ret = 0;
+
+	if (!private || !dma)
+		return -EINVAL;
+
+	dma->pfnmap_flag = 1;
+	vaddr = dma->vaddr;
+	iova = dma->iova;
+	size = dma->size;
+
+	mutex_lock(&hct_data.lock);
+	while (size) {
+		ret = vaddr_get_pfn(current->mm, vaddr, hct_data.prot, &pfn);
+		if (ret)
+			goto map_fail;
+
+		ret = iommu_map(hct_data.domain, iova,
+				(phys_addr_t)pfn << PAGE_SHIFT,
+				1 << PAGE_SHIFT, hct_data.prot);
+		if (ret)
+			goto map_fail;
+
+		size -= 1 << PAGE_SHIFT;
+		vaddr += 1 << PAGE_SHIFT;
+		iova += 1 << PAGE_SHIFT;
+		mapped_size += 1 << PAGE_SHIFT;
+	}
+	mutex_unlock(&hct_data.lock);
+
+	list_add(&dma->next, &private->head);
+	return 0;
+
+map_fail:
+	mutex_unlock(&hct_data.lock);
+	iommu_unmap(hct_data.domain, dma->iova, mapped_size);
+	return ret;
+}
+
 static int hct_iommu_map(struct hct_private *private, unsigned long vaddr,
 			dma_addr_t dma_iova, size_t dma_size)
 {
@@ -1459,8 +1603,14 @@ static int hct_iommu_map(struct hct_private *private, unsigned long vaddr,
 
 	pages = hct_pin_memory(private, vaddr, dma_size, &n);
 	if (!pages) {
-		ret = -ENOMEM;
-		goto pin_fail;
+		/* We will think the vm_flags includes VM_PFNMAP. */
+		dma->vaddr = vaddr;
+		dma->iova = dma_iova;
+		dma->size = dma_size;
+		ret = hct_iommu_pfnmap(private, dma);
+		if (ret)
+			kfree(dma);
+		return ret;
 	}
 
 	dma->vaddr = vaddr;
@@ -1480,6 +1630,11 @@ static int hct_iommu_map(struct hct_private *private, unsigned long vaddr,
 
 		npages = get_num_contig_pages(i, pages, n);
 
+		/* When the value of npages is 524288, the value of npages * PAGE_SIZE
+		 * will be 0x80000000 (bit31 is 1).
+		 * When the value of npages is not less than 524288, if the type of len is int,
+		 * the len will be a negative value.
+		 */
 		len = min_t(size_t, (npages * PAGE_SIZE), iova_size);
 		phys = page_to_phys(pages[i]);
 
@@ -1521,24 +1676,43 @@ map_fail:
 		iommu_unmap(hct_data.domain, dma_iova, mapped_size);
 	mutex_unlock(&hct_data.lock);
 	hct_unpin_memory(private, pages, n);
-pin_fail:
 	kfree(dma);
 	return ret;
 }
 
-
-void hct_iommu_unmap(struct hct_private *private)
+static void hct_iommu_unmap(struct hct_private *private,
+			dma_addr_t iova, size_t size)
 {
-	struct hct_dma *dma, *tmp;
-	struct iommu_domain *domain;
+	struct iommu_domain *domain = hct_data.domain;
+	struct hct_dma *dma;
 
-	domain = hct_data.domain;
+	if (!size || (iova | size) & (PAGE_SIZE - 1))
+		return;
+
+	dma = hct_find_dma(private, iova, size);
+	if (!dma)
+		return;
+
+	mutex_lock(&hct_data.lock);
+	iommu_unmap(domain, dma->iova, dma->size);
+	if (dma->pfnmap_flag == 0)
+		hct_unpin_memory(private, dma->pages, dma->npages);
+	list_del(&dma->next);
+	kfree(dma);
+	mutex_unlock(&hct_data.lock);
+}
+
+static void hct_iommu_unmap_all(struct hct_private *private)
+{
+	struct iommu_domain *domain = hct_data.domain;
+	struct hct_dma *dma, *tmp;
 
 	mutex_lock(&hct_data.lock);
 	list_for_each_entry_safe(dma, tmp, &private->head, next) {
 		if (hct_unmap_dma_share_unsafe(dma->iova, dma->size))
 			iommu_unmap(domain, dma->iova, dma->size);
-		hct_unpin_memory(private, dma->pages, dma->npages);
+		if (dma->pfnmap_flag == 0)
+			hct_unpin_memory(private, dma->pages, dma->npages);
 		cond_resched();
 		list_del(&dma->next);
 		kfree(dma);
@@ -1546,12 +1720,66 @@ void hct_iommu_unmap(struct hct_private *private)
 	mutex_unlock(&hct_data.lock);
 }
 
-static long hct_share_ioctl(struct file *file, unsigned int ioctl,
-			    unsigned long arg)
+static struct page *hct_get_page(pgoff_t page_idx)
+{
+	u64 *node;
+
+	mutex_lock(&hct_share.lock);
+	if (!hct_share.pages[page_idx]) {
+		hct_share.pages[page_idx] =
+			alloc_pages(GFP_HIGHUSER | __GFP_ZERO, 0);
+		if (!hct_share.pages[page_idx]) {
+			mutex_unlock(&hct_share.lock);
+			return NULL;
+		}
+	}
+	get_page(hct_share.pages[page_idx]);
+
+	node = page_to_virt(hct_share.pages[page_idx]) + PAGE_SIZE - 8;
+	*node = hct_data.iommu[page_idx].pdev->dev.numa_node;
+	mutex_unlock(&hct_share.lock);
+
+	return hct_share.pages[page_idx];
+}
+
+static void hct_put_pages(void)
+{
+	int i;
+
+	for (i = 0; i < hct_share.pagecount; i++) {
+		if (!hct_share.pages[i])
+			continue;
+
+		put_page(hct_share.pages[i]);
+		hct_share.pages[i] = NULL;
+	}
+}
+
+/* Clear status information when exiting abnormally. */
+static void hct_clear_shared_lock_memory(unsigned int gid)
+{
+	int *base;
+	int *queue_lck;
+	int dev_idx;
+	int queue_idx;
+
+	for (dev_idx = 0; dev_idx < MCCP_DEV_MAX &&
+			hct_share.pages[dev_idx]; dev_idx++) {
+		base = (int *)page_to_virt(hct_share.pages[dev_idx]);
+		for (queue_idx = 0; queue_idx < MCCP_DEV_QUEUE; queue_idx++) {
+			queue_lck = base + queue_idx;
+			if (*queue_lck == gid)
+				*queue_lck = 0; /* vq userid will be changed. */
+		}
+	}
+}
+
+static long hct_share_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)
 {
 	struct hct_dev_ctrl dev_ctrl;
 	unsigned int cmd_id;
 	unsigned int len;
+	unsigned int pasid;
 	int ret = 0;
 	struct hct_private *private = file->private_data;
 
@@ -1573,23 +1801,42 @@ static long hct_share_ioctl(struct file *file, unsigned int ioctl,
 	mutex_lock(&private->lock);
 	switch (dev_ctrl.op) {
 	case MCCP_SHARE_OP_DMA_MAP:
-		ret = hct_iommu_map(private, dev_ctrl.vaddr, dev_ctrl.iova,
-				    dev_ctrl.size);
+		ret = hct_iommu_map(private, dev_ctrl.vaddr, dev_ctrl.iova, dev_ctrl.size);
 		break;
 	case MCCP_SHARE_OP_DMA_UNMAP:
-		hct_iommu_unmap(private);
+		hct_iommu_unmap(private, dev_ctrl.iova, dev_ctrl.size);
+		ret = 0;
+		break;
+	case MCCP_SHARE_OP_DMA_UNMAP_ALL:
+		hct_iommu_unmap_all(private);
 		ret = 0;
 		break;
 	case MCCP_SHARE_OP_GET_ID:
 		dev_ctrl.id = private->id;
-		if (copy_to_user((void __user *)arg, &dev_ctrl,
-				 sizeof(dev_ctrl)))
+		if (copy_to_user((void __user *)arg, &dev_ctrl, sizeof(dev_ctrl)))
 			ret = -EINVAL;
 		else
 			ret = 0;
 		break;
+	case MCCP_SHARE_OP_GET_PASID:
+		/* The different virtual machines is distinguished through pasid. */
+		pasid = private->id >> MCCP_INSTANCE_OFFSET;
+		if (pasid >= MCCP_PASID_SIZE) {
+			ret = -EINVAL;
+			break;
+		}
+
+		dev_ctrl.id = pasid;
+		if (copy_to_user((void __user *)arg, &dev_ctrl, sizeof(dev_ctrl)))
+			ret = -EINVAL;
+		break;
+	case MCCP_SHARE_OP_GET_VERSION:
+		memcpy(dev_ctrl.version, VERSION_STRING, sizeof(VERSION_STRING));
+		if (copy_to_user((void __user *)arg, &dev_ctrl, sizeof(dev_ctrl)))
+			ret = -EINVAL;
+		break;
 	default:
-		ret = 0;
+		ret = -EINVAL;
 		break;
 	}
 	mutex_unlock(&private->lock);
@@ -1600,54 +1847,88 @@ static long hct_share_ioctl(struct file *file, unsigned int ioctl,
 static int hct_share_close(struct inode *inode, struct file *file)
 {
 	struct hct_private *private = file->private_data;
-	struct hct_shared_cfg *cfg = hct_share.vaddr;
-	int i = 0;
-	unsigned int id;
-
-	id = private->id >> MCCP_INSTANCE_OFFSET;
+	unsigned int id = private->id >> MCCP_INSTANCE_OFFSET;
 
 	mutex_lock(&hct_share.lock);
+	/* For the vm scenario, the hct_share.vaddr value is NULL. */
+	if (hct_share.vaddr) {
+		struct hct_shared_cfg *cfg = hct_share.vaddr;
+		int i;
 
-	if (private->id == (MCCP_INSTANCE_MASK & cfg->ccps_ref_lock))
-		cfg->ccps_ref_lock = 0;
+		if (private->id == cfg->ccps_ref_lock)
+			cfg->ccps_ref_lock = 0;
 
-	for (i = 0; i < MCCP_DEV_MAX; i++)
-		if (private->id == (MCCP_INSTANCE_MASK & cfg->ccp_state[i]))
-			cfg->ccp_state[i] = 0;
+		for (i = 0; i < MCCP_DEV_MAX; i++)
+			if (private->id == (MCCP_INSTANCE_MASK & cfg->ccp_state[i]))
+				cfg->ccp_state[i] = 0;
 
-	for (i = 0; i < MCCP_QUEUES_MAX; i++)
-		if (private->id == (MCCP_INSTANCE_MASK & cfg->ccp_queue_state[i]))
-			cfg->ccp_queue_state[i] = MCCP_QUEUE_NEED_INIT;
+		for (i = 0; i < MCCP_QUEUES_MAX; i++)
+			if (private->id == cfg->ccp_queue_state[i])
+				cfg->ccp_queue_state[i] = MCCP_QUEUE_NEED_INIT;
 
-	for (i = 0; i < CCP_IOVA_MAX_SLOT; i++)
-		if (private->id == (MCCP_INSTANCE_MASK & cfg->iova_slot[i]))
-			cfg->iova_slot[i] = 0;
+		for (i = 0; i < MCCP_IOVA_MAX_SLOT; i++)
+			if (private->id == cfg->iova_slot[i])
+				cfg->iova_slot[i] = 0;
+	}
+
+	hct_clear_shared_lock_memory(private->id);
 
 	hct_share.ref--;
-	if (!hct_share.ref && hct_share.vaddr)
-		memset(hct_share.vaddr, 0x00, hct_share.size);
-
+	if (!hct_share.ref) {
+		hct_put_pages();
+		if (hct_share.vaddr)
+			memset(hct_share.vaddr, 0x00, hct_share.size);
+	}
 	mutex_unlock(&hct_share.lock);
 
 	mutex_lock(&hct_data.lock);
-	if (id < MCCP_INSTANCE_MAX)
+	if (--id < MCCP_INSTANCE_MAX)
 		bitmap_clear(hct_data.ids, id, 1);
 	mutex_unlock(&hct_data.lock);
 
 	mutex_lock(&private->lock);
-	hct_iommu_unmap(private);
+	hct_iommu_unmap_all(private);
 	mutex_unlock(&private->lock);
 
 	kfree(private);
+	return 0;
+}
+
+static vm_fault_t hct_cdev_vma_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	pgoff_t page_idx = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
+
+	if (page_idx >= hct_share.pagecount)
+		return VM_FAULT_SIGBUS;
+
+	vmf->page = hct_get_page(page_idx);
+	if (!vmf->page)
+		return VM_FAULT_SIGBUS;
 
 	return 0;
 }
 
+static const struct vm_operations_struct hct_cdev_vm_ops = {
+	.fault = hct_cdev_vma_fault,
+};
+
 static int hct_share_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	int ret;
+	unsigned long len;
+	int ret = 0;
 
 	mutex_lock(&hct_share.lock);
+	len = vma->vm_end - vma->vm_start;
+	if (len == MCCP_SHARED_SIZE) {
+		/*
+		 * The required size for vm is (MCCP_DEV_MAX * PAGE_SIZE),
+		 * and will follow the pagefault process.
+		 */
+		vma->vm_ops = &hct_cdev_vm_ops;
+		goto exit;
+	}
+
 	if (unlikely(!hct_share.vaddr)) {
 		hct_share.size = (vma->vm_end - vma->vm_start);
 		hct_share.vaddr = kzalloc(hct_share.size, GFP_KERNEL);
@@ -1738,9 +2019,8 @@ static void hct_share_exit(void)
 	if (hct_data.domain)
 		iommu_domain_free(hct_data.domain);
 
-	kfree(hct_share.vaddr);
-
 	misc_deregister(&hct_misc);
+	kfree(hct_share.vaddr);
 }
 
 static int hct_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -1793,6 +2073,7 @@ static void hct_device_release(struct device *dev)
 {
 	dev_dbg(dev, "hct: released\n");
 }
+#endif /* IS_ENABLED(CONFIG_VFIO_MDEV) */
 
 #define CPUID_VENDOR_HygonGenuine_ebx	0x6f677948
 #define CPUID_VENDOR_HygonGenuine_ecx	0x656e6975
@@ -1810,9 +2091,132 @@ static inline void _cpuid(unsigned int *eax, unsigned int *ebx,
 	    : "memory");
 }
 
+static void _pfn_vm_pat_flags_moved(unsigned long addr)
+{
+	struct vm_area_struct *vma = find_vma(current->mm, addr);
+
+	if (!vma) {
+		pr_err("vma is NULL.\n");
+		return;
+	}
+
+	if (vma->vm_flags & VM_PFNMAP)
+		vma->vm_flags &= ~VM_PAT;
+}
+
+/* set the flags PAT, PCT and PWT of page all to 0
+ * for obtaining cache properties.
+ */
+static void hct_noiommu_set_memory_wb(unsigned long address)
+{
+	pgd_t *pgd = current->mm->pgd + pgd_index(address);
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+	pte_t old_pte;
+	pte_t new_pte;
+	pgprot_t new_prot;
+	unsigned long pfn;
+
+	if (pgd_none(*pgd)) {
+		pr_err("pgd val shouldn't be none\n");
+		return;
+	}
+
+	p4d = p4d_offset(pgd, address);
+	if (p4d_none(*p4d)) {
+		pr_err("p4d val shouldn't be none\n");
+		return;
+	}
+
+	pud = pud_offset(p4d, address);
+	if (pud_none(*pud) || pud_large(*pud) || !pud_present(*pud)) {
+		pr_err("pud val is invalid.\n");
+		return;
+	}
+
+	pmd = pmd_offset(pud, address);
+	if (pmd_none(*pmd) || pmd_large(*pmd) || !pmd_present(*pmd)) {
+		pr_err("pmd val is invalid.\n");
+		return;
+	}
+
+	pte = pte_offset_kernel(pmd, address);
+	if (pte_none(*pte)) {
+		pr_err("pte val shouldn't be none\n");
+		return;
+	}
+
+	old_pte = *pte;
+	pfn = pte_pfn(old_pte);
+	new_prot = pte_pgprot(old_pte);
+	pgprot_val(new_prot) &= ~(_PAGE_PAT | _PAGE_PCD | _PAGE_PWT);
+	new_pte = pfn_pte(pfn, new_prot);
+	set_pte_atomic(pte, new_pte);
+	_pfn_vm_pat_flags_moved(address);
+}
+
+static DEFINE_MUTEX(hct_noiommu_lock);
+static long hct_noiommu_ioctl(struct file *file,
+		unsigned int ioctl, unsigned long arg)
+{
+	struct hct_dev_ctrl ctrl;
+	unsigned int cmd_id;
+	unsigned int len;
+	int ret = 0;
+
+	if (_IOC_TYPE(ioctl) != MCCP_NOIOMMU_IOC_TYPE)
+		return -EINVAL;
+
+	cmd_id = _IOC_NR(ioctl);
+	len = _IOC_SIZE(ioctl);
+
+	if (cmd_id != MCCP_SHARE_OP)
+		return -EINVAL;
+
+	if (len != sizeof(ctrl))
+		return -EINVAL;
+
+	if (copy_from_user(&ctrl, (void __user *)arg, sizeof(ctrl)))
+		return -EINVAL;
+
+	mutex_lock(&hct_noiommu_lock);
+	switch (ctrl.op) {
+	case MCCP_NOIOMMU_SET_MEMORY_WB:
+		while (ctrl.nr_pages && ctrl.nr_pages--) {
+			hct_noiommu_set_memory_wb(ctrl.vt_addr);
+			ctrl.vt_addr += PAGE_SIZE;
+		}
+		break;
+	case MCCP_NOIOMMU_GET_SME_ACTIVE:
+		ctrl.sme_mask = sme_me_mask;
+		if (copy_to_user((void __user *)arg, &ctrl, sizeof(ctrl)))
+			ret = -EINVAL;
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+	mutex_unlock(&hct_noiommu_lock);
+
+	return ret;
+}
+
+const struct file_operations hct_noiommu_fops = {
+	.owner          = THIS_MODULE,
+	.unlocked_ioctl = hct_noiommu_ioctl,
+};
+
+struct miscdevice hct_noiommu_misc = {
+	.minor = MISC_DYNAMIC_MINOR,
+	.name  = "hct_noiommu",
+	.fops  = &hct_noiommu_fops,
+};
+
 static int __init hct_dev_init(void)
 {
-	int ret = 0;
+	int __maybe_unused ret = 0;
 	u32 vendor_ebx = 0;
 	u32 vendor_ecx = 0;
 	u32 vendor_edx = 0;
@@ -1827,6 +2231,10 @@ static int __init hct_dev_init(void)
 		pr_err("Not hygon hardware\n");
 		return -1;
 	}
+
+#if IS_ENABLED(CONFIG_VFIO_MDEV)
+	if (!iommu_present(&pci_bus_type))
+		return misc_register(&hct_noiommu_misc);
 
 	memset(&hct_dev, 0, sizeof(hct_dev));
 
@@ -1852,6 +2260,7 @@ static int __init hct_dev_init(void)
 	hct_dev.dev.class = hct_dev.vd_class;
 	hct_dev.dev.release = hct_device_release;
 	dev_set_name(&hct_dev.dev, "%s", MCCP_NAME);
+	hct_dev.dev.devt = hct_dev.vd_devt;
 
 	ret = device_register(&hct_dev.dev);
 	if (ret)
@@ -1892,12 +2301,21 @@ failed1:
 
 all_done:
 	return ret;
+#else
+	pr_info("The module mdev is disabled.\n");
+	return misc_register(&hct_noiommu_misc);
+#endif
 }
 
 static void __exit hct_dev_exit(void)
 {
-	hct_share_exit();
+#if IS_ENABLED(CONFIG_VFIO_MDEV)
+	if (!iommu_present(&pci_bus_type)) {
+		misc_deregister(&hct_noiommu_misc);
+		return;
+	}
 
+	hct_share_exit();
 	hct_dev.dev.bus = NULL;
 	mdev_unregister_device(&hct_dev.dev);
 
@@ -1908,6 +2326,9 @@ static void __exit hct_dev_exit(void)
 	hct_dev.vd_class = NULL;
 
 	pci_unregister_driver(&hct_pci_driver);
+#else
+	misc_deregister(&hct_noiommu_misc);
+#endif
 }
 
 module_init(hct_dev_init)

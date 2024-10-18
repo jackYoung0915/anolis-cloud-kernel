@@ -20,3 +20,18 @@ if [ -n "$DIST_SPECIAL_VERSION_NAME" ]; then
 else
     sed -i '/%%VARIANT%%/d' ${DIST_OUTPUT}/${DIST_SPEC_FILE}
 fi
+
+function generate_cmdline() {
+    local arch=$1
+    local cmdline=""
+    for cmd in $(awk '!/^#/ && !/^[[:space:]]*$/' ${DIST_SOURCES}cmdline/${arch})
+    do
+        cmdline="${cmdline} ${cmd}"
+    done
+    echo "${cmdline}"
+}
+
+x86_cmdline=$(generate_cmdline x86)
+arm_cmdline=$(generate_cmdline arm64)
+sed -i -e "s/%%X86_CMDLINE%%/$x86_cmdline/" ${DIST_OUTPUT}/${DIST_SPEC_FILE}
+sed -i -e "s/%%ARM_CMDLINE%%/$arm_cmdline/" ${DIST_OUTPUT}/${DIST_SPEC_FILE}

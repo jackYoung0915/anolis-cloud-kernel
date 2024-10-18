@@ -604,31 +604,30 @@ static bool btf_name_offset_valid(const struct btf *btf, u32 offset)
 		offset < btf->hdr.str_len;
 }
 
-static bool __btf_name_char_ok(char c, bool first, bool dot_ok)
+static bool __btf_name_char_ok(char c, bool first)
 {
 	if ((first ? !isalpha(c) :
 		     !isalnum(c)) &&
 	    c != '_' &&
-	    ((c == '.' && !dot_ok) ||
-	      c != '.'))
+	    c != '.')
 		return false;
 	return true;
 }
 
-static bool __btf_name_valid(const struct btf *btf, u32 offset, bool dot_ok)
+static bool __btf_name_valid(const struct btf *btf, u32 offset)
 {
 	/* offset must be valid */
 	const char *src = &btf->strings[offset];
 	const char *src_limit;
 
-	if (!__btf_name_char_ok(*src, true, dot_ok))
+	if (!__btf_name_char_ok(*src, true))
 		return false;
 
 	/* set a limit on identifier length */
 	src_limit = src + KSYM_NAME_LEN;
 	src++;
 	while (*src && src < src_limit) {
-		if (!__btf_name_char_ok(*src, false, dot_ok))
+		if (!__btf_name_char_ok(*src, false))
 			return false;
 		src++;
 	}
@@ -636,17 +635,14 @@ static bool __btf_name_valid(const struct btf *btf, u32 offset, bool dot_ok)
 	return !*src;
 }
 
-/* Only C-style identifier is permitted. This can be relaxed if
- * necessary.
- */
 static bool btf_name_valid_identifier(const struct btf *btf, u32 offset)
 {
-	return __btf_name_valid(btf, offset, false);
+	return __btf_name_valid(btf, offset);
 }
 
 static bool btf_name_valid_section(const struct btf *btf, u32 offset)
 {
-	return __btf_name_valid(btf, offset, true);
+	return __btf_name_valid(btf, offset);
 }
 
 static const char *__btf_name_by_offset(const struct btf *btf, u32 offset)
@@ -1481,6 +1477,11 @@ static void btf_free_rcu(struct rcu_head *rcu)
 	struct btf *btf = container_of(rcu, struct btf, rcu);
 
 	btf_free(btf);
+}
+
+void btf_get(struct btf *btf)
+{
+	refcount_inc(&btf->refcnt);
 }
 
 void btf_put(struct btf *btf)
@@ -2913,7 +2914,7 @@ static int btf_struct_resolve(struct btf_verifier_env *env,
 	if (v->next_member) {
 		const struct btf_type *last_member_type;
 		const struct btf_member *last_member;
-		u16 last_member_type_id;
+		u32 last_member_type_id;
 
 		last_member = btf_type_member(v->t) + v->next_member - 1;
 		last_member_type_id = last_member->type;
@@ -2976,41 +2977,90 @@ static void btf_struct_log(struct btf_verifier_env *env,
 	btf_verifier_log(env, "size=%u vlen=%u", t->size, btf_type_vlen(t));
 }
 
-/* find 'struct bpf_spin_lock' in map value.
- * return >= 0 offset if found
- * and < 0 in case of error
- */
-int btf_find_spin_lock(const struct btf *btf, const struct btf_type *t)
+static int btf_find_struct_field(const struct btf *btf, const struct btf_type *t,
+				 const char *name, int sz, int align)
 {
 	const struct btf_member *member;
 	u32 i, off = -ENOENT;
-
-	if (!__btf_type_is_struct(t))
-		return -EINVAL;
 
 	for_each_member(i, t, member) {
 		const struct btf_type *member_type = btf_type_by_id(btf,
 								    member->type);
 		if (!__btf_type_is_struct(member_type))
 			continue;
-		if (member_type->size != sizeof(struct bpf_spin_lock))
+		if (member_type->size != sz)
 			continue;
-		if (strcmp(__btf_name_by_offset(btf, member_type->name_off),
-			   "bpf_spin_lock"))
+		if (strcmp(__btf_name_by_offset(btf, member_type->name_off), name))
 			continue;
 		if (off != -ENOENT)
-			/* only one 'struct bpf_spin_lock' is allowed */
+			/* only one such field is allowed */
 			return -E2BIG;
 		off = btf_member_bit_offset(t, member);
 		if (off % 8)
 			/* valid C code cannot generate such BTF */
 			return -EINVAL;
 		off /= 8;
-		if (off % __alignof__(struct bpf_spin_lock))
-			/* valid struct bpf_spin_lock will be 4 byte aligned */
+		if (off % align)
 			return -EINVAL;
 	}
 	return off;
+}
+
+static int btf_find_datasec_var(const struct btf *btf, const struct btf_type *t,
+				const char *name, int sz, int align)
+{
+	const struct btf_var_secinfo *vsi;
+	u32 i, off = -ENOENT;
+
+	for_each_vsi(i, t, vsi) {
+		const struct btf_type *var = btf_type_by_id(btf, vsi->type);
+		const struct btf_type *var_type = btf_type_by_id(btf, var->type);
+
+		if (!__btf_type_is_struct(var_type))
+			continue;
+		if (var_type->size != sz)
+			continue;
+		if (vsi->size != sz)
+			continue;
+		if (strcmp(__btf_name_by_offset(btf, var_type->name_off), name))
+			continue;
+		if (off != -ENOENT)
+			/* only one such field is allowed */
+			return -E2BIG;
+		off = vsi->offset;
+		if (off % align)
+			return -EINVAL;
+	}
+	return off;
+}
+
+static int btf_find_field(const struct btf *btf, const struct btf_type *t,
+			  const char *name, int sz, int align)
+{
+
+	if (__btf_type_is_struct(t))
+		return btf_find_struct_field(btf, t, name, sz, align);
+	else if (btf_type_is_datasec(t))
+		return btf_find_datasec_var(btf, t, name, sz, align);
+	return -EINVAL;
+}
+
+/* find 'struct bpf_spin_lock' in map value.
+ * return >= 0 offset if found
+ * and < 0 in case of error
+ */
+int btf_find_spin_lock(const struct btf *btf, const struct btf_type *t)
+{
+	return btf_find_field(btf, t, "bpf_spin_lock",
+			      sizeof(struct bpf_spin_lock),
+			      __alignof__(struct bpf_spin_lock));
+}
+
+int btf_find_timer(const struct btf *btf, const struct btf_type *t)
+{
+	return btf_find_field(btf, t, "bpf_timer",
+			      sizeof(struct bpf_timer),
+			      __alignof__(struct bpf_timer));
 }
 
 static void __btf_struct_show(const struct btf *btf, const struct btf_type *t,
@@ -3417,7 +3467,7 @@ static s32 btf_var_check_meta(struct btf_verifier_env *env,
 	}
 
 	if (!t->name_off ||
-	    !__btf_name_valid(env->btf, t->name_off, true)) {
+	    !__btf_name_valid(env->btf, t->name_off)) {
 		btf_verifier_log_type(env, t, "Invalid name");
 		return -EINVAL;
 	}
@@ -3541,6 +3591,7 @@ static int btf_datasec_resolve(struct btf_verifier_env *env,
 	struct btf *btf = env->btf;
 	u16 i;
 
+	env->resolve_mode = RESOLVE_TBD;
 	for_each_vsi_from(i, v->next_member, v->t, vsi) {
 		u32 var_type_id = vsi->type, type_id, type_size = 0;
 		const struct btf_type *var_type = btf_type_by_id(env->btf,
@@ -3673,6 +3724,11 @@ static int btf_func_proto_check(struct btf_verifier_env *env,
 			btf_verifier_log_type(env, t, "Invalid arg#%u", i + 1);
 			err = -EINVAL;
 			break;
+		}
+
+		if (btf_type_is_resolve_source_only(arg_type)) {
+			btf_verifier_log_type(env, t, "Invalid arg#%u", i + 1);
+			return -EINVAL;
 		}
 
 		if (args[i].name_off &&
@@ -4268,6 +4324,7 @@ btf_get_prog_ctx_type(struct bpf_verifier_log *log, struct btf *btf,
 	if (!ctx_struct)
 		/* should not happen */
 		return NULL;
+again:
 	ctx_tname = btf_name_by_offset(btf_vmlinux, ctx_struct->name_off);
 	if (!ctx_tname) {
 		/* should not happen */
@@ -4281,8 +4338,16 @@ btf_get_prog_ctx_type(struct bpf_verifier_log *log, struct btf *btf,
 	 * int socket_filter_bpf_prog(struct __sk_buff *skb)
 	 * { // no fields of skb are ever used }
 	 */
-	if (strcmp(ctx_tname, tname))
-		return NULL;
+	if (strcmp(ctx_tname, tname)) {
+		/* bpf_user_pt_regs_t is a typedef, so resolve it to
+		 * underlying struct and check name again
+		 */
+		if (!btf_type_is_modifier(ctx_struct))
+			return NULL;
+		while (btf_type_is_modifier(ctx_struct))
+			ctx_struct = btf_type_by_id(btf_vmlinux, ctx_struct->type);
+		goto again;
+	}
 	return ctx_type;
 }
 

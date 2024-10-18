@@ -201,7 +201,7 @@ vm_fault_t pgtable_share_copy_pmd(struct vm_area_struct *orig_vma,
 	} else {
 		pmd_populate(orig_mm, pmd, pmd_pgtable(*shadow_pmd));
 		get_page(pmd_page(*shadow_pmd));
-		add_mm_counter(orig_mm, MM_SHMEMPAGES, HPAGE_PMD_NR);
+		add_mm_counter(orig_mm, MM_SHMEMPAGES, PMD_SIZE >> PAGE_SHIFT);
 	}
 	spin_unlock(ptl);
 
@@ -329,7 +329,7 @@ void __pgtable_share_clear_pmd(struct mm_struct *mm, pmd_t *pmdp,
 {
 	put_page(pmd_pgtable(*pmdp));
 	pmd_clear(pmdp);
-	add_mm_counter(mm, MM_SHMEMPAGES, -HPAGE_PMD_NR);
+	add_mm_counter(mm, MM_SHMEMPAGES, PMD_SIZE >> PAGE_SHIFT);
 }
 
 void pgtable_share_clear_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
@@ -484,7 +484,7 @@ void pgtable_share_adjust_range(struct vm_area_struct *vma, unsigned long *start
 		*end = ALIGN(*end, PMD_SIZE);
 }
 
-DEFINE_STATIC_KEY_TRUE(pgtable_share_enabled_key);
+DEFINE_STATIC_KEY_FALSE(pgtable_share_enabled_key);
 static int __init setup_pgtable_share(char *s)
 {
 	if (!strcmp(s, "1"))

@@ -6,16 +6,16 @@
  * High level machine check handler. Handles pages reported by the
  * hardware as being corrupted usually due to a multi-bit ECC memory or cache
  * failure.
- * 
+ *
  * In addition there is a "soft offline" entry point that allows stop using
  * not-yet-corrupted-by-suspicious pages without killing anything.
  *
  * Handles page cache pages in various states.	The tricky part
- * here is that we can access any page asynchronously in respect to 
- * other VM users, because memory failures could happen anytime and 
- * anywhere. This could violate some of their assumptions. This is why 
- * this code has to be extremely careful. Generally it tries to use 
- * normal locking rules, as in get the standard locks, even if that means 
+ * here is that we can access any page asynchronously in respect to
+ * other VM users, because memory failures could happen anytime and
+ * anywhere. This could violate some of their assumptions. This is why
+ * this code has to be extremely careful. Generally it tries to use
+ * normal locking rules, as in get the standard locks, even if that means
  * the error handling takes potentially a long time.
  *
  * It can be very tempting to add handling for obscure cases here.
@@ -25,12 +25,12 @@
  *   https://git.kernel.org/cgit/utils/cpu/mce/mce-test.git/
  * - The case actually shows up as a frequent (top 10) page state in
  *   tools/vm/page-types when running a real workload.
- * 
+ *
  * There are several operations here with exponential complexity because
- * of unsuitable VM data structures. For example the operation to map back 
- * from RMAP chains to processes has to walk the complete process list and 
+ * of unsuitable VM data structures. For example the operation to map back
+ * from RMAP chains to processes has to walk the complete process list and
  * has non linear complexity with the number. But since memory corruptions
- * are rare we hope to get away with this. This avoids impacting the core 
+ * are rare we hope to get away with this. This avoids impacting the core
  * VM.
  */
 #include <linux/kernel.h>
@@ -67,6 +67,31 @@ int sysctl_memory_failure_recovery __read_mostly = 1;
 
 atomic_long_t num_poisoned_pages __read_mostly = ATOMIC_LONG_INIT(0);
 
+static bool __page_handle_poison(struct page *page)
+{
+	int ret;
+
+	/*
+	 * zone_pcp_disable() can't be used here. It will
+	 * hold pcp_batch_high_lock and dissolve_free_huge_page() might hold
+	 * cpu_hotplug_lock via static_key_slow_dec() when hugetlb vmemmap
+	 * optimization is enabled. This will break current lock dependency
+	 * chain and leads to deadlock.
+	 * Disabling pcp before dissolving the page was a deterministic
+	 * approach because we made sure that those pages cannot end up in any
+	 * PCP list. Draining PCP lists expels those pages to the buddy system,
+	 * but nothing guarantees that those pages do not get back to a PCP
+	 * queue if we need to refill those.
+	 */
+	ret = dissolve_free_huge_page(page);
+	if (!ret) {
+		drain_all_pages(page_zone(page));
+		ret = take_page_off_buddy(page);
+	}
+
+	return ret > 0;
+}
+
 static bool page_handle_poison(struct page *page, bool hugepage_or_freepage, bool release)
 {
 	if (hugepage_or_freepage) {
@@ -74,7 +99,7 @@ static bool page_handle_poison(struct page *page, bool hugepage_or_freepage, boo
 		 * Doing this check for free pages is also fine since dissolve_free_huge_page
 		 * returns 0 for non-hugetlb pages as well.
 		 */
-		if (dissolve_free_huge_page(page) || !take_page_off_buddy(page))
+		if (!__page_handle_poison(page))
 			/*
 			 * We could fail to take off the target page from buddy
 			 * for example due to racy page allocaiton, but that's
@@ -1067,7 +1092,7 @@ static int me_swapcache_clean(struct page_state *ps, struct page *p)
  */
 static int me_huge_page(struct page_state *ps, struct page *p)
 {
-	int res = 0;
+	int res;
 	struct page *hpage = compound_head(p);
 	struct address_space *mapping;
 	bool extra_pins = false;
@@ -1082,6 +1107,7 @@ static int me_huge_page(struct page_state *ps, struct page *p)
 		extra_pins = true;
 		unlock_page(hpage);
 	} else {
+		res = MF_FAILED;
 		unlock_page(hpage);
 		/*
 		 * migration entry prevents later access on error anonymous
@@ -1090,8 +1116,10 @@ static int me_huge_page(struct page_state *ps, struct page *p)
 		 */
 		if (PageAnon(hpage))
 			put_page(hpage);
-		dissolve_free_huge_page(p);
-		res = MF_RECOVERED;
+		if (__page_handle_poison(p)) {
+			page_ref_inc(p);
+			res = MF_RECOVERED;
+		}
 	}
 
 	if (has_extra_refcount(ps, p, extra_pins))
@@ -1532,9 +1560,13 @@ static int memory_failure_hugetlb(unsigned long pfn, int flags)
 			}
 		}
 		unlock_page(head);
-		dissolve_free_huge_page(p);
-		action_result(pfn, MF_MSG_FREE_HUGE, MF_DELAYED);
-		return 0;
+		res = MF_FAILED;
+		if (__page_handle_poison(p)) {
+			page_ref_inc(p);
+			res = MF_RECOVERED;
+		}
+		action_result(pfn, MF_MSG_FREE_HUGE, res);
+		return res == MF_RECOVERED ? 0 : -EBUSY;
 	}
 
 	lock_page(head);
@@ -1638,6 +1670,7 @@ int memory_failure(unsigned long pfn, int flags)
 	struct dev_pagemap *pgmap;
 	int res = 0;
 	unsigned long page_flags;
+	bool retry = true;
 	static DEFINE_MUTEX(mf_mutex);
 
 	if (!sysctl_memory_failure_recovery)
@@ -1665,6 +1698,7 @@ int memory_failure(unsigned long pfn, int flags)
 		goto unlock_mutex;
 	}
 
+try_again:
 	if (PageHuge(p)) {
 		res = memory_failure_hugetlb(pfn, flags);
 		goto unlock_mutex;
@@ -1695,8 +1729,21 @@ int memory_failure(unsigned long pfn, int flags)
 	 */
 	if (!(flags & MF_COUNT_INCREASED) && !get_hwpoison_page(p)) {
 		if (is_free_buddy_page(p)) {
-			action_result(pfn, MF_MSG_BUDDY, MF_DELAYED);
-			res = 0;
+			if (take_page_off_buddy(p)) {
+				page_ref_inc(p);
+				res = MF_RECOVERED;
+			} else {
+				/* We lost the race, try again */
+				if (retry) {
+					ClearPageHWPoison(p);
+					num_poisoned_pages_dec();
+					retry = false;
+					goto try_again;
+				}
+				res = MF_FAILED;
+			}
+			action_result(pfn, MF_MSG_BUDDY, res);
+			res = (res == MF_RECOVERED) ? 0 : -EBUSY;
 		} else {
 			action_result(pfn, MF_MSG_KERNEL_HIGH_ORDER, MF_IGNORED);
 			res = -EBUSY;
@@ -1736,15 +1783,6 @@ int memory_failure(unsigned long pfn, int flags)
 	 * walked by the page reclaim code, however that's not a big loss.
 	 */
 	shake_page(p, 0);
-	/* shake_page could have turned it free. */
-	if (!PageLRU(p) && is_free_buddy_page(p)) {
-		if (flags & MF_COUNT_INCREASED)
-			action_result(pfn, MF_MSG_BUDDY, MF_DELAYED);
-		else
-			action_result(pfn, MF_MSG_BUDDY_2ND, MF_DELAYED);
-		res = 0;
-		goto unlock_mutex;
-	}
 
 	lock_page(p);
 
@@ -2034,70 +2072,51 @@ EXPORT_SYMBOL(unpoison_memory);
 
 /*
  * Safely get reference count of an arbitrary page.
- * Returns 0 for a free page, -EIO for a zero refcount page
- * that is not free, and 1 for any other page type.
- * For 1 the page is returned with increased page count, otherwise not.
+ * Returns 0 for a free page, 1 for an in-use page, -EIO for a page-type we
+ * cannot handle and -EBUSY if we raced with an allocation.
+ * We only incremented refcount in case the page was already in-use and it is
+ * a known type we can handle.
  */
-static int __get_any_page(struct page *p, unsigned long pfn, int flags)
+static int get_any_page(struct page *p, int flags)
 {
-	int ret;
+	int ret = 0, pass = 0;
+	bool count_increased = false;
 
 	if (flags & MF_COUNT_INCREASED)
-		return 1;
+		count_increased = true;
 
-	/*
-	 * When the target page is a free hugepage, just remove it
-	 * from free hugepage list.
-	 */
-	if (!get_hwpoison_page(p)) {
-		if (PageHuge(p)) {
-			pr_info("%s: %#lx free huge page\n", __func__, pfn);
-			ret = 0;
-		} else if (is_free_buddy_page(p)) {
-			pr_info("%s: %#lx free buddy page\n", __func__, pfn);
-			ret = 0;
-		} else if (page_count(p)) {
-			/* raced with allocation */
+try_again:
+	if (!count_increased && !get_hwpoison_page(p)) {
+		if (page_count(p)) {
+			/* We raced with an allocation, retry. */
+			if (pass++ < 3)
+				goto try_again;
 			ret = -EBUSY;
-		} else {
-			pr_info("%s: %#lx: unknown zero refcount page type %lx\n",
-				__func__, pfn, p->flags);
+		} else if (!PageHuge(p) && !is_free_buddy_page(p)) {
+			/* We raced with put_page, retry. */
+			if (pass++ < 3)
+				goto try_again;
 			ret = -EIO;
 		}
 	} else {
-		/* Not a free page */
-		ret = 1;
-	}
-	return ret;
-}
-
-static int get_any_page(struct page *page, unsigned long pfn, int flags)
-{
-	int ret = __get_any_page(page, pfn, flags);
-
-	if (ret == -EBUSY)
-		ret = __get_any_page(page, pfn, flags);
-
-	if (ret == 1 && !PageHuge(page) &&
-	    !PageLRU(page) && !__PageMovable(page)) {
-		/*
-		 * Try to free it.
-		 */
-		put_page(page);
-		shake_page(page, 1);
-
-		/*
-		 * Did it turn free?
-		 */
-		ret = __get_any_page(page, pfn, 0);
-		if (ret == 1 && !PageLRU(page)) {
-			/* Drop page reference which is from __get_any_page() */
-			put_page(page);
-			pr_info("soft_offline: %#lx: unknown non LRU page type %lx (%pGp)\n",
-				pfn, page->flags, &page->flags);
-			return -EIO;
+		if (PageHuge(p) || PageLRU(p) || __PageMovable(p)) {
+			ret = 1;
+		} else {
+			/*
+			 * A page we cannot handle. Check whether we can turn
+			 * it into something we can handle.
+			 */
+			if (pass++ < 3) {
+				put_page(p);
+				shake_page(p, 1);
+				count_increased = false;
+				goto try_again;
+			}
+			put_page(p);
+			ret = -EIO;
 		}
 	}
+
 	return ret;
 }
 
@@ -2107,7 +2126,7 @@ static bool isolate_page(struct page *page, struct list_head *pagelist)
 	bool lru = PageLRU(page);
 
 	if (PageHuge(page)) {
-		isolated = isolate_huge_page(page, pagelist);
+		isolated = !isolate_hugetlb(page, pagelist);
 	} else {
 		if (lru)
 			isolated = !isolate_lru_page(page);
@@ -2220,14 +2239,10 @@ static int soft_offline_in_use_page(struct page *page)
 	return __soft_offline_page(page);
 }
 
-static int soft_offline_free_page(struct page *page)
+static void put_ref_page(struct page *page)
 {
-	int rc = 0;
-
-	if (!page_handle_poison(page, true, false))
-		rc = -EBUSY;
-
-	return rc;
+	if (page)
+		put_page(page);
 }
 
 /**
@@ -2255,36 +2270,49 @@ static int soft_offline_free_page(struct page *page)
 int soft_offline_page(unsigned long pfn, int flags)
 {
 	int ret;
-	struct page *page;
 	bool try_again = true;
+	struct page *page, *ref_page = NULL;
+
+	WARN_ON_ONCE(!pfn_valid(pfn) && (flags & MF_COUNT_INCREASED));
 
 	if (!pfn_valid(pfn))
 		return -ENXIO;
+	if (flags & MF_COUNT_INCREASED)
+		ref_page = pfn_to_page(pfn);
+
 	/* Only online pages can be soft-offlined (esp., not ZONE_DEVICE). */
 	page = pfn_to_online_page(pfn);
-	if (!page)
+	if (!page) {
+		put_ref_page(ref_page);
 		return -EIO;
+	}
 
 	if (PageHWPoison(page)) {
-		pr_info("soft offline: %#lx page already poisoned\n", pfn);
-		if (flags & MF_COUNT_INCREASED)
-			put_page(page);
+		pr_info("%s: %#lx page already poisoned\n", __func__, pfn);
+		put_ref_page(ref_page);
 		return 0;
 	}
 
 retry:
 	get_online_mems();
-	ret = get_any_page(page, pfn, flags);
+	ret = get_any_page(page, flags);
 	put_online_mems();
 
-	if (ret > 0)
+	if (ret > 0) {
 		ret = soft_offline_in_use_page(page);
-	else if (ret == 0)
-		if (soft_offline_free_page(page) && try_again) {
-			try_again = false;
-			flags &= ~MF_COUNT_INCREASED;
-			goto retry;
+	} else if (ret == 0) {
+		if (!page_handle_poison(page, true, false)) {
+			if (try_again) {
+				try_again = false;
+				flags &= ~MF_COUNT_INCREASED;
+				goto retry;
+			}
+			ret = -EBUSY;
 		}
+	} else if (ret == -EIO) {
+		pr_info("%s: %#lx: unknown page type: %lx (%pGp)\n",
+			 __func__, pfn, page->flags, &page->flags);
+	}
 
 	return ret;
 }

@@ -29,25 +29,43 @@ function do_prep() {
     # the kconfigs of x86 and arm64 has been moved to kconfig baseline,
     # so use `make dist-configs` to generate them
     make -C ${DIST_SRCROOT}/anolis dist-configs
-    cp ${DIST_OUTPUT}/kernel-${DIST_KERNELVERSION}-x86-ANCK.config \
+    cp ${DIST_OUTPUT}/kernel-ANCK-generic-x86.config \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-x86_64.config
-    cp ${DIST_OUTPUT}/kernel-${DIST_KERNELVERSION}-x86-debug-ANCK.config \
+    cp ${DIST_OUTPUT}/kernel-ANCK-debug-x86.config \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-x86_64-debug.config
-    cp ${DIST_OUTPUT}/kernel-${DIST_KERNELVERSION}-arm64-ANCK.config \
+    cp ${DIST_OUTPUT}/kernel-ANCK-generic-arm64.config \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-aarch64.config
-    cp ${DIST_OUTPUT}/kernel-${DIST_KERNELVERSION}-arm64-debug-ANCK.config \
+    cp ${DIST_OUTPUT}/kernel-ANCK-debug-arm64.config \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-aarch64-debug.config
 
     # the kconfigs of sw_64 and loongarch keep the legacy way,
     # so still copy them from arch/${arch}/configs/ directory.
-    cp ${DIST_SRCROOT}/arch/sw_64/configs/anolis_defconfig \
+    cp ${DIST_SRCROOT}/arch/sw_64/configs/anolis_xuelang_defconfig \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-sw_64.config
-    cp ${DIST_SRCROOT}/arch/sw_64/configs/anolis-debug_defconfig \
+    cp ${DIST_SRCROOT}/arch/sw_64/configs/anolis_xuelang_defconfig \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-sw_64-debug.config
     cp ${DIST_SRCROOT}/arch/loongarch/configs/anolis_defconfig \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-loongarch64.config
     cp ${DIST_SRCROOT}/arch/loongarch/configs/anolis-debug_defconfig \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-loongarch64-debug.config
+
+    if [ "$DIST_BUILD_MODE" == "gcov" ]; then
+        # for gcov packages, override the generic config files with the gcov version
+        cp -f ${DIST_OUTPUT}/kernel-ANCK-gcov-x86.config \
+        ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-x86_64.config
+        cp -f ${DIST_OUTPUT}/kernel-ANCK-gcov-arm64.config \
+        ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-aarch64.config
+
+        # sw_64 and loongarch do not support gcov, so we won't touch them
+    fi
+
+    if [ "$DIST_SPECIAL_VERSION_NAME" == "64k" ]; then
+        # for arm64 64k packages, override the generic config files with the 64k version
+        cp -f ${DIST_OUTPUT}/kernel-ANCK-arm64-64k.config \
+        ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-aarch64.config
+        # FIXME: set ExclusiveArch to aarch64 only in kernel.spec,
+        #        because 64k is only supported on arm64
+    fi
 }
 
 do_prep

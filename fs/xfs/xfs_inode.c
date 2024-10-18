@@ -1158,25 +1158,19 @@ xfs_create(
 	 * the case we'll drop the one we have and get a more
 	 * appropriate transaction later.
 	 */
-	error = xfs_trans_alloc(mp, tres, resblks, 0, 0, &tp);
+	error = xfs_trans_alloc_icreate(mp, tres, udqp, gdqp, pdqp, resblks,
+			&tp);
 	if (error == -ENOSPC) {
 		/* flush outstanding delalloc blocks and retry */
 		xfs_flush_inodes(mp);
-		error = xfs_trans_alloc(mp, tres, resblks, 0, 0, &tp);
+		error = xfs_trans_alloc_icreate(mp, tres, udqp, gdqp, pdqp,
+				resblks, &tp);
 	}
 	if (error)
-		goto out_release_inode;
+		goto out_release_dquots;
 
 	xfs_ilock(dp, XFS_ILOCK_EXCL | XFS_ILOCK_PARENT);
 	unlock_dp_on_error = true;
-
-	/*
-	 * Reserve disk quota and the inode.
-	 */
-	error = xfs_trans_reserve_quota(tp, mp, udqp, gdqp,
-						pdqp, resblks, 1, 0);
-	if (error)
-		goto out_trans_cancel;
 
 	/*
 	 * A newly created regular or special file just has one directory
@@ -1252,7 +1246,7 @@ xfs_create(
 		xfs_finish_inode_setup(ip);
 		xfs_irele(ip);
 	}
-
+ out_release_dquots:
 	xfs_qm_dqrele(udqp);
 	xfs_qm_dqrele(gdqp);
 	xfs_qm_dqrele(pdqp);
@@ -1296,14 +1290,10 @@ xfs_create_tmpfile(
 	resblks = XFS_IALLOC_SPACE_RES(mp);
 	tres = &M_RES(mp)->tr_create_tmpfile;
 
-	error = xfs_trans_alloc(mp, tres, resblks, 0, 0, &tp);
+	error = xfs_trans_alloc_icreate(mp, tres, udqp, gdqp, pdqp, resblks,
+			&tp);
 	if (error)
-		goto out_release_inode;
-
-	error = xfs_trans_reserve_quota(tp, mp, udqp, gdqp,
-						pdqp, resblks, 1, 0);
-	if (error)
-		goto out_trans_cancel;
+		goto out_release_dquots;
 
 	error = xfs_dir_ialloc(&tp, dp, mode, 0, 0, prid, &ip);
 	if (error)
@@ -1346,7 +1336,7 @@ xfs_create_tmpfile(
 		xfs_finish_inode_setup(ip);
 		xfs_irele(ip);
 	}
-
+ out_release_dquots:
 	xfs_qm_dqrele(udqp);
 	xfs_qm_dqrele(gdqp);
 	xfs_qm_dqrele(pdqp);
@@ -1497,6 +1487,8 @@ xfs_itruncate_extents_flags(
 	xfs_fileoff_t		first_unmap_block;
 	xfs_filblks_t		unmap_len;
 	int			error = 0;
+	bool			secondary_inactive = false;
+	int			force_count = 0;
 
 	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 	ASSERT(!atomic_read(&VFS_I(ip)->i_count) ||
@@ -1537,9 +1529,13 @@ xfs_itruncate_extents_flags(
 		}
 	}
 
+	if (!new_size && (ip->i_reflink_flags & XFS_REFLINK_SECONDARY))
+		secondary_inactive = true;
+
 	unmap_len = XFS_MAX_FILEOFF - first_unmap_block + 1;
 	while (unmap_len > 0) {
 		ASSERT(tp->t_firstblock == NULLFSBLOCK);
+
 		error = __xfs_bunmapi(tp, ip, first_unmap_block, &unmap_len,
 				flags, XFS_ITRUNC_MAX_EXTENTS);
 		if (error)
@@ -1549,6 +1545,14 @@ xfs_itruncate_extents_flags(
 		error = xfs_defer_finish(&tp);
 		if (error)
 			goto out;
+
+		if (secondary_inactive) {
+			if (xfs_reflink_inactive_force_log_period &&
+			    ++force_count >= xfs_reflink_inactive_force_log_period) {
+				xfs_log_force(mp, 0);
+				force_count = 0;
+			}
+		}
 	}
 
 	if (whichfork == XFS_DATA_FORK) {
@@ -1802,6 +1806,86 @@ xfs_inactive_ifree(
 	return 0;
 }
 
+STATIC void
+xfs_reflink_opt_disconnect(
+	struct xfs_mount        *mp,
+	struct xfs_inode        *ip,
+	bool                    unexpected)
+{
+	bool valid = false;
+
+	if (!(ip->i_reflink_flags & (XFS_REFLINK_PRIMARY |
+				XFS_REFLINK_SECONDARY)))
+		return;
+
+	mutex_lock(&mp->m_reflink_opt_lock);
+	if (ip->i_reflink_opt_ip) {
+		ip->i_reflink_opt_ip->i_reflink_opt_ip = NULL;
+		ip->i_reflink_opt_ip = NULL;
+		valid = true;
+	}
+	mutex_unlock(&mp->m_reflink_opt_lock);
+	if (valid) {
+		wake_up_all(&mp->m_reflink_opt_wait);
+		if (unexpected)
+			xfs_warn(mp, "unexpectedly, inactive reflink file in advance %llu",
+				 ip->i_ino);
+	}
+}
+
+/*
+ * Returns true if we need to update the on-disk metadata before we can free
+ * the memory used by this inode.  Updates include freeing post-eof
+ * preallocations; freeing COW staging extents; and marking the inode free in
+ * the inobt if it is on the unlinked list.
+ */
+bool
+xfs_inode_needs_inactive(
+	struct xfs_inode	*ip)
+{
+	struct xfs_mount	*mp = ip->i_mount;
+	struct xfs_ifork	*cow_ifp = XFS_IFORK_PTR(ip, XFS_COW_FORK);
+
+	/*
+	 * If the inode is already free, then there can be nothing
+	 * to clean up here.
+	 */
+	if (VFS_I(ip)->i_mode == 0)
+		return false;
+
+	/* If this is a read-only mount, don't do this (would generate I/O) */
+	if (mp->m_flags & XFS_MOUNT_RDONLY)
+		return false;
+
+	/* If the log isn't running, push inodes straight to reclaim. */
+	if (XFS_FORCED_SHUTDOWN(mp) || (mp->m_flags & XFS_MOUNT_NORECOVERY))
+		return false;
+
+	/* Metadata inodes require explicit resource cleanup. */
+	if (xfs_is_metadata_inode(ip))
+		return false;
+
+	/* Want to clean out the cow blocks if there are any. */
+	if (cow_ifp && cow_ifp->if_bytes > 0)
+		return true;
+
+	/* Unlinked files must be freed. */
+	if (VFS_I(ip)->i_nlink == 0)
+		return true;
+
+	/*
+	 * This file isn't being freed, so check if there are post-eof blocks
+	 * to free.  @force is true because we are evicting an inode from the
+	 * cache.  Post-eof blocks must be freed, lest we end up with broken
+	 * free space accounting.
+	 *
+	 * Note: don't bother with iolock here since lockdep complains about
+	 * acquiring it in reclaim context. We have the only reference to the
+	 * inode at this point anyways.
+	 */
+	return xfs_can_free_eofblocks(ip, true);
+}
+
 /*
  * xfs_inactive
  *
@@ -1824,7 +1908,7 @@ xfs_inactive(
 	 */
 	if (VFS_I(ip)->i_mode == 0) {
 		ASSERT(ip->i_df.if_broot_bytes == 0);
-		return;
+		goto out;
 	}
 
 	mp = ip->i_mount;
@@ -1832,7 +1916,11 @@ xfs_inactive(
 
 	/* If this is a read-only mount, don't do this (would generate I/O) */
 	if (mp->m_flags & XFS_MOUNT_RDONLY)
-		return;
+		goto out;
+
+	/* Metadata inodes require explicit resource cleanup. */
+	if (xfs_is_metadata_inode(ip))
+		goto out;
 
 	/* Try to clean out the cow blocks if there are any. */
 	if (xfs_inode_has_cow_data(ip))
@@ -1851,7 +1939,8 @@ xfs_inactive(
 		if (xfs_can_free_eofblocks(ip, true))
 			xfs_free_eofblocks(ip);
 
-		return;
+		xfs_reflink_opt_disconnect(mp, ip, true);
+		goto out;
 	}
 
 	if (S_ISREG(VFS_I(ip)->i_mode) &&
@@ -1861,14 +1950,16 @@ xfs_inactive(
 
 	error = xfs_qm_dqattach(ip);
 	if (error)
-		return;
+		goto out;
 
 	if (S_ISLNK(VFS_I(ip)->i_mode))
 		error = xfs_inactive_symlink(ip);
 	else if (truncate)
 		error = xfs_inactive_truncate(ip);
 	if (error)
-		return;
+		goto out;
+
+	xfs_reflink_opt_disconnect(mp, ip, false);
 
 	/*
 	 * If there are attributes associated with the file then blow them away
@@ -1878,7 +1969,7 @@ xfs_inactive(
 	if (XFS_IFORK_Q(ip)) {
 		error = xfs_attr_inactive(ip);
 		if (error)
-			return;
+			goto out;
 	}
 
 	ASSERT(!ip->i_afp);
@@ -1887,12 +1978,12 @@ xfs_inactive(
 	/*
 	 * Free the inode.
 	 */
-	error = xfs_inactive_ifree(ip);
-	if (error)
-		return;
+	xfs_inactive_ifree(ip);
 
+out:
 	/*
-	 * Release the dquots held by inode, if any.
+	 * We're done making metadata updates for this inode, so we can release
+	 * the attached dquots.
 	 */
 	xfs_qm_dqdetach(ip);
 }

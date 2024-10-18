@@ -125,6 +125,9 @@
 
 #define LSB_ENTRY_NUMBER(LSB_ADDR)	(LSB_ADDR / LSB_ITEM_SIZE)
 
+/* indicates whether there is ECC engine for Hygon CCP */
+#define RI_ECC_PRESENT			0x0400
+
 /* ------------------------ CCP Version 3 Specifics ------------------------ */
 #define REQ0_WAIT_FOR_WRITE		0x00000004
 #define REQ0_INT_ON_COMPLETE		0x00000002
@@ -361,6 +364,9 @@ struct ccp_device {
 	unsigned int irq;
 	bool use_tasklet;
 	struct tasklet_struct irq_tasklet;
+
+	/* This flag mark if the ccp support both sm2 and ecc function */
+	uint32_t support_sm2_ecc;
 
 	/* I/O area used for device communication. The register mapping
 	 * starts at an offset into the mapped bar.

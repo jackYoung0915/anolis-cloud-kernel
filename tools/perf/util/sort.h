@@ -107,6 +107,7 @@ struct hist_entry {
 	u64			transaction;
 	s32			socket;
 	s32			cpu;
+	u64			code_page_size;
 	u8			cpumode;
 	u8			depth;
 
@@ -232,6 +233,7 @@ enum sort_type {
 	SORT_TIME,
 	SORT_LOCAL_INS_LAT,
 	SORT_GLOBAL_INS_LAT,
+	SORT_CODE_PAGE_SIZE,
 
 	/* branch stack specific sort keys */
 	__SORT_BRANCH_STACK,
@@ -261,6 +263,7 @@ enum sort_type {
 	SORT_MEM_IADDR_SYMBOL,
 	SORT_MEM_PHYS_DADDR,
 	SORT_MEM_BLOCKED,
+	SORT_MEM_DATA_PAGE_SIZE,
 };
 
 /*

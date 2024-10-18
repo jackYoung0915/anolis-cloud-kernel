@@ -432,8 +432,13 @@ static void inode_lru_list_add(struct inode *inode)
 {
 	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_inc(nr_unused);
-	else
+	else {
 		inode->i_state |= I_REFERENCED;
+#ifdef CONFIG_KIDLED
+		/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
+		inode->i_state |= I_KIDLED_YOUNG;
+#endif
+	}
 }
 
 /*
@@ -455,6 +460,39 @@ static void inode_lru_list_del(struct inode *inode)
 
 	if (list_lru_del(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_dec(nr_unused);
+}
+
+static void inode_pin_lru_isolating(struct inode *inode)
+{
+	lockdep_assert_held(&inode->i_lock);
+	WARN_ON(inode->i_state & (I_LRU_ISOLATING | I_FREEING | I_WILL_FREE));
+	inode->i_state |= I_LRU_ISOLATING;
+}
+
+static void inode_unpin_lru_isolating(struct inode *inode)
+{
+	spin_lock(&inode->i_lock);
+	WARN_ON(!(inode->i_state & I_LRU_ISOLATING));
+	inode->i_state &= ~I_LRU_ISOLATING;
+	smp_mb();
+	wake_up_bit(&inode->i_state, __I_LRU_ISOLATING);
+	spin_unlock(&inode->i_lock);
+}
+
+static void inode_wait_for_lru_isolating(struct inode *inode)
+{
+	spin_lock(&inode->i_lock);
+	if (inode->i_state & I_LRU_ISOLATING) {
+		DEFINE_WAIT_BIT(wq, &inode->i_state, __I_LRU_ISOLATING);
+		wait_queue_head_t *wqh;
+
+		wqh = bit_waitqueue(&inode->i_state, __I_LRU_ISOLATING);
+		spin_unlock(&inode->i_lock);
+		__wait_on_bit(wqh, &wq, bit_wait, TASK_UNINTERRUPTIBLE);
+		spin_lock(&inode->i_lock);
+		WARN_ON(inode->i_state & I_LRU_ISOLATING);
+	}
+	spin_unlock(&inode->i_lock);
 }
 
 /**
@@ -568,6 +606,8 @@ static void evict(struct inode *inode)
 		inode_io_list_del(inode);
 
 	inode_sb_list_del(inode);
+
+	inode_wait_for_lru_isolating(inode);
 
 	/*
 	 * Wait for flusher thread to be done with the inode so that filesystem
@@ -768,7 +808,7 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	}
 
 	if (inode_has_buffers(inode) || inode->i_data.nrpages) {
-		__iget(inode);
+		inode_pin_lru_isolating(inode);
 		spin_unlock(&inode->i_lock);
 		spin_unlock(lru_lock);
 		if (remove_inode_buffers(inode)) {
@@ -781,7 +821,7 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 			if (current->reclaim_state)
 				current->reclaim_state->reclaimed_slab += reap;
 		}
-		iput(inode);
+		inode_unpin_lru_isolating(inode);
 		spin_lock(lru_lock);
 		return LRU_RETRY;
 	}
@@ -829,10 +869,19 @@ static enum lru_status inode_lru_cold_count(struct list_head *item,
 	    kidled_is_slab_scanned(inode_age, kidled_scan_rounds))
 		goto out;
 
-	if (atomic_read(&inode->i_count) ||
-	    (inode->i_state & I_REFERENCED)) {
+	if (atomic_read(&inode->i_count)) {
 		if (unlikely(inode_age))
 			kidled_set_slab_age(inode, 0);
+		goto out;
+	}
+
+	if (inode->i_state & I_KIDLED_YOUNG) {
+		if (unlikely(inode_age))
+			kidled_set_slab_age(inode, 0);
+		if (spin_trylock(&inode->i_lock)) {
+			inode->i_state &= ~I_KIDLED_YOUNG;
+			spin_unlock(&inode->i_lock);
+		}
 		goto out;
 	}
 
@@ -870,7 +919,11 @@ static inline bool valid_cold_inode_check(struct inode *inode)
 	assert_spin_locked(&inode->i_lock);
 	if (atomic_read(&inode->i_count))
 		return false;
-	if (inode->i_state & I_REFERENCED)
+	/*
+	 * Since RECLAIM_COLDPGS depends on KIDLED, check
+	 * I_KIDLED_YOUNG instead of I_REFERENCED.
+	 */
+	if (inode->i_state & I_KIDLED_YOUNG)
 		return false;
 	if (inode_has_buffers(inode))
 		return false;
@@ -1147,6 +1200,48 @@ void discard_new_inode(struct inode *inode)
 	iput(inode);
 }
 EXPORT_SYMBOL(discard_new_inode);
+
+/**
+ * lock_two_inodes - lock two inodes (may be regular files but also dirs)
+ *
+ * Lock any non-NULL argument. The caller must make sure that if he is passing
+ * in two directories, one is not ancestor of the other.  Zero, one or two
+ * objects may be locked by this function.
+ *
+ * @inode1: first inode to lock
+ * @inode2: second inode to lock
+ * @subclass1: inode lock subclass for the first lock obtained
+ * @subclass2: inode lock subclass for the second lock obtained
+ */
+void lock_two_inodes(struct inode *inode1, struct inode *inode2,
+		     unsigned subclass1, unsigned subclass2)
+{
+	if (!inode1 || !inode2) {
+		/*
+		 * Make sure @subclass1 will be used for the acquired lock.
+		 * This is not strictly necessary (no current caller cares) but
+		 * let's keep things consistent.
+		 */
+		if (!inode1)
+			swap(inode1, inode2);
+		goto lock;
+	}
+
+	/*
+	 * If one object is directory and the other is not, we must make sure
+	 * to lock directory first as the other object may be its child.
+	 */
+	if (S_ISDIR(inode2->i_mode) == S_ISDIR(inode1->i_mode)) {
+		if (inode1 > inode2)
+			swap(inode1, inode2);
+	} else if (!S_ISDIR(inode1->i_mode))
+		swap(inode1, inode2);
+lock:
+	if (inode1)
+		inode_lock_nested(inode1, subclass1);
+	if (inode2 && inode2 != inode1)
+		inode_lock_nested(inode2, subclass2);
+}
 
 /**
  * lock_two_nondirectories - take two i_mutexes on non-directory objects
@@ -2491,6 +2586,22 @@ int vfs_ioc_fssetxattr_check(struct inode *inode, const struct fsxattr *old_fa,
 	return 0;
 }
 EXPORT_SYMBOL(vfs_ioc_fssetxattr_check);
+
+/**
+ * inode_set_ctime_current - set the ctime to current_time
+ * @inode: inode
+ *
+ * Set the inode->i_ctime to the current value for the inode. Returns
+ * the current value that was assigned to i_ctime.
+ */
+struct timespec64 inode_set_ctime_current(struct inode *inode)
+{
+	struct timespec64 now = current_time(inode);
+
+	inode_set_ctime(inode, now.tv_sec, now.tv_nsec);
+	return now;
+}
+EXPORT_SYMBOL(inode_set_ctime_current);
 
 /**
  * in_group_or_capable - check whether caller is CAP_FSETID privileged

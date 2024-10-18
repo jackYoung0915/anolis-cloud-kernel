@@ -117,8 +117,11 @@ class JsonEvent:
           'imx8_ddr': 'imx8_ddr',
           'L3PMC': 'amd_l3',
           'DFPMC': 'amd_df',
+          'UMCPMC': 'amd_umc',
           'cpu_core': 'cpu_core',
           'cpu_atom': 'cpu_atom',
+          'ali_drw': 'ali_drw',
+          'arm_cmn': 'arm_cmn',
       }
       return table[unit] if unit in table else f'uncore_{unit.lower()}'
 
@@ -128,6 +131,7 @@ class JsonEvent:
     if 'ExtSel' in jd:
       eventcode |= int(jd['ExtSel']) << 8
     configcode = int(jd['ConfigCode'], 0) if 'ConfigCode' in jd else None
+    eventidcode = int(jd['EventidCode'], 0) if 'EventidCode' in jd else None
     self.name = jd['EventName'].lower() if 'EventName' in jd else None
     self.topic = ''
     self.compat = jd.get('Compat')
@@ -159,7 +163,13 @@ class JsonEvent:
     if precise and self.desc and '(Precise Event)' not in self.desc:
       extra_desc += ' (Must be precise)' if precise == '2' else (' (Precise '
                                                                  'event)')
-    event = f'config={llx(configcode)}' if configcode is not None else f'event={llx(eventcode)}'
+    event = None
+    if configcode is not None:
+      event = f'config={llx(configcode)}'
+    elif eventidcode is not None:
+      event = f'eventid={llx(eventidcode)}'
+    else:
+      event = f'event={llx(eventcode)}'
     event_fields = [
         ('AnyThread', 'any='),
         ('PortMask', 'ch_mask='),
@@ -169,6 +179,8 @@ class JsonEvent:
         ('Invert', 'inv='),
         ('SampleAfterValue', 'period='),
         ('UMask', 'umask='),
+        ('RdWrMask', 'rdwrmask='),
+        ('NodeType', 'type='),
     ]
     for key, value in event_fields:
       if key in jd and jd[key] != '0':
@@ -521,7 +533,7 @@ def main() -> None:
       help='Root of tree containing architecture directories containing json files'
   )
   ap.add_argument(
-      'output_file', type=argparse.FileType('w'), nargs='?', default=sys.stdout)
+      'output_file', type=argparse.FileType('w', encoding='utf-8'), nargs='?', default=sys.stdout)
   _args = ap.parse_args()
 
   _args.output_file.write("""

@@ -8,6 +8,7 @@ perf-y += machine.o
 perf-y += event.o
 perf-y += mem-events.o
 perf-y += evsel.o
+perf-y += env.o
 
 perf-$(CONFIG_DWARF) += dwarf-regs.o
 perf-$(CONFIG_BPF_PROLOGUE) += dwarf-regs.o

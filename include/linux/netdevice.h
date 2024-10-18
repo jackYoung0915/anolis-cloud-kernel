@@ -1655,6 +1655,13 @@ enum netdev_ml_priv_type {
 	ML_PRIV_CAN,
 };
 
+enum netdev_stat_type {
+	NETDEV_PCPU_STAT_NONE,
+	NETDEV_PCPU_STAT_LSTATS, /* struct pcpu_lstats */
+	NETDEV_PCPU_STAT_TSTATS, /* struct pcpu_sw_netstats */
+	NETDEV_PCPU_STAT_DSTATS, /* struct pcpu_dstats */
+};
+
 /**
  *	struct net_device - The DEVICE structure.
  *
@@ -1851,10 +1858,14 @@ enum netdev_ml_priv_type {
  *
  * 	@ml_priv:	Mid-layer private
  *	@ml_priv_type:  Mid-layer private type
- * 	@lstats:	Loopback statistics
- * 	@tstats:	Tunnel statistics
- * 	@dstats:	Dummy statistics
- * 	@vstats:	Virtual ethernet statistics
+ *
+ *	@pcpu_stat_type:	Type of device statistics which the core should
+ *				allocate/free: none, lstats, tstats, dstats. none
+ *				means the driver is handling statistics allocation/
+ *				freeing internally.
+ *	@lstats:		Loopback statistics: packets, bytes
+ *	@tstats:		Tunnel statistics: RX/TX packets, RX/TX bytes
+ *	@dstats:		Dummy statistics: RX/TX/drop packets, RX/TX bytes
  *
  *	@garp_port:	GARP
  *	@mrp_port:	MRP
@@ -2166,6 +2177,8 @@ struct net_device {
 	void				*ml_priv;
 	enum netdev_ml_priv_type	ml_priv_type;
 
+	enum netdev_stat_type		pcpu_stat_type:8;
+
 	union {
 		struct pcpu_lstats __percpu		*lstats;
 		struct pcpu_sw_netstats __percpu	*tstats;
@@ -2222,6 +2235,9 @@ struct net_device {
 
 	/* protected by rtnl_lock */
 	struct bpf_xdp_entity	xdp_state[__MAX_XDP_MODE];
+
+	/** @irq_moder: dim parameters used if IS_ENABLED(CONFIG_DIMLIB). */
+	struct dim_irq_moder	*irq_moder;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -2642,6 +2658,16 @@ struct pcpu_sw_netstats {
 	struct u64_stats_sync   syncp;
 } __aligned(4 * sizeof(u64));
 
+struct pcpu_dstats {
+	u64			rx_packets;
+	u64			rx_bytes;
+	u64			rx_drops;
+	u64			tx_packets;
+	u64			tx_bytes;
+	u64			tx_drops;
+	struct u64_stats_sync	syncp;
+} __aligned(8 * sizeof(u64));
+
 struct pcpu_lstats {
 	u64_stats_t packets;
 	u64_stats_t bytes;
@@ -2657,6 +2683,18 @@ static inline void dev_sw_netstats_rx_add(struct net_device *dev, unsigned int l
 	u64_stats_update_begin(&tstats->syncp);
 	tstats->rx_bytes += len;
 	tstats->rx_packets++;
+	u64_stats_update_end(&tstats->syncp);
+}
+
+static inline void dev_sw_netstats_tx_add(struct net_device *dev,
+					  unsigned int packets,
+					  unsigned int len)
+{
+	struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
+
+	u64_stats_update_begin(&tstats->syncp);
+	tstats->tx_bytes += len;
+	tstats->tx_packets += packets;
 	u64_stats_update_end(&tstats->syncp);
 }
 
@@ -4028,7 +4066,7 @@ static __always_inline int ____dev_forward_skb(struct net_device *dev,
 		return NET_RX_DROP;
 	}
 
-	skb_scrub_packet(skb, true);
+	skb_scrub_packet(skb, !net_eq(dev_net(dev), dev_net(skb->dev)));
 	skb->priority = 0;
 	return 0;
 }

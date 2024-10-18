@@ -16,9 +16,12 @@
 #include <linux/firmware-map.h>
 #include <linux/sort.h>
 #include <linux/memory_hotplug.h>
+#include <linux/memblock.h>
 
 #include <asm/e820/api.h>
 #include <asm/setup.h>
+#include <asm/unaccepted_memory.h>
+#include <asm/efi.h>
 
 /*
  * We organize the E820 table into three main data structures:
@@ -288,6 +291,18 @@ static struct change_member	*change_point[2*E820_MAX_ENTRIES]	__initdata;
 static struct e820_entry	*overlap_list[E820_MAX_ENTRIES]		__initdata;
 static struct e820_entry	new_entries[E820_MAX_ENTRIES]		__initdata;
 
+/* 256K, max 4TB */
+#define	E820_UNACCEPTED_MAX		0x40000
+#define	E820_UNACCEPTED_MAX_ADDR	\
+	(E820_UNACCEPTED_MAX * EFI_UNACCEPTED_UNIT_SIZE * BITS_PER_BYTE)
+struct e820_unaccepted_memory {
+	struct efi_unaccepted_memory efi_unaccepted;
+	u8 bitmap[E820_UNACCEPTED_MAX];
+};
+
+static struct e820_unaccepted_memory direct_unaccepted;
+
+
 static int __init cpcompare(const void *a, const void *b)
 {
 	struct change_member * const *app = a, * const *bpp = b;
@@ -417,6 +432,74 @@ int __init e820__update_table(struct e820_table *table)
 	table->nr_entries = new_nr_entries;
 
 	return 0;
+}
+
+static void __init e820__update_unaccepted(struct e820_table *table)
+{
+
+	u64 start, end, unit_mask = EFI_UNACCEPTED_UNIT_SIZE - 1;
+	struct e820_entry *entries = table->entries;
+	int i;
+
+	if (!IS_ENABLED(CONFIG_UNACCEPTED_MEMORY) ||
+	    unaccepted_direct != NULL)
+		return;
+
+	/* memblocks have not been added yet, e820 has not been constructed  */
+	unaccepted_direct = (struct efi_unaccepted_memory *)&direct_unaccepted;
+
+	unaccepted_direct->version = 1;
+	unaccepted_direct->unit_size = EFI_UNACCEPTED_UNIT_SIZE;
+	/* Bitmap byte size */
+	unaccepted_direct->size = E820_UNACCEPTED_MAX;
+	unaccepted_direct->phys_base = 0;
+
+	for (i = 0; i < table->nr_entries; i++) {
+		entries = &table->entries[i];
+		if (entries->type != EFI_UNACCEPTED_MEMORY)
+			continue;
+
+		/*
+		 * TODO: highlight, if e820 entries are overlaped,
+		 * the scenario cannot be handled here right now.
+		 */
+		entries->type = E820_TYPE_RAM;
+
+		start = entries->addr;
+		end = entries->addr + entries->size;
+		/* If start is not 2M aligned */
+		if (start & unit_mask) {
+			/* Accept from start to next 2M aligned addr*/
+			arch_accept_memory(start,
+					   round_up(start,
+						    EFI_UNACCEPTED_UNIT_SIZE));
+			/* Update start */
+			start = round_up(start, EFI_UNACCEPTED_UNIT_SIZE);
+		}
+		/* If end is not 2M aligned */
+		if (end & unit_mask) {
+			/* Accept from former 2M aligned addr to end */
+			arch_accept_memory(round_down(end,
+						      EFI_UNACCEPTED_UNIT_SIZE),
+					   end);
+			/* Update end */
+			end = round_down(end, EFI_UNACCEPTED_UNIT_SIZE);
+		}
+		/*
+		 * In case memory region is large then 4T,
+		 * accept them individually
+		 */
+		if (end > E820_UNACCEPTED_MAX_ADDR) {
+			/* Accept memory start at 4T */
+			arch_accept_memory(E820_UNACCEPTED_MAX_ADDR,
+					   end);
+			end = E820_UNACCEPTED_MAX_ADDR;
+		}
+
+		bitmap_set(unaccepted_direct->bitmap,
+			   start / EFI_UNACCEPTED_UNIT_SIZE,
+			   (end - start) / EFI_UNACCEPTED_UNIT_SIZE);
+	}
 }
 
 static int __init __append_e820_table(struct boot_e820_entry *entries, u32 nr_entries)
@@ -1254,6 +1337,8 @@ void __init e820__reserve_resources_late(void)
 	}
 }
 
+void __init e820__memblock_setup(void);
+
 /*
  * Pass the firmware (bootloader) E820 map to the kernel and process it:
  */
@@ -1286,6 +1371,8 @@ char *__init e820__memory_setup_default(void)
 
 	/* We just appended a lot of ranges, sanitize the table: */
 	e820__update_table(e820_table);
+
+	e820__update_unaccepted(e820_table);
 
 	return who;
 }

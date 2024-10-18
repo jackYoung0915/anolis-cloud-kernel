@@ -22,7 +22,7 @@
 #include "smc_ib.h"
 
 #define SMC_RMBS_PER_LGR_MAX	255	/* max. # of RMBs per link group */
-#define SMC_CONN_PER_LGR_MIN	16	/* min. # of connections per link group */
+#define SMC_CONN_PER_LGR_MIN	1	/* min. # of connections per link group */
 #define SMC_CONN_PER_LGR_MAX	255	/* max. # of connections per link group,
 					 * also is the default value for SMC-R v1 and v2.0
 					 */
@@ -302,6 +302,8 @@ struct smc_link_group {
 	struct rw_semaphore	sndbufs_lock;	/* protects tx buffers */
 	struct list_head	rmbs[SMC_RMBE_SIZES];	/* rx buffers */
 	struct rw_semaphore	rmbs_lock;	/* protects rx buffers */
+	u64			alloc_sndbufs;	/* stats of tx buffers */
+	u64			alloc_rmbs;	/* stats of rx buffers */
 
 	u8			id[SMC_LGR_ID_SIZE];	/* unique lgr id */
 	struct delayed_work	free_work;	/* delayed freeing of an lgr */
@@ -641,7 +643,6 @@ int smc_vlan_by_tcpsk(struct socket *clcsock, struct smc_init_info *ini);
 
 void smc_conn_free(struct smc_connection *conn);
 int smc_conn_create(struct smc_sock *smc, struct smc_init_info *ini);
-void smc_lgr_schedule_free_work_fast(struct smc_link_group *lgr);
 int smc_core_init(void);
 void smc_core_exit(void);
 

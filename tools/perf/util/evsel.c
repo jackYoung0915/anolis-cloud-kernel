@@ -1801,6 +1801,8 @@ fallback_missing_features:
 		evsel->core.attr.bpf_event = 0;
 	if (perf_missing_features.branch_hw_idx)
 		evsel->core.attr.branch_sample_type &= ~PERF_SAMPLE_BRANCH_HW_INDEX;
+	if (perf_missing_features.branch_counters)
+		evsel->core.attr.branch_sample_type &= ~PERF_SAMPLE_BRANCH_COUNTERS;
 retry_sample_id:
 	if (perf_missing_features.sample_id_all)
 		evsel->core.attr.sample_id_all = 0;
@@ -1995,6 +1997,11 @@ try_fallback:
 		perf_missing_features.group_read = true;
 		pr_debug2_peo("switching off group read\n");
 		goto fallback_missing_features;
+	} else if (!perf_missing_features.branch_counters &&
+		   (evsel->core.attr.branch_sample_type & PERF_SAMPLE_BRANCH_COUNTERS)) {
+		perf_missing_features.branch_counters = true;
+		pr_debug2("switching off branch counters support\n");
+		goto fallback_missing_features;
 	}
 out_close:
 	if (err)
@@ -2129,6 +2136,22 @@ perf_event__check_size(union perf_event *event, unsigned int sample_size)
 	return 0;
 }
 
+static inline bool evsel__has_branch_counters(struct evsel *evsel)
+{
+	struct evsel *cur, *leader = evsel__leader(evsel);
+
+	/* The branch counters feature only supports group */
+	if (!leader || !evsel->evlist)
+		return false;
+
+	evlist__for_each_entry(evsel->evlist, cur) {
+		if ((leader == evsel__leader(cur)) &&
+		    (cur->core.attr.branch_sample_type & PERF_SAMPLE_BRANCH_COUNTERS))
+			return true;
+	}
+	return false;
+}
+
 int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 			struct perf_sample *data)
 {
@@ -2151,7 +2174,6 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 	data->period = evsel->core.attr.sample_period;
 	data->cpumode = event->header.misc & PERF_RECORD_MISC_CPUMODE_MASK;
 	data->misc    = event->header.misc;
-	data->id = -1ULL;
 	data->data_src = PERF_MEM_DATA_SRC_NONE;
 
 	if (event->header.type != PERF_RECORD_SAMPLE) {
@@ -2330,6 +2352,16 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 			data->no_hw_idx = true;
 		OVERFLOW_CHECK(array, sz, max_size);
 		array = (void *)array + sz;
+
+		if (evsel__has_branch_counters(evsel)) {
+			OVERFLOW_CHECK_u64(array);
+
+			data->branch_stack_cntr = (u64 *)array;
+			sz = data->branch_stack->nr * sizeof(u64);
+
+			OVERFLOW_CHECK(array, sz, max_size);
+			array = (void *)array + sz;
+		}
 	}
 
 	if (type & PERF_SAMPLE_REGS_USER) {

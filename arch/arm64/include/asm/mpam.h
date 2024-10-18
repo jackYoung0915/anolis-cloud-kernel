@@ -56,6 +56,8 @@ DECLARE_STATIC_KEY_FALSE(mpam_enabled);
 DECLARE_PER_CPU(u64, arm64_mpam_default);
 DECLARE_PER_CPU(u64, arm64_mpam_current);
 
+extern u64 mpam_sysreg_offset;
+
 enum mpam_enable_type {
 	MPAM_ENABLE_DENIED = 0,
 	MPAM_ENABLE_ACPI,
@@ -82,6 +84,16 @@ static inline void __init __enable_mpam_hcr(void)
 {
 	if (IS_ENABLED(CONFIG_ARM64_MPAM))
 		static_branch_enable(&arm64_mpam_has_hcr);
+}
+
+static inline void enable_mpam_hcr(void)
+{
+	__enable_mpam_hcr();
+}
+
+static inline void disable_mpam_hcr(void)
+{
+	static_branch_disable(&arm64_mpam_has_hcr);
 }
 
 /*
@@ -167,7 +179,7 @@ static inline void mpam_thread_switch(struct task_struct *tsk)
 		return;
 
 	/* Synchronising this write is left until the ERET to EL0 */
-	write_sysreg_s(regval, SYS_MPAM0_EL1);
+	write_sysreg_s(mpam_sysreg_offset + regval, SYS_MPAM0_EL1);
 	WRITE_ONCE(per_cpu(arm64_mpam_current, cpu), regval);
 }
 #endif /* __ASM__MPAM_H */

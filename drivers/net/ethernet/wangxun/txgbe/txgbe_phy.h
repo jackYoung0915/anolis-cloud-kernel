@@ -9,6 +9,12 @@
 #define TXGBE_I2C_EEPROM_DEV_ADDR       0xA0
 #define TXGBE_I2C_EEPROM_DEV_ADDR2      0xA2
 
+/*fiber to copper module inter reg i2c addr */
+#define TXGBE_I2C_EEPROM_DEV_ADDR3      0xAC
+#define TXGBE_I2C_10G_SFP_LINK_STATUS   BIT(10)
+#define TXGBE_I2C_PHY_LOCAL_RX_STATUS   BIT(12)
+#define TXGBE_I2C_PHY_REMOTE_RX_STATUS  BIT(13)
+
 /* EEPROM byte offsets */
 #define TXGBE_SFF_IDENTIFIER            0x0
 #define TXGBE_SFF_IDENTIFIER_SFP        0x3
@@ -19,6 +25,7 @@
 #define TXGBE_SFF_10GBE_COMP_CODES      0x3
 #define TXGBE_SFF_CABLE_TECHNOLOGY      0x8
 #define TXGBE_SFF_CABLE_SPEC_COMP       0x3C
+#define TXGBE_SFF_DDM_IMPLEMENTED		0x40
 #define TXGBE_SFF_SFF_8472_SWAP         0x5C
 #define TXGBE_SFF_SFF_8472_COMP         0x5E
 
@@ -60,5 +67,9 @@ s32 txgbe_read_i2c_eeprom(struct txgbe_hw *hw, u8 byte_offset,
 			  u8 *eeprom_data);
 s32 txgbe_read_i2c_sff8472(struct txgbe_hw *hw, u8 byte_offset,
 			   u8 *sff8472_data);
+s32 txgbe_read_i2c_word(struct txgbe_hw *hw, u16 byte_offset,
+			u8 dev_addr, u16 *data);
+s32 txgbe_read_i2c_sfp_phy(struct txgbe_hw *hw, u16 byte_offset,
+			   u16 *data);
 
 #endif /* _TXGBE_PHY_H_ */

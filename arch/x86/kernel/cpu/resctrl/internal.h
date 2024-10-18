@@ -22,16 +22,6 @@
 #define HWDRC_MEMCLOS_AVAILABLE		BIT_ULL(0)
 #define HWDRC_OS_MAILBOX_RETRY_COUNT	30
 
-#define MSR_IA32_L3_QOS_CFG		0xc81
-#define MSR_IA32_L2_QOS_CFG		0xc82
-#define MSR_IA32_L3_CBM_BASE		0xc90
-#define MSR_IA32_L2_CBM_BASE		0xd10
-#define MSR_IA32_MBA_THRTL_BASE		0xd50
-#define MSR_IA32_MBA_BW_BASE		0xc0000200
-
-#define MSR_IA32_QM_CTR			0x0c8e
-#define MSR_IA32_QM_EVTSEL		0x0c8d
-
 #define L3_QOS_CDP_ENABLE		0x01ULL
 
 #define L2_QOS_CDP_ENABLE		0x01ULL
@@ -48,6 +38,12 @@
  * as an offset from MBM_CNTR_WIDTH_BASE.
  */
 #define MBM_CNTR_WIDTH_OFFSET_MAX (62 - MBM_CNTR_WIDTH_BASE)
+
+/* Max event bits supported */
+#define MAX_EVT_CONFIG_BITS		GENMASK(6, 0)
+
+/* Setting bit 0 in L3_QOS_EXT_CFG enables the ABMC feature. */
+#define ABMC_ENABLE_BIT			0
 
 /**
  * struct arch_mbm_state - values used to compute resctrl_arch_rmid_read()s
@@ -68,6 +64,8 @@ struct arch_mbm_state {
  * @ctrl_val:	array of cache or mem ctrl values (indexed by CLOSID)
  * @arch_mbm_total:	arch private state for MBM total bandwidth
  * @arch_mbm_local:	arch private state for MBM local bandwidth
+ * @mbm_total_cfg:	MBM total bandwidth configuration
+ * @mbm_local_cfg:	MBM local bandwidth configuration
  *
  * Members of this structure are accessed via helpers that provide abstraction.
  */
@@ -76,6 +74,8 @@ struct rdt_hw_domain {
 	u32				*ctrl_val;
 	struct arch_mbm_state		*arch_mbm_total;
 	struct arch_mbm_state		*arch_mbm_local;
+	u32				mbm_total_cfg;
+	u32				mbm_local_cfg;
 };
 
 static inline struct rdt_hw_domain *resctrl_to_arch_dom(struct rdt_domain *r)
@@ -197,6 +197,7 @@ out:
  * @mon_scale:		cqm counter * mon_scale = occupancy in bytes
  * @mbm_width:		Monitor width, to detect and correct for overflow.
  * @cdp_enabled:	CDP state of this resource
+ * @mbm_cntr_assign_enabled:	ABMC feature is enabled
  *
  * Members of this structure are either private to the architecture
  * e.g. mbm_width, or accessed via helpers that provide abstraction. e.g.
@@ -211,6 +212,7 @@ struct rdt_hw_resource {
 	unsigned int		mon_scale;
 	unsigned int		mbm_width;
 	bool			cdp_enabled;
+	bool			mbm_cntr_assign_enabled;
 };
 
 static inline struct rdt_hw_resource *resctrl_to_arch_res(struct rdt_resource *r)
@@ -265,6 +267,15 @@ union cpuid_0x10_3_eax {
 	unsigned int full;
 };
 
+/* CPUID.(EAX=10H, ECX=ResID).ECX */
+union cpuid_0x10_x_ecx {
+	struct {
+		unsigned int reserved:3;
+		unsigned int noncont:1;
+	} split;
+	unsigned int full;
+};
+
 /* CPUID.(EAX=10H, ECX=ResID).EDX */
 union cpuid_0x10_x_edx {
 	struct {
@@ -273,9 +284,37 @@ union cpuid_0x10_x_edx {
 	unsigned int full;
 };
 
+/*
+ * ABMC counters can be configured by writing to L3_QOS_ABMC_CFG.
+ * @bw_type		: Bandwidth configuration(supported by BMEC)
+ *			  tracked by the @cntr_id.
+ * @bw_src		: Bandwidth source (RMID or CLOSID).
+ * @reserved1		: Reserved.
+ * @is_clos		: @bw_src field is a CLOSID (not an RMID).
+ * @cntr_id		: Counter identifier.
+ * @reserved		: Reserved.
+ * @cntr_en		: Tracking enable bit.
+ * @cfg_en		: Configuration enable bit.
+ */
+union l3_qos_abmc_cfg {
+	struct {
+		unsigned long	bw_type	:32,
+				bw_src	:12,
+				reserved1: 3,
+				is_clos	: 1,
+				cntr_id	: 5,
+				reserved : 9,
+				cntr_en	: 1,
+				cfg_en	: 1;
+	} split;
+	unsigned long full;
+};
+
 void rdt_ctrl_update(void *arg);
 int rdt_get_mon_l3_config(struct rdt_resource *r);
+bool __init rdt_cpu_has(int flag);
 void __init intel_rdt_mbm_apply_quirk(void);
 void rdt_domain_reconfigure_cdp(struct rdt_resource *r);
+void resctrl_mbm_evt_config_init(struct rdt_hw_domain *hw_dom);
 
 #endif /* _ASM_X86_RESCTRL_INTERNAL_H */

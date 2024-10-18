@@ -26,11 +26,18 @@
  *		`cat /sys/kernel/debug/relay_ebpf`
  *	Return
  *		0 on success, or a negative error in case of failure.
+ *
+ * struct rb_node * bpf_anolis_rb_next(const struct rb_node *node)
+ *	Description
+ *		Find next rb node in a tree.
+ *	Returns
+ *		Pointer to the next rb_node. NULL if reach the end.
  */
 
 #define ___ANOLIS_BPF_FUNC_MAPPER(FN)		\
 	FN(anolis_ipv6_addr_set)		\
 	FN(anolis_relay_write)			\
+	FN(anolis_rb_next)			\
 
 #define __BPF_ENUM_FN(x) BPF_FUNC_ ## x,
 enum anolis_bpf_func_id {

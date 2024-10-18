@@ -427,6 +427,9 @@ static unsigned long __munlock_pagevec_fill(struct pagevec *pvec,
 void munlock_vma_pages_range(struct vm_area_struct *vma,
 			     unsigned long start, unsigned long end)
 {
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	int is_vm_lockonfault = vma->vm_flags & VM_LOCKONFAULT;
+#endif
 	vma->vm_flags &= VM_LOCKED_CLEAR_MASK;
 
 	while (start < end) {
@@ -481,6 +484,22 @@ void munlock_vma_pages_range(struct vm_area_struct *vma,
 				__munlock_pagevec(&pvec, zone);
 				goto next;
 			}
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+		} else if (!page && !is_vm_lockonfault) {
+			/*
+			 * When munlocking the pages which were dropped by
+			 * coldpgs.ko, we also increase the mlock_refault
+			 * counter in reclaim_coldpgs_stats.
+			 *
+			 * Thus we can figure out how many mlocked pages in the
+			 * task workingset are actually dropped currently, by
+			 * calculating mlock_dropped - mlock_refault.
+			 *
+			 * VM_LOCKONFAULT pages currently are not taken into
+			 * account, and will be well considered later.
+			 */
+			reclaim_coldpgs_stats_mlock_refault();
+#endif
 		}
 		page_increm = 1 + page_mask;
 		start += page_increm * PAGE_SIZE;

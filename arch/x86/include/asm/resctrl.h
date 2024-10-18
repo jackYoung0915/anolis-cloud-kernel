@@ -11,8 +11,6 @@
 #include <linux/sched.h>
 #include <linux/resctrl_types.h>
 
-#define IA32_PQR_ASSOC	0x0c8f
-
 void resctrl_arch_reset_resources(void);
 
 /**
@@ -22,8 +20,8 @@ void resctrl_arch_reset_resources(void);
  * @default_rmid:	The user assigned Resource Monitoring ID
  * @default_closid:	The user assigned cached Class Of Service ID
  *
- * The upper 32 bits of IA32_PQR_ASSOC contain closid and the
- * lower 10 bits rmid. The update to IA32_PQR_ASSOC always
+ * The upper 32 bits of MSR_IA32_PQR_ASSOC contain closid and the
+ * lower 10 bits rmid. The update to MSR_IA32_PQR_ASSOC always
  * contains both parts, so we need to cache them. This also
  * stores the user configured per cpu CLOSID and RMID.
  *
@@ -41,6 +39,7 @@ DECLARE_PER_CPU(struct resctrl_pqr_state, pqr_state);
 
 extern bool rdt_alloc_capable;
 extern bool rdt_mon_capable;
+extern bool rdt_bmec_capable;
 extern unsigned int rdt_mon_features;
 
 DECLARE_STATIC_KEY_FALSE(rdt_enable_key);
@@ -61,7 +60,7 @@ DECLARE_STATIC_KEY_FALSE(rdt_mon_enable_key);
  *   simple as possible.
  * Must be called with preemption disabled.
  */
-static void __resctrl_sched_in(void)
+static inline void __resctrl_sched_in(struct task_struct *tsk)
 {
 	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
 	u32 closid = READ_ONCE(state->default_closid);
@@ -73,13 +72,13 @@ static void __resctrl_sched_in(void)
 	 * Else use the closid/rmid assigned to this cpu.
 	 */
 	if (static_branch_likely(&rdt_alloc_enable_key)) {
-		tmp = READ_ONCE(current->closid);
+		tmp = READ_ONCE(tsk->closid);
 		if (tmp)
 			closid = tmp;
 	}
 
 	if (static_branch_likely(&rdt_mon_enable_key)) {
-		tmp = READ_ONCE(current->rmid);
+		tmp = READ_ONCE(tsk->rmid);
 		if (tmp)
 			rmid = tmp;
 	}
@@ -87,7 +86,7 @@ static void __resctrl_sched_in(void)
 	if (closid != state->cur_closid || rmid != state->cur_rmid) {
 		state->cur_closid = closid;
 		state->cur_rmid = rmid;
-		wrmsr(IA32_PQR_ASSOC, rmid, closid);
+		wrmsr(MSR_IA32_PQR_ASSOC, rmid, closid);
 	}
 }
 
@@ -125,10 +124,10 @@ static inline bool resctrl_arch_match_rmid(struct task_struct *tsk, u32 ignored,
 	return READ_ONCE(tsk->rmid) == rmid;
 }
 
-static inline void resctrl_sched_in(void)
+static inline void resctrl_sched_in(struct task_struct *tsk)
 {
 	if (static_branch_likely(&rdt_enable_key))
-		__resctrl_sched_in();
+		__resctrl_sched_in(tsk);
 }
 
 static inline u32 resctrl_arch_system_num_rmid_idx(void)
@@ -213,6 +212,36 @@ static inline bool resctrl_arch_is_mbm_local_enabled(void)
 	return (rdt_mon_features & (1 << QOS_L3_MBM_LOCAL_EVENT_ID));
 }
 
+static inline bool resctrl_arch_is_mbm_bps_enabled(void)
+{
+	return false;
+}
+
+static inline bool resctrl_arch_is_mbm_total_configurable(void)
+{
+	return rdt_bmec_capable && resctrl_arch_is_mbm_total_enabled();
+}
+
+static inline bool resctrl_arch_is_mbm_local_configurable(void)
+{
+	return rdt_bmec_capable && resctrl_arch_is_mbm_local_enabled();
+}
+
+bool resctrl_arch_get_abmc_enabled(void);
+
+int resctrl_arch_mbm_cntr_assign_enable(void);
+void resctrl_arch_mbm_cntr_assign_disable(void);
+bool resctrl_arch_get_mbm_cntr_assign_enable(void);
+
+void resctrl_arch_event_config_set(void *info);
+u32 resctrl_arch_event_config_get(void *dom,
+				  enum resctrl_event_id eventid);
+
+int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
+			     u32 rmid, u32 cntr_id, u32 closid, bool assign);
+
+void resctrl_arch_mbm_cntr_assign_configure(void);
+
 u64 resctrl_arch_get_prefetch_disable_bits(void);
 int resctrl_arch_pseudo_lock_fn(void *_plr);
 int resctrl_arch_measure_cycles_lat_fn(void *_plr);
@@ -226,9 +255,12 @@ int resctrl_arch_set_cdp_enabled(enum resctrl_res_level l, bool enable);
 bool resctrl_arch_is_hwdrc_mb_capable(void);
 int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level l, bool hwdrc_mb);
 
+void resctrl_arch_mondata_config_read(void *d, void *info);
+int resctrl_arch_mbm_config_write_domain(void *rdt_resource, void *dom, u32 evtid, u32 val);
+
 #else
 
-static inline void resctrl_sched_in(void) {}
+static inline void resctrl_sched_in(struct task_struct *tsk) {}
 static inline void resctrl_cpu_detect(struct cpuinfo_x86 *c) {}
 
 #endif /* CONFIG_X86_CPU_RESCTRL */

@@ -60,6 +60,9 @@ struct mpam_msc
 	spinlock_t		mon_sel_lock;
 	void __iomem *		mapped_hwpage;
 	size_t			mapped_hwpage_sz;
+
+	/* virtual partids info */
+	u32			vpartid_free_map;
 };
 
 /*
@@ -86,6 +89,7 @@ enum mpam_device_features {
 	mpam_feat_msmon_mbwu,
 	mpam_feat_msmon_mbwu_capture,
 	mpam_feat_msmon_capt,
+	mpam_feat_impl_msmon_mbwu,
 	mpam_feat_partid_nrw,
 	MPAM_FEATURE_LAST,
 };
@@ -255,6 +259,22 @@ static inline int mpam_alloc_mbwu_mon(struct mpam_class *class)
 static inline void mpam_free_mbwu_mon(struct mpam_class *class, int mbwu_mon)
 {
 	ida_free(&class->ida_mbwu_mon, mbwu_mon);
+}
+
+static inline u32 __mpam_read_reg(struct mpam_msc *msc, u16 reg)
+{
+	WARN_ON_ONCE(reg >= msc->mapped_hwpage_sz);
+	WARN_ON_ONCE(!cpumask_test_cpu(smp_processor_id(), &msc->accessibility));
+
+	return readl_relaxed(msc->mapped_hwpage + reg);
+}
+
+static inline void __mpam_write_reg(struct mpam_msc *msc, u16 reg, u32 val)
+{
+	WARN_ON_ONCE(reg >= msc->mapped_hwpage_sz);
+	WARN_ON_ONCE(!cpumask_test_cpu(smp_processor_id(), &msc->accessibility));
+
+	writel_relaxed(val, msc->mapped_hwpage + reg);
 }
 
 /* List of all classes */
@@ -532,5 +552,12 @@ void mpam_resctrl_exit(void);
  *                  generation register
  */
 #define MSMON_CAPT_EVNT_NOW    BIT(0)
+
+/* Used for PTG Yitian710 specific MB monitoring feature */
+#define MBWU_MASK GENMASK(23, 0)
+#define MBWU_WINWD_MAX GENMASK(22, 0)
+#define MBWU_GET(v) ((v) & MBWU_MASK)
+#define MPAMF_CUST_MBWC_OFFSET 0x08
+#define MPAMF_CUST_WINDW_OFFSET 0x0C
 
 #endif /* MPAM_INTERNAL_H */

@@ -126,6 +126,9 @@ int intel_pasid_alloc_table(struct device *dev)
 	pasid_table->max_pasid = 1 << (order + PAGE_SHIFT + 3);
 	info->pasid_table = pasid_table;
 
+	if (!ecap_coherent(info->iommu->ecap))
+		clflush_cache_range(pasid_table->table, (1 << order) * PAGE_SIZE);
+
 	return 0;
 }
 
@@ -212,6 +215,10 @@ retry:
 			      (u64)virt_to_phys(entries) | PASID_PTE_PRESENT)) {
 			free_pgtable_page(entries);
 			goto retry;
+		}
+		if (!ecap_coherent(info->iommu->ecap)) {
+			clflush_cache_range(entries, VTD_PAGE_SIZE);
+			clflush_cache_range(&dir[dir_index].val, sizeof(*dir));
 		}
 	}
 
@@ -457,6 +464,9 @@ devtlb_invalidation_with_pasid(struct intel_iommu *iommu,
 	if (!info || !info->ats_enabled)
 		return;
 
+	if (pci_dev_is_disconnected(to_pci_dev(dev)))
+		return;
+
 	sid = info->bus << 8 | info->devfn;
 	qdep = info->ats_qdep;
 	pfsid = info->pfsid;
@@ -601,7 +611,7 @@ int intel_pasid_setup_first_level(struct intel_iommu *iommu,
 	}
 
 	if (flags & PASID_FLAG_FL5LP) {
-		if (cap_5lp_support(iommu->cap)) {
+		if (cap_fl5lp_support(iommu->cap)) {
 			pasid_set_flpm(pte, 1);
 		} else {
 			pr_err("No 5-level paging support for first-level\n");
@@ -702,7 +712,7 @@ int intel_pasid_setup_second_level(struct intel_iommu *iommu,
 	 * Since it is a second level only translation setup, we should
 	 * set SRE bit as well (addresses are expected to be GPAs).
 	 */
-	if (pasid != PASID_RID2PASID)
+	if (pasid != PASID_RID2PASID && ecap_srs(iommu->ecap))
 		pasid_set_sre(pte);
 	pasid_set_present(pte);
 	pasid_flush_caches(iommu, pte, pasid, did);
@@ -741,7 +751,8 @@ int intel_pasid_setup_pass_through(struct intel_iommu *iommu,
 	 * We should set SRE bit as well since the addresses are expected
 	 * to be GPAs.
 	 */
-	pasid_set_sre(pte);
+	if (ecap_srs(iommu->ecap))
+		pasid_set_sre(pte);
 	pasid_set_present(pte);
 	pasid_flush_caches(iommu, pte, pasid, did);
 
@@ -864,7 +875,7 @@ int intel_pasid_setup_nested(struct intel_iommu *iommu, struct device *dev,
 #ifdef CONFIG_X86
 	case ADDR_WIDTH_5LEVEL:
 		if (!cpu_feature_enabled(X86_FEATURE_LA57) ||
-		    !cap_5lp_support(iommu->cap)) {
+		    !cap_fl5lp_support(iommu->cap)) {
 			dev_err_ratelimited(dev,
 					    "5-level paging not supported\n");
 			return -EINVAL;

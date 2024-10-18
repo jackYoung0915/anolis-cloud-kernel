@@ -272,6 +272,35 @@ config EFI_DISABLE_PCI_DMA
 	  options "efi=disable_early_pci_dma" or "efi=no_disable_early_pci_dma"
 	  may be used to override this option.
 
+config EFI_COCO_SECRET
+	bool "EFI Confidential Computing Secret Area Support"
+	depends on EFI
+	help
+	  Confidential Computing platforms (such as AMD SEV) allow the
+	  Guest Owner to securely inject secrets during guest VM launch.
+	  The secrets are placed in a designated EFI reserved memory area.
+
+	  In order to use the secrets in the kernel, the location of the secret
+	  area (as published in the EFI config table) must be kept.
+
+	  If you say Y here, the address of the EFI secret area will be kept
+	  for usage inside the kernel.  This will allow the
+	  virt/coco/efi_secret module to access the secrets, which in turn
+	  allows userspace programs to access the injected secrets.
+
+config UNACCEPTED_MEMORY
+	bool "Tdx unaccepted memory support"
+	depends on EFI_STUB && X86
+	help
+	   Some Virtual Machine platforms, such as Intel TDX, require
+	   some memory to be "accepted" by the guest before it can be used.
+	   This mechanism helps prevent malicious hosts from making changes
+	   to guest memory.
+
+	   UEFI specification v2.9 introduced EFI_UNACCEPTED_MEMORY memory type.
+
+	   This option adds support for unaccepted memory and makes such memory
+	   usable by the kernel.
 endmenu
 
 config EFI_EMBEDDED_FIRMWARE
@@ -322,18 +351,3 @@ config YITIAN_CPER_RAWDATA
 	  including CMN, GIC, SMMU, DDR, etc. It gathers more useful error
 	  info from hardware, which helps to debug and test RAS feature.
 
-config EFI_COCO_SECRET
-	bool "EFI Confidential Computing Secret Area Support"
-	depends on EFI
-	help
-	  Confidential Computing platforms (such as AMD SEV) allow the
-	  Guest Owner to securely inject secrets during guest VM launch.
-	  The secrets are placed in a designated EFI reserved memory area.
-
-	  In order to use the secrets in the kernel, the location of the secret
-	  area (as published in the EFI config table) must be kept.
-
-	  If you say Y here, the address of the EFI secret area will be kept
-	  for usage inside the kernel.  This will allow the
-	  virt/coco/efi_secret module to access the secrets, which in turn
-	  allows userspace programs to access the injected secrets.

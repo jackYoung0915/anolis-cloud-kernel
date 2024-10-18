@@ -5,6 +5,7 @@
 #include <asm/rmwcc.h>
 #include <asm/percpu.h>
 #include <linux/thread_info.h>
+#include <linux/static_call_types.h>
 
 DECLARE_PER_CPU(int, __preempt_count);
 
@@ -103,16 +104,25 @@ static __always_inline bool should_resched(int preempt_offset)
 }
 
 #ifdef CONFIG_PREEMPTION
-  extern asmlinkage void preempt_schedule_thunk(void);
-# define __preempt_schedule() \
-	asm volatile ("call preempt_schedule_thunk" : ASM_CALL_CONSTRAINT)
 
-  extern asmlinkage void preempt_schedule(void);
-  extern asmlinkage void preempt_schedule_notrace_thunk(void);
-# define __preempt_schedule_notrace() \
-	asm volatile ("call preempt_schedule_notrace_thunk" : ASM_CALL_CONSTRAINT)
+extern asmlinkage void preempt_schedule(void);
+extern asmlinkage void preempt_schedule_thunk(void);
 
-  extern asmlinkage void preempt_schedule_notrace(void);
-#endif
+#define preempt_schedule_dynamic_enabled	preempt_schedule_thunk
+#define preempt_schedule_dynamic_disabled	NULL
+
+extern asmlinkage void preempt_schedule_notrace(void);
+extern asmlinkage void preempt_schedule_notrace_thunk(void);
+
+#define preempt_schedule_notrace_dynamic_enabled	preempt_schedule_notrace_thunk
+#define preempt_schedule_notrace_dynamic_disabled	NULL
+
+#define __preempt_schedule() \
+	asm volatile ("call preempt_schedule_thunk" : ASM_CALL_CONSTRAINT);
+
+#define __preempt_schedule_notrace() \
+	asm volatile ("call preempt_schedule_notrace_thunk" : ASM_CALL_CONSTRAINT);
+
+#endif /* PREEMPTION */
 
 #endif /* __ASM_PREEMPT_H */

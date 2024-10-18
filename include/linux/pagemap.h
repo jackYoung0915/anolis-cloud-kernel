@@ -32,6 +32,8 @@ enum mapping_flags {
 	AS_NO_WRITEBACK_TAGS = 5,
 	AS_THP_SUPPORT = 6,	/* THPs supported */
 	AS_ZEROPAGE = 7,   /* Filled file hole with zero page */
+
+	AS_FSDAX_NORMAP = 30,
 };
 
 /**

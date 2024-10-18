@@ -107,7 +107,7 @@ static bool txgbe_set_vmdq_queues(struct txgbe_adapter *adapter)
 	/* 64 pool mode with 2 queues per pool, or
 	 * 16/32/64 pool mode with 1 queue per pool
 	 */
-	if (vmdq_i > 32 || rss_i < 4 || adapter->vf_mode == 63) {
+	if (vmdq_i > 32) {
 		vmdq_m = TXGBE_VMDQ_2Q_MASK;
 		rss_m = TXGBE_RSS_2Q_MASK;
 		rss_i = min_t(u16, rss_i, 2);
@@ -115,7 +115,8 @@ static bool txgbe_set_vmdq_queues(struct txgbe_adapter *adapter)
 	} else {
 		vmdq_m = TXGBE_VMDQ_4Q_MASK;
 		rss_m = TXGBE_RSS_4Q_MASK;
-		rss_i = 4;
+		/* We can support 4, 2, or 1 queues */
+		rss_i = (rss_i > 3) ? 4 : (rss_i > 1) ? 2 : 1;
 	}
 
 	/* remove the starting offset from the pool count */

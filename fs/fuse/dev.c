@@ -22,6 +22,9 @@
 #include <linux/splice.h>
 #include <linux/sched.h>
 
+#define CREATE_TRACE_POINTS
+#include "fuse_trace.h"
+
 MODULE_ALIAS_MISCDEV(FUSE_MINOR);
 MODULE_ALIAS("devname:fuse");
 
@@ -30,6 +33,8 @@ MODULE_ALIAS("devname:fuse");
 #define FUSE_REQ_ID_STEP (1ULL << 1)
 
 static struct kmem_cache *fuse_req_cachep;
+
+static void end_requests(struct list_head *head);
 
 static struct fuse_dev *fuse_get_dev(struct file *file)
 {
@@ -197,10 +202,21 @@ unsigned int fuse_len_args(unsigned int numargs, struct fuse_arg *args)
 }
 EXPORT_SYMBOL_GPL(fuse_len_args);
 
-u64 fuse_get_unique(struct fuse_iqueue *fiq)
+static u64 fuse_get_unique_locked(struct fuse_iqueue *fiq)
 {
 	fiq->reqctr += FUSE_REQ_ID_STEP;
 	return fiq->reqctr;
+}
+
+u64 fuse_get_unique(struct fuse_iqueue *fiq)
+{
+	u64 ret;
+
+	spin_lock(&fiq->lock);
+	ret = fuse_get_unique_locked(fiq);
+	spin_unlock(&fiq->lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(fuse_get_unique);
 
@@ -220,22 +236,71 @@ __releases(fiq->lock)
 	spin_unlock(&fiq->lock);
 }
 
+static void fuse_dev_queue_forget(struct fuse_iqueue *fiq, struct fuse_forget_link *forget)
+{
+	spin_lock(&fiq->lock);
+	if (fiq->connected) {
+		fiq->forget_list_tail->next = forget;
+		fiq->forget_list_tail = forget;
+		fuse_dev_wake_and_unlock(fiq);
+	} else {
+		kfree(forget);
+		spin_unlock(&fiq->lock);
+	}
+}
+
+static void fuse_dev_queue_interrupt(struct fuse_iqueue *fiq, struct fuse_req *req)
+{
+	spin_lock(&fiq->lock);
+	if (list_empty(&req->intr_entry)) {
+		list_add_tail(&req->intr_entry, &fiq->interrupts);
+		/*
+		 * Pairs with smp_mb() implied by test_and_set_bit()
+		 * from fuse_request_end().
+		 */
+		smp_mb();
+		if (test_bit(FR_FINISHED, &req->flags)) {
+			list_del_init(&req->intr_entry);
+			spin_unlock(&fiq->lock);
+		} else  {
+			fuse_dev_wake_and_unlock(fiq);
+		}
+	} else {
+		spin_unlock(&fiq->lock);
+	}
+}
+
+static void fuse_dev_queue_req(struct fuse_iqueue *fiq, struct fuse_req *req)
+{
+	spin_lock(&fiq->lock);
+	if (fiq->connected) {
+		if (req->in.h.opcode != FUSE_NOTIFY_REPLY)
+			req->in.h.unique = fuse_get_unique_locked(fiq);
+		list_add_tail(&req->list, &fiq->pending);
+		fuse_dev_wake_and_unlock(fiq);
+	} else {
+		spin_unlock(&fiq->lock);
+		req->out.h.error = -ENOTCONN;
+		clear_bit(FR_PENDING, &req->flags);
+		fuse_request_end(req);
+	}
+}
+
 const struct fuse_iqueue_ops fuse_dev_fiq_ops = {
-	.wake_forget_and_unlock		= fuse_dev_wake_and_unlock,
-	.wake_interrupt_and_unlock	= fuse_dev_wake_and_unlock,
-	.wake_pending_and_unlock	= fuse_dev_wake_and_unlock,
+	.send_forget	= fuse_dev_queue_forget,
+	.send_interrupt	= fuse_dev_queue_interrupt,
+	.send_req	= fuse_dev_queue_req,
 };
 EXPORT_SYMBOL_GPL(fuse_dev_fiq_ops);
 
-static void queue_request_and_unlock(struct fuse_iqueue *fiq,
-				     struct fuse_req *req)
-__releases(fiq->lock)
+static void fuse_send_one(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
+	req->send_time = get_time_now_us();
 	req->in.h.len = sizeof(struct fuse_in_header) +
 		fuse_len_args(req->args->in_numargs,
 			      (struct fuse_arg *) req->args->in_args);
-	list_add_tail(&req->list, &fiq->pending);
-	fiq->ops->wake_pending_and_unlock(fiq);
+	trace_fuse_request_send(req);
+	fiq->ops->send_req(fiq, req);
 }
 
 void fuse_queue_forget(struct fuse_conn *fc, struct fuse_forget_link *forget,
@@ -246,21 +311,224 @@ void fuse_queue_forget(struct fuse_conn *fc, struct fuse_forget_link *forget,
 	forget->forget_one.nodeid = nodeid;
 	forget->forget_one.nlookup = nlookup;
 
-	spin_lock(&fiq->lock);
-	if (fiq->connected) {
-		fiq->forget_list_tail->next = forget;
-		fiq->forget_list_tail = forget;
-		fiq->ops->wake_forget_and_unlock(fiq);
-	} else {
-		kfree(forget);
-		spin_unlock(&fiq->lock);
+	fiq->ops->send_forget(fiq, forget);
+}
+
+static unsigned int fuse_bgqueue_type(struct fuse_req *req)
+{
+	return req->args->opcode == FUSE_WRITE ? FUSE_BG_WRITE : FUSE_BG_DEFAULT;
+}
+
+static unsigned int fuse_ihash(u64 nodeid)
+{
+	return hash_long(nodeid, FUSE_BG_HASH_BITS);
+}
+
+static unsigned int fuse_hash_index_conflict(struct fuse_conn *fc,
+		unsigned int type, unsigned int start)
+{
+	struct fuse_bg_table *table = &fc->bg_table[type];
+	unsigned int candidate = start;
+	unsigned int lowest_pending = table->bg_queue[start].pending;
+	unsigned int next = (start + 1) & FUSE_BG_HASH_MASK;
+
+	while (next != start) {
+		unsigned int pending = table->bg_queue[next].pending;
+
+		if (!pending)
+			return next;
+		if (pending < lowest_pending) {
+			candidate = next;
+			lowest_pending = pending;
+		}
+		next = (next + 1) & FUSE_BG_HASH_MASK;
+	}
+	return candidate;
+}
+
+static unsigned int fuse_hash_index(struct fuse_conn *fc,
+		struct fuse_req *req, unsigned int type)
+{
+	unsigned int index = fuse_ihash(req->args->nodeid);
+
+	/* find an empty slot (if any) if hash conflicts */
+	if (fc->bg_table[type].bg_queue[index].pending)
+		index = fuse_hash_index_conflict(fc, type, index);
+	return index;
+}
+
+static unsigned int fuse_bgqueue_index(struct fuse_conn *fc,
+		struct fuse_req *req, unsigned int type)
+{
+	struct fuse_inode *fi = req->args->fi;
+
+	/* fast path: reuse cached index if any */
+	if (fi) {
+		fi->bg_queue_active[type]++;
+		if (fi->bg_queue_index[type] == FUSE_BG_INDEX_NONE)
+			fi->bg_queue_index[type] = fuse_hash_index(fc, req, type);
+		return fi->bg_queue_index[type];
+	}
+
+	/* slow path: calculate index from hash */
+	return fuse_hash_index(fc, req, type);
+}
+
+static void fuse_add_sbg_queue(struct fuse_conn *fc, struct fuse_req *req)
+{
+	unsigned int type = fuse_bgqueue_type(req);
+	unsigned int index = fuse_bgqueue_index(fc, req, type);
+	struct fuse_bg_queue *bg_queue = &fc->bg_table[type].bg_queue[index];
+
+	req->bg_queue_index = index;
+	list_add_tail(&req->list, &bg_queue->queue);
+	bg_queue->pending++;
+}
+
+static void fuse_add_bg_queue(struct fuse_conn *fc, struct fuse_req *req)
+{
+	if (!fc->separate_background)
+		list_add_tail(&req->list, &fc->bg_queue);
+	else
+		fuse_add_sbg_queue(fc, req);
+}
+
+static unsigned int fuse_req_numpages(struct fuse_req *req)
+{
+	struct fuse_args_pages *ap = container_of(req->args, typeof(*ap), args);
+
+	return ap->num_pages;
+}
+
+static void fuse_dec_active_sbg(struct fuse_conn *fc, struct fuse_req *req)
+{
+	unsigned int type = fuse_bgqueue_type(req);
+	struct fuse_bg_table *table = &fc->bg_table[type];
+	struct fuse_inode *fi = req->args->fi;
+
+	if (test_bit(FR_RESERVED_QUOTA, &req->flags))
+		table->bg_queue[req->bg_queue_index].active--;
+	else {
+		table->active_background--;
+		if (req->args->opcode == FUSE_WRITE)
+			table->active_background_pages -= fuse_req_numpages(req);
+	}
+
+	if (fi && !--fi->bg_queue_active[type])
+		fi->bg_queue_index[type] = FUSE_BG_INDEX_NONE;
+}
+
+static void fuse_dec_active_bg(struct fuse_conn *fc, struct fuse_req *req)
+{
+	if (!fc->separate_background)
+		fc->active_background--;
+	else
+		fuse_dec_active_sbg(fc, req);
+}
+
+static void fuse_flush_sbg_queue_reserved(struct fuse_conn *fc, unsigned int type)
+{
+	struct fuse_bg_table *table = &fc->bg_table[type];
+	int i;
+
+	for (i = 0; i < FUSE_BG_HASH_SIZE; i++) {
+		struct fuse_bg_queue *bg_queue = &table->bg_queue[i];
+
+		while (bg_queue->active < table->reserved_background &&
+		       !list_empty(&bg_queue->queue)) {
+			struct fuse_req *req;
+
+			req = list_first_entry(&bg_queue->queue, struct fuse_req, list);
+			list_del(&req->list);
+			__set_bit(FR_RESERVED_QUOTA, &req->flags);
+			bg_queue->active++;
+			bg_queue->pending--;
+			fuse_send_one(&fc->iq, req);
+		}
 	}
 }
 
-static void flush_bg_queue(struct fuse_conn *fc)
+/*
+ * Iterate all bg_queues, with each queue consuming at maximum batch (i.e.
+ * FUSE_DEFAULT_MAX_BACKGROUND) quotas.
+ *
+ * Return true if there's any pending request remained after one round, false
+ * otherwise.
+ */
+static bool fuse_flush_sbg_queue_shared(struct fuse_conn *fc, unsigned int type)
 {
-	struct fuse_iqueue *fiq = &fc->iq;
+	struct fuse_bg_table *table = &fc->bg_table[type];
+	unsigned int start_queue = table->next_queue_index;
+	unsigned int batch = FUSE_DEFAULT_MAX_BACKGROUND;
+	bool again = false;
 
+	do {
+		unsigned int count = 0;
+		unsigned int index = table->next_queue_index;
+		struct fuse_bg_queue *bg_queue = &table->bg_queue[index];
+
+		index = (index + 1) & FUSE_BG_HASH_MASK;
+
+		while (!list_empty(&bg_queue->queue)) {
+			struct fuse_req *req;
+
+			/*
+			 * Don't bump the next_queue_index if current bg_queue
+			 * has not comsumed any quota.  Otherwise bump the index
+			 * even when the whole batch has not been used up.
+			 */
+			if (table->active_background >= table->max_background) {
+				if (count)
+					table->next_queue_index = index;
+				return false;
+			}
+			if (count == batch) {
+				again = true;
+				break;
+			}
+
+			req = list_first_entry(&bg_queue->queue, struct fuse_req, list);
+			if (type == FUSE_BG_WRITE) {
+				if (table->active_background_pages + fuse_req_numpages(req) >
+						table->max_background_pages)
+					return false;
+				table->active_background_pages += fuse_req_numpages(req);
+			}
+
+			list_del(&req->list);
+			table->active_background++;
+			bg_queue->pending--;
+			count++;
+			fuse_send_one(&fc->iq, req);
+		}
+
+		table->next_queue_index = index;
+	} while (table->next_queue_index != start_queue);
+
+	return again;
+}
+
+static void fuse_do_flush_sbg_queue(struct fuse_conn *fc, unsigned int type)
+{
+	bool retry;
+
+	/* first try each bg_queue's reserved quota */
+	fuse_flush_sbg_queue_reserved(fc, type);
+
+	/* then compete for the shared quota */
+	do {
+		retry = fuse_flush_sbg_queue_shared(fc, type);
+	} while (retry);
+}
+
+static void fuse_flush_sbg_queue(struct fuse_conn *fc)
+{
+	fuse_do_flush_sbg_queue(fc, FUSE_BG_DEFAULT);
+	fuse_do_flush_sbg_queue(fc, FUSE_BG_WRITE);
+}
+
+static void fuse_flush_bg_queue(struct fuse_conn *fc)
+{
 	while (fc->active_background < fc->max_background &&
 	       !list_empty(&fc->bg_queue)) {
 		struct fuse_req *req;
@@ -268,10 +536,16 @@ static void flush_bg_queue(struct fuse_conn *fc)
 		req = list_first_entry(&fc->bg_queue, struct fuse_req, list);
 		list_del(&req->list);
 		fc->active_background++;
-		spin_lock(&fiq->lock);
-		req->in.h.unique = fuse_get_unique(fiq);
-		queue_request_and_unlock(fiq, req);
+		fuse_send_one(&fc->iq, req);
 	}
+}
+
+static void flush_bg_queue(struct fuse_conn *fc)
+{
+	if (!fc->separate_background)
+		fuse_flush_bg_queue(fc);
+	else
+		fuse_flush_sbg_queue(fc);
 }
 
 static void fuse_update_stats(struct fuse_conn *fc, struct fuse_req *req)
@@ -307,6 +581,7 @@ void fuse_request_end(struct fuse_req *req)
 	if (test_and_set_bit(FR_FINISHED, &req->flags))
 		goto put_request;
 
+	trace_fuse_request_end(req);
 	/*
 	 * test_and_set_bit() implies smp_mb() between bit
 	 * changing and below FR_INTERRUPTED check. Pairs with
@@ -320,8 +595,6 @@ void fuse_request_end(struct fuse_req *req)
 	WARN_ON(test_bit(FR_PENDING, &req->flags));
 	WARN_ON(test_bit(FR_SENT, &req->flags));
 	if (test_bit(FR_BACKGROUND, &req->flags)) {
-		fuse_update_stats(fc, req);
-
 		spin_lock(&fc->bg_lock);
 		clear_bit(FR_BACKGROUND, &req->flags);
 		if (fc->num_background == fc->max_background) {
@@ -343,13 +616,15 @@ void fuse_request_end(struct fuse_req *req)
 			clear_bdi_congested(fm->sb->s_bdi, BLK_RW_ASYNC);
 		}
 		fc->num_background--;
-		fc->active_background--;
+		fuse_dec_active_bg(fc, req);
 		flush_bg_queue(fc);
 		spin_unlock(&fc->bg_lock);
 	} else {
 		/* Wake up waiter sleeping in request_wait_answer() */
 		wake_up(&req->waitq);
 	}
+
+	fuse_update_stats(fc, req);
 
 	if (test_bit(FR_ASYNC, &req->flags))
 		req->args->end(fm, req->args, req->out.h.error);
@@ -362,29 +637,12 @@ static int queue_interrupt(struct fuse_req *req)
 {
 	struct fuse_iqueue *fiq = &req->fm->fc->iq;
 
-	spin_lock(&fiq->lock);
 	/* Check for we've sent request to interrupt this req */
-	if (unlikely(!test_bit(FR_INTERRUPTED, &req->flags))) {
-		spin_unlock(&fiq->lock);
+	if (unlikely(!test_bit(FR_INTERRUPTED, &req->flags)))
 		return -EINVAL;
-	}
 
-	if (list_empty(&req->intr_entry)) {
-		list_add_tail(&req->intr_entry, &fiq->interrupts);
-		/*
-		 * Pairs with smp_mb() implied by test_and_set_bit()
-		 * from fuse_request_end().
-		 */
-		smp_mb();
-		if (test_bit(FR_FINISHED, &req->flags)) {
-			list_del_init(&req->intr_entry);
-			spin_unlock(&fiq->lock);
-			return 0;
-		}
-		fiq->ops->wake_interrupt_and_unlock(fiq);
-	} else {
-		spin_unlock(&fiq->lock);
-	}
+	fiq->ops->send_interrupt(fiq, req);
+
 	return 0;
 }
 
@@ -437,27 +695,16 @@ static void request_wait_answer(struct fuse_req *req)
 static void __fuse_request_send(struct fuse_req *req)
 {
 	struct fuse_iqueue *fiq = &req->fm->fc->iq;
-	struct fuse_conn *fc = req->fm->fc;
 
 	BUG_ON(test_bit(FR_BACKGROUND, &req->flags));
-	spin_lock(&fiq->lock);
-	if (!fiq->connected) {
-		spin_unlock(&fiq->lock);
-		req->out.h.error = -ENOTCONN;
-	} else {
-		req->send_time = get_time_now_us();
-		req->in.h.unique = fuse_get_unique(fiq);
-		/* acquire extra reference, since request is still needed
-		   after fuse_request_end() */
-		__fuse_get_request(req);
-		queue_request_and_unlock(fiq, req);
+	/* acquire extra reference, since request is still needed after
+	   fuse_request_end() */
+	__fuse_get_request(req);
+	fuse_send_one(fiq, req);
 
-		request_wait_answer(req);
-		/* Pairs with smp_wmb() in fuse_request_end() */
-		smp_rmb();
-
-		fuse_update_stats(fc, req);
-	}
+	request_wait_answer(req);
+	/* Pairs with smp_wmb() in fuse_request_end() */
+	smp_rmb();
 }
 
 static void fuse_adjust_compat(struct fuse_conn *fc, struct fuse_args *args)
@@ -562,9 +809,6 @@ static bool fuse_request_queue_background(struct fuse_req *req)
 		atomic_inc(&fc->num_waiting);
 	}
 	__set_bit(FR_ISREPLY, &req->flags);
-
-	req->send_time = get_time_now_us();
-
 	spin_lock(&fc->bg_lock);
 	if (likely(fc->connected)) {
 		fc->num_background++;
@@ -574,7 +818,7 @@ static bool fuse_request_queue_background(struct fuse_req *req)
 			set_bdi_congested(fm->sb->s_bdi, BLK_RW_SYNC);
 			set_bdi_congested(fm->sb->s_bdi, BLK_RW_ASYNC);
 		}
-		list_add_tail(&req->list, &fc->bg_queue);
+		fuse_add_bg_queue(fc, req);
 		flush_bg_queue(fc);
 		queued = true;
 	}
@@ -617,7 +861,6 @@ static int fuse_simple_notify_reply(struct fuse_mount *fm,
 {
 	struct fuse_req *req;
 	struct fuse_iqueue *fiq = &fm->fc->iq;
-	int err = 0;
 
 	req = fuse_get_req(fm, false);
 	if (IS_ERR(req))
@@ -628,16 +871,9 @@ static int fuse_simple_notify_reply(struct fuse_mount *fm,
 
 	fuse_args_to_req(req, args);
 
-	spin_lock(&fiq->lock);
-	if (fiq->connected) {
-		queue_request_and_unlock(fiq, req);
-	} else {
-		err = -ENODEV;
-		spin_unlock(&fiq->lock);
-		fuse_put_request(req);
-	}
+	fuse_send_one(fiq, req);
 
-	return err;
+	return 0;
 }
 
 int fuse_request_queue(struct fuse_mount *fm, struct fuse_args *args)
@@ -661,17 +897,7 @@ int fuse_request_queue(struct fuse_mount *fm, struct fuse_args *args)
 	}
 
 	__set_bit(FR_ISREPLY, &req->flags);
-
-	spin_lock(&fiq->lock);
-	if (!fiq->connected) {
-		err = -ENODEV;
-		spin_unlock(&fiq->lock);
-		fuse_put_request(req);
-		goto out;
-	}
-
-	req->in.h.unique = fuse_get_unique(fiq);
-	queue_request_and_unlock(fiq, req);
+	fuse_send_one(fiq, req);
 out:
 	spin_unlock(&fc->lock);
 	return err;
@@ -1154,9 +1380,9 @@ __releases(fiq->lock)
 	return err ? err : reqsize;
 }
 
-struct fuse_forget_link *fuse_dequeue_forget(struct fuse_iqueue *fiq,
-					     unsigned int max,
-					     unsigned int *countp)
+static struct fuse_forget_link *fuse_dequeue_forget(struct fuse_iqueue *fiq,
+						    unsigned int max,
+						    unsigned int *countp)
 {
 	struct fuse_forget_link *head = fiq->forget_list_head.next;
 	struct fuse_forget_link **newhead = &head;
@@ -1175,7 +1401,6 @@ struct fuse_forget_link *fuse_dequeue_forget(struct fuse_iqueue *fiq,
 
 	return head;
 }
-EXPORT_SYMBOL(fuse_dequeue_forget);
 
 static int fuse_read_single_forget(struct fuse_iqueue *fiq,
 				   struct fuse_copy_state *cs,
@@ -1190,7 +1415,7 @@ __releases(fiq->lock)
 	struct fuse_in_header ih = {
 		.opcode = FUSE_FORGET,
 		.nodeid = forget->forget_one.nodeid,
-		.unique = fuse_get_unique(fiq),
+		.unique = fuse_get_unique_locked(fiq),
 		.len = sizeof(ih) + sizeof(arg),
 	};
 
@@ -1221,7 +1446,7 @@ __releases(fiq->lock)
 	struct fuse_batch_forget_in arg = { .count = 0 };
 	struct fuse_in_header ih = {
 		.opcode = FUSE_BATCH_FORGET,
-		.unique = fuse_get_unique(fiq),
+		.unique = fuse_get_unique_locked(fiq),
 		.len = sizeof(ih) + sizeof(arg),
 	};
 
@@ -1696,9 +1921,11 @@ static int fuse_notify_store(struct fuse_conn *fc, unsigned int size,
 
 		this_num = min_t(unsigned, num, PAGE_SIZE - offset);
 		err = fuse_copy_page(cs, &page, offset, this_num, 0);
-		if (!err && offset == 0 &&
-		    (this_num == PAGE_SIZE || file_size == end))
+		if (!PageUptodate(page) && !err && offset == 0 &&
+		    (this_num == PAGE_SIZE || file_size == end)) {
+			zero_user_segment(page, this_num, PAGE_SIZE);
 			SetPageUptodate(page);
+		}
 		unlock_page(page);
 		put_page(page);
 
@@ -1853,6 +2080,76 @@ copy_finish:
 	return err;
 }
 
+static void fuse_requeue_requests(struct fuse_conn *fc,
+				  struct list_head *to_queue)
+{
+	struct fuse_req *req, *next;
+	struct fuse_iqueue *fiq = &fc->iq;
+
+	list_for_each_entry_safe(req, next, to_queue, list) {
+		set_bit(FR_PENDING, &req->flags);
+		clear_bit(FR_SENT, &req->flags);
+		/* mark the request as resend request */
+		req->in.h.unique |= FUSE_UNIQUE_RESEND;
+	}
+
+	spin_lock(&fiq->lock);
+	if (!fiq->connected) {
+		spin_unlock(&fiq->lock);
+		list_for_each_entry(req, to_queue, list)
+			clear_bit(FR_PENDING, &req->flags);
+		end_requests(to_queue);
+		return;
+	}
+	/* iq and pq requests are both oldest to newest */
+	list_splice(to_queue, &fiq->pending);
+	fuse_dev_wake_and_unlock(fiq);
+}
+
+/*
+ * Resending all processing queue requests.
+ *
+ * During a FUSE daemon panics and failover, it is possible for some inflight
+ * requests to be lost and never returned. As a result, applications awaiting
+ * replies would become stuck forever. To address this, we can use notification
+ * to trigger resending of these pending requests to the FUSE daemon, ensuring
+ * they are properly processed again.
+ *
+ * Please note that this strategy is applicable only to idempotent requests or
+ * if the FUSE daemon takes careful measures to avoid processing duplicated
+ * non-idempotent requests.
+ */
+static void fuse_resend(struct fuse_conn *fc)
+{
+	struct fuse_dev *fud;
+	LIST_HEAD(to_queue);
+	unsigned int i;
+
+	spin_lock(&fc->lock);
+	if (!fc->connected) {
+		spin_unlock(&fc->lock);
+		return;
+	}
+
+	list_for_each_entry(fud, &fc->devices, entry) {
+		struct fuse_pqueue *fpq = &fud->pq;
+
+		spin_lock(&fpq->lock);
+		for (i = 0; i < FUSE_PQ_HASH_SIZE; i++)
+			list_splice_tail_init(&fpq->processing[i], &to_queue);
+		spin_unlock(&fpq->lock);
+	}
+	spin_unlock(&fc->lock);
+
+	fuse_requeue_requests(fc, &to_queue);
+}
+
+static int fuse_notify_resend(struct fuse_conn *fc)
+{
+	fuse_resend(fc);
+	return 0;
+}
+
 static int fuse_notify(struct fuse_conn *fc, enum fuse_notify_code code,
 		       unsigned int size, struct fuse_copy_state *cs)
 {
@@ -1877,6 +2174,9 @@ static int fuse_notify(struct fuse_conn *fc, enum fuse_notify_code code,
 
 	case FUSE_NOTIFY_DELETE:
 		return fuse_notify_delete(fc, size, cs);
+
+	case FUSE_NOTIFY_RESEND:
+		return fuse_notify_resend(fc);
 
 	default:
 		fuse_copy_finish(cs);
@@ -2241,6 +2541,10 @@ void fuse_abort_conn(struct fuse_conn *fc)
 		spin_lock(&fc->bg_lock);
 		fc->blocked = 0;
 		fc->max_background = UINT_MAX;
+		fc->bg_table[FUSE_BG_DEFAULT].max_background = UINT_MAX;
+		fc->bg_table[FUSE_BG_WRITE].max_background = UINT_MAX;
+		fc->bg_table[FUSE_BG_DEFAULT].max_background_pages = UINT_MAX;
+		fc->bg_table[FUSE_BG_WRITE].max_background_pages = UINT_MAX;
 		flush_bg_queue(fc);
 		spin_unlock(&fc->bg_lock);
 
@@ -2288,10 +2592,13 @@ int fuse_dev_release(struct inode *inode, struct file *file)
 			list_splice_init(&fpq->processing[i], &to_end);
 		spin_unlock(&fpq->lock);
 
-		end_requests(&to_end);
+		if (!fc->recovery)
+			end_requests(&to_end);
+		else
+			fuse_requeue_requests(fc, &to_end);
 
 		/* Are we the last open device? */
-		if (atomic_dec_and_test(&fc->dev_count)) {
+		if (atomic_dec_and_test(&fc->dev_count) && !fc->recovery) {
 			WARN_ON(fc->iq.fasync != NULL);
 			fuse_abort_conn(fc);
 		}
@@ -2443,134 +2750,186 @@ void fuse_reset_conn(struct fuse_conn *fc)
 }
 EXPORT_SYMBOL_GPL(fuse_reset_conn);
 
+static long fuse_dev_ioctl_clone(struct file *file, __u32 __user *argp)
+{
+	int res;
+	int oldfd;
+	struct fuse_dev *fud = NULL;
+	struct file *old;
+
+	if (get_user(oldfd, argp))
+		return -EFAULT;
+
+	old = fget(oldfd);
+	if (!old)
+		return -EINVAL;
+
+	/*
+	 * Check against file->f_op because CUSE
+	 * uses the same ioctl handler.
+	 */
+	if (old->f_op == file->f_op &&
+	    old->f_cred->user_ns == file->f_cred->user_ns)
+		fud = fuse_get_dev(old);
+
+	res = -EINVAL;
+	if (fud) {
+		mutex_lock(&fuse_mutex);
+		res = fuse_device_clone(fud->fc, file);
+		mutex_unlock(&fuse_mutex);
+	}
+
+	fput(old);
+	return res;
+}
+
+static long fuse_dev_ioctl_passthrough_open(struct file *file,
+		__u32 __user *argp, bool write_only)
+{
+	int fd;
+	struct fuse_dev *fud;
+
+	if (get_user(fd, argp))
+		return -EFAULT;
+
+	fud = fuse_get_dev(file);
+	if (!fud)
+		return -EINVAL;
+
+	return fuse_passthrough_open(fud, fd, write_only);
+}
+
+static int fuse_device_attach(struct file *file, void __user *argp,
+		struct fuse_ioctl_attach *attach, struct fuse_mount **fmp)
+{
+	struct fuse_conn *fc;
+	struct fuse_mount *fm;
+	int res;
+
+	list_for_each_entry(fc, &fuse_conn_list, entry) {
+		if (strncmp(fc->tag, attach->tag, FUSE_TAG_NAME_MAX - 1))
+			continue;
+
+		/*
+		 * Get the main fuse_mount through super block to avoid
+		 * dependence on list fc->mounts sequence.
+		 */
+		down_read(&fc->killsb);
+		if (list_empty(&fc->mounts)) {
+			up_read(&fc->killsb);
+			return -EINVAL;
+		}
+		fm = list_first_entry(&fc->mounts, struct fuse_mount, fc_entry);
+		*fmp = get_fuse_mount_super(fm->sb);
+		up_read(&fc->killsb);
+
+		/* return dev_t of matched connection */
+		attach->dev = fc->dev;
+		if (copy_to_user(argp, attach, sizeof(*attach)))
+			return -EFAULT;
+
+		res = fuse_device_clone(fc, file);
+		if (!res)
+			fuse_reset_conn(fc);
+		return res;
+	}
+	return -EINVAL;
+}
+
+static long fuse_dev_ioctl_attach(struct file *file, void __user *argp)
+{
+	struct fuse_ioctl_attach attach;
+	struct fuse_mount *fm;
+	int res;
+
+	if (copy_from_user(&attach, argp, sizeof(attach)))
+		return -EFAULT;
+
+	if (attach.tag[0] == '\0')
+		return -EINVAL;
+
+	mutex_lock(&fuse_mutex);
+	res = fuse_device_attach(file, argp, &attach, &fm);
+	mutex_unlock(&fuse_mutex);
+	if (!res)
+		fuse_resend_init(fm);
+	return res;
+}
+
+static inline bool fuse_device_recover_permissible(struct fuse_conn *fc)
+{
+	const struct cred *cred = current_cred();
+
+	return (uid_eq(cred->euid, fc->rescue_uid) &&
+		uid_eq(cred->suid, fc->rescue_uid) &&
+		uid_eq(cred->uid,  fc->rescue_uid));
+}
+
+static int fuse_device_recover(struct file *file, void __user *argp,
+		struct fuse_ioctl_attach *attach)
+{
+	struct fuse_conn *fc;
+
+	list_for_each_entry(fc, &fuse_conn_list, entry) {
+		if (strncmp(fc->tag, attach->tag, FUSE_TAG_NAME_MAX))
+			continue;
+		if (!fc->recovery)
+			return -EOPNOTSUPP;
+		if (!fuse_device_recover_permissible(fc))
+			return -EPERM;
+
+		/* return dev_t of matched connection */
+		attach->dev = fc->dev;
+		if (copy_to_user(argp, attach, sizeof(*attach)))
+			return -EFAULT;
+
+		atomic64_inc(&fc->fo_version);
+		return fuse_device_clone(fc, file);
+	}
+	return -ENODEV;
+}
+
+static long fuse_dev_ioctl_recover(struct file *file, void __user *argp)
+{
+	struct fuse_ioctl_attach attach;
+	int res;
+
+	if (copy_from_user(&attach, argp, sizeof(attach)))
+		return -EFAULT;
+
+	if (attach.tag[0] == '\0')
+		return -EINVAL;
+
+	mutex_lock(&fuse_mutex);
+	res = fuse_device_recover(file, argp, &attach);
+	mutex_unlock(&fuse_mutex);
+	return res;
+}
+
 static long fuse_dev_ioctl(struct file *file, unsigned int cmd,
 			   unsigned long arg)
 {
-	int res;
-	int fd;
-	struct fuse_dev *fud = NULL;
-	bool passthrough_write_only = false;
-	struct fuse_ioctl_attach attach_info;
-	struct fuse_conn *fc;
-	struct fuse_mount *fm, *tmp_fm;
+	void __user *argp = (void __user *)arg;
 
 	switch (cmd) {
 	case FUSE_DEV_IOC_CLONE:
-		res = -EFAULT;
-		if (!get_user(fd, (__u32 __user *)arg)) {
-			struct file *old = fget(fd);
+		return fuse_dev_ioctl_clone(file, argp);
 
-			res = -EINVAL;
-			if (old) {
-				/*
-				 * Check against file->f_op because CUSE
-				 * uses the same ioctl handler.
-				 */
-				if (old->f_op == file->f_op &&
-				    old->f_cred->user_ns == file->f_cred->user_ns)
-					fud = fuse_get_dev(old);
-
-				if (fud) {
-					mutex_lock(&fuse_mutex);
-					res = fuse_device_clone(fud->fc, file);
-					mutex_unlock(&fuse_mutex);
-				}
-				fput(old);
-			}
-		}
-		break;
 	case FUSE_DEV_IOC_PASSTHROUGH_WRITE_OPEN_V0:
-		passthrough_write_only = true;
-		/* fallthrough */
+		return fuse_dev_ioctl_passthrough_open(file, argp, true);
+
 	case FUSE_DEV_IOC_PASSTHROUGH_OPEN_V0:
-		res = -EFAULT;
-		if (!get_user(fd, (__u32 __user *)arg)) {
-			res = -EINVAL;
-			fud = fuse_get_dev(file);
-			if (fud)
-				res = fuse_passthrough_open(fud, fd,
-						passthrough_write_only);
-		}
-		break;
+		return fuse_dev_ioctl_passthrough_open(file, argp, false);
+
 	case FUSE_DEV_IOC_ATTACH:
-		if (copy_from_user(&attach_info, (__u32 __user *)arg,
-				   sizeof(attach_info))) {
-			res = -EFAULT;
-			goto out;
-		}
+		return fuse_dev_ioctl_attach(file, argp);
 
-		if (attach_info.tag[0] == '\0') {
-			res = -EINVAL;
-			goto out;
-		}
+	case FUSE_DEV_IOC_RECOVER:
+		return fuse_dev_ioctl_recover(file, argp);
 
-		if (!file) {
-			res = -EBADF;
-			goto out;
-		}
-
-		if (file->f_op != &fuse_dev_operations ||
-		    file->private_data) {
-			res = -EBADF;
-			goto out;
-		}
-
-		res = -EINVAL;
-		mutex_lock(&fuse_mutex);
-		list_for_each_entry(fc, &fuse_conn_list, entry) {
-			if (strncmp(fc->tag, attach_info.tag,
-				    FUSE_TAG_NAME_MAX - 1))
-				continue;
-
-			attach_info.dev = fc->dev;
-			if (copy_to_user((void __user *)arg, &attach_info,
-					 sizeof(attach_info))) {
-				res = -EFAULT;
-				mutex_unlock(&fuse_mutex);
-				goto out;
-			}
-
-			fud = fuse_dev_alloc_install(fc);
-			if (!fud) {
-				res = -ENOMEM;
-				mutex_unlock(&fuse_mutex);
-				goto out;
-			}
-
-			down_read(&fc->killsb);
-			if (list_empty(&fc->mounts)) {
-				res = -EINVAL;
-				up_read(&fc->killsb);
-				fuse_dev_free(fud);
-				mutex_unlock(&fuse_mutex);
-				goto out;
-			}
-
-			file->private_data = fud;
-			atomic_inc(&fc->dev_count);
-			tmp_fm = list_first_entry(&fc->mounts,
-						  struct fuse_mount,
-						  fc_entry);
-			/* Get the main fuse_mount through super block to avoid
-			 * dependence on list fc->mounts sequence
-			 */
-			fm = get_fuse_mount_super(tmp_fm->sb);
-			up_read(&fc->killsb);
-
-			fuse_reset_conn(fc);
-			mutex_unlock(&fuse_mutex);
-			fuse_resend_init(fm);
-			res = 0;
-			goto out;
-		}
-		mutex_unlock(&fuse_mutex);
-out:
-		break;
 	default:
-		res = -ENOTTY;
-		break;
+		return -ENOTTY;
 	}
-	return res;
 }
 
 const struct file_operations fuse_dev_operations = {

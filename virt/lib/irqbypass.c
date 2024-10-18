@@ -295,4 +295,13 @@ static int __init init_irqbypass(void)
 	return 0;
 }
 
+static void __exit exit_irqbypass(void)
+{
+	int i;
+
+	for (i = 0; i < IRQBYPASS_TABLE_SIZE; i++)
+		mutex_destroy(&locks[i]);
+}
+
 module_init(init_irqbypass);
+module_exit(exit_irqbypass);

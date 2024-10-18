@@ -10,6 +10,11 @@
 
 #include <asm/resctrl.h>
 
+/* Maximum assignable counters per resctrl group */
+#define MAX_CNTRS			2
+
+#define MON_CNTR_UNSET			U32_MAX
+
 struct rdt_fs_context {
 	struct kernfs_fs_context	kfc;
 	bool				enable_cdpl2;
@@ -30,6 +35,13 @@ static inline bool is_mba_sc(struct rdt_resource *r)
 	if (!r)
 		r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
 
+	/*
+	 * The software controller support is only applicable to MBA resource.
+	 * Make sure to check for resource type.
+	 */
+	if (r->rid != RDT_RESOURCE_MBA)
+		return false;
+
 	return r->membw.mba_sc;
 }
 
@@ -45,11 +57,13 @@ static inline bool is_hwdrc_enabled(struct rdt_resource *r)
  * struct mon_evt - Entry in the event list of a resource
  * @evtid:		event id
  * @name:		name of the event
- * @list:		entry in &rdt_resource->evt_list
+ * @configurable:	true if the event is configurable
+ * @list:		entry in &rdt_resource->mon.evt_list
  */
 struct mon_evt {
 	enum resctrl_event_id	evtid;
 	char			*name;
+	bool			configurable;
 	struct list_head	list;
 };
 
@@ -126,12 +140,14 @@ enum rdtgrp_mode {
  * @parent:			parent rdtgrp
  * @crdtgrp_list:		child rdtgroup node list
  * @rmid:			rmid for this rdtgroup
+ * @cntr_id:			Counter ids for assignment
  */
 struct mongroup {
 	struct kernfs_node	*mon_data_kn;
 	struct rdtgroup		*parent;
 	struct list_head	crdtgrp_list;
 	u32			rmid;
+	u32			cntr_id[MAX_CNTRS];
 };
 
 /**
@@ -263,5 +279,14 @@ void cqm_setup_limbo_handler(struct rdt_domain *dom, unsigned long delay_ms,
 void cqm_handle_limbo(struct work_struct *work);
 bool has_busy_rmid(struct rdt_resource *r, struct rdt_domain *d);
 void __check_limbo(struct rdt_domain *d, bool force_free);
+void resctrl_file_fflags_init(const char *config,
+			      unsigned long fflags);
 
+int mbm_cntr_alloc(struct rdt_resource *r);
+void mbm_cntr_free(u32 cntr_id);
+unsigned int mon_event_config_index_get(u32 evtid);
+int rdtgroup_assign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid);
+int rdtgroup_alloc_cntr(struct rdtgroup *rdtgrp, int index);
+int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid);
+void rdtgroup_free_cntr(struct rdt_resource *r, struct rdtgroup *rdtgrp, int index);
 #endif /* _FS_RESCTRL_INTERNAL_H */

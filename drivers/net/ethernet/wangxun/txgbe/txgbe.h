@@ -243,6 +243,13 @@ enum txgbe_ring_f_enum {
 #define TXGBE_VMDQ_4Q_MASK 0x7C
 #define TXGBE_VMDQ_2Q_MASK 0x7E
 
+#define TXGBE_RSS_64Q_MASK      0x3F
+#define TXGBE_RSS_16Q_MASK      0xF
+#define TXGBE_RSS_8Q_MASK       0x7
+#define TXGBE_RSS_4Q_MASK       0x3
+#define TXGBE_RSS_2Q_MASK       0x1
+#define TXGBE_RSS_DISABLED_MASK 0x0
+
 #define TXGBE_MAX_RX_QUEUES   (TXGBE_MAX_FDIR_INDICES + 1)
 #define TXGBE_MAX_TX_QUEUES   (TXGBE_MAX_FDIR_INDICES + 1)
 
@@ -445,6 +452,7 @@ struct txgbe_mac_addr {
 #define TXGBE_FLAG2_EEE_CAPABLE                 BIT(14)
 #define TXGBE_FLAG2_EEE_ENABLED                 BIT(15)
 #define TXGBE_FLAG2_VXLAN_REREG_NEEDED          BIT(16)
+#define TXGBE_FLAG2_VLAN_PROMISC                BIT(17)
 #define TXGBE_FLAG2_DEV_RESET_REQUESTED         BIT(18)
 #define TXGBE_FLAG2_RESET_INTR_RECEIVED         BIT(19)
 #define TXGBE_FLAG2_GLOBAL_RESET_REQUESTED      BIT(20)
@@ -594,6 +602,7 @@ struct txgbe_adapter {
 
 	struct timer_list service_timer;
 	struct work_struct service_task;
+	struct work_struct sfp_sta_task;
 	struct hlist_head fdir_filter_list;
 	unsigned long fdir_overflow; /* number of times ATR was backed off */
 	union txgbe_atr_input fdir_mask;
@@ -601,6 +610,8 @@ struct txgbe_adapter {
 	u32 fdir_pballoc;
 	u32 atr_sample_rate;
 	spinlock_t fdir_perfect_lock; /*spinlock for FDIR */
+
+	struct txgbe_etype_filter_info etype_filter_info;
 
 	u32 wol;
 
@@ -641,7 +652,7 @@ struct txgbe_adapter {
 #define TXGBE_MAX_RETA_ENTRIES 128
 	u8 rss_indir_tbl[TXGBE_MAX_RETA_ENTRIES];
 #define TXGBE_RSS_KEY_SIZE     40
-	u32 *rss_key;
+	u32 rss_key[TXGBE_RSS_KEY_SIZE / sizeof(u32)];
 
 	/* misc interrupt status block */
 	dma_addr_t isb_dma;
@@ -652,7 +663,6 @@ struct txgbe_adapter {
 	struct vf_data_storage *vfinfo;
 	struct vf_macvlans vf_mvs;
 	struct vf_macvlans *mv_list;
-	u8  vf_mode;
 #ifdef CONFIG_PCI_IOV
 	u32 timer_event_accumulator;
 	u32 vferr_refcount;
@@ -687,7 +697,7 @@ struct txgbe_fdir_filter {
 	struct  hlist_node fdir_node;
 	union txgbe_atr_input filter;
 	u16 sw_idx;
-	u16 action;
+	u64 action;
 };
 
 enum txgbe_state_t {
@@ -782,6 +792,8 @@ static inline void txgbe_dbg_init(void) {}
 static inline void txgbe_dbg_exit(void) {}
 #endif
 
+void txgbe_setup_reta(struct txgbe_adapter *adapter);
+
 static inline struct netdev_queue *txring_txq(const struct txgbe_ring *ring)
 {
 	return netdev_get_tx_queue(ring->netdev, ring->queue_index);
@@ -793,7 +805,7 @@ int txgbe_add_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool);
 int txgbe_del_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool);
 int txgbe_available_rars(struct txgbe_adapter *adapter);
 void txgbe_vlan_mode(struct net_device *netdev, u32 features);
-
+u32 txgbe_rss_indir_tbl_entries(struct txgbe_adapter *adapter);
 void txgbe_ptp_init(struct txgbe_adapter *adapter);
 void txgbe_ptp_stop(struct txgbe_adapter *adapter);
 void txgbe_ptp_suspend(struct txgbe_adapter *adapter);
@@ -808,6 +820,7 @@ void txgbe_ptp_reset(struct txgbe_adapter *adapter);
 void txgbe_set_rx_drop_en(struct txgbe_adapter *adapter);
 
 void txgbe_store_reta(struct txgbe_adapter *adapter);
+void txgbe_store_vfreta(struct txgbe_adapter *adapter);
 
 void txgbe_set_vlan_anti_spoofing(struct txgbe_hw *hw, bool enable, int vf);
 void txgbe_set_ethertype_anti_spoofing(struct txgbe_hw *hw,
@@ -874,6 +887,7 @@ static inline void txgbe_intr_trigger(struct txgbe_hw *hw, u64 qmask)
 #define usec_delay(_x) udelay(_x)
 
 extern char txgbe_driver_name[];
+extern const char txgbe_driver_version[];
 
 struct txgbe_msg {
 	u16 msg_enable;

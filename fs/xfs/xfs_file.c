@@ -695,7 +695,7 @@ xfs_file_buffered_aio_write(
 	struct inode		*inode = mapping->host;
 	struct xfs_inode	*ip = XFS_I(inode);
 	ssize_t			ret;
-	int			enospc = 0;
+	bool			cleared_space = false;
 	int			iolock;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
@@ -725,27 +725,23 @@ write_retry:
 	 * metadata space. This reduces the chances that the eofblocks scan
 	 * waits on dirty mappings. Since xfs_flush_inodes() is serialized, this
 	 * also behaves as a filter to prevent too many eofblocks scans from
-	 * running at the same time.
+	 * running at the same time.  Use a synchronous scan to increase the
+	 * effectiveness of the scan.
 	 */
-	if (ret == -EDQUOT && !enospc) {
+	if (ret == -EDQUOT && !cleared_space) {
 		xfs_iunlock(ip, iolock);
-		enospc = xfs_inode_free_quota_eofblocks(ip);
-		if (enospc)
-			goto write_retry;
-		enospc = xfs_inode_free_quota_cowblocks(ip);
-		if (enospc)
-			goto write_retry;
-		iolock = 0;
-	} else if (ret == -ENOSPC && !enospc) {
+		xfs_blockgc_free_quota(ip, XFS_EOF_FLAGS_SYNC);
+		cleared_space = true;
+		goto write_retry;
+	} else if (ret == -ENOSPC && !cleared_space) {
 		struct xfs_eofblocks eofb = {0};
 
-		enospc = 1;
+		cleared_space = true;
 		xfs_flush_inodes(ip->i_mount);
 
 		xfs_iunlock(ip, iolock);
 		eofb.eof_flags = XFS_EOF_FLAGS_SYNC;
-		xfs_icache_free_eofblocks(ip->i_mount, &eofb);
-		xfs_icache_free_cowblocks(ip->i_mount, &eofb);
+		xfs_blockgc_free_space(ip->i_mount, &eofb);
 		goto write_retry;
 	}
 
@@ -1164,6 +1160,19 @@ xfs_file_remap_range(
 
 	if (xfs_file_sync_writes(file_in) || xfs_file_sync_writes(file_out))
 		xfs_log_force_inode(dest);
+
+	if (remapped && (src->i_reflink_flags & XFS_REFLINK_PRIMARY)) {
+		mutex_lock(&mp->m_reflink_opt_lock);
+		src->i_reflink_opt_ip = dest;
+		dest->i_reflink_opt_ip = src;
+		mutex_unlock(&mp->m_reflink_opt_lock);
+
+		if (!xfs_sb_version_hasrmapbt(&mp->m_sb)) {
+			set_bit(AS_FSDAX_NORMAP, &VFS_I(src)->i_mapping->flags);
+			set_bit(AS_FSDAX_NORMAP, &VFS_I(dest)->i_mapping->flags);
+		}
+	}
+
 out_unlock:
 	xfs_iunlock2_io_mmap(src, dest);
 	if (ret)

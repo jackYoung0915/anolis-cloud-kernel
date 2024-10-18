@@ -380,8 +380,7 @@ ssize_t cachefiles_ondemand_daemon_read(struct cachefiles_cache *cache,
 
 err_put_fd:
 	if (msg->opcode == CACHEFILES_OP_OPEN)
-		__close_fd(current->files,
-			   ((struct cachefiles_open *)msg->data)->fd);
+		close_fd(((struct cachefiles_open *)msg->data)->fd);
 error:
 	xa_lock(&cache->reqs);
 	radix_tree_delete(&cache->reqs, id);

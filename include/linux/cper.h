@@ -572,4 +572,6 @@ void cper_print_proc_ia(const char *pfx,
 int cper_mem_err_location(struct cper_mem_err_compact *mem, char *msg);
 int cper_dimm_err_location(struct cper_mem_err_compact *mem, char *msg);
 
+const char *cper_zdi_zpi_err_type_str(unsigned int etype);
+
 #endif

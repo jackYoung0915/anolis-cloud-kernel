@@ -12,7 +12,9 @@ ccp-$(CONFIG_PCI) += sp-pci.o
 ccp-$(CONFIG_CRYPTO_DEV_SP_PSP) += psp-dev.o \
                                    sev-dev.o \
                                    tee-dev.o \
-                                   psp-ringbuf.o
+                                   psp-ringbuf.o \
+                                   vpsp.o
+
 ccp-$(CONFIG_TDM_DEV_HYGON) += tdm-dev.o
 
 obj-$(CONFIG_CRYPTO_DEV_CCP_CRYPTO) += ccp-crypto.o

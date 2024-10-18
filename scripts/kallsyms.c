@@ -18,6 +18,7 @@
  *
  */
 
+#include <getopt.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +49,7 @@ _Static_assert(
 struct sym_entry {
 	unsigned long long addr;
 	unsigned int len;
+	unsigned int seq;
 	unsigned int start_pos;
 	unsigned int percpu_absolute;
 	unsigned char sym[];
@@ -86,8 +88,8 @@ static unsigned char best_table_len[256];
 
 static void usage(void)
 {
-	fprintf(stderr, "Usage: kallsyms [--all-symbols] "
-			"[--base-relative] < in.map > out.S\n");
+	fprintf(stderr, "Usage: kallsyms [--all-symbols] [--absolute-percpu] "
+			"[--base-relative] in.map > out.S\n");
 	exit(1);
 }
 
@@ -115,6 +117,7 @@ static bool is_ignored_symbol(const char *name, char type)
 		"kallsyms_markers",
 		"kallsyms_token_table",
 		"kallsyms_token_index",
+		"kallsyms_seqs_of_names",
 		/* Exclude linker generated symbols which vary between passes */
 		"_SDA_BASE_",		/* ppc */
 		"_SDA2_BASE_",		/* ppc */
@@ -328,12 +331,19 @@ static void shrink_table(void)
 	}
 }
 
-static void read_map(FILE *in)
+static void read_map(const char *in)
 {
+	FILE *fp;
 	struct sym_entry *sym;
 
-	while (!feof(in)) {
-		sym = read_symbol(in);
+	fp = fopen(in, "r");
+	if (!fp) {
+		perror(in);
+		exit(1);
+	}
+
+	while (!feof(fp)) {
+		sym = read_symbol(fp);
 		if (!sym)
 			continue;
 
@@ -344,12 +354,15 @@ static void read_map(FILE *in)
 			table = realloc(table, sizeof(*table) * table_size);
 			if (!table) {
 				fprintf(stderr, "out of memory\n");
+				fclose(fp);
 				exit (1);
 			}
 		}
 
 		table[table_cnt++] = sym;
 	}
+
+	fclose(fp);
 }
 
 static void output_label(const char *label)
@@ -398,6 +411,35 @@ static int expand_symbol(const unsigned char *data, int len, char *result)
 static int symbol_absolute(const struct sym_entry *s)
 {
 	return s->percpu_absolute;
+}
+
+static int compare_names(const void *a, const void *b)
+{
+	int ret;
+	char sa_namebuf[KSYM_NAME_LEN];
+	char sb_namebuf[KSYM_NAME_LEN];
+	const struct sym_entry *sa = *(const struct sym_entry **)a;
+	const struct sym_entry *sb = *(const struct sym_entry **)b;
+
+	expand_symbol(sa->sym, sa->len, sa_namebuf);
+	expand_symbol(sb->sym, sb->len, sb_namebuf);
+	ret = strcmp(&sa_namebuf[1], &sb_namebuf[1]);
+	if (!ret) {
+		if (sa->addr > sb->addr)
+			return 1;
+		else if (sa->addr < sb->addr)
+			return -1;
+
+		/* keep old order */
+		return (int)(sa->seq - sb->seq);
+	}
+
+	return ret;
+}
+
+static void sort_symbols_by_name(void)
+{
+	qsort(table, table_cnt, sizeof(table[0]), compare_names);
 }
 
 static void write_src(void)
@@ -485,6 +527,7 @@ static void write_src(void)
 	for (i = 0; i < table_cnt; i++) {
 		if ((i & 0xFF) == 0)
 			markers[i >> 8] = off;
+		table[i]->seq = i;
 
 		/* There cannot be any symbol of length zero. */
 		if (table[i]->len == 0) {
@@ -525,6 +568,15 @@ static void write_src(void)
 
 	free(markers);
 
+	sort_symbols_by_name();
+	output_label("kallsyms_seqs_of_names");
+	for (i = 0; i < table_cnt; i++)
+		printf("\t.byte 0x%02x, 0x%02x, 0x%02x\n",
+			(unsigned char)(table[i]->seq >> 16),
+			(unsigned char)(table[i]->seq >> 8),
+			(unsigned char)(table[i]->seq >> 0));
+	printf("\n");
+
 	output_label("kallsyms_token_table");
 	off = 0;
 	for (i = 0; i < 256; i++) {
@@ -563,7 +615,7 @@ static void forget_symbol(const unsigned char *symbol, int len)
 }
 
 /* do the initial token count */
-static void build_initial_tok_table(void)
+static void build_initial_token_table(void)
 {
 	unsigned int i;
 
@@ -688,7 +740,7 @@ static void insert_real_symbols_in_table(void)
 
 static void optimize_token_table(void)
 {
-	build_initial_tok_table();
+	build_initial_token_table();
 
 	insert_real_symbols_in_table();
 
@@ -803,22 +855,26 @@ static void record_relative_base(void)
 
 int main(int argc, char **argv)
 {
-	if (argc >= 2) {
-		int i;
-		for (i = 1; i < argc; i++) {
-			if(strcmp(argv[i], "--all-symbols") == 0)
-				all_symbols = 1;
-			else if (strcmp(argv[i], "--absolute-percpu") == 0)
-				absolute_percpu = 1;
-			else if (strcmp(argv[i], "--base-relative") == 0)
-				base_relative = 1;
-			else
-				usage();
-		}
-	} else if (argc != 1)
+	while (1) {
+		static struct option long_options[] = {
+			{"all-symbols",     no_argument, &all_symbols,     1},
+			{"absolute-percpu", no_argument, &absolute_percpu, 1},
+			{"base-relative",   no_argument, &base_relative,   1},
+			{},
+		};
+
+		int c = getopt_long(argc, argv, "", long_options, NULL);
+
+		if (c == -1)
+			break;
+		if (c != 0)
+			usage();
+	}
+
+	if (optind >= argc)
 		usage();
 
-	read_map(stdin);
+	read_map(argv[optind]);
 	shrink_table();
 	if (absolute_percpu)
 		make_percpus_absolute();

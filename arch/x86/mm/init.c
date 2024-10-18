@@ -7,8 +7,10 @@
 #include <linux/swapops.h>
 #include <linux/kmemleak.h>
 #include <linux/sched/task.h>
+#include <linux/sched/mm.h>
 
 #include <asm/set_memory.h>
+#include <asm/cpu_device_id.h>
 #include <asm/e820/api.h>
 #include <asm/init.h>
 #include <asm/page.h>
@@ -137,14 +139,12 @@ __ref void *alloc_low_pages(unsigned int num)
 		unsigned long ret = 0;
 
 		if (min_pfn_mapped < max_pfn_mapped) {
-			ret = memblock_find_in_range(
+			ret = memblock_phys_alloc_range(
+					PAGE_SIZE * num, PAGE_SIZE,
 					min_pfn_mapped << PAGE_SHIFT,
-					max_pfn_mapped << PAGE_SHIFT,
-					PAGE_SIZE * num , PAGE_SIZE);
+					max_pfn_mapped << PAGE_SHIFT);
 		}
-		if (ret)
-			memblock_reserve(ret, PAGE_SIZE * num);
-		else if (can_use_brk_pgt)
+		if (!ret && can_use_brk_pgt)
 			ret = __pa(extend_brk(PAGE_SIZE * num, PAGE_SIZE));
 
 		if (!ret)
@@ -254,6 +254,24 @@ static void __init probe_page_size_mask(void)
 	}
 }
 
+#define INTEL_MATCH(_model) { .vendor  = X86_VENDOR_INTEL,	\
+			      .family  = 6,			\
+			      .model = _model,			\
+			    }
+/*
+ * INVLPG may not properly flush Global entries
+ * on these CPUs when PCIDs are enabled.
+ */
+static const struct x86_cpu_id invlpg_miss_ids[] = {
+	INTEL_MATCH(INTEL_FAM6_ALDERLAKE   ),
+	INTEL_MATCH(INTEL_FAM6_ALDERLAKE_L ),
+	INTEL_MATCH(INTEL_FAM6_ALDERLAKE_N ),
+	INTEL_MATCH(INTEL_FAM6_RAPTORLAKE  ),
+	INTEL_MATCH(INTEL_FAM6_RAPTORLAKE_P),
+	INTEL_MATCH(INTEL_FAM6_RAPTORLAKE_S),
+	{}
+};
+
 static void setup_pcid(void)
 {
 	if (!IS_ENABLED(CONFIG_X86_64))
@@ -261,6 +279,12 @@ static void setup_pcid(void)
 
 	if (!boot_cpu_has(X86_FEATURE_PCID))
 		return;
+
+	if (x86_match_cpu(invlpg_miss_ids)) {
+		pr_info("Incomplete global flushes, disabling PCID");
+		setup_clear_cpu_cap(X86_FEATURE_PCID);
+		return;
+	}
 
 	if (boot_cpu_has(X86_FEATURE_PGE)) {
 		/*
@@ -611,8 +635,17 @@ static void __init memory_map_top_down(unsigned long map_start,
 	unsigned long addr;
 	unsigned long mapped_ram_size = 0;
 
-	/* xen has big range in reserved near end of ram, skip it at first.*/
-	addr = memblock_find_in_range(map_start, map_end, PMD_SIZE, PMD_SIZE);
+	/*
+	 * Systems that have many reserved areas near top of the memory,
+	 * e.g. QEMU with less than 1G RAM and EFI enabled, or Xen, will
+	 * require lots of 4K mappings which may exhaust pgt_buf.
+	 * Start with top-most PMD_SIZE range aligned at PMD_SIZE to ensure
+	 * there is enough mapped memory that can be allocated from
+	 * memblock.
+	 */
+	addr = memblock_phys_alloc_range(PMD_SIZE, PMD_SIZE, map_start,
+					 map_end);
+	memblock_free(addr, PMD_SIZE);
 	real_end = addr + PMD_SIZE;
 
 	/* step_size need to be small so pgt_buf from BRK could cover it */
@@ -779,7 +812,7 @@ void __init poking_init(void)
 	spinlock_t *ptl;
 	pte_t *ptep;
 
-	poking_mm = copy_init_mm();
+	poking_mm = mm_alloc();
 	BUG_ON(!poking_mm);
 
 	/*

@@ -3,6 +3,7 @@ set -xe
 function do_rpmbuild() {
 	if [ "$DIST_BUILD_MODE" == "official" ] || \
 	   [ "$DIST_BUILD_MODE" == "nightly" ]  || \
+	   [ "$DIST_BUILD_MODE" == "gcov" ] || \
 	   [ "$DIST_BUILD_MODE" == "diy" ]; then
 		CMD="-ba"
 	else
@@ -12,8 +13,7 @@ function do_rpmbuild() {
 	# Now we have:
 	#  + variants: default, only-debug, with-debug
 	#  + extras: base, with-debuginfo, full
-	#  + modes: official, nightly, dev
-	#TODO: add with-gcov
+	#  + modes: official, nightly, dev, diy, gcov
 	#
 	# Matrix
 	#
@@ -22,6 +22,7 @@ function do_rpmbuild() {
 	# | official  | without sha id  | Yes          |
 	# | nightly   | with git sha id | Yes          |
 	# | devel     | with git sha id | No           |
+	# | gcov      | with git sha id | Yes          |
 	#
 	# | Extra\Var | Default  | Only-debug | With-debug |
 	# |-----------|----------|------------|------------|
@@ -34,10 +35,13 @@ function do_rpmbuild() {
 	# | full      |         +tools +doc +perf          |
 	#
 	# Note: pre-release mode will always be "full" and "with-debug" by default
+	# Note: gcov mod will always be "full" and "without-debug with-gcov" by default
 
 	build_opts="--with headers --without bpftool --without signmodules"
 
-	if [ "_${DIST_BUILD_VARIANT}" == "_only-debug" ]; then
+	if [ "$DIST_BUILD_MODE" == "gcov" ]; then
+		build_opts="$build_opts --with default --without debug --with gcov"
+	elif [ "_${DIST_BUILD_VARIANT}" == "_only-debug" ]; then
 		build_opts="$build_opts --without default --with debug"
 	elif [ "_${DIST_BUILD_VARIANT}" == "_with-debug" ]; then
 		build_opts="$build_opts --with default --with debug"

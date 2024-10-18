@@ -1,1 +1,0 @@
-CONFIG_LSM="integrity,selinux,smack,tomoyo,apparmor,bpf"

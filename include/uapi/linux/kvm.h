@@ -903,6 +903,9 @@ struct kvm_ppc_resize_hpt {
 #ifdef __KVM_HAVE_PIT
 #define KVM_CAP_REINJECT_CONTROL 24
 #endif
+
+#define KVM_CAP_ARM_VIRT_MSI_BYPASS 799
+
 #define KVM_CAP_IRQ_ROUTING 25
 #define KVM_CAP_IRQ_INJECT_STATUS 26
 #define KVM_CAP_ASSIGN_DEV_IRQ 29
@@ -1085,8 +1088,8 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_X86_MSR_FILTER 189
 #define KVM_CAP_ENFORCE_PV_FEATURE_CPUID 190
 #define KVM_CAP_X86_BUS_LOCK_EXIT 193
-#define KVM_CAP_PTP_KVM 195
 #define KVM_CAP_SGX_ATTRIBUTE 196
+#define KVM_CAP_PTP_KVM 198
 
 #define KVM_CAP_EXIT_HYPERCALL 201
 
@@ -1096,6 +1099,8 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_X86_NOTIFY_VMEXIT 219
 
 #define KVM_CAP_SEV_ES_GHCB 500
+
+#define KVM_CAP_ARM_CPU_FEATURE 555
 
 #define KVM_CAP_LOONGARCH_FPU 800
 #define KVM_CAP_LOONGARCH_LSX 801
@@ -1338,6 +1343,22 @@ struct kvm_vfio_spapr_tce {
 	__s32	tablefd;
 };
 
+struct kvm_master_dev_info {
+	__u32 nvectors;
+	struct kvm_msi msi[];
+};
+
+#define ID_REG_MAX_NUMS 64
+struct id_reg_info {
+	__u64 sys_id;
+	__u64 sys_val;
+};
+
+struct id_registers {
+	struct id_reg_info regs[ID_REG_MAX_NUMS];
+	__u64 num;
+};
+
 /*
  * ioctls for VM fds
  */
@@ -1454,6 +1475,9 @@ struct kvm_s390_ucas_mapping {
 #define KVM_SET_DEVICE_ATTR	  _IOW(KVMIO,  0xe1, struct kvm_device_attr)
 #define KVM_GET_DEVICE_ATTR	  _IOW(KVMIO,  0xe2, struct kvm_device_attr)
 #define KVM_HAS_DEVICE_ATTR	  _IOW(KVMIO,  0xe3, struct kvm_device_attr)
+
+#define KVM_CREATE_SHADOW_DEV	  _IOW(KVMIO,  0xf0, struct kvm_master_dev_info)
+#define KVM_DEL_SHADOW_DEV	  _IOW(KVMIO,  0xf1, __u32)
 
 /* ioctls for control vm during system reset */
 #define KVM_CONTROL_PRE_SYSTEM_RESET	 _IO(KVMIO, 0xe8)
@@ -1880,6 +1904,7 @@ enum csv_cmd_id {
 	KVM_CSV_SEND_ENCRYPT_CONTEXT,
 	KVM_CSV_RECEIVE_ENCRYPT_DATA,
 	KVM_CSV_RECEIVE_ENCRYPT_CONTEXT,
+	KVM_CSV_HANDLE_MEMORY,
 
 	KVM_CSV_NR_MAX,
 };
@@ -1926,4 +1951,11 @@ struct kvm_csv_receive_encrypt_context {
 	__u32 trans_len;
 };
 
+#define KVM_CSV_RELEASE_SHARED_MEMORY (0x0001)
+
+struct kvm_csv_handle_memory {
+	__u64 gpa;
+	__u32 num_pages;
+	__u32 opcode;
+};
 #endif /* __LINUX_KVM_H */

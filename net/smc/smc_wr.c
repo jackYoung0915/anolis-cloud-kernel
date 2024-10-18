@@ -457,7 +457,8 @@ static inline void smc_wr_rx_process_cqe(struct ib_wc *wc)
 	}
 
 	if (smc_wr_rx_credits_need_announce(link) &&
-	    !test_bit(SMC_LINKFLAG_ANNOUNCE_PENDING, &link->flags)) {
+	    !test_bit(SMC_LINKFLAG_ANNOUNCE_PENDING, &link->flags) &&
+	    !link->clearing) {
 		set_bit(SMC_LINKFLAG_ANNOUNCE_PENDING, &link->flags);
 		schedule_work(&link->credits_announce_work);
 	}

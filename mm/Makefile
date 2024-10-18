@@ -138,3 +138,4 @@ obj-$(CONFIG_PAGECACHE_LIMIT) += pagecache_limit.o
 obj-$(CONFIG_HAVE_BOOTMEM_INFO_NODE) += bootmem_info.o
 obj-$(CONFIG_PGTABLE_BIND) += pgtable_bind.o
 obj-$(CONFIG_PAGETABLE_SHARE) += pgtable_share.o
+obj-$(CONFIG_PRE_OOM) += pre_oom.o

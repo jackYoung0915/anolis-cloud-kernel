@@ -42,4 +42,16 @@ config NGBE
          To compile this driver as a module, choose M here. The module
          will be called ngbe.
 
+config TXGBEVF
+       tristate "Netswift PCI-Express 10GbE Virtual Function support"
+       depends on PCI
+       imply PTP_1588_CLOCK
+       help
+         This driver supports Netswift 10gigabit ethernet adapters
+         virtual functions. For more information on how to identify
+         your adapter, go to <http://www.net-swift.com>
+
+         To compile this driver as a module, choose M here. The module
+         will be called txgbevf.
+
 endif # NET_VENDOR_WANGXUN

@@ -792,6 +792,28 @@ out:
 	return res;
 }
 
+bool pmu_uncore_identifier_match(const char *compat, const char *id)
+{
+	regex_t re;
+	regmatch_t pmatch[1];
+	int match;
+
+	if (regcomp(&re, compat, REG_EXTENDED) != 0) {
+		/* Warn unable to generate match particular string. */
+		pr_info("Invalid regular expression %s\n", compat);
+		return false;
+	}
+
+	match = !regexec(&re, id, 1, pmatch, 0);
+	if (match) {
+		/* Ensure a full match. */
+		match = pmatch[0].rm_so == 0 && (size_t)pmatch[0].rm_eo == strlen(id);
+	}
+	regfree(&re);
+
+	return match;
+}
+
 /*
  * From the pmu_events_map, find the table of PMU events that corresponds
  * to the current running CPU. Then, add all PMU events from that table
@@ -863,8 +885,8 @@ static int pmu_add_sys_aliases_iter_fn(const struct pmu_event *pe,
 	if (!pe->compat || !pe->pmu)
 		return 0;
 
-	if (!strcmp(pmu->id, pe->compat) &&
-	    pmu_uncore_alias_match(pe->pmu, pmu->name)) {
+	if (pmu_uncore_alias_match(pe->pmu, pmu->name) &&
+			pmu_uncore_identifier_match(pe->compat, pmu->id)) {
 		__perf_pmu__new_alias(idata->head, NULL,
 				      (char *)pe->name,
 				      (char *)pe->desc,
@@ -959,6 +981,23 @@ static struct perf_pmu *pmu_lookup(const char *name)
 	pmu->default_config = perf_pmu__get_default_config(pmu);
 
 	return pmu;
+}
+
+void perf_pmu__warn_invalid_formats(struct perf_pmu *pmu)
+{
+	struct perf_pmu_format *format;
+
+	/* fake pmu doesn't have format list */
+	if (pmu == &perf_pmu__fake)
+		return;
+
+	list_for_each_entry(format, &pmu->format, list)
+		if (format->value >= PERF_PMU_FORMAT_VALUE_CONFIG_END) {
+			pr_warning("WARNING: '%s' format '%s' requires 'perf_event_attr::config%d'"
+				   "which is not supported by this version of perf!\n",
+				   pmu->name, format->name, format->value);
+			return;
+		}
 }
 
 static struct perf_pmu *pmu_find(const char *name)
@@ -1752,7 +1791,7 @@ static int perf_pmu__new_caps(struct list_head *list, char *name, char *value)
 	return 0;
 
 free_name:
-	zfree(caps->name);
+	zfree(&caps->name);
 free_caps:
 	free(caps);
 

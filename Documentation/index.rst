@@ -194,6 +194,8 @@ to ReStructured Text format, or are simply too old.
 
    staging/index
    watch_queue
+   RAS/index
+>>>>>>> 1289c431641f (Documentation: RAS: Add index and address translation section)
 
 
 Translations

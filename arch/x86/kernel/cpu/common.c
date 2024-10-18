@@ -1206,6 +1206,9 @@ static const __initconst struct x86_cpu_id cpu_vuln_whitelist[] = {
 /* CPU is affected by RETbleed, speculating where you would not expect it */
 #define RETBLEED	BIT(3)
 
+/* CPU is affected by SRSO */
+#define SRSO		BIT(5)
+
 static const struct x86_cpu_id cpu_vuln_blacklist[] __initconst = {
 	VULNBL_INTEL_STEPPINGS(IVYBRIDGE,	X86_STEPPING_ANY,		SRBDS),
 	VULNBL_INTEL_STEPPINGS(HASWELL,		X86_STEPPING_ANY,		SRBDS),
@@ -1236,8 +1239,9 @@ static const struct x86_cpu_id cpu_vuln_blacklist[] __initconst = {
 
 	VULNBL_AMD(0x15, RETBLEED),
 	VULNBL_AMD(0x16, RETBLEED),
-	VULNBL_AMD(0x17, RETBLEED),
-	VULNBL_HYGON(0x18, RETBLEED),
+	VULNBL_AMD(0x17, RETBLEED | SRSO),
+	VULNBL_HYGON(0x18, RETBLEED | SRSO),
+	VULNBL_AMD(0x19, SRSO),
 	{}
 };
 
@@ -1350,6 +1354,11 @@ static void __init cpu_set_bug_bits(struct cpuinfo_x86 *c)
 	if (!cpu_has(c, X86_FEATURE_BTC_NO)) {
 		if (cpu_matches(cpu_vuln_blacklist, RETBLEED) || (ia32_cap & ARCH_CAP_RSBA))
 			setup_force_cpu_bug(X86_BUG_RETBLEED);
+	}
+
+	if (!cpu_has(c, X86_FEATURE_SRSO_NO)) {
+		if (cpu_matches(cpu_vuln_blacklist, SRSO))
+			setup_force_cpu_bug(X86_BUG_SRSO);
 	}
 
 	if (cpu_matches(cpu_vuln_whitelist, NO_MELTDOWN))
@@ -1733,6 +1742,13 @@ static void identify_cpu(struct cpuinfo_x86 *c)
 #ifdef CONFIG_X86_64
 	c->apicid = apic->phys_pkg_id(c->initial_apicid, 0);
 #endif
+
+
+	/*
+	 * Set default APIC and TSC_DEADLINE MSR fencing flag. AMD and
+	 * Hygon will clear it in ->c_init() below.
+	 */
+	set_cpu_cap(c, X86_FEATURE_APIC_MSRS_FENCE);
 
 	/*
 	 * Vendor-specific initialization.  In this section we
@@ -2143,13 +2159,12 @@ void cpu_init_exception_handling(void)
 
 /*
  * cpu_init() initializes state that is per-CPU. Some data is already
- * initialized (naturally) in the bootstrap process, such as the GDT
- * and IDT. We reload them nevertheless, this function acts as a
- * 'CPU state barrier', nothing should get across.
+ * initialized (naturally) in the bootstrap process, such as the GDT.  We
+ * reload it nevertheless, this function acts as a 'CPU state barrier',
+ * nothing should get across.
  */
 void cpu_init(void)
 {
-	struct tss_struct *tss = this_cpu_ptr(&cpu_tss_rw);
 	struct task_struct *cur = current;
 	int cpu = raw_smp_processor_id();
 
@@ -2162,8 +2177,6 @@ void cpu_init(void)
 	    early_cpu_to_node(cpu) != NUMA_NO_NODE)
 		set_numa_node(early_cpu_to_node(cpu));
 #endif
-	setup_getcpu(cpu);
-
 	pr_debug("Initializing CPU#%d\n", cpu);
 
 	if (IS_ENABLED(CONFIG_X86_64) || cpu_feature_enabled(X86_FEATURE_VME) ||
@@ -2175,7 +2188,6 @@ void cpu_init(void)
 	 * and set up the GDT descriptor:
 	 */
 	switch_to_new_gdt(cpu);
-	load_current_idt();
 
 	if (IS_ENABLED(CONFIG_X86_64)) {
 		loadsegment(fs, 0);
@@ -2195,12 +2207,6 @@ void cpu_init(void)
 	initialize_tlbstate_and_flush();
 	enter_lazy_tlb(&init_mm, cur);
 
-	/* Initialize the TSS. */
-	tss_setup_ist(tss);
-	tss_setup_io_bitmap(tss);
-	set_tss_desc(cpu, &get_cpu_entry_area(cpu)->tss.x86_tss);
-
-	load_TR_desc();
 	/*
 	 * sp0 points to the entry trampoline stack regardless of what task
 	 * is running.
@@ -2221,6 +2227,18 @@ void cpu_init(void)
 
 	load_fixmap_gdt(cpu);
 }
+
+#ifdef CONFIG_SMP
+void cpu_init_secondary(void)
+{
+	/*
+	 * Relies on the BP having set-up the IDT tables, which are loaded
+	 * on this CPU in cpu_init_exception_handling().
+	 */
+	cpu_init_exception_handling();
+	cpu_init();
+}
+#endif
 
 /*
  * The microcode loader calls this upon late microcode load to recheck features,

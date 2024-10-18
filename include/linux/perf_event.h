@@ -666,6 +666,7 @@ struct perf_event {
 	/* The cumulative AND of all event_caps for events in this group. */
 	int				group_caps;
 
+	unsigned int			group_generation;
 	struct perf_event		*group_leader;
 	struct pmu			*pmu;
 	void				*pmu_private;
@@ -750,6 +751,8 @@ struct perf_event {
 	struct pid_namespace		*ns;
 	u64				id;
 
+	atomic64_t			lost_samples;
+
 	u64				(*clock)(void);
 	perf_overflow_handler_t		overflow_handler;
 	void				*overflow_handler_context;
@@ -776,7 +779,7 @@ struct perf_event {
 	struct list_head		sb_list;
 #endif /* CONFIG_PERF_EVENTS */
 
-	CK_KABI_USE_SPLIT(1, unsigned int group_generation)
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -1007,24 +1010,36 @@ int perf_event_read_local(struct perf_event *event, u64 *value,
 extern u64 perf_event_read_value(struct perf_event *event,
 				 u64 *enabled, u64 *running);
 
+static inline bool branch_sample_counters(const struct perf_event *event)
+{
+	return event->attr.branch_sample_type & PERF_SAMPLE_BRANCH_COUNTERS;
+}
+
+static inline bool branch_sample_call_stack(const struct perf_event *event)
+{
+	return event->attr.branch_sample_type & PERF_SAMPLE_BRANCH_CALL_STACK;
+}
 
 struct perf_sample_data {
 	/*
 	 * Fields set by perf_sample_data_init(), group so as to
 	 * minimize the cachelines touched.
 	 */
+	u64				sample_flags;
 	u64				addr;
 	struct perf_raw_record		*raw;
-	struct perf_branch_stack	*br_stack;
 	u64				period;
-	union perf_sample_weight	weight;
-	u64				txn;
-	union  perf_mem_data_src	data_src;
 
 	/*
 	 * The other fields, optionally {set,used} by
 	 * perf_{prepare,output}_sample().
 	 */
+	struct perf_branch_stack	*br_stack;
+	u64				*br_stack_cntr;
+	union perf_sample_weight	weight;
+	union  perf_mem_data_src	data_src;
+	u64				txn;
+
 	u64				type;
 	u64				ip;
 	struct {
@@ -1062,13 +1077,11 @@ static inline void perf_sample_data_init(struct perf_sample_data *data,
 					 u64 addr, u64 period)
 {
 	/* remaining struct members initialized in perf_prepare_sample() */
+	data->sample_flags = 0;
 	data->addr = addr;
 	data->raw  = NULL;
-	data->br_stack = NULL;
+	data->br_stack_cntr = NULL;
 	data->period = period;
-	data->weight.full = 0;
-	data->data_src.val = PERF_MEM_NA;
-	data->txn = 0;
 }
 
 /*
@@ -1084,6 +1097,7 @@ static inline void perf_clear_branch_entry_bitfields(struct perf_branch_entry *b
 	br->abort = 0;
 	br->cycles = 0;
 	br->type = 0;
+	br->spec = PERF_BR_SPEC_NA;
 	br->reserved = 0;
 }
 
@@ -1111,14 +1125,30 @@ extern int perf_event_output(struct perf_event *event,
 			     struct pt_regs *regs);
 
 static inline bool
-is_default_overflow_handler(struct perf_event *event)
+__is_default_overflow_handler(perf_overflow_handler_t overflow_handler)
 {
-	if (likely(event->overflow_handler == perf_event_output_forward))
+	if (likely(overflow_handler == perf_event_output_forward))
 		return true;
-	if (unlikely(event->overflow_handler == perf_event_output_backward))
+	if (unlikely(overflow_handler == perf_event_output_backward))
 		return true;
 	return false;
 }
+
+#define is_default_overflow_handler(event) \
+	__is_default_overflow_handler((event)->overflow_handler)
+
+#ifdef CONFIG_BPF_SYSCALL
+static inline bool uses_default_overflow_handler(struct perf_event *event)
+{
+	if (likely(is_default_overflow_handler(event)))
+		return true;
+
+	return __is_default_overflow_handler(event->orig_overflow_handler);
+}
+#else
+#define uses_default_overflow_handler(event) \
+	is_default_overflow_handler(event)
+#endif
 
 extern void
 perf_event_header__init_id(struct perf_event_header *header,

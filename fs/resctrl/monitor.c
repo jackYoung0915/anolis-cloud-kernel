@@ -307,6 +307,9 @@ static int __mon_event_count(u32 closid, u32 rmid, struct rmid_read *rr)
 	case QOS_L3_OCCUP_EVENT_ID:
 		rr->val += tval;
 		return 0;
+	case QOS_MC_MBM_BPS_EVENT_ID:
+		rr->val += tval;
+		return 0;
 	case QOS_L3_MBM_TOTAL_EVENT_ID:
 		m = &rr->d->mbm_total[idx];
 		break;
@@ -717,6 +720,12 @@ static struct mon_evt mbm_local_event = {
 	.name		= "mbm_local_bytes",
 	.evtid		= QOS_L3_MBM_LOCAL_EVENT_ID,
 };
+#ifdef CONFIG_ARM64
+static struct mon_evt mbm_bps_event = {
+	.name		= "mbm_local_bytes",
+	.evtid		= QOS_MC_MBM_BPS_EVENT_ID,
+};
+#endif
 
 /*
  * Initialize the event list for the resource.
@@ -727,10 +736,26 @@ static struct mon_evt mbm_local_event = {
  */
 static void l3_mon_evt_init(struct rdt_resource *r)
 {
-	INIT_LIST_HEAD(&r->evt_list);
+	INIT_LIST_HEAD(&r->mon.evt_list);
+
+	if (resctrl_arch_is_mbm_total_enabled()) {
+		mbm_total_event.configurable = true;
+		resctrl_file_fflags_init("mbm_total_bytes_config",
+					 RF_MON_INFO | RFTYPE_RES_CACHE);
+	}
+	if (resctrl_arch_is_mbm_local_enabled()) {
+		mbm_local_event.configurable = true;
+		resctrl_file_fflags_init("mbm_local_bytes_config",
+					 RF_MON_INFO | RFTYPE_RES_CACHE);
+	}
+
+	if (resctrl_arch_get_abmc_enabled()) {
+		resctrl_file_fflags_init("num_mbm_cntrs", RF_MON_INFO);
+		resctrl_file_fflags_init("mbm_control", RF_MON_INFO);
+	}
 
 	if (resctrl_arch_is_llc_occupancy_enabled())
-		list_add_tail(&llc_occupancy_event.list, &r->evt_list);
+		list_add_tail(&llc_occupancy_event.list, &r->mon.evt_list);
 /*
  * FIXME: There are some differences on Yitian ARM64 and X86_64 platform.
  * X86_64's MBM events are covered by RDT_RESOURCE_L3, while Yitian ARM64's MBM
@@ -739,21 +764,23 @@ static void l3_mon_evt_init(struct rdt_resource *r)
  */
 #ifdef CONFIG_X86_64
 	if (resctrl_arch_is_mbm_total_enabled())
-		list_add_tail(&mbm_total_event.list, &r->evt_list);
+		list_add_tail(&mbm_total_event.list, &r->mon.evt_list);
 	if (resctrl_arch_is_mbm_local_enabled())
-		list_add_tail(&mbm_local_event.list, &r->evt_list);
+		list_add_tail(&mbm_local_event.list, &r->mon.evt_list);
 #endif
 }
 
 #ifdef CONFIG_ARM64
 static void mba_mon_evt_init(struct rdt_resource *r)
 {
-	INIT_LIST_HEAD(&r->evt_list);
+	INIT_LIST_HEAD(&r->mon.evt_list);
 
 	if (resctrl_arch_is_mbm_total_enabled())
-		list_add_tail(&mbm_total_event.list, &r->evt_list);
+		list_add_tail(&mbm_total_event.list, &r->mon.evt_list);
 	if (resctrl_arch_is_mbm_local_enabled())
-		list_add_tail(&mbm_local_event.list, &r->evt_list);
+		list_add_tail(&mbm_local_event.list, &r->mon.evt_list);
+	if (resctrl_arch_is_mbm_bps_enabled())
+		list_add_tail(&mbm_bps_event.list, &r->mon.evt_list);
 }
 #endif
 

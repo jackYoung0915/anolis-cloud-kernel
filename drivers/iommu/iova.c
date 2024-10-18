@@ -1042,16 +1042,17 @@ static void free_global_cached_iovas(struct iova_domain *iovad)
 {
 	struct iova_rcache *rcache;
 	unsigned long flags;
-	int i, j;
+	int i;
 
 	for (i = 0; i < IOVA_RANGE_CACHE_MAX_SIZE; ++i) {
 		rcache = &iovad->rcaches[i];
 		spin_lock_irqsave(&rcache->lock, flags);
-		for (j = 0; j < rcache->depot_size; ++j) {
-			iova_magazine_free_pfns(&rcache->depot[j], iovad);
-			iova_magazine_free(&rcache->depot[j]);
+		while (rcache->depot) {
+			struct iova_magazine *mag = iova_depot_pop(rcache);
+
+			iova_magazine_free_pfns(mag, iovad);
+			iova_magazine_free(mag);
 		}
-		rcache->depot_size = 0;
 		spin_unlock_irqrestore(&rcache->lock, flags);
 	}
 }

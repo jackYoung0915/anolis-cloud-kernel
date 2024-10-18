@@ -8,30 +8,33 @@
 set -e
 
 SCRIPT_DIR=$(realpath $(dirname $0))
+FILE_LIST=${DIST_OUTPUT}/file_list
 
 mkdir -p ${DIST_OUTPUT}
 
-for arch in $@
-do
-    python3 ${SCRIPT_DIR}/anolis_kconfig.py generate\
+if [ -z "$@" ]; then
+    python3 ${SCRIPT_DIR}/anolis_kconfig.py generate_translate \
         --input_dir ${SCRIPT_DIR}/../ \
-        --output_dir ${DIST_OUTPUT}\
-        $arch
+        --output_dir ${DIST_OUTPUT} \
+        --src_root ${DIST_SRCROOT} \
+        ${DIST_SRCROOT}/${DIST_CONFIG_LAYOUTS} > ${DIST_OUTPUT}/generate.sh
+else
+    for target in $@
+    do
+    python3 ${SCRIPT_DIR}/anolis_kconfig.py generate_translate \
+        --input_dir ${SCRIPT_DIR}/../ \
+        --output_dir ${DIST_OUTPUT} \
+        --src_root ${DIST_SRCROOT} \
+        --target ${DIST_CONFIG_KERNEL_NAME}/${target} \
+        ${DIST_SRCROOT}/${DIST_CONFIG_LAYOUTS} > ${DIST_OUTPUT}/generate.sh
+    done
+fi
 
-    config_file_name=kernel-${DIST_KERNELVERSION}-${arch}-${DIST_CONFIG_KERNEL_NAME}.config
+sh ${DIST_OUTPUT}/generate.sh | tee ${FILE_LIST}
 
-    echo "* process ${config_file_name}"
+if [ "${DIST_DO_GENERATE_DOT_CONFIG}" == "Y" ]; then
+    file=$(cat ${FILE_LIST} | grep "generated" | awk '{print $4}' | head -1)
+    cp -f ${file} ${DIST_SRCROOT}.config
+fi
 
-    KCONFIG_CONFIG=${DIST_OUTPUT}/${config_file_name} \
-    ARCH=${arch%%-*} \
-    CROSS_COMPILE=scripts/dummy-tools/ \
-    make -C ${DIST_SRCROOT} olddefconfig > /dev/null
 
-    # remove old backup kconfig file
-    rm -f ${DIST_OUTPUT}/${config_file_name}.old
-
-    if [ "${DIST_DO_GENERATE_DOT_CONFIG}" == "Y" ]; then
-        cp -f ${DIST_OUTPUT}/${config_file_name} \
-        ${DIST_SRCROOT}.config
-    fi
-done

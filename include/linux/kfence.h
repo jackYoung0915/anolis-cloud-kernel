@@ -22,10 +22,10 @@ struct kfence_pool_area {
 	unsigned long pool_size; /* size of kfence pool of this area */
 	unsigned long nr_objects; /* max object number of this area, 0 marked as zombie area */
 	int node; /* the numa node this area belongs to */
+	atomic_t _ref; /* count kpa ref, to protect kpa itself */
 	struct list_head list; /* ready to be added to kfence_pool_root */
 	struct percpu_ref refcnt; /* count in use objects */
 	struct work_struct work; /* use workqueue to free unused area */
-	bool on_rb_tree; /* whether this kpa is on rb tree */
 };
 
 #ifdef CONFIG_KFENCE

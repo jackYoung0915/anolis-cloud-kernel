@@ -17,14 +17,22 @@ AMD refers to this feature as AMD Platform Quality of Service(AMD QoS).
 This feature is enabled by the CONFIG_X86_CPU_RESCTRL and the x86 /proc/cpuinfo
 flag bits:
 
-=============================================	================================
+===============================================	================================
 RDT (Resource Director Technology) Allocation	"rdt_a"
 CAT (Cache Allocation Technology)		"cat_l3", "cat_l2"
 CDP (Code and Data Prioritization)		"cdp_l3", "cdp_l2"
 CQM (Cache QoS Monitoring)			"cqm_llc", "cqm_occup_llc"
 MBM (Memory Bandwidth Monitoring)		"cqm_mbm_total", "cqm_mbm_local"
 MBA (Memory Bandwidth Allocation)		"mba"
-=============================================	================================
+SMBA (Slow Memory Bandwidth Allocation)         ""
+BMEC (Bandwidth Monitoring Event Configuration) ""
+ABMC (Assignable Bandwidth Monitoring Counters) ""
+===============================================	================================
+
+Historically, new features were made visible by default in /proc/cpuinfo. This
+resulted in the feature flags becoming hard to parse by humans. Adding a new
+flag to /proc/cpuinfo should be avoided if user space can obtain information
+about the feature from resctrl's info directory.
 
 To use the feature mount the file system::
 
@@ -117,6 +125,13 @@ related to allocation:
 			"P":
 			      Corresponding region is pseudo-locked. No
 			      sharing allowed.
+"sparse_masks":
+		Indicates if non-contiguous 1s value in CBM is supported.
+
+			"0":
+			      Only contiguous 1s value in CBM is supported.
+			"1":
+			      Non-contiguous 1s value in CBM is supported.
 
 Memory bandwidth(MB) subdirectory contains the following files
 with respect to allocation:
@@ -161,6 +176,282 @@ with the following files:
 "mon_features":
 		Lists the monitoring events if
 		monitoring is enabled for the resource.
+		Example::
+
+			# cat /sys/fs/resctrl/info/L3_MON/mon_features
+			llc_occupancy
+			mbm_total_bytes
+			mbm_local_bytes
+
+		If the system supports Bandwidth Monitoring Event
+		Configuration (BMEC), then the bandwidth events will
+		be configurable. The output will be::
+
+			# cat /sys/fs/resctrl/info/L3_MON/mon_features
+			llc_occupancy
+			mbm_total_bytes
+			mbm_total_bytes_config
+			mbm_local_bytes
+			mbm_local_bytes_config
+
+"mbm_total_bytes_config", "mbm_local_bytes_config":
+	Read/write files containing the configuration for the mbm_total_bytes
+	and mbm_local_bytes events, respectively, when the Bandwidth
+	Monitoring Event Configuration (BMEC) feature is supported.
+	The event configuration settings are domain specific and affect
+	all the CPUs in the domain. When either event configuration is
+	changed, the bandwidth counters for all RMIDs of both events
+	(mbm_total_bytes as well as mbm_local_bytes) are cleared for that
+	domain. The next read for every RMID will report "Unavailable"
+	and subsequent reads will report the valid value.
+
+	Following are the types of events supported:
+
+	====    ========================================================
+	Bits    Description
+	====    ========================================================
+	6       Dirty Victims from the QOS domain to all types of memory
+	5       Reads to slow memory in the non-local NUMA domain
+	4       Reads to slow memory in the local NUMA domain
+	3       Non-temporal writes to non-local NUMA domain
+	2       Non-temporal writes to local NUMA domain
+	1       Reads to memory in the non-local NUMA domain
+	0       Reads to memory in the local NUMA domain
+	====    ========================================================
+
+	By default, the mbm_total_bytes configuration is set to 0x7f to count
+	all the event types and the mbm_local_bytes configuration is set to
+	0x15 to count all the local memory events.
+
+	Examples:
+
+	* To view the current configuration::
+	  ::
+
+	    # cat /sys/fs/resctrl/info/L3_MON/mbm_total_bytes_config
+	    0=0x7f;1=0x7f;2=0x7f;3=0x7f
+
+	    # cat /sys/fs/resctrl/info/L3_MON/mbm_local_bytes_config
+	    0=0x15;1=0x15;3=0x15;4=0x15
+
+	* To change the mbm_total_bytes to count only reads on domain 0,
+	  the bits 0, 1, 4 and 5 needs to be set, which is 110011b in binary
+	  (in hexadecimal 0x33):
+	  ::
+
+	    # echo  "0=0x33" > /sys/fs/resctrl/info/L3_MON/mbm_total_bytes_config
+
+	    # cat /sys/fs/resctrl/info/L3_MON/mbm_total_bytes_config
+	    0=0x33;1=0x7f;2=0x7f;3=0x7f
+
+	* To change the mbm_local_bytes to count all the slow memory reads on
+	  domain 0 and 1, the bits 4 and 5 needs to be set, which is 110000b
+	  in binary (in hexadecimal 0x30):
+	  ::
+
+	    # echo  "0=0x30;1=0x30" > /sys/fs/resctrl/info/L3_MON/mbm_local_bytes_config
+
+	    # cat /sys/fs/resctrl/info/L3_MON/mbm_local_bytes_config
+	    0=0x30;1=0x30;3=0x15;4=0x15
+
+"mbm_mode":
+	Reports the list of assignable monitoring features supported. The
+	enclosed brackets indicate which feature is enabled.
+	::
+
+	  cat /sys/fs/resctrl/info/L3_MON/mbm_mode
+	  [mbm_cntr_assign]
+	  legacy
+
+	"mbm_cntr_assign":
+		AMD's ABMC feature is one of the mbm_cntr_assign mode supported.
+		The bandwidth monitoring feature on AMD system only guarantees
+		that RMIDs currently assigned to a processor will be tracked by
+		hardware. The counters of any other RMIDs which are no longer
+		being tracked will be reset to zero. The MBM event counters
+		return "Unavailable" for the RMIDs that are not tracked by
+		hardware. So, there can be only limited number of groups that can
+		give guaranteed monitoring numbers. With ever changing configurations
+		there is no way to definitely know which of these groups are being
+		tracked for certain point of time. Users do not have the option to
+		monitor a group or set of groups for certain period of time without
+		worrying about RMID being reset in between.
+
+		The ABMC feature provides an option to the user to assign a hardware
+		counter to an RMID and monitor the bandwidth as long as it is assigned.
+		The assigned RMID will be tracked by the hardware until the user
+		unassigns it manually. There is no need to worry about counters being
+		reset during this period.
+
+	"Legacy":
+		Legacy mode works without the assignment option. The monitoring works
+		as long as there are enough RMID counters available to support number
+		of monitoring groups.
+
+	* To enable ABMC feature:
+	  ::
+
+	    # echo  "mbm_cntr_assign" > /sys/fs/resctrl/info/L3_MON/mbm_mode
+
+	* To enable the legacy monitoring feature:
+	  ::
+
+	    # echo  "legacy" > /sys/fs/resctrl/info/L3_MON/mbm_mode
+
+	The MBM event counters will reset when mbm_mode is changed. Moving to
+	mbm_cntr_assign will require users to assign the counters to the events to
+	read the events. Otherwise, the MBM event counters will return "Unassigned"
+	when read.
+
+"num_mbm_cntrs":
+	The number of monitoring counters available for assignment.
+
+	Resctrl subsystem provides the interface to count maximum of two
+	MBM events per group, from a combination of total and local events.
+	Keeping the current interface, users can assign a maximum of two
+	monitoring counters per group. User will also have the option to
+	enable only one counter to the group.
+
+	With limited number of counters, system can run out of assignable counters.
+	In mbm_cntr_assign mode, the MBM event counters will return "Unassigned" if
+	the counter is not assigned to the event when read. Users need to assign a
+	counter manually to read the events.
+
+"mbm_control":
+	Reports the resctrl group and monitor status of each group.
+
+	List follows the following format:
+		"<CTRL_MON group>/<MON group>/<domain_id>=<flags>"
+
+	Format for specific type of groups:
+
+	* Default CTRL_MON group:
+		"//<domain_id>=<flags>"
+
+	* Non-default CTRL_MON group:
+		"<CTRL_MON group>//<domain_id>=<flags>"
+
+	* Child MON group of default CTRL_MON group:
+		"/<MON group>/<domain_id>=<flags>"
+
+	* Child MON group of non-default CTRL_MON group:
+		"<CTRL_MON group>/<MON group>/<domain_id>=<flags>"
+
+	Flags can be one of the following:
+	::
+
+	 t  MBM total event is enabled.
+	 l  MBM local event is enabled.
+	 tl Both total and local MBM events are enabled.
+	 _  None of the MBM events are enabled.
+
+	Examples:
+	::
+
+	 # mkdir /sys/fs/resctrl/mon_groups/child_default_mon_grp
+	 # mkdir /sys/fs/resctrl/non_default_ctrl_mon_grp
+	 # mkdir /sys/fs/resctrl/non_default_ctrl_mon_grp/mon_groups/child_non_default_mon_grp
+
+	 # cat /sys/fs/resctrl/info/L3_MON/mbm_control
+	 non_default_ctrl_mon_grp//0=tl;1=tl;
+	 non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
+	 //0=tl;1=tl;
+	 /child_default_mon_grp/0=tl;1=tl;
+
+	 There are four resctrl groups. All the groups have total and local MBM events
+	 enabled on domain 0 and 1.
+
+	Assignment state can be updated by writing to the interface.
+
+	Format is similar to the list format with addition of opcode for the
+	assignment operation.
+
+		"<CTRL_MON group>/<MON group>/<domain_id><opcode><flags>"
+
+	Format for each type of groups:
+
+        * Default CTRL_MON group:
+                "//<domain_id><opcode><flags>"
+
+        * Non-default CTRL_MON group:
+                "<CTRL_MON group>//<domain_id><opcode><flags>"
+
+        * Child MON group of default CTRL_MON group:
+                "/<MON group>/<domain_id><opcode><flags>"
+
+        * Child MON group of non-default CTRL_MON group:
+                "<CTRL_MON group>/<MON group>/<domain_id><opcode><flags>"
+
+	Domain_id '*' wil apply the flags on all the domains.
+
+	Opcode can be one of the following:
+	::
+
+	 = Update the assignment to match the MBM event.
+	 + Assign a MBM event.
+	 - Unassign a MBM event.
+
+	Examples:
+	::
+
+	  Initial group status:
+	  # cat /sys/fs/resctrl/info/L3_MON/mbm_control
+	  non_default_ctrl_mon_grp//0=tl;1=tl;
+	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
+	  //0=tl;1=tl;
+	  /child_default_mon_grp/0=tl;1=tl;
+
+	  To update the default group to assign only total MBM event on domain 0:
+	  # echo "//0=t" > /sys/fs/resctrl/info/L3_MON/mbm_control
+
+	  Assignment status after the update:
+	  # cat /sys/fs/resctrl/info/L3_MON/mbm_control
+	  non_default_ctrl_mon_grp//0=tl;1=tl;
+	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
+	  //0=t;1=tl;
+	  /child_default_mon_grp/0=tl;1=tl;
+
+	  To update the MON group child_default_mon_grp to remove total MBM event on domain 1:
+	  # echo "/child_default_mon_grp/1-t" > /sys/fs/resctrl/info/L3_MON/mbm_control
+
+	  Assignment status after the update:
+	  $ cat /sys/fs/resctrl/info/L3_MON/mbm_control
+	  non_default_ctrl_mon_grp//0=tl;1=tl;
+	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
+	  //0=t;1=tl;
+	  /child_default_mon_grp/0=tl;1=l;
+
+	  To update the MON group non_default_ctrl_mon_grp/child_non_default_mon_grp to
+	  unassign both local and total MBM events on domain 1:
+	  # echo "non_default_ctrl_mon_grp/child_non_default_mon_grp/1=_" >
+			/sys/fs/resctrl/info/L3_MON/mbm_control
+
+	  Assignment status after the update:
+	  non_default_ctrl_mon_grp//0=tl;1=tl;
+	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=_;
+	  //0=t;1=tl;
+	  /child_default_mon_grp/0=tl;1=l;
+
+	  To update the default group to add a local MBM event domain 0.
+	  # echo "//0+l" > /sys/fs/resctrl/info/L3_MON/mbm_control
+
+	  Assignment status after the update:
+	  # cat /sys/fs/resctrl/info/L3_MON/mbm_control
+	  non_default_ctrl_mon_grp//0=tl;1=tl;
+	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=_;
+	  //0=tl;1=tl;
+	  /child_default_mon_grp/0=tl;1=l;
+
+	  To update the non default CTRL_MON group non_default_ctrl_mon_grp to unassign all
+	  the MBM events on all the domains.
+	  # echo "non_default_ctrl_mon_grp//*=_" > /sys/fs/resctrl/info/L3_MON/mbm_control
+
+	  Assignment status after the update:
+	  #cat /sys/fs/resctrl/info/L3_MON/mbm_control
+	  non_default_ctrl_mon_grp//0=_;1=_;
+	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=_;
+	  //0=tl;1=tl;
+	  /child_default_mon_grp/0=tl;1=l;
 
 "max_threshold_occupancy":
 		Read/write file provides the largest value (in
@@ -354,12 +645,13 @@ For cache resources we describe the portion of the cache that is available
 for allocation using a bitmask. The maximum value of the mask is defined
 by each cpu model (and may be different for different cache levels). It
 is found using CPUID, but is also provided in the "info" directory of
-the resctrl file system in "info/{resource}/cbm_mask". Intel hardware
+the resctrl file system in "info/{resource}/cbm_mask". Some Intel hardware
 requires that these masks have all the '1' bits in a contiguous block. So
 0x3, 0x6 and 0xC are legal 4-bit masks with two bits set, but 0x5, 0x9
-and 0xA are not.  On a system with a 20-bit mask each bit represents 5%
-of the capacity of the cache. You could partition the cache into four
-equal parts with masks: 0x1f, 0x3e0, 0x7c00, 0xf8000.
+and 0xA are not. Check /sys/fs/resctrl/info/{resource}/sparse_masks
+if non-contiguous 1s value is supported. On a system with a 20-bit mask
+each bit represents 5% of the capacity of the cache. You could partition
+the cache into four equal parts with masks: 0x1f, 0x3e0, 0x7c00, 0xf8000.
 
 Memory bandwidth Allocation and monitoring
 ==========================================
@@ -464,6 +756,25 @@ Memory bandwidth domain is L3 cache.
 
 	MB:<cache_id0>=bw_MBps0;<cache_id1>=bw_MBps1;...
 
+Slow Memory Bandwidth Allocation (SMBA)
+---------------------------------------
+AMD hardware supports Slow Memory Bandwidth Allocation (SMBA).
+CXL.memory is the only supported "slow" memory device. With the
+support of SMBA, the hardware enables bandwidth allocation on
+the slow memory devices. If there are multiple such devices in
+the system, the throttling logic groups all the slow sources
+together and applies the limit on them as a whole.
+
+The presence of SMBA (with CXL.memory) is independent of slow memory
+devices presence. If there are no such devices on the system, then
+configuring SMBA will have no impact on the performance of the system.
+
+The bandwidth domain for slow memory is L3 cache. Its schemata file
+is formatted as:
+::
+
+	SMBA:<cache_id0>=bandwidth0;<cache_id1>=bandwidth1;...
+
 Reading/writing the schemata file
 ---------------------------------
 Reading the schemata file will show the state of all resources
@@ -478,6 +789,46 @@ which you wish to change.  E.g.
   # cat schemata
   L3DATA:0=fffff;1=fffff;2=3c0;3=fffff
   L3CODE:0=fffff;1=fffff;2=fffff;3=fffff
+
+Reading/writing the schemata file (on AMD systems)
+--------------------------------------------------
+Reading the schemata file will show the current bandwidth limit on all
+domains. The allocated resources are in multiples of one eighth GB/s.
+When writing to the file, you need to specify what cache id you wish to
+configure the bandwidth limit.
+
+For example, to allocate 2GB/s limit on the first cache id:
+
+::
+
+  # cat schemata
+    MB:0=2048;1=2048;2=2048;3=2048
+    L3:0=ffff;1=ffff;2=ffff;3=ffff
+
+  # echo "MB:1=16" > schemata
+  # cat schemata
+    MB:0=2048;1=  16;2=2048;3=2048
+    L3:0=ffff;1=ffff;2=ffff;3=ffff
+
+Reading/writing the schemata file (on AMD systems) with SMBA feature
+--------------------------------------------------------------------
+Reading and writing the schemata file is the same as without SMBA in
+above section.
+
+For example, to allocate 8GB/s limit on the first cache id:
+
+::
+
+  # cat schemata
+    SMBA:0=2048;1=2048;2=2048;3=2048
+      MB:0=2048;1=2048;2=2048;3=2048
+      L3:0=ffff;1=ffff;2=ffff;3=ffff
+
+  # echo "SMBA:1=64" > schemata
+  # cat schemata
+    SMBA:0=2048;1=  64;2=2048;3=2048
+      MB:0=2048;1=2048;2=2048;3=2048
+      L3:0=ffff;1=ffff;2=ffff;3=ffff
 
 Cache Pseudo-Locking
 ====================

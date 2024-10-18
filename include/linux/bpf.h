@@ -88,7 +88,11 @@ struct bpf_map_ops {
 	/* funcs called by prog_array and perf_event_array map */
 	void *(*map_fd_get_ptr)(struct bpf_map *map, struct file *map_file,
 				int fd);
-	void (*map_fd_put_ptr)(void *ptr);
+	/* If need_defer is true, the implementation should guarantee that
+	 * the to-be-put element is still alive before the bpf program, which
+	 * may manipulate it, exists.
+	 */
+	void (*map_fd_put_ptr)(struct bpf_map *map, void *ptr, bool need_defer);
 	int (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 	u32 (*map_fd_sys_lookup_elem)(void *ptr);
 	void (*map_seq_show_elem)(struct bpf_map *map, void *key,
@@ -132,6 +136,13 @@ struct bpf_map_ops {
 	bool (*map_meta_equal)(const struct bpf_map *meta0,
 			       const struct bpf_map *meta1);
 
+	int (*map_set_for_each_callback_args)(struct bpf_verifier_env *env,
+					      struct bpf_func_state *caller,
+					      struct bpf_func_state *callee);
+	int (*map_for_each_callback)(struct bpf_map *map,
+				     bpf_callback_t callback_fn,
+				     void *callback_ctx, u64 flags);
+
 	/* BTF name and id of struct allocated by map_alloc */
 	const char * const map_btf_name;
 	int *map_btf_id;
@@ -139,12 +150,8 @@ struct bpf_map_ops {
 	/* bpf_iter info used to open a seq_file */
 	const struct bpf_iter_seq_info *iter_seq_info;
 
-	CK_KABI_USE(1, int (*map_set_for_each_callback_args)(struct bpf_verifier_env *env,
-							     struct bpf_func_state *caller,
-							     struct bpf_func_state *callee))
-	CK_KABI_USE(2, int (*map_for_each_callback)(struct bpf_map *map,
-						    bpf_callback_t callback_fn,
-						    void *callback_ctx, u64 flags))
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
 };
@@ -170,6 +177,7 @@ struct bpf_map {
 	u32 map_flags;
 	u64 map_extra; /* any per-map-type extra fields */
 	int spin_lock_off; /* >=0 valid offset, <0 error */
+	int timer_off; /* >=0 valid offset, <0 error */
 	u32 id;
 	int numa_node;
 	u32 btf_key_type_id;
@@ -180,14 +188,19 @@ struct bpf_map {
 	u32 btf_vmlinux_value_type_id;
 	bool bypass_spec_v1;
 	bool frozen; /* write-once; write-protected by freeze_mutex */
-	/* 22 bytes hole */
+	bool free_after_mult_rcu_gp;
+	/* 1 byte hole */
 
 	/* The 3rd and 4th cacheline with misc members to avoid false sharing
 	 * particularly with refcounting.
 	 */
 	atomic64_t refcnt ____cacheline_aligned;
 	atomic64_t usercnt;
-	struct work_struct work;
+	/* rcu is used before freeing and work is only used during freeing */
+	union {
+		struct work_struct work;
+		struct rcu_head rcu;
+	};
 	struct mutex freeze_mutex;
 	atomic64_t writecnt;
 
@@ -202,30 +215,52 @@ static inline bool map_value_has_spin_lock(const struct bpf_map *map)
 	return map->spin_lock_off >= 0;
 }
 
-static inline void check_and_init_map_lock(struct bpf_map *map, void *dst)
+static inline bool map_value_has_timer(const struct bpf_map *map)
 {
-	if (likely(!map_value_has_spin_lock(map)))
-		return;
-	*(struct bpf_spin_lock *)(dst + map->spin_lock_off) =
-		(struct bpf_spin_lock){};
+	return map->timer_off >= 0;
 }
 
-/* copy everything but bpf_spin_lock */
+static inline void check_and_init_map_value(struct bpf_map *map, void *dst)
+{
+	if (unlikely(map_value_has_spin_lock(map)))
+		memset(dst + map->spin_lock_off, 0, sizeof(struct bpf_spin_lock));
+	if (unlikely(map_value_has_timer(map)))
+		memset(dst + map->timer_off, 0, sizeof(struct bpf_timer));
+}
+
+/* copy everything but bpf_spin_lock and bpf_timer. There could be one of each. */
 static inline void copy_map_value(struct bpf_map *map, void *dst, void *src)
 {
-	if (unlikely(map_value_has_spin_lock(map))) {
-		u32 off = map->spin_lock_off;
+	u32 s_off = 0, s_sz = 0, t_off = 0, t_sz = 0;
 
-		memcpy(dst, src, off);
-		memcpy(dst + off + sizeof(struct bpf_spin_lock),
-		       src + off + sizeof(struct bpf_spin_lock),
-		       map->value_size - off - sizeof(struct bpf_spin_lock));
+	if (unlikely(map_value_has_spin_lock(map))) {
+		s_off = map->spin_lock_off;
+		s_sz = sizeof(struct bpf_spin_lock);
+	}
+	if (unlikely(map_value_has_timer(map))) {
+		t_off = map->timer_off;
+		t_sz = sizeof(struct bpf_timer);
+	}
+
+	if (unlikely(s_sz || t_sz)) {
+		if (s_off < t_off || !s_sz) {
+			swap(s_off, t_off);
+			swap(s_sz, t_sz);
+		}
+		memcpy(dst, src, t_off);
+		memcpy(dst + t_off + t_sz,
+		       src + t_off + t_sz,
+		       s_off - t_off - t_sz);
+		memcpy(dst + s_off + s_sz,
+		       src + s_off + s_sz,
+		       map->value_size - s_off - s_sz);
 	} else {
 		memcpy(dst, src, map->value_size);
 	}
 }
 void copy_map_value_locked(struct bpf_map *map, void *dst, void *src,
 			   bool lock_src);
+void bpf_timer_cancel_and_free(void *timer);
 int bpf_obj_name_cpy(char *dst, const char *src, unsigned int size);
 
 struct bpf_offload_dev;
@@ -342,6 +377,7 @@ enum bpf_arg_type {
 	ARG_PTR_TO_FUNC,	/* pointer to a bpf program function */
 	ARG_PTR_TO_STACK,	/* pointer to stack */
 	ARG_PTR_TO_CONST_STR,	/* pointer to a null terminated read-only string */
+	ARG_PTR_TO_TIMER,	/* pointer to bpf_timer */
 	__BPF_ARG_TYPE_MAX,
 
 	/* Extended arg_types. */
@@ -447,6 +483,7 @@ enum bpf_reg_type {
 	PTR_TO_CTX,		 /* reg points to bpf_context */
 	CONST_PTR_TO_MAP,	 /* reg points to struct bpf_map */
 	PTR_TO_MAP_VALUE,	 /* reg points to map element value */
+	PTR_TO_MAP_KEY,		 /* reg points to a map element key */
 	PTR_TO_STACK,		 /* reg == frame_pointer + offset */
 	PTR_TO_PACKET_META,	 /* skb->data - meta_len */
 	PTR_TO_PACKET,		 /* reg points to skb->data */
@@ -474,6 +511,7 @@ enum bpf_reg_type {
 	 */
 	PTR_TO_MEM,		 /* reg points to valid memory region */
 	PTR_TO_BUF,		 /* reg points to a read/write buffer */
+	PTR_TO_FUNC,		 /* reg points to a bpf program function */
 	PTR_TO_PERCPU_BTF_ID,	 /* reg points to a percpu kernel variable */
 	__BPF_REG_TYPE_MAX,
 
@@ -489,15 +527,6 @@ enum bpf_reg_type {
 	 */
 	__BPF_REG_TYPE_LIMIT	= BPF_TYPE_LIMIT,
 };
-
-/* For KABI compatibility, we build a new enum bpf_reg_type. */
-enum bpf_reg_type_extra {
-	BPF_REG_TYPE_EXTRA_START = __BPF_REG_TYPE_MAX - 1,
-	PTR_TO_FUNC,		/* reg points to a bpf program function */
-	PTR_TO_MAP_KEY,		/* reg points to a map element key */
-	__BPF_REG_TYPE_EXTRA_MAX,
-};
-static_assert(__BPF_REG_TYPE_EXTRA_MAX <= BPF_BASE_TYPE_LIMIT);
 
 /* The information passed from prog-specific *_is_valid_access
  * back to the verifier.
@@ -520,10 +549,14 @@ bpf_ctx_record_field_size(struct bpf_insn_access_aux *aux, u32 size)
 	aux->ctx_field_size = size;
 }
 
+static bool bpf_is_ldimm64(const struct bpf_insn *insn)
+{
+	return insn->code == (BPF_LD | BPF_IMM | BPF_DW);
+}
+
 static inline bool bpf_pseudo_func(const struct bpf_insn *insn)
 {
-	return insn->code == (BPF_LD | BPF_IMM | BPF_DW) &&
-	       insn->src_reg == BPF_PSEUDO_FUNC;
+	return bpf_is_ldimm64(insn) && insn->src_reg == BPF_PSEUDO_FUNC;
 }
 
 struct bpf_prog_ops {
@@ -720,9 +753,11 @@ struct bpf_tramp_image {
 struct bpf_trampoline {
 	/* hlist for trampoline_table */
 	struct hlist_node hlist;
+	struct ftrace_ops *fops;
 	/* serializes access to fields of this trampoline */
 	struct mutex mutex;
 	refcount_t refcnt;
+	u32 flags;
 	u64 key;
 	struct {
 		struct btf_func_model model;
@@ -742,8 +777,8 @@ struct bpf_trampoline {
 	struct bpf_tramp_image *cur_image;
 	u64 selector;
 
-	CK_KABI_USE(1, struct ftrace_ops *fops)
-	CK_KABI_USE_SPLIT(2, u32 flags)
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 struct bpf_attach_target_info {
@@ -844,7 +879,7 @@ static inline int bpf_trampoline_unlink_prog(struct bpf_prog *prog,
 static inline struct bpf_trampoline *bpf_trampoline_get(u64 key,
 							struct bpf_attach_target_info *tgt_info)
 {
-	return ERR_PTR(-EOPNOTSUPP);
+	return NULL;
 }
 static inline void bpf_trampoline_put(struct bpf_trampoline *tr) {}
 #define DEFINE_BPF_DISPATCHER(name)
@@ -1397,6 +1432,7 @@ struct bpf_map *bpf_map_get_curr_or_next(u32 *id);
 struct bpf_prog *bpf_prog_get_curr_or_next(u32 *id);
 
 extern int sysctl_unprivileged_bpf_disabled;
+extern int sysctl_bpf_customized_fmodret;
 
 static inline bool bpf_allow_ptr_leaks(void)
 {
@@ -1928,6 +1964,7 @@ int sock_map_get_from_fd(const union bpf_attr *attr, struct bpf_prog *prog);
 int sock_map_prog_detach(const union bpf_attr *attr, enum bpf_prog_type ptype);
 int sock_map_update_elem_sys(struct bpf_map *map, void *key, void *value, u64 flags);
 void sock_map_unhash(struct sock *sk);
+void sock_map_destroy(struct sock *sk);
 void sock_map_close(struct sock *sk, long timeout);
 #else
 static inline int sock_map_prog_update(struct bpf_map *map,

@@ -29,7 +29,7 @@ static DEFINE_MUTEX(trampoline_mutex);
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
 static int bpf_trampoline_update(struct bpf_trampoline *tr, bool lock_direct_mutex);
 
-int bpf_tramp_ftrace_ops_func(struct ftrace_ops *ops, enum ftrace_ops_cmd cmd)
+static int bpf_tramp_ftrace_ops_func(struct ftrace_ops *ops, enum ftrace_ops_cmd cmd)
 {
 	struct bpf_trampoline *tr = ops->private;
 	int ret = 0;
@@ -158,7 +158,7 @@ static struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
 		goto out;
 	}
 	tr->fops->private = tr;
-	tr->fops->flags |= FTRACE_OPS_FL_OPS_FUNC_CK_RESERVED;
+	tr->fops->ops_func = bpf_tramp_ftrace_ops_func;
 #endif
 
 	tr->key = key;
@@ -359,9 +359,10 @@ static struct bpf_tramp_image *bpf_tramp_image_alloc(u64 key, u32 idx)
 		goto out_free_im;
 
 	err = -ENOMEM;
-	im->image = image = bpf_jit_alloc_exec_page();
+	im->image = image = bpf_jit_alloc_exec(PAGE_SIZE);
 	if (!image)
 		goto out_uncharge;
+	set_vm_flush_reset_perms(image);
 
 	err = percpu_ref_init(&im->pcref, __bpf_tramp_image_release, 0, GFP_KERNEL);
 	if (err)
@@ -433,6 +434,9 @@ again:
 					  tr->func.addr);
 	if (err < 0)
 		goto out;
+
+	set_memory_ro((long)im->image, 1);
+	set_memory_x((long)im->image, 1);
 
 	WARN_ON(tr->cur_image && tr->selector == 0);
 	WARN_ON(!tr->cur_image && tr->selector);

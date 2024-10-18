@@ -467,6 +467,7 @@ struct sched_statistics {
 	u64				parent_wait_contrib;
 	u64				iowait_count;
 	u64				iowait_sum;
+	u64				wait_self;
 
 	u64				sleep_start;
 	u64				sleep_max;
@@ -498,29 +499,25 @@ struct sched_statistics {
 
 #ifdef CONFIG_SCHED_CORE
 	u64				core_forceidle_sum;
+	u64				core_forceidle_task_sum;
+	u64				forceidled_sum;
+	u64				forceidled_sum_base;
 #endif
 
 #if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
 	u64				core_sibidle_sum;
+	u64				core_sibidle_task_sum;
 #endif
 
-	CK_KABI_USE(1, unsigned long forceidled_sum)
-	CK_KABI_USE(2, unsigned long forceidled_sum_base)
-#ifdef CONFIG_SCHED_CORE
-	CK_KABI_USE(3, unsigned long core_forceidle_task_sum)
-#else
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
-#endif
-#if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
-	CK_KABI_USE(4, unsigned long core_sibidle_task_sum)
-#else
 	CK_KABI_RESERVE(4)
-#endif
 	CK_KABI_RESERVE(5)
 	CK_KABI_RESERVE(6)
 	CK_KABI_RESERVE(7)
 	CK_KABI_RESERVE(8)
-#endif
+#endif /* CONFIG_SCHEDSTATS */
 };
 
 struct sched_entity {
@@ -535,9 +532,6 @@ struct sched_entity {
 	u64				vruntime;
 	u64				prev_sum_exec_runtime;
 
-	/* irq time is included */
-	u64				exec_start_raw;
-	u64				sum_exec_raw;
 	u64				cg_idle_start;
 	u64				cg_idle_sum;
 	u64				cg_init_time;
@@ -546,7 +540,7 @@ struct sched_entity {
 	u64				cg_iowait_start;
 	u64				cg_ineffective_sum;
 	u64				cg_ineffective_start;
-	seqlock_t			idle_seqlock;
+	seqcount_t			idle_seqcount;
 	spinlock_t			iowait_lock;
 
 	u64				nr_migrations;
@@ -592,7 +586,9 @@ struct sched_entity {
 #endif
 #endif
 
-	CK_KABI_USE(1, long priority)
+	long priority;
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -976,7 +972,9 @@ struct task_struct {
 #ifdef CONFIG_IOMMU_SVA
 	unsigned			pasid_activated:1;
 #endif
-
+#ifdef CONFIG_PRE_OOM
+	unsigned			reclaim_stall:1;
+#endif
 	unsigned long			atomic_flags; /* Flags requiring atomic access. */
 
 	struct restart_block		restart_block;
@@ -1029,6 +1027,9 @@ struct task_struct {
 
 	/* CLONE_CHILD_CLEARTID: */
 	int __user			*clear_child_tid;
+
+	/* PF_IO_WORKER */
+	void				*pf_io_worker;
 
 	u64				utime;
 	u64				stime;
@@ -1507,8 +1508,12 @@ struct task_struct {
 	int				mce_count;
 #endif
 
-	/* PF_IO_WORKER */
-	CK_KABI_USE(1, void *pf_io_worker)
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask			cpus_allowed_alt;
+	int				soft_cpus_version;
+#endif
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -1841,7 +1846,9 @@ current_restore_flags(unsigned long orig_flags, unsigned long flags)
 }
 
 extern int cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpumask *trial);
-extern int task_can_attach(struct task_struct *p, const struct cpumask *cs_cpus_allowed);
+extern int task_can_attach(struct task_struct *p);
+extern int dl_bw_alloc(int cpu, u64 dl_bw);
+extern void dl_bw_free(int cpu, u64 dl_bw);
 #ifdef CONFIG_SMP
 extern void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask);
 extern int set_cpus_allowed_ptr(struct task_struct *p, const struct cpumask *new_mask);
@@ -2044,11 +2051,40 @@ static inline int test_tsk_need_resched(struct task_struct *tsk)
  * value indicates whether a reschedule was done in fact.
  * cond_resched_lock() will drop the spinlock before scheduling,
  */
-#ifndef CONFIG_PREEMPTION
-extern int _cond_resched(void);
+#if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
+extern int __cond_resched(void);
+
+#if defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
+
+DECLARE_STATIC_CALL(cond_resched, __cond_resched);
+
+static __always_inline int _cond_resched(void)
+{
+	return static_call_mod(cond_resched)();
+}
+
+#elif defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+extern int dynamic_cond_resched(void);
+
+static __always_inline int _cond_resched(void)
+{
+	return dynamic_cond_resched();
+}
+
 #else
+
+static inline int _cond_resched(void)
+{
+	return __cond_resched();
+}
+
+#endif /* CONFIG_PREEMPT_DYNAMIC */
+
+#else
+
 static inline int _cond_resched(void) { return 0; }
-#endif
+
+#endif /* !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC) */
 
 #define cond_resched() ({			\
 	___might_sleep(__FILE__, __LINE__, 0);	\
@@ -2270,6 +2306,7 @@ enum rich_container_source {
 	RICH_CONTAINER_CSS,
 	RICH_CONTAINER_REAPER,
 	RICH_CONTAINER_CURRENT,
+	RICH_CONTAINER_PARENT_CGROUP,
 };
 
 #ifdef CONFIG_RICH_CONTAINER

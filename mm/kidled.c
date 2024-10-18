@@ -743,7 +743,7 @@ static __kidled_ref void kidled_reset(void)
 			for (pfn = start_pfn; pfn <= end_pfn; pfn++) {
 				if (pfn_valid(pfn))
 					kidled_set_page_age(pgdat, pfn, 0);
-				if (pfn % HPAGE_PMD_NR == 0)
+				if (pfn % (PMD_SIZE >> PAGE_SHIFT) == 0)
 					cond_resched();
 			}
 		}

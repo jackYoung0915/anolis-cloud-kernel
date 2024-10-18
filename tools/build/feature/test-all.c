@@ -178,6 +178,10 @@
 # include "test-libzstd.c"
 #undef main
 
+#define main main_test_libunwind-sw_64
+# include "test-libunwind-sw_64.c"
+#undef main
+
 int main(int argc, char *argv[])
 {
 	main_test_libpython();
@@ -218,6 +222,7 @@ int main(int argc, char *argv[])
 	main_test_reallocarray();
 	main_test_disassembler_four_args();
 	main_test_libzstd();
+	main_test_libunwind-sw_64();
 
 	return 0;
 }

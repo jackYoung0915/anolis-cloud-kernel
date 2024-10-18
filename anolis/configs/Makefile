@@ -5,13 +5,13 @@ ifeq ($(MAKELEVEL),0)
 endif
 
 dist-defconfig:
-	@sh scripts/generate_configs.sh ${DIST_ARCH}
+	@sh scripts/generate_configs.sh generic-${DIST_ARCH}
 
 dist-debug-defconfig:
-	@sh scripts/generate_configs.sh ${DIST_ARCH}-debug
+	@sh scripts/generate_configs.sh debug-${DIST_ARCH}
 
 dist-configs:
-	@sh scripts/generate_configs.sh ${DIST_CONFIG_KERNEL_ARCHS}
+	@sh scripts/generate_configs.sh
 
 dist-configs-update:
 	@sh scripts/update_configs.sh
@@ -25,6 +25,12 @@ dist-configs-import:
 dist-configs-export:
 	@sh scripts/export_configs.sh
 
+dist-configs-check:
+	@sh examination/configs-check.sh
+
+dist-configs-modify:
+	@sh scripts/modify_config.sh
+
 dist-configs-help:
 	@echo ''
 	@echo '--------------------------------'
@@ -33,6 +39,7 @@ dist-configs-help:
 	@echo '    dist-debug-defconfig:  - generate anolis debug default config file of current ARCH, output to $${DIST_OUTPUT}'
 	@echo '    dist-configs:          - generate anolis config files to all arch, output to $${DIST_OUTPUT}'
 	@echo '    dist-configs-update:   - refresh configs'
+	@echo '    dist-configs-modify:   - modify the specified kconfig and refresh configs'
 	@echo '    dist-configs-move:     - adjust the level of kconfig'
 	@echo '    dist-configs-import:   - import legacy kconfig files, and split them into independent small files'
 	@echo '    dist-configs-export:   - export all configs into a xlsx file'

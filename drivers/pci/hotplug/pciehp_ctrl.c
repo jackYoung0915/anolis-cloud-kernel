@@ -87,7 +87,8 @@ static int board_added(struct controller *ctrl)
 	 * Some device drivers will change indicators, so move setting
 	 * indicators before configuring device.
 	 */
-	pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_ON,
+	if (parent->self->enable_vpp)
+		pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_ON,
 			      PCI_EXP_SLTCTL_ATTN_IND_OFF);
 
 	retval = pciehp_configure_device(ctrl);
@@ -95,12 +96,16 @@ static int board_added(struct controller *ctrl)
 		if (retval != -EEXIST) {
 			ctrl_err(ctrl, "Cannot add device at %04x:%02x:00\n",
 				 pci_domain_nr(parent), parent->number);
-			pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
-			      PCI_EXP_SLTCTL_ATTN_IND_OFF);
+			if (parent->self->enable_vpp)
+				pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
+					PCI_EXP_SLTCTL_ATTN_IND_OFF);
 			goto err_exit;
 		}
 	}
 
+	if (!parent->self->enable_vpp)
+		pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_ON,
+			      PCI_EXP_SLTCTL_ATTN_IND_OFF);
 	return 0;
 
 err_exit:
@@ -115,12 +120,15 @@ err_exit:
  */
 static void remove_board(struct controller *ctrl, bool safe_removal)
 {
+	struct pci_bus *parent = ctrl->pcie->port->subordinate;
+
 	/*
 	 * Some device drivers will change indicators, so move setting
 	 * indicators before unconfiguring device.
 	 */
-	pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
-			      INDICATOR_NOOP);
+	if (parent->self->enable_vpp)
+		pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
+			INDICATOR_NOOP);
 
 	pciehp_unconfigure_device(ctrl, safe_removal);
 	if (POWER_CTRL(ctrl)) {
@@ -137,6 +145,10 @@ static void remove_board(struct controller *ctrl, bool safe_removal)
 		atomic_and(~(PCI_EXP_SLTSTA_DLLSC | PCI_EXP_SLTSTA_PDC),
 			   &ctrl->pending_events);
 	}
+
+	if (!parent->self->enable_vpp)
+		pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
+			INDICATOR_NOOP);
 }
 
 static int pciehp_enable_slot(struct controller *ctrl);
@@ -266,6 +278,14 @@ void pciehp_handle_presence_or_link_change(struct controller *ctrl, u32 events)
 	present = pciehp_card_present(ctrl);
 	link_active = pciehp_check_link_active(ctrl);
 	if (present <= 0 && link_active <= 0) {
+		if (ctrl->state == BLINKINGON_STATE) {
+			ctrl->state = OFF_STATE;
+			cancel_delayed_work(&ctrl->button_work);
+			pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
+					      INDICATOR_NOOP);
+			ctrl_info(ctrl, "Slot(%s): Card not present\n",
+				  slot_name(ctrl));
+		}
 		mutex_unlock(&ctrl->state_lock);
 		return;
 	}

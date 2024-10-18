@@ -157,15 +157,6 @@ void efi_set_u64_split(u64 data, u32 *lo, u32 *hi)
  */
 #define EFI_MMAP_NR_SLACK_SLOTS	8
 
-struct efi_boot_memmap {
-	efi_memory_desc_t	**map;
-	unsigned long		*map_size;
-	unsigned long		*desc_size;
-	u32			*desc_ver;
-	unsigned long		*key_ptr;
-	unsigned long		*buff_size;
-};
-
 typedef struct efi_generic_dev_path efi_device_path_protocol_t;
 
 union efi_device_path_to_text_protocol {
@@ -764,9 +755,7 @@ typedef efi_status_t (*efi_exit_boot_map_processing)(
 	struct efi_boot_memmap *map,
 	void *priv);
 
-efi_status_t efi_exit_boot_services(void *handle,
-				    struct efi_boot_memmap *map,
-				    void *priv,
+efi_status_t efi_exit_boot_services(void *handle, void *priv,
 				    efi_exit_boot_map_processing priv_func);
 
 efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
@@ -779,6 +768,8 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 
 void *get_fdt(unsigned long *fdt_size);
 
+efi_status_t efi_alloc_virtmap(efi_memory_desc_t **virtmap,
+			       unsigned long *desc_size, u32 *desc_ver);
 void efi_get_virtmap(efi_memory_desc_t *memory_map, unsigned long map_size,
 		     unsigned long desc_size, efi_memory_desc_t *runtime_map,
 		     int *count);
@@ -804,7 +795,8 @@ void efi_apply_loadoptions_quirk(const void **load_options, int *load_options_si
 
 char *efi_convert_cmdline(efi_loaded_image_t *image, int *cmd_line_len);
 
-efi_status_t efi_get_memory_map(struct efi_boot_memmap *map);
+efi_status_t efi_get_memory_map(struct efi_boot_memmap **map,
+				bool install_cfg_tbl);
 
 efi_status_t efi_allocate_pages(unsigned long size, unsigned long *addr,
 				unsigned long max);
@@ -868,5 +860,11 @@ asmlinkage void __noreturn efi_enter_kernel(unsigned long entrypoint,
 					    unsigned long fdt_size);
 
 void efi_handle_post_ebs_state(void);
+
+efi_status_t allocate_unaccepted_bitmap(__u32 nr_desc,
+					struct efi_boot_memmap *map);
+void process_unaccepted_memory(u64 start, u64 end);
+void accept_memory(phys_addr_t start, phys_addr_t end);
+void arch_accept_memory(phys_addr_t start, phys_addr_t end);
 
 #endif

@@ -27,7 +27,7 @@ endif
 CHECKFLAGS	+= -D__sw__
 cflags-y	:= -pipe -ffixed-8 -mno-fp-regs #-msmall-data
 ifeq ($(CONFIG_SUBARCH_C4),y)
-	cflags-y += -fsw-rev
+	cflags-y += -fsw-rev -fno-sw-unalign-byte
 endif
 cflags-y	+= $(call cc-option, -fno-jump-tables)
 
@@ -40,6 +40,7 @@ head-y := arch/sw_64/kernel/head.o
 
 core-y				+= arch/sw_64/
 drivers-$(CONFIG_OPROFILE)	+= arch/sw_64/oprofile/
+drivers-$(CONFIG_PCI)           += arch/sw_64/pci/
 libs-y				+= arch/sw_64/lib/
 
 # export what is needed by arch/sw_64/boot/Makefile

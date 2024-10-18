@@ -44,7 +44,7 @@ struct virtio_fs_vq {
 	struct work_struct done_work;
 	struct list_head queued_reqs;
 	struct list_head end_reqs;	/* End these requests */
-	struct delayed_work dispatch_work;
+	struct work_struct dispatch_work;
 	struct fuse_dev *fud;
 	bool connected;
 	long in_flight;
@@ -61,6 +61,8 @@ struct virtio_fs {
 	unsigned int nvqs;               /* number of virtqueues */
 	unsigned int num_request_queues; /* number of request queues */
 	struct dax_device *dax_dev;
+
+	unsigned int *mq_map; /* index = cpu id, value = request vq id */
 
 	/* DAX memory window where file contents are mapped */
 	void *window_kaddr;
@@ -106,14 +108,14 @@ static const struct fs_parameter_spec virtio_fs_parameters[] = {
 	{}
 };
 
-static int virtio_fs_parse_param(struct fs_context *fc,
+static int virtio_fs_parse_param(struct fs_context *fsc,
 				 struct fs_parameter *param)
 {
 	struct fs_parse_result result;
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 	int opt;
 
-	opt = fs_parse(fc, virtio_fs_parameters, param, &result);
+	opt = fs_parse(fsc, virtio_fs_parameters, param, &result);
 	if (opt < 0)
 		return opt;
 
@@ -131,9 +133,9 @@ static int virtio_fs_parse_param(struct fs_context *fc,
 	return 0;
 }
 
-static void virtio_fs_free_fc(struct fs_context *fc)
+static void virtio_fs_free_fsc(struct fs_context *fsc)
 {
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 
 	kfree(ctx);
 }
@@ -169,6 +171,7 @@ static void release_virtio_fs_obj(struct kref *ref)
 {
 	struct virtio_fs *vfs = container_of(ref, struct virtio_fs, refcount);
 
+	kfree(vfs->mq_map);
 	kfree(vfs->vqs);
 	kfree(vfs);
 }
@@ -206,7 +209,7 @@ static void virtio_fs_drain_queue(struct virtio_fs_vq *fsvq)
 	}
 
 	flush_work(&fsvq->done_work);
-	flush_delayed_work(&fsvq->dispatch_work);
+	flush_work(&fsvq->dispatch_work);
 }
 
 static void virtio_fs_drain_all_queues_locked(struct virtio_fs *fs)
@@ -349,7 +352,11 @@ static void virtio_fs_hiprio_done_work(struct work_struct *work)
 			kfree(req);
 			dec_in_flight_req(fsvq);
 		}
-	} while (!virtqueue_enable_cb(vq) && likely(!virtqueue_is_broken(vq)));
+	} while (!virtqueue_enable_cb(vq));
+
+	if (!list_empty(&fsvq->queued_reqs))
+		schedule_work(&fsvq->dispatch_work);
+
 	spin_unlock(&fsvq->lock);
 }
 
@@ -357,7 +364,7 @@ static void virtio_fs_request_dispatch_work(struct work_struct *work)
 {
 	struct fuse_req *req;
 	struct virtio_fs_vq *fsvq = container_of(work, struct virtio_fs_vq,
-						 dispatch_work.work);
+						 dispatch_work);
 	int ret;
 
 	pr_debug("virtio-fs: worker %s called.\n", __func__);
@@ -389,11 +396,9 @@ static void virtio_fs_request_dispatch_work(struct work_struct *work)
 
 		ret = virtio_fs_enqueue_req(fsvq, req, true);
 		if (ret < 0) {
-			if (ret == -ENOMEM || ret == -ENOSPC) {
+			if (ret == -ENOSPC) {
 				spin_lock(&fsvq->lock);
 				list_add_tail(&req->list, &fsvq->queued_reqs);
-				schedule_delayed_work(&fsvq->dispatch_work,
-						      msecs_to_jiffies(1));
 				spin_unlock(&fsvq->lock);
 				return;
 			}
@@ -436,12 +441,10 @@ static int send_forget_request(struct virtio_fs_vq *fsvq,
 
 	ret = virtqueue_add_outbuf(vq, &sg, 1, forget, GFP_ATOMIC);
 	if (ret < 0) {
-		if (ret == -ENOMEM || ret == -ENOSPC) {
+		if (ret == -ENOSPC) {
 			pr_debug("virtio-fs: Could not queue FORGET: err=%d. Will try later\n",
 				 ret);
 			list_add_tail(&forget->list, &fsvq->queued_reqs);
-			schedule_delayed_work(&fsvq->dispatch_work,
-					      msecs_to_jiffies(1));
 			if (!in_flight)
 				inc_in_flight_req(fsvq);
 			/* Queue is full */
@@ -473,7 +476,7 @@ static void virtio_fs_hiprio_dispatch_work(struct work_struct *work)
 {
 	struct virtio_fs_forget *forget;
 	struct virtio_fs_vq *fsvq = container_of(work, struct virtio_fs_vq,
-						 dispatch_work.work);
+						 dispatch_work);
 	pr_debug("virtio-fs: worker %s called.\n", __func__);
 	while (1) {
 		spin_lock(&fsvq->lock);
@@ -631,7 +634,7 @@ static void virtio_fs_requests_done_work(struct work_struct *work)
 			list_move_tail(&req->list, &reqs);
 			spin_unlock(&fpq->lock);
 		}
-	} while (!virtqueue_enable_cb(vq) && likely(!virtqueue_is_broken(vq)));
+	} while (!virtqueue_enable_cb(vq));
 	spin_unlock(&fsvq->lock);
 
 	/* End requests */
@@ -651,6 +654,44 @@ static void virtio_fs_requests_done_work(struct work_struct *work)
 			virtio_fs_request_complete(req, fsvq);
 		}
 	}
+
+	/* Try to push previously queued requests, as the queue might no longer be full */
+	spin_lock(&fsvq->lock);
+	if (!list_empty(&fsvq->queued_reqs))
+		schedule_work(&fsvq->dispatch_work);
+	spin_unlock(&fsvq->lock);
+}
+
+static void virtio_fs_map_queues(struct virtio_device *vdev, struct virtio_fs *fs)
+{
+	const struct cpumask *mask;
+	struct blk_mq_queue_map qmap;
+	unsigned int q, cpu;
+
+	/* First attempt to map using existing transport layer affinities
+	 * e.g. PCIe MSI-X
+	 */
+	if (!vdev->config->get_vq_affinity)
+		goto fallback;
+
+	for (q = 0; q < fs->num_request_queues; q++) {
+		mask = vdev->config->get_vq_affinity(vdev, VQ_REQUEST + q);
+		if (!mask)
+			goto fallback;
+
+		for_each_cpu(cpu, mask)
+			fs->mq_map[cpu] = q;
+	}
+
+	return;
+fallback:
+	/* Attempt to map evenly in groups over the CPUs */
+	qmap = (struct blk_mq_queue_map) {
+		.mq_map = fs->mq_map,
+		.nr_queues = fs->num_request_queues,
+		.queue_offset = 0,
+	};
+	blk_mq_map_queues(&qmap);
 }
 
 /* Virtqueue interrupt handler */
@@ -666,7 +707,7 @@ static void virtio_fs_vq_done(struct virtqueue *vq)
 static void virtio_fs_init_vq(struct virtio_fs_vq *fsvq, char *name,
 			      int vq_type)
 {
-	strncpy(fsvq->name, name, VQ_NAME_LEN);
+	strscpy(fsvq->name, name, VQ_NAME_LEN);
 	spin_lock_init(&fsvq->lock);
 	INIT_LIST_HEAD(&fsvq->queued_reqs);
 	INIT_LIST_HEAD(&fsvq->end_reqs);
@@ -674,12 +715,12 @@ static void virtio_fs_init_vq(struct virtio_fs_vq *fsvq, char *name,
 
 	if (vq_type == VQ_REQUEST) {
 		INIT_WORK(&fsvq->done_work, virtio_fs_requests_done_work);
-		INIT_DELAYED_WORK(&fsvq->dispatch_work,
-				  virtio_fs_request_dispatch_work);
+		INIT_WORK(&fsvq->dispatch_work,
+				virtio_fs_request_dispatch_work);
 	} else {
 		INIT_WORK(&fsvq->done_work, virtio_fs_hiprio_done_work);
-		INIT_DELAYED_WORK(&fsvq->dispatch_work,
-				  virtio_fs_hiprio_dispatch_work);
+		INIT_WORK(&fsvq->dispatch_work,
+				virtio_fs_hiprio_dispatch_work);
 	}
 }
 
@@ -689,6 +730,11 @@ static int virtio_fs_setup_vqs(struct virtio_device *vdev,
 {
 	struct virtqueue **vqs;
 	vq_callback_t **callbacks;
+	/* Specify pre_vectors to ensure that the queues before the
+	 * request queues (e.g. hiprio) don't claim any of the CPUs in
+	 * the multi-queue mapping and interrupt affinities
+	 */
+	struct irq_affinity desc = { .pre_vectors = VQ_REQUEST };
 	const char **names;
 	unsigned int i;
 	int ret = 0;
@@ -698,6 +744,9 @@ static int virtio_fs_setup_vqs(struct virtio_device *vdev,
 	if (fs->num_request_queues == 0)
 		return -EINVAL;
 
+	/* Truncate nr of request queues to nr_cpu_id */
+	fs->num_request_queues = min_t(unsigned int, fs->num_request_queues,
+					nr_cpu_ids);
 	fs->nvqs = VQ_REQUEST + fs->num_request_queues;
 	fs->vqs = kcalloc(fs->nvqs, sizeof(fs->vqs[VQ_HIPRIO]), GFP_KERNEL);
 	if (!fs->vqs)
@@ -707,7 +756,9 @@ static int virtio_fs_setup_vqs(struct virtio_device *vdev,
 	callbacks = kmalloc_array(fs->nvqs, sizeof(callbacks[VQ_HIPRIO]),
 					GFP_KERNEL);
 	names = kmalloc_array(fs->nvqs, sizeof(names[VQ_HIPRIO]), GFP_KERNEL);
-	if (!vqs || !callbacks || !names) {
+	fs->mq_map = kcalloc_node(nr_cpu_ids, sizeof(*fs->mq_map), GFP_KERNEL,
+					dev_to_node(&vdev->dev));
+	if (!vqs || !callbacks || !names || !fs->mq_map) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -727,7 +778,7 @@ static int virtio_fs_setup_vqs(struct virtio_device *vdev,
 		names[i] = fs->vqs[i].name;
 	}
 
-	ret = virtio_find_vqs(vdev, fs->nvqs, vqs, callbacks, names, NULL);
+	ret = virtio_find_vqs(vdev, fs->nvqs, vqs, callbacks, names, &desc);
 	if (ret < 0)
 		goto out;
 
@@ -739,8 +790,10 @@ out:
 	kfree(names);
 	kfree(callbacks);
 	kfree(vqs);
-	if (ret)
+	if (ret) {
 		kfree(fs->vqs);
+		kfree(fs->mq_map);
+	}
 	return ret;
 }
 
@@ -928,7 +981,7 @@ static int virtio_fs_probe(struct virtio_device *vdev)
 	if (ret < 0)
 		goto out;
 
-	/* TODO vq affinity */
+	virtio_fs_map_queues(vdev, fs);
 
 	ret = virtio_fs_setup_dax(vdev, fs);
 	if (ret < 0)
@@ -1023,22 +1076,13 @@ static struct virtio_driver virtio_fs_driver = {
 #endif
 };
 
-static void virtio_fs_wake_forget_and_unlock(struct fuse_iqueue *fiq)
-__releases(fiq->lock)
+static void virtio_fs_send_forget(struct fuse_iqueue *fiq, struct fuse_forget_link *link)
 {
-	struct fuse_forget_link *link;
 	struct virtio_fs_forget *forget;
 	struct virtio_fs_forget_req *req;
-	struct virtio_fs *fs;
-	struct virtio_fs_vq *fsvq;
-	u64 unique;
-
-	link = fuse_dequeue_forget(fiq, 1, NULL);
-	unique = fuse_get_unique(fiq);
-
-	fs = fiq->priv;
-	fsvq = &fs->vqs[VQ_HIPRIO];
-	spin_unlock(&fiq->lock);
+	struct virtio_fs *fs = fiq->priv;
+	struct virtio_fs_vq *fsvq = &fs->vqs[VQ_HIPRIO];
+	u64 unique = fuse_get_unique(fiq);
 
 	/* Allocate a buffer for the request */
 	forget = kmalloc(sizeof(*forget), GFP_NOFS | __GFP_NOFAIL);
@@ -1058,8 +1102,7 @@ __releases(fiq->lock)
 	kfree(link);
 }
 
-static void virtio_fs_wake_interrupt_and_unlock(struct fuse_iqueue *fiq)
-__releases(fiq->lock)
+static void virtio_fs_send_interrupt(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
 	/*
 	 * TODO interrupts.
@@ -1068,7 +1111,6 @@ __releases(fiq->lock)
 	 * Exceptions are blocking lock operations; for example fcntl(F_SETLKW)
 	 * with shared lock between host and guest.
 	 */
-	spin_unlock(&fiq->lock);
 }
 
 /* Count number of scatter-gather elements required */
@@ -1273,33 +1315,31 @@ out:
 	return ret;
 }
 
-static void virtio_fs_wake_pending_and_unlock(struct fuse_iqueue *fiq)
-__releases(fiq->lock)
+static void virtio_fs_send_req(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
-	unsigned int queue_id = VQ_REQUEST; /* TODO multiqueue */
+	unsigned int queue_id;
 	struct virtio_fs *fs;
-	struct fuse_req *req;
 	struct virtio_fs_vq *fsvq;
 	int ret;
 
-	WARN_ON(list_empty(&fiq->pending));
-	req = list_last_entry(&fiq->pending, struct fuse_req, list);
+	if (req->in.h.opcode != FUSE_NOTIFY_REPLY)
+		req->in.h.unique = fuse_get_unique(fiq);
+
 	clear_bit(FR_PENDING, &req->flags);
-	list_del_init(&req->list);
-	WARN_ON(!list_empty(&fiq->pending));
-	spin_unlock(&fiq->lock);
 
 	fs = fiq->priv;
+	queue_id = VQ_REQUEST + fs->mq_map[raw_smp_processor_id()];
 
-	pr_debug("%s: opcode %u unique %#llx nodeid %#llx in.len %u out.len %u\n",
-		  __func__, req->in.h.opcode, req->in.h.unique,
+	pr_debug("%s: opcode %u unique %#llx nodeid %#llx in.len %u out.len %u queue_id %u\n",
+		 __func__, req->in.h.opcode, req->in.h.unique,
 		 req->in.h.nodeid, req->in.h.len,
-		 fuse_len_args(req->args->out_numargs, req->args->out_args));
+		 fuse_len_args(req->args->out_numargs, req->args->out_args),
+		 queue_id);
 
 	fsvq = &fs->vqs[queue_id];
 	ret = virtio_fs_enqueue_req(fsvq, req, false);
 	if (ret < 0) {
-		if (ret == -ENOMEM || ret == -ENOSPC) {
+		if (ret == -ENOSPC) {
 			/*
 			 * Virtqueue full. Retry submission from worker
 			 * context as we might be holding fc->bg_lock.
@@ -1307,8 +1347,6 @@ __releases(fiq->lock)
 			spin_lock(&fsvq->lock);
 			list_add_tail(&req->list, &fsvq->queued_reqs);
 			inc_in_flight_req(fsvq);
-			schedule_delayed_work(&fsvq->dispatch_work,
-						msecs_to_jiffies(1));
 			spin_unlock(&fsvq->lock);
 			return;
 		}
@@ -1318,17 +1356,17 @@ __releases(fiq->lock)
 		/* Can't end request in submission context. Use a worker */
 		spin_lock(&fsvq->lock);
 		list_add_tail(&req->list, &fsvq->end_reqs);
-		schedule_delayed_work(&fsvq->dispatch_work, 0);
+		schedule_work(&fsvq->dispatch_work);
 		spin_unlock(&fsvq->lock);
 		return;
 	}
 }
 
 static const struct fuse_iqueue_ops virtio_fs_fiq_ops = {
-	.wake_forget_and_unlock		= virtio_fs_wake_forget_and_unlock,
-	.wake_interrupt_and_unlock	= virtio_fs_wake_interrupt_and_unlock,
-	.wake_pending_and_unlock	= virtio_fs_wake_pending_and_unlock,
-	.release			= virtio_fs_fiq_release,
+	.send_forget	= virtio_fs_send_forget,
+	.send_interrupt	= virtio_fs_send_interrupt,
+	.send_req	= virtio_fs_send_req,
+	.release	= virtio_fs_fiq_release,
 };
 
 static inline void virtio_fs_ctx_set_defaults(struct fuse_fs_context *ctx)
@@ -1462,18 +1500,6 @@ static int virtio_fs_test_super(struct super_block *sb,
 	return fsc_fm->fc->iq.priv == sb_fm->fc->iq.priv;
 }
 
-static int virtio_fs_set_super(struct super_block *sb,
-			       struct fs_context *fsc)
-{
-	int err;
-
-	err = get_anon_bdev(&sb->s_dev);
-	if (!err)
-		fuse_mount_get(fsc->s_fs_info);
-
-	return err;
-}
-
 static int virtio_fs_get_tree(struct fs_context *fsc)
 {
 	struct virtio_fs *fs;
@@ -1510,14 +1536,16 @@ static int virtio_fs_get_tree(struct fs_context *fsc)
 	fc->release = fuse_free_conn;
 	fc->delete_stale = true;
 	fc->auto_submounts = true;
+	fc->kvec_pages = true;
 
 	/* Tell FUSE to split requests that exceed the virtqueue's size */
 	fc->max_pages_limit = min_t(unsigned int, fc->max_pages_limit,
 				    virtqueue_size - FUSE_HEADER_OVERHEAD);
 
 	fsc->s_fs_info = fm;
-	sb = sget_fc(fsc, virtio_fs_test_super, virtio_fs_set_super);
-	fuse_mount_put(fm);
+	sb = sget_fc(fsc, virtio_fs_test_super, set_anon_super_fc);
+	if (fsc->s_fs_info)
+		fuse_mount_put(fm);
 	if (IS_ERR(sb))
 		return PTR_ERR(sb);
 
@@ -1546,7 +1574,7 @@ out_err:
 }
 
 static const struct fs_context_operations virtio_fs_context_ops = {
-	.free		= virtio_fs_free_fc,
+	.free		= virtio_fs_free_fsc,
 	.parse_param	= virtio_fs_parse_param,
 	.get_tree	= virtio_fs_get_tree,
 };

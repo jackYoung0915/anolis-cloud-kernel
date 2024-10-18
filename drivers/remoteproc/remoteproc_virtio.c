@@ -113,6 +113,8 @@ static struct virtqueue *rp_find_vq(struct virtio_device *vdev,
 		return ERR_PTR(-ENOMEM);
 	}
 
+	vq->num_max = len;
+
 	rvring->vq = vq;
 	vq->priv = rvring;
 

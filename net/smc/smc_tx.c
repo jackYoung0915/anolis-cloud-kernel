@@ -176,6 +176,21 @@ static bool smc_tx_should_cork(struct smc_sock *smc, struct msghdr *msg)
 	return false;
 }
 
+static inline bool smc_tx_should_split(struct smc_sock *smc, size_t *len)
+{
+	size_t split_size = sock_net(&smc->sk)->smc.sysctl_autosplit_size;
+
+	/* only split when len >= sysctl_autosplit_size * 1.3,
+	 * in case of a following tiny size xmit.
+	 */
+	if (*len >= (split_size * 4 / 3)) {
+		*len = split_size;
+		return true;
+	}
+
+	return false;
+}
+
 /* sndbuf producer: main API called by socket layer.
  * called under sock lock.
  */
@@ -186,6 +201,8 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 	struct smc_connection *conn = &smc->conn;
 	union smc_host_cursor prep;
 	struct sock *sk = &smc->sk;
+	bool full_stat = false;
+	bool is_split = false;
 	char *sndbuf_base;
 	int tx_cnt_prep;
 	int writespace;
@@ -239,6 +256,7 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 		writespace = atomic_read(&conn->sndbuf_space);
 		/* not more than what user space asked for */
 		copylen = min_t(size_t, send_remaining, writespace);
+		is_split = smc_tx_should_split(smc, &copylen);
 		/* determine start of sndbuf */
 		sndbuf_base = conn->sndbuf_desc->cpu_addr;
 		smc_curs_copy(&prep, &conn->tx_curs_prep, conn);
@@ -285,8 +303,8 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 		/* If we need to cork, do nothing and wait for the next
 		 * sendmsg() call or push on tx completion
 		 */
-		if (!smc_tx_should_cork(smc, msg))
-			smc_tx_sndbuf_nonempty(conn);
+		if (is_split || !smc_tx_should_cork(smc, msg))
+			smc_tx_sndbuf_nonempty(conn, &full_stat);
 
 		trace_smc_tx_sendmsg(smc, copylen);
 	} /* while (msg_data_left(msg)) */
@@ -1034,7 +1052,7 @@ static int smcd_tx_sndbuf_nonempty(struct smc_connection *conn)
 	return rc;
 }
 
-static int __smc_tx_sndbuf_nonempty(struct smc_connection *conn)
+static int __smc_tx_sndbuf_nonempty(struct smc_connection *conn, bool *full_stat)
 {
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
 	int rc = 0;
@@ -1045,7 +1063,10 @@ static int __smc_tx_sndbuf_nonempty(struct smc_connection *conn)
 
 	/* Peer don't have RMBE space */
 	if (unlikely(atomic_read(&conn->peer_rmbe_space) <= 0)) {
-		SMC_STAT_RMB_TX_PEER_FULL(smc, !conn->lnk);
+		if (!(*full_stat)) {
+			*full_stat = true;
+			SMC_STAT_RMB_TX_PEER_FULL(smc, !conn->lnk);
+		}
 		goto out;
 	}
 
@@ -1072,7 +1093,7 @@ out:
 	return rc;
 }
 
-int smc_tx_sndbuf_nonempty(struct smc_connection *conn)
+int smc_tx_sndbuf_nonempty(struct smc_connection *conn, bool *full_stat)
 {
 	int rc;
 
@@ -1086,7 +1107,7 @@ int smc_tx_sndbuf_nonempty(struct smc_connection *conn)
 again:
 	atomic_set(&conn->tx_pushing, 1);
 	smp_wmb(); /* Make sure tx_pushing is 1 before real send */
-	rc = __smc_tx_sndbuf_nonempty(conn);
+	rc = __smc_tx_sndbuf_nonempty(conn, full_stat);
 
 	/* We need to check whether someone else have added some data into
 	 * the send queue and tried to push but failed after the atomic_set()
@@ -1107,6 +1128,7 @@ again:
 void smc_tx_pending(struct smc_connection *conn)
 {
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
+	bool full_stat = false;
 	int rc;
 
 	if (smc->sk.sk_err)
@@ -1115,7 +1137,7 @@ void smc_tx_pending(struct smc_connection *conn)
 	if (smc_tx_prepared_sends(conn) <= 0)
 		return;
 
-	rc = smc_tx_sndbuf_nonempty(conn);
+	rc = smc_tx_sndbuf_nonempty(conn, &full_stat);
 	if (!rc && conn->local_rx_ctrl.prod_flags.write_blocked &&
 	    !atomic_read(&conn->bytes_to_rcv))
 		conn->local_rx_ctrl.prod_flags.write_blocked = 0;

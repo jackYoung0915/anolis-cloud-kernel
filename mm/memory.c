@@ -3582,8 +3582,8 @@ void unmap_mapping_zeropages(struct address_space *mapping)
 void unmap_mapping_range(struct address_space *mapping,
 		loff_t const holebegin, loff_t const holelen, int even_cows)
 {
-	pgoff_t hba = holebegin >> PAGE_SHIFT;
-	pgoff_t hlen = (holelen + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	pgoff_t hba = (pgoff_t)(holebegin) >> PAGE_SHIFT;
+	pgoff_t hlen = ((pgoff_t)(holelen) + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
 	/* Check for overflow. */
 	if (sizeof(holelen) > sizeof(hlen)) {
@@ -3628,10 +3628,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			vmf->page = device_private_entry_to_page(entry);
 			vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
 					vmf->address, &vmf->ptl);
-			if (unlikely(!pte_same(*vmf->pte, vmf->orig_pte))) {
-				spin_unlock(vmf->ptl);
-				goto out;
-			}
+			if (unlikely(!pte_same(*vmf->pte, vmf->orig_pte)))
+				goto unlock;
 
 			/*
 			 * Get a page reference while we know the page can't be
@@ -3639,7 +3637,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			 */
 			get_page(vmf->page);
 			pte_unmap_unlock(vmf->pte, vmf->ptl);
-			vmf->page->pgmap->ops->migrate_to_ram(vmf);
+			ret = vmf->page->pgmap->ops->migrate_to_ram(vmf);
 			put_page(vmf->page);
 		} else if (is_hwpoison_entry(entry)) {
 			ret = VM_FAULT_HWPOISON;
@@ -4255,6 +4253,18 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct page *page)
 		page_add_new_anon_rmap(page, vma, vmf->address, false);
 		lru_cache_add_inactive_or_unevictable(page, vma);
 	} else if (likely(!is_zero_page(page))) {
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+		if ((vma->vm_flags & VM_LOCKED) &&
+		    (vmf->flags & FAULT_FLAG_USER) &&
+		    !PageTransCompound(page)) {
+			if (!PageLRU(page))
+				lru_add_drain();
+			if (PageLRU(page) && !PageMlocked(page)) {
+				mlock_vma_page(page);
+				reclaim_coldpgs_stats_mlock_refault();
+			}
+		}
+#endif
 		inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
 		page_add_file_rmap(page, false);
 	}
@@ -4438,8 +4448,19 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 			&& vma_is_hugetext_file(vma, vma->vm_flags)) {
 		unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
 
-		if (transhuge_vma_suitable(vma, haddr))
+		if (transhuge_vma_suitable(vma, haddr)) {
+			/*
+			 * Try direct file collapse for vmf->address before
+			 * returning to the user space if needed.
+			 */
+			if (hugetext_file_direct_enabled())
+				hugetext_add_file_collapse_work(haddr);
+			/*
+			 * Then add the whole vma into khugepaged scan list
+			 * in case of failure.
+			 */
 			khugepaged_enter(vma, vma->vm_flags);
+		}
 	}
 #endif
 

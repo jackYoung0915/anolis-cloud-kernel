@@ -16,6 +16,7 @@ enum {
 	PERF_PMU_FORMAT_VALUE_CONFIG,
 	PERF_PMU_FORMAT_VALUE_CONFIG1,
 	PERF_PMU_FORMAT_VALUE_CONFIG2,
+	PERF_PMU_FORMAT_VALUE_CONFIG_END,
 };
 
 #define PERF_PMU_FORMAT_BITS 64
@@ -125,6 +126,7 @@ char *perf_pmu__getcpuid(struct perf_pmu *pmu);
 const struct pmu_event *pmu_events_table__find(void);
 bool pmu_uncore_alias_match(const char *pmu_name, const char *name);
 void perf_pmu_free_alias(struct perf_pmu_alias *alias);
+bool pmu_uncore_identifier_match(const char *compat, const char *id);
 
 int perf_pmu__convert_scale(const char *scale, char **end, double *sval);
 
@@ -135,5 +137,6 @@ void perf_pmu__warn_invalid_config(struct perf_pmu *pmu, __u64 config,
 				   const char *name);
 double perf_pmu__cpu_slots_per_cycle(void);
 int perf_pmu__match(char *pattern, char *name, char *tok);
+void perf_pmu__warn_invalid_formats(struct perf_pmu *pmu);
 
 #endif /* __PMU_H */

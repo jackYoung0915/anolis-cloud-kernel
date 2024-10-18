@@ -173,6 +173,9 @@ void __init dma_contiguous_reserve(phys_addr_t limit)
 
 	pr_debug("%s(limit %08lx)\n", __func__, (unsigned long)limit);
 
+	if (is_zhaoxin_kh40000())
+		return;
+
 	if (size_cmdline != -1) {
 		selected_size = size_cmdline;
 		selected_base = base_cmdline;

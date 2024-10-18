@@ -313,6 +313,7 @@ static ssize_t fuse_conn_max_background_write(struct file *file,
 		if (fc) {
 			spin_lock(&fc->bg_lock);
 			fc->max_background = val;
+			fc->bg_table[FUSE_BG_DEFAULT].max_background = val;
 			fc->blocked = fc->num_background >= fc->max_background;
 			if (!fc->blocked)
 				wake_up(&fc->blocked_waitq);
@@ -322,6 +323,132 @@ static ssize_t fuse_conn_max_background_write(struct file *file,
 	}
 
 	return ret;
+}
+
+static ssize_t fuse_conn_max_write_background_read(struct file *file,
+		char __user *buf, size_t len, loff_t *ppos)
+{
+	struct fuse_conn *fc;
+	unsigned val;
+
+	fc = fuse_ctl_file_conn_get(file);
+	if (!fc)
+		return 0;
+
+	val = READ_ONCE(fc->bg_table[FUSE_BG_WRITE].max_background);
+	fuse_conn_put(fc);
+
+	return fuse_conn_limit_read(file, buf, len, ppos, val);
+}
+
+static ssize_t fuse_conn_max_write_background_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	unsigned val;
+	ssize_t ret;
+
+	ret = fuse_conn_limit_write(file, buf, count, ppos, &val,
+				    max_user_bgreq);
+	if (ret > 0) {
+		struct fuse_conn *fc = fuse_ctl_file_conn_get(file);
+
+		if (fc) {
+			spin_lock(&fc->bg_lock);
+			fc->bg_table[FUSE_BG_WRITE].max_background = val;
+			spin_unlock(&fc->bg_lock);
+			fuse_conn_put(fc);
+		}
+	}
+
+	return ret;
+}
+
+static ssize_t fuse_conn_max_reserved_background_read(struct file *file,
+		char __user *buf, size_t len, loff_t *ppos)
+{
+	struct fuse_conn *fc;
+	unsigned val;
+
+	fc = fuse_ctl_file_conn_get(file);
+	if (!fc)
+		return 0;
+
+	val = READ_ONCE(fc->bg_table[FUSE_BG_DEFAULT].reserved_background) *
+		FUSE_BG_HASH_SIZE;
+	fuse_conn_put(fc);
+
+	return fuse_conn_limit_read(file, buf, len, ppos, val);
+}
+
+static ssize_t fuse_conn_max_reserved_background_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	unsigned val, reserved_background;
+	ssize_t ret;
+
+	ret = fuse_conn_limit_write(file, buf, count, ppos, &val,
+				    max_user_bgreq);
+	if (ret > 0) {
+		struct fuse_conn *fc = fuse_ctl_file_conn_get(file);
+
+		if (fc) {
+			spin_lock(&fc->bg_lock);
+			reserved_background = val / FUSE_BG_HASH_SIZE;
+			fc->bg_table[FUSE_BG_DEFAULT].reserved_background =
+							reserved_background;
+			fc->bg_table[FUSE_BG_WRITE].reserved_background =
+							reserved_background;
+			spin_unlock(&fc->bg_lock);
+			fuse_conn_put(fc);
+		}
+	}
+
+	return ret;
+}
+
+static ssize_t fuse_conn_max_write_background_bytes_read(struct file *file,
+		char __user *buf, size_t len, loff_t *ppos)
+{
+	struct fuse_conn *fc;
+	u64 val;
+	char tmp[64];
+	size_t size;
+
+	fc = fuse_ctl_file_conn_get(file);
+	if (!fc)
+		return 0;
+
+	val = READ_ONCE(fc->bg_table[FUSE_BG_WRITE].max_background_pages);
+	val <<= PAGE_SHIFT;
+	fuse_conn_put(fc);
+
+	size = sprintf(tmp, "%llu\n", val);
+	return simple_read_from_buffer(buf, len, ppos, tmp, size);
+}
+
+static ssize_t fuse_conn_max_write_background_bytes_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	struct fuse_conn *fc;
+	u64 val;
+	int err;
+
+	if (*ppos)
+		return -EINVAL;
+	err = kstrtou64_from_user(buf, count, 0, &val);
+	if (err)
+		return err;
+
+	fc = fuse_ctl_file_conn_get(file);
+	if (fc) {
+		spin_lock(&fc->bg_lock);
+		fc->bg_table[FUSE_BG_WRITE].max_background_pages =
+			val >> PAGE_SHIFT;
+		spin_unlock(&fc->bg_lock);
+		fuse_conn_put(fc);
+	}
+
+	return count;
 }
 
 static ssize_t fuse_conn_congestion_threshold_read(struct file *file,
@@ -528,6 +655,26 @@ static const struct file_operations fuse_conn_max_background_ops = {
 	.llseek = no_llseek,
 };
 
+static const struct file_operations fuse_conn_max_write_background_ops = {
+	.open = nonseekable_open,
+	.read = fuse_conn_max_write_background_read,
+	.write = fuse_conn_max_write_background_write,
+	.llseek = no_llseek,
+};
+
+static const struct file_operations fuse_conn_max_reserved_background_ops = {
+	.open = nonseekable_open,
+	.read = fuse_conn_max_reserved_background_read,
+	.write = fuse_conn_max_reserved_background_write,
+	.llseek = no_llseek,
+};
+
+static const struct file_operations fuse_conn_max_write_background_bytes_ops = {
+	.open = nonseekable_open,
+	.read = fuse_conn_max_write_background_bytes_read,
+	.write = fuse_conn_max_write_background_bytes_write,
+	.llseek = no_llseek,
+};
 static const struct file_operations fuse_conn_stats_ops = {
 	.open = nonseekable_open,
 	.read = fuse_conn_stats_read,
@@ -623,6 +770,12 @@ int fuse_ctl_add_conn(struct fuse_conn *fc)
 				 NULL, &fuse_conn_stats_ops) ||
 	    !fuse_ctl_add_dentry(parent, fc, "max_background", S_IFREG | 0600,
 				 1, NULL, &fuse_conn_max_background_ops) ||
+	    !fuse_ctl_add_dentry(parent, fc, "max_write_background", S_IFREG | 0600,
+				 1, NULL, &fuse_conn_max_write_background_ops) ||
+	    !fuse_ctl_add_dentry(parent, fc, "max_reserved_background", S_IFREG | 0600,
+				 1, NULL, &fuse_conn_max_reserved_background_ops) ||
+	    !fuse_ctl_add_dentry(parent, fc, "max_write_background_bytes", S_IFREG | 0600,
+				 1, NULL, &fuse_conn_max_write_background_bytes_ops) ||
 	    !fuse_ctl_add_dentry(parent, fc, "passthrough", S_IFREG | 0600,
 				 1, NULL, &fuse_conn_passthrough_ops) ||
 	    !fuse_ctl_add_dentry(parent, fc, "passthrough_metrics", S_IFREG | 0600,
@@ -662,7 +815,7 @@ void fuse_ctl_remove_conn(struct fuse_conn *fc)
 	drop_nlink(d_inode(fuse_control_sb->s_root));
 }
 
-static int fuse_ctl_fill_super(struct super_block *sb, struct fs_context *fctx)
+static int fuse_ctl_fill_super(struct super_block *sb, struct fs_context *fsc)
 {
 	static const struct tree_descr empty_descr = {""};
 	struct fuse_conn *fc;
@@ -688,18 +841,18 @@ static int fuse_ctl_fill_super(struct super_block *sb, struct fs_context *fctx)
 	return 0;
 }
 
-static int fuse_ctl_get_tree(struct fs_context *fc)
+static int fuse_ctl_get_tree(struct fs_context *fsc)
 {
-	return get_tree_single(fc, fuse_ctl_fill_super);
+	return get_tree_single(fsc, fuse_ctl_fill_super);
 }
 
 static const struct fs_context_operations fuse_ctl_context_ops = {
 	.get_tree	= fuse_ctl_get_tree,
 };
 
-static int fuse_ctl_init_fs_context(struct fs_context *fc)
+static int fuse_ctl_init_fs_context(struct fs_context *fsc)
 {
-	fc->ops = &fuse_ctl_context_ops;
+	fsc->ops = &fuse_ctl_context_ops;
 	return 0;
 }
 

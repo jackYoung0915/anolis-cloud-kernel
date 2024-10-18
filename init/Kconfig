@@ -79,6 +79,10 @@ config TOOLS_SUPPORT_RELR
 config CC_HAS_ASM_INLINE
 	def_bool $(success,echo 'void foo(void) { asm inline (""); }' | $(CC) -x c - -c -o /dev/null)
 
+config PAHOLE_VERSION
+	int
+	default $(shell,$(srctree)/scripts/pahole-version.sh $(PAHOLE))
+
 config CONSTRUCTORS
 	bool
 	depends on !UML
@@ -987,6 +991,15 @@ config CFS_BANDWIDTH
 	  set are considered to be unconstrained and will run with no
 	  restriction.
 	  See Documentation/scheduler/sched-bwc.rst for more information.
+
+config GROUP_BALANCER
+	bool "Group balancing for SCHED_OTHER"
+	depends on FAIR_GROUP_SCHED && SMP && CFS_BANDWIDTH
+	default n
+	help
+	  This feature schedule task groups as a whole to achieve better
+	  locality. It use a soft cpu bind method which offer a dynamic
+	  way to restrict allowed CPUS for tasks in the same cgroup.
 
 config RT_GROUP_SCHED
 	bool "Group scheduling for SCHED_RR/FIFO"

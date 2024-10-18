@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- *	linux/arch/sw_64/kernel/smp.c
- */
 
 #include <linux/errno.h>
 #include <linux/sched/mm.h>
@@ -9,8 +6,13 @@
 #include <linux/smp.h>
 #include <linux/delay.h>
 #include <linux/irq.h>
+#include <linux/irq_work.h>
 #include <linux/cpu.h>
+#include <linux/acpi.h>
+#include <linux/of.h>
+#include <linux/numa.h>
 
+#include <asm/irq_impl.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
 #include <asm/sw64_init.h>
@@ -23,11 +25,16 @@ struct smp_rcb_struct *smp_rcb;
 
 extern struct cpuinfo_sw64 cpu_data[NR_CPUS];
 
-int smp_booted;
+static nodemask_t nodes_found_map = NODE_MASK_NONE;
+ /* maps to convert between physical node ID and logical node ID */
+static int pnode_to_lnode_map[MAX_NUMNODES]
+			= { [0 ... MAX_NUMNODES - 1] = NUMA_NO_NODE };
+static int lnode_to_pnode_map[MAX_NUMNODES]
+			= { [0 ... MAX_NUMNODES - 1] = NUMA_NO_NODE };
 
 #define smp_debug 0
 #define DBGS(fmt, arg...) \
-	do { if (smp_debug) printk("SMP: " fmt, ## arg); } while (0)
+	do { if (smp_debug) pr_info("SMP: " fmt, ## arg); } while (0)
 
 void *idle_task_pointer[NR_CPUS];
 
@@ -43,43 +50,114 @@ enum ipi_message_type {
 	IPI_RESCHEDULE,
 	IPI_CALL_FUNC,
 	IPI_CPU_STOP,
+	IPI_IRQ_WORK,
 };
 
 int smp_num_cpus = 1;		/* Number that came online.  */
 EXPORT_SYMBOL(smp_num_cpus);
 
+struct rcid_information rcid_info = { 0 };
+
 #define send_sleep_interrupt(cpu)	send_ipi((cpu), II_SLEEP)
 #define send_wakeup_interrupt(cpu)	send_ipi((cpu), II_WAKE)
+
+enum core_version {
+	CORE_VERSION_NONE = 0,
+	CORE_VERSION_C3B  = 1,
+	CORE_VERSION_C4   = 2,
+	CORE_VERSION_RESERVED = 3 /* 3 and greater are reserved */
+};
+
+#ifdef CONFIG_SUBARCH_C4
+#define OFFSET_CLU_LV2_SELH	0x3a00UL
+#define OFFSET_CLU_LV2_SELL	0x3b00UL
+
+static void upshift_freq(void)
+{
+	int i, cpu_num;
+	void __iomem *spbu_base;
+
+	if (is_guest_or_emul())
+		return;
+
+	if (!sunway_machine_is_compatible("sunway,junzhang"))
+		return;
+
+	cpu_num = sw64_chip->get_cpu_num();
+	for (i = 0; i < cpu_num; i++) {
+		spbu_base = misc_platform_get_spbu_base(i);
+		writeq(-1UL, spbu_base + OFFSET_CLU_LV2_SELH);
+		writeq(-1UL, spbu_base + OFFSET_CLU_LV2_SELL);
+		udelay(1000);
+	}
+}
+
+static void downshift_freq(void)
+{
+	unsigned long value;
+	int core_id, node_id, cpu;
+	int cpuid = smp_processor_id();
+	struct cpu_topology *cpu_topo = &cpu_topology[cpuid];
+	void __iomem *spbu_base;
+
+	if (is_guest_or_emul())
+		return;
+
+	if (!sunway_machine_is_compatible("sunway,junzhang"))
+		return;
+
+	for_each_online_cpu(cpu) {
+		struct cpu_topology *sib_topo = &cpu_topology[cpu];
+
+		if ((cpu_topo->package_id == sib_topo->package_id) &&
+				(cpu_topo->core_id == sib_topo->core_id))
+			return;
+	}
+
+
+	core_id = rcid_to_core_id(cpu_to_rcid(cpuid));
+	node_id = rcid_to_domain_id(cpu_to_rcid(cpuid));
+
+	spbu_base = misc_platform_get_spbu_base(node_id);
+
+	if (core_id > 31) {
+		value = 1UL << (2 * (core_id - 32));
+		writeq(value, spbu_base + OFFSET_CLU_LV2_SELH);
+	} else {
+		value = 1UL << (2 * core_id);
+		writeq(value, spbu_base + OFFSET_CLU_LV2_SELL);
+	}
+}
+#else
+static void upshift_freq(void)	{ }
+static void downshift_freq(void) { }
+#endif
 
 /*
  * Where secondaries begin a life of C.
  */
 void smp_callin(void)
 {
-	int cpuid = smp_processor_id();
+	int cpuid;
+	struct page  __maybe_unused *nmi_stack_page;
+	unsigned long __maybe_unused nmi_stack;
 
+	save_ktp();
+	upshift_freq();
+	cpuid = smp_processor_id();
 	local_irq_disable();
 
 	if (cpu_online(cpuid)) {
-		printk("??, cpu 0x%x already present??\n", cpuid);
+		pr_err("??, cpu 0x%x already present??\n", cpuid);
 		BUG();
 	}
-	set_cpu_online(cpuid, true);
 
-	/* clear ksp, usp  */
-	wrksp(0);
-	wrusp(0);
+	set_cpu_online(cpuid, true);
 
 	/* Set trap vectors.  */
 	trap_init();
 
 	/* Set interrupt vector.  */
-	if (is_in_host()) {
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI0_INTEN);
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI1_INTEN);
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI2_INTEN);
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI3_INTEN);
-	}
 	wrent(entInt, 0);
 
 	/* Get our local ticker going. */
@@ -90,12 +168,29 @@ void smp_callin(void)
 	current->active_mm = &init_mm;
 	/* update csr:ptbr */
 	update_ptbr_sys(virt_to_phys(init_mm.pgd));
+#ifdef CONFIG_SUBARCH_C4
+	update_ptbr_usr(__pa_symbol(empty_zero_page));
+#endif
+
+	if (IS_ENABLED(CONFIG_SUBARCH_C4) && is_in_host()) {
+		nmi_stack_page = alloc_pages_node(
+				cpu_to_node(smp_processor_id()),
+				THREADINFO_GFP,
+				THREAD_SIZE_ORDER);
+		nmi_stack = nmi_stack_page ?
+			(unsigned long)page_address(nmi_stack_page) : 0;
+		sw64_write_csr_imb(nmi_stack + THREAD_SIZE, CSR_NMI_STACK);
+		wrent(entNMI, 6);
+		set_nmi(INT_PC);
+	}
 
 	/* inform the notifiers about the new cpu */
 	notify_cpu_starting(cpuid);
 
 	per_cpu(cpu_state, cpuid) = CPU_ONLINE;
 	per_cpu(hard_node_id, cpuid) = rcid_to_domain_id(cpu_to_rcid(cpuid));
+	store_cpu_topology(cpuid);
+	numa_add_cpu(cpuid);
 
 	/* Must have completely accurate bogos.  */
 	local_irq_enable();
@@ -136,6 +231,9 @@ static int secondary_cpu_start(int cpuid, struct task_struct *idle)
 
 	set_secondary_ready(cpuid);
 
+	/* send reset signal */
+	reset_cpu(cpuid);
+
 	/* Wait 10 seconds for secondary cpu.  */
 	timeout = jiffies + 10*HZ;
 	while (time_before(jiffies, timeout)) {
@@ -149,8 +247,6 @@ static int secondary_cpu_start(int cpuid, struct task_struct *idle)
 
 started:
 	DBGS("%s: SUCCESS for CPU %d!!!\n", __func__, cpuid);
-	store_cpu_topology(cpuid);
-	numa_add_cpu(cpuid);
 	return 0;
 }
 
@@ -176,14 +272,154 @@ static void __init process_nr_cpu_ids(void)
 	nr_cpu_ids = num_possible_cpus();
 }
 
-void __init smp_rcb_init(void)
+void __init smp_rcb_init(struct smp_rcb_struct *smp_rcb_base_addr)
 {
-	smp_rcb = INIT_SMP_RCB;
+	if (smp_rcb != NULL)
+		return;
+
+	smp_rcb = smp_rcb_base_addr;
 	memset(smp_rcb, 0, sizeof(struct smp_rcb_struct));
 	/* Setup SMP_RCB fields that uses to activate secondary CPU */
 	smp_rcb->restart_entry = __smp_callin;
 	smp_rcb->init_done = 0xDEADBEEFUL;
 	mb();
+}
+
+static int __init sw64_of_core_version(const struct device_node *dn,
+		int *version)
+{
+	if (!dn || !version)
+		return -EINVAL;
+
+	if (of_device_is_compatible(dn, "sw64,xuelang")) {
+		*version = CORE_VERSION_C3B;
+		return 0;
+	}
+
+	if (of_device_is_compatible(dn, "sw64,junzhang")) {
+		*version = CORE_VERSION_C4;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+static void __fdt_map_pnode_to_lnode(int pnode, int lnode)
+{
+	if (pnode_to_lnode_map[pnode] == NUMA_NO_NODE || lnode < pnode_to_lnode_map[pnode])
+		pnode_to_lnode_map[pnode] = lnode;
+	if (lnode_to_pnode_map[lnode] == NUMA_NO_NODE || pnode < lnode_to_pnode_map[lnode])
+		lnode_to_pnode_map[lnode] = pnode;
+}
+
+static int fdt_map_pnode_to_lnode(int pnode)
+{
+	int lnode;
+
+	if (pnode < 0 || pnode >= MAX_NUMNODES || numa_off)
+		return NUMA_NO_NODE;
+	lnode = pnode_to_lnode_map[pnode];
+
+	if (lnode == NUMA_NO_NODE) {
+		if (nodes_weight(nodes_found_map) >= MAX_NUMNODES)
+			return NUMA_NO_NODE;
+		lnode = first_unset_node(nodes_found_map);
+		__fdt_map_pnode_to_lnode(pnode, lnode);
+		node_set(lnode, nodes_found_map);
+	}
+
+	return lnode;
+}
+
+static int __init fdt_setup_smp(void)
+{
+	struct device_node *dn = NULL;
+	u64 boot_flag_address;
+	u32 rcid, logical_core_id = 0;
+	u32 online_capable = 0;
+	bool available;
+	int ret, i, version, lnode, pnode;
+
+	/* Clean the map from logical core ID to physical core ID */
+	for (i = 0; i < ARRAY_SIZE(__cpu_to_rcid); ++i)
+		set_rcid_map(i, -1);
+
+	/* Clean core mask */
+	init_cpu_possible(cpu_none_mask);
+	init_cpu_present(cpu_none_mask);
+
+	while ((dn = of_find_node_by_type(dn, "cpu"))) {
+		of_property_read_u32(dn, "online-capable", &online_capable);
+
+		available = of_device_is_available(dn);
+
+		if (!available && !online_capable) {
+			pr_info("OF: Core is not available\n");
+			continue;
+		}
+
+		ret = of_property_read_u32(dn, "reg", &rcid);
+		if (ret) {
+			pr_err("OF: Found core without rcid\n");
+			return -ENODEV;
+		}
+
+		if (logical_core_id >= nr_cpu_ids) {
+			pr_warn_once("OF: Core [0x%x] exceeds max core num [%u]\n",
+					rcid, nr_cpu_ids);
+			return 0;
+		}
+
+		if (is_rcid_duplicate(rcid)) {
+			pr_err("OF: Duplicate core [0x%x]\n", rcid);
+			return -EINVAL;
+		}
+
+		ret = sw64_of_core_version(dn, &version);
+		if (ret) {
+			pr_err("OF: No valid core version found\n");
+			return ret;
+		}
+
+		ret = of_property_read_u64(dn, "sw64,boot_flag_address",
+					&boot_flag_address);
+		if (ret) {
+			pr_err("OF: No boot_flag_address found\n");
+			return ret;
+		}
+
+		set_rcid_map(logical_core_id, rcid);
+		set_cpu_possible(logical_core_id, true);
+		store_cpu_data(logical_core_id);
+
+		if (!cpumask_test_cpu(logical_core_id, &cpu_offline) &&
+				available)
+			set_cpu_present(logical_core_id, true);
+
+		rcid_information_init(version);
+
+		smp_rcb_init(__va(boot_flag_address));
+
+		/* Set core affinity */
+	        pnode = of_node_to_nid(dn);
+		lnode = fdt_map_pnode_to_lnode(pnode);
+
+		early_map_cpu_to_node(logical_core_id, lnode);
+
+		logical_core_id++;
+	}
+
+	/* No valid cpu node found */
+	if (!num_possible_cpus())
+		return -EINVAL;
+
+	/* It's time to update nr_cpu_ids */
+	nr_cpu_ids = num_possible_cpus();
+
+	pr_info("OF: Detected %u possible CPU(s), %u CPU(s) are present\n",
+			nr_cpu_ids, num_present_cpus());
+
+	return 0;
 }
 
 /*
@@ -194,10 +430,29 @@ void __init setup_smp(void)
 {
 	int i = 0, num = 0;
 
+	/* First try SMP initialization via ACPI */
+	if (!acpi_disabled)
+		return;
+
+	/* Next try SMP initialization via device tree */
+	if (!fdt_setup_smp())
+		return;
+
+	/* Fallback to legacy SMP initialization */
+
+	/* Clean the map from logical core ID to physical core ID */
+	for (i = 0; i < ARRAY_SIZE(__cpu_to_rcid); ++i)
+		set_rcid_map(i, -1);
+
+	/* Clean core mask */
 	init_cpu_possible(cpu_none_mask);
+	init_cpu_present(cpu_none_mask);
+
+	/* Legacy core detect */
+	sw64_chip_init->early_init.setup_core_map(&core_start);
 
 	/* For unified kernel, NR_CPUS is the maximum possible value */
-	for (; i < NR_CPUS; i++) {
+	for (i = 0; i < NR_CPUS; i++) {
 		if (cpu_to_rcid(i) != -1) {
 			set_cpu_possible(num, true);
 			store_cpu_data(num);
@@ -212,8 +467,67 @@ void __init setup_smp(void)
 	pr_info("Detected %u possible CPU(s), %u CPU(s) are present\n",
 			nr_cpu_ids, num_present_cpus());
 
-	smp_rcb_init();
+	smp_rcb_init(INIT_SMP_RCB);
 }
+
+void rcid_information_init(int core_version)
+{
+	if (rcid_info.initialized)
+		return;
+
+	switch (core_version) {
+	case CORE_VERSION_C3B:
+		rcid_info.thread_bits  = 1;
+		rcid_info.thread_shift = 31;
+		rcid_info.core_bits    = 5;
+		rcid_info.core_shift   = 0;
+		rcid_info.domain_bits  = 2;
+		rcid_info.domain_shift = 5;
+		break;
+	case CORE_VERSION_C4:
+		rcid_info.thread_bits  = 1;
+		rcid_info.thread_shift = 8;
+		rcid_info.core_bits    = 6;
+		rcid_info.core_shift   = 0;
+		rcid_info.domain_bits  = 2;
+		rcid_info.domain_shift = 12;
+		break;
+	default:
+		rcid_info.initialized = 0;
+		return;
+	}
+
+	rcid_info.initialized = 1;
+}
+
+static int get_rcid_field(int rcid, unsigned int shift, unsigned int bits)
+{
+	unsigned int h, l;
+
+	if (WARN_ON_ONCE(!rcid_info.initialized))
+		return -1;
+
+	h = shift + bits - 1;
+	l = shift;
+
+	return (rcid & GENMASK(h, l)) >> shift;
+}
+
+int get_core_id_from_rcid(int rcid)
+{
+	return get_rcid_field(rcid, rcid_info.core_shift, rcid_info.core_bits);
+}
+
+int get_thread_id_from_rcid(int rcid)
+{
+	return get_rcid_field(rcid, rcid_info.thread_shift, rcid_info.thread_bits);
+}
+
+int get_domain_id_from_rcid(int rcid)
+{
+	return get_rcid_field(rcid, rcid_info.domain_shift, rcid_info.domain_bits);
+}
+
 /*
  * Called by smp_init prepare the secondaries
  */
@@ -251,14 +565,11 @@ void smp_prepare_boot_cpu(void)
 
 int vt_cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
-	printk("%s: cpu = %d\n", __func__, cpu);
+	pr_info("%s: cpu = %d\n", __func__, cpu);
 
 	wmb();
 	smp_rcb->ready = 0;
-	if (smp_booted) {
-		/* irq must be disabled before reset vCPU */
-		reset_cpu(cpu);
-	}
+	/* irq must be disabled before reset vCPU */
 	smp_boot_one_cpu(cpu, tidle);
 
 	return cpu_online(cpu) ? 0 : -ENOSYS;
@@ -276,27 +587,18 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	wmb();
 	smp_rcb->ready = 0;
 
-	/* send wake up signal */
-	send_wakeup_interrupt(cpu);
-	/* send reset signal */
-	if (smp_booted) {
-		if (is_in_host()) {
-			reset_cpu(cpu);
-		} else {
-			while (1) {
-				cpu_relax();
-			}
-		}
+	if (!is_junzhang_v1()) {
+		/* send wake up signal */
+		send_wakeup_interrupt(cpu);
 	}
+
 	smp_boot_one_cpu(cpu, tidle);
 
 #ifdef CONFIG_SUBARCH_C3B
 	if (static_branch_likely(&use_tc_as_sched_clock)) {
-		if (smp_booted) {
-			tc_sync_clear();
-			smp_call_function_single(cpu, tc_sync_ready, NULL, 0);
-			tc_sync_set();
-		}
+		tc_sync_clear();
+		smp_call_function_single(cpu, tc_sync_ready, NULL, 0);
+		tc_sync_set();
 	}
 #endif
 
@@ -305,7 +607,6 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 
 void __init smp_cpus_done(unsigned int max_cpus)
 {
-	smp_booted = 1;
 	pr_info("SMP: Total of %d processors activated.\n", num_online_cpus());
 }
 
@@ -336,6 +637,13 @@ static void ipi_cpu_stop(int cpu)
 		wait_for_interrupt();
 }
 
+#ifdef CONFIG_IRQ_WORK
+void arch_irq_work_raise(void)
+{
+	send_ipi_message(cpumask_of(smp_processor_id()), IPI_IRQ_WORK);
+}
+#endif
+
 void handle_ipi(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
@@ -358,13 +666,15 @@ void handle_ipi(struct pt_regs *regs)
 				break;
 
 			case IPI_CALL_FUNC:
-				irq_enter();
 				generic_smp_call_function_interrupt();
-				irq_exit();
 				break;
 
 			case IPI_CPU_STOP:
 				ipi_cpu_stop(cpu);
+				break;
+
+			case IPI_IRQ_WORK:
+				irq_work_run();
 				break;
 
 			default:
@@ -444,9 +754,8 @@ void flush_tlb_mm(struct mm_struct *mm)
 	/* happens as a result of exit_mmap()
 	 * Shall we clear mm->context.asid[] here?
 	 */
-	if (atomic_read(&mm->mm_users) == 0) {
+	if (atomic_read(&mm->mm_users) == 0)
 		return;
-	}
 
 	preempt_disable();
 
@@ -532,9 +841,17 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 EXPORT_SYMBOL(flush_tlb_kernel_range);
 
 #ifdef CONFIG_HOTPLUG_CPU
+extern int can_unplug_cpu(void);
 int __cpu_disable(void)
 {
 	int cpu = smp_processor_id();
+	int ret;
+
+	if (is_in_host()) {
+		ret = can_unplug_cpu();
+		if (ret)
+			return ret;
+	}
 
 	set_cpu_online(cpu, false);
 	remove_cpu_topology(cpu);
@@ -563,6 +880,7 @@ void __cpu_die(unsigned int cpu)
 
 void arch_cpu_idle_dead(void)
 {
+	downshift_freq();
 	idle_task_exit();
 	mb();
 	__this_cpu_write(cpu_state, CPU_DEAD);
@@ -572,15 +890,23 @@ void arch_cpu_idle_dead(void)
 	if (is_in_guest()) {
 		hcall(HCALL_SET_CLOCKEVENT, 0, 0, 0);
 		hcall(HCALL_STOP, 0, 0, 0);
+		return;
 	} else {
 		wrtimer(0);
 	}
 
 #ifdef CONFIG_SUSPEND
-	sleepen();
-	send_sleep_interrupt(smp_processor_id());
-	while (1)
-		asm("nop");
+	if (!is_junzhang_v1()) {
+		sleepen();
+		send_sleep_interrupt(smp_processor_id());
+		while (1)
+			asm("nop");
+	} else {
+		asm volatile("halt");
+		while (1)
+			asm("nop");
+	}
+
 #else
 	asm volatile("memb");
 	asm volatile("halt");

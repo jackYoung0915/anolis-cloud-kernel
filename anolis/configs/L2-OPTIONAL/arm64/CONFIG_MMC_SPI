@@ -1,1 +1,1 @@
-# CONFIG_MMC_SPI is not set
+CONFIG_MMC_SPI=m

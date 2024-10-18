@@ -16,6 +16,11 @@
 
 #define ARRAY_SIZE(a)    (sizeof(a) / sizeof(a[0]))
 
+#ifdef __sw_64__
+#define __NR_getpid 174
+#define __NR_getppid 175
+#endif
+
 unsigned long long timing(clockid_t clk_id, unsigned long long samples)
 {
 	struct timespec start, finish;

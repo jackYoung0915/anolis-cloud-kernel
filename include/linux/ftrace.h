@@ -157,11 +157,7 @@ static __always_inline bool ftrace_regs_has_args(struct ftrace_regs *fregs)
 #endif
 
 typedef void (*ftrace_func_t)(unsigned long ip, unsigned long parent_ip,
-#ifndef __GENKSYMS__
 			      struct ftrace_ops *op, struct ftrace_regs *fregs);
-#else
-			      struct ftrace_ops *op, struct pt_regs *regs);
-#endif
 
 ftrace_func_t ftrace_ops_get_func(struct ftrace_ops *ops);
 
@@ -220,8 +216,6 @@ ftrace_func_t ftrace_ops_get_func(struct ftrace_ops *ops);
  *             ftrace_enabled.
  * DIRECT - Used by the direct ftrace_ops helper for direct functions
  *            (internal ftrace only, should not be used by others)
- * OPS_FUNC_CK_RESERVED - A workaround instead of ops->ops_func. If set, we need to
- *                        call bpf_tramp_ftrace_ops_func().
  */
 enum {
 	FTRACE_OPS_FL_ENABLED			= BIT(0),
@@ -242,7 +236,6 @@ enum {
 	FTRACE_OPS_FL_TRACE_ARRAY		= BIT(15),
 	FTRACE_OPS_FL_PERMANENT                 = BIT(16),
 	FTRACE_OPS_FL_DIRECT			= BIT(17),
-	FTRACE_OPS_FL_OPS_FUNC_CK_RESERVED	= BIT(63),
 };
 
 #ifndef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
@@ -288,15 +281,6 @@ enum ftrace_ops_cmd {
  */
 typedef int (*ftrace_ops_func_t)(struct ftrace_ops *op, enum ftrace_ops_cmd cmd);
 
-#if defined(CONFIG_BPF_JIT) && defined(CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS)
-int bpf_tramp_ftrace_ops_func(struct ftrace_ops *ops, enum ftrace_ops_cmd cmd);
-#else
-static inline int bpf_tramp_ftrace_ops_func(struct ftrace_ops *ops, enum ftrace_ops_cmd cmd)
-{
-	return -EBUSY;
-}
-#endif
-
 #ifdef CONFIG_DYNAMIC_FTRACE
 /* The hash used to know what functions callbacks trace */
 struct ftrace_ops_hash {
@@ -336,9 +320,13 @@ struct ftrace_ops {
 	unsigned long			trampoline;
 	unsigned long			trampoline_size;
 	struct list_head		list;
+	ftrace_ops_func_t		ops_func;
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+	unsigned long			direct_call;
+#endif
 #endif
 
-	CK_KABI_USE(1, unsigned long direct_call)
+	CK_KABI_RESERVE(1)
 };
 
 extern struct ftrace_ops __rcu *ftrace_ops_list;

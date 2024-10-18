@@ -170,25 +170,25 @@ static efi_status_t update_fdt_memmap(void *fdt, struct efi_boot_memmap *map)
 	if (node < 0)
 		return EFI_LOAD_ERROR;
 
-	fdt_val64 = cpu_to_fdt64((unsigned long)*map->map);
+	fdt_val64 = cpu_to_fdt64((unsigned long)map->map);
 
 	err = fdt_setprop_inplace_var(fdt, node, "linux,uefi-mmap-start", fdt_val64);
 	if (err)
 		return EFI_LOAD_ERROR;
 
-	fdt_val32 = cpu_to_fdt32(*map->map_size);
+	fdt_val32 = cpu_to_fdt32(map->map_size);
 
 	err = fdt_setprop_inplace_var(fdt, node, "linux,uefi-mmap-size", fdt_val32);
 	if (err)
 		return EFI_LOAD_ERROR;
 
-	fdt_val32 = cpu_to_fdt32(*map->desc_size);
+	fdt_val32 = cpu_to_fdt32(map->desc_size);
 
 	err = fdt_setprop_inplace_var(fdt, node, "linux,uefi-mmap-desc-size", fdt_val32);
 	if (err)
 		return EFI_LOAD_ERROR;
 
-	fdt_val32 = cpu_to_fdt32(*map->desc_ver);
+	fdt_val32 = cpu_to_fdt32(map->desc_ver);
 
 	err = fdt_setprop_inplace_var(fdt, node, "linux,uefi-mmap-desc-ver", fdt_val32);
 	if (err)
@@ -198,22 +198,25 @@ static efi_status_t update_fdt_memmap(void *fdt, struct efi_boot_memmap *map)
 }
 
 struct exit_boot_struct {
+	struct efi_boot_memmap	*boot_memmap;
 	efi_memory_desc_t	*runtime_map;
-	int			*runtime_entry_count;
+	int			runtime_entry_count;
 	void			*new_fdt_addr;
 };
 
-static efi_status_t exit_boot_func(struct efi_boot_memmap *map,
-				   void *priv)
+static efi_status_t exit_boot_func(struct efi_boot_memmap *map, void *priv)
 {
 	struct exit_boot_struct *p = priv;
+
+	p->boot_memmap = map;
+
 	/*
 	 * Update the memory map with virtual addresses. The function will also
 	 * populate @runtime_map with copies of just the EFI_MEMORY_RUNTIME
 	 * entries so that we can pass it straight to SetVirtualAddressMap()
 	 */
-	efi_get_virtmap(*map->map, *map->map_size, *map->desc_size,
-			p->runtime_map, p->runtime_entry_count);
+	efi_get_virtmap(map->map, map->map_size, map->desc_size,
+			p->runtime_map, &p->runtime_entry_count);
 
 	return update_fdt_memmap(p->new_fdt_addr, map);
 }
@@ -244,50 +247,27 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 					    unsigned long fdt_addr,
 					    unsigned long fdt_size)
 {
-	unsigned long map_size, desc_size, buff_size;
+	unsigned long desc_size;
 	u32 desc_ver;
-	unsigned long mmap_key;
-	efi_memory_desc_t *memory_map, *runtime_map;
 	efi_status_t status;
-	int runtime_entry_count;
-	struct efi_boot_memmap map;
 	struct exit_boot_struct priv;
 
-	map.map		= &runtime_map;
-	map.map_size	= &map_size;
-	map.desc_size	= &desc_size;
-	map.desc_ver	= &desc_ver;
-	map.key_ptr	= &mmap_key;
-	map.buff_size	= &buff_size;
-
-	/*
-	 * Get a copy of the current memory map that we will use to prepare
-	 * the input for SetVirtualAddressMap(). We don't have to worry about
-	 * subsequent allocations adding entries, since they could not affect
-	 * the number of EFI_MEMORY_RUNTIME regions.
-	 */
-	status = efi_get_memory_map(&map);
-	if (status != EFI_SUCCESS) {
-		efi_err("Unable to retrieve UEFI memory map.\n");
-		return status;
+	if (!efi_novamap) {
+		status = efi_alloc_virtmap(&priv.runtime_map, &desc_size,
+					   &desc_ver);
+		if (status != EFI_SUCCESS) {
+			efi_err("Unable to retrieve UEFI memory map.\n");
+			return status;
+		}
 	}
 
 	efi_info("Exiting boot services and installing virtual address map...\n");
 
-	map.map = &memory_map;
 	status = efi_allocate_pages(MAX_FDT_SIZE, new_fdt_addr, max_addr);
 	if (status != EFI_SUCCESS) {
 		efi_err("Unable to allocate memory for new device tree.\n");
 		goto fail;
 	}
-
-	/*
-	 * Now that we have done our final memory allocation (and free)
-	 * we can get the memory map key needed for exit_boot_services().
-	 */
-	status = efi_get_memory_map(&map);
-	if (status != EFI_SUCCESS)
-		goto fail_free_new_fdt;
 
 	status = update_fdt((void *)fdt_addr, fdt_size,
 			    (void *)*new_fdt_addr, MAX_FDT_SIZE, cmdline_ptr,
@@ -298,12 +278,9 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 		goto fail_free_new_fdt;
 	}
 
-	runtime_entry_count		= 0;
-	priv.runtime_map		= runtime_map;
-	priv.runtime_entry_count	= &runtime_entry_count;
-	priv.new_fdt_addr		= (void *)*new_fdt_addr;
+	priv.new_fdt_addr = (void *)*new_fdt_addr;
 
-	status = efi_exit_boot_services(handle, &map, &priv, exit_boot_func);
+	status = efi_exit_boot_services(handle, &priv, exit_boot_func);
 
 	if (status == EFI_SUCCESS) {
 		efi_set_virtual_address_map_t *svam;
@@ -313,8 +290,8 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 
 		/* Install the new virtual address map */
 		svam = efi_system_table->runtime->set_virtual_address_map;
-		status = svam(runtime_entry_count * desc_size, desc_size,
-			      desc_ver, runtime_map);
+		status = svam(priv.runtime_entry_count * desc_size, desc_size,
+			      desc_ver, priv.runtime_map);
 
 		/*
 		 * We are beyond the point of no return here, so if the call to
@@ -322,6 +299,7 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 		 * incoming kernel but proceed normally otherwise.
 		 */
 		if (status != EFI_SUCCESS) {
+			efi_memory_desc_t *p;
 			int l;
 
 			/*
@@ -330,8 +308,9 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
 			 * the incoming kernel that no virtual translation has
 			 * been installed.
 			 */
-			for (l = 0; l < map_size; l += desc_size) {
-				efi_memory_desc_t *p = (void *)memory_map + l;
+			for (l = 0; l < priv.boot_memmap->map_size;
+			     l += priv.boot_memmap->desc_size) {
+				p = (void *)priv.boot_memmap->map + l;
 
 				if (p->attribute & EFI_MEMORY_RUNTIME)
 					p->virt_addr = 0;
@@ -346,7 +325,8 @@ fail_free_new_fdt:
 	efi_free(MAX_FDT_SIZE, *new_fdt_addr);
 
 fail:
-	efi_system_table->boottime->free_pool(runtime_map);
+	if (!efi_novamap)
+		efi_bs_call(free_pool, priv.runtime_map);
 
 	return EFI_LOAD_ERROR;
 }

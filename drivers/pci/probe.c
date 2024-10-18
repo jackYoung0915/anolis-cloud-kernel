@@ -891,8 +891,6 @@ static int pci_register_host_bridge(struct pci_host_bridge *bridge)
 
 	bridge->bus = bus;
 
-	/* Temporarily move resources off the list */
-	list_splice_init(&bridge->windows, &resources);
 	bus->sysdata = bridge->sysdata;
 	bus->msi = bridge->msi;
 	bus->ops = bridge->ops;
@@ -916,6 +914,8 @@ static int pci_register_host_bridge(struct pci_host_bridge *bridge)
 	if (err)
 		goto free;
 
+	/* Temporarily move resources off the list */
+	list_splice_init(&bridge->windows, &resources);
 	err = device_add(&bridge->dev);
 	if (err) {
 		put_device(&bridge->dev);
@@ -2508,6 +2508,8 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 
 	ret = pcibios_add_device(dev);
 	WARN_ON(ret < 0);
+
+	pci_seq_tree_add_dev(dev);
 
 	/* Set up MSI IRQ domain */
 	pci_set_msi_domain(dev);

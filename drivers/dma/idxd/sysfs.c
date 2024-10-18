@@ -806,10 +806,14 @@ static ssize_t wq_block_on_fault_store(struct device *dev,
 	if (rc < 0)
 		return rc;
 
-	if (bof)
+	if (bof) {
+		if (test_bit(WQ_FLAG_PRS_DISABLE, &wq->flags))
+			return -EOPNOTSUPP;
+
 		set_bit(WQ_FLAG_BLOCK_ON_FAULT, &wq->flags);
-	else
+	} else {
 		clear_bit(WQ_FLAG_BLOCK_ON_FAULT, &wq->flags);
+	}
 
 	return count;
 }
@@ -1072,8 +1076,8 @@ static ssize_t wq_ats_disable_store(struct device *dev, struct device_attribute 
 	if (wq->state != IDXD_WQ_DISABLED)
 		return -EPERM;
 
-	if (!idxd->hw.wq_cap.wq_ats_support)
-		return -EOPNOTSUPP;
+	if (!test_bit(IDXD_FLAG_CONFIGURABLE, &idxd->flags))
+		return -EPERM;
 
 	rc = kstrtobool(buf, &ats_dis);
 	if (rc < 0)
@@ -1089,6 +1093,44 @@ static ssize_t wq_ats_disable_store(struct device *dev, struct device_attribute 
 
 static struct device_attribute dev_attr_wq_ats_disable =
 		__ATTR(ats_disable, 0644, wq_ats_disable_show, wq_ats_disable_store);
+
+static ssize_t wq_prs_disable_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct idxd_wq *wq = confdev_to_wq(dev);
+
+	return sysfs_emit(buf, "%u\n", test_bit(WQ_FLAG_PRS_DISABLE, &wq->flags));
+}
+
+static ssize_t wq_prs_disable_store(struct device *dev, struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct idxd_wq *wq = confdev_to_wq(dev);
+	struct idxd_device *idxd = wq->idxd;
+	bool prs_dis;
+	int rc;
+
+	if (wq->state != IDXD_WQ_DISABLED)
+		return -EPERM;
+
+	if (!test_bit(IDXD_FLAG_CONFIGURABLE, &idxd->flags))
+		return -EPERM;
+
+	rc = kstrtobool(buf, &prs_dis);
+	if (rc < 0)
+		return rc;
+
+	if (prs_dis) {
+		set_bit(WQ_FLAG_PRS_DISABLE, &wq->flags);
+		/* when PRS is disabled, BOF needs to be off as well */
+		clear_bit(WQ_FLAG_BLOCK_ON_FAULT, &wq->flags);
+	} else {
+		clear_bit(WQ_FLAG_PRS_DISABLE, &wq->flags);
+	}
+	return count;
+}
+
+static struct device_attribute dev_attr_wq_prs_disable =
+		__ATTR(prs_disable, 0644, wq_prs_disable_show, wq_prs_disable_store);
 
 static ssize_t wq_occupancy_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -1253,6 +1295,7 @@ static struct attribute *idxd_wq_attributes[] = {
 	&dev_attr_wq_max_transfer_size.attr,
 	&dev_attr_wq_max_batch_size.attr,
 	&dev_attr_wq_ats_disable.attr,
+	&dev_attr_wq_prs_disable.attr,
 	&dev_attr_wq_occupancy.attr,
 	&dev_attr_wq_enqcmds_retries.attr,
 	&dev_attr_wq_driver_name.attr,
@@ -1260,12 +1303,9 @@ static struct attribute *idxd_wq_attributes[] = {
 	NULL,
 };
 
-static bool idxd_wq_attr_op_config_invisible(struct attribute *attr,
-					     struct idxd_device *idxd)
-{
-	return attr == &dev_attr_wq_op_config.attr &&
-	       !idxd->hw.wq_cap.op_config;
-}
+/*  A WQ attr is invisible if the feature is not supported in WQCAP. */
+#define idxd_wq_attr_invisible(name, cap_field, a, idxd)		\
+	((a) == &dev_attr_wq_##name.attr && !(idxd)->hw.wq_cap.cap_field)
 
 static bool idxd_wq_attr_max_batch_size_invisible(struct attribute *attr,
 						  struct idxd_device *idxd)
@@ -1285,7 +1325,13 @@ static umode_t idxd_wq_attr_visible(struct kobject *kobj,
 	if (idxd_wq_attr_max_batch_size_invisible(attr, idxd))
 		return 0;
 
-	if (idxd_wq_attr_op_config_invisible(attr, idxd))
+	if (idxd_wq_attr_invisible(op_config, op_config, attr, idxd))
+		return 0;
+
+	if (idxd_wq_attr_invisible(prs_disable, wq_prs_support, attr, idxd))
+		return 0;
+
+	if (idxd_wq_attr_invisible(ats_disable, wq_ats_support, attr, idxd))
 		return 0;
 
 	return attr->mode;
@@ -1307,6 +1353,7 @@ static void idxd_conf_wq_release(struct device *dev)
 
 	bitmap_free(wq->opcap_bmap);
 	kfree(wq->wqcfg);
+	xa_destroy(&wq->upasid_xa);
 	kfree(wq);
 }
 
@@ -1588,6 +1635,47 @@ static ssize_t iaa_cap_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(iaa_cap);
 
+static ssize_t event_log_size_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct idxd_device *idxd = confdev_to_idxd(dev);
+
+	if (!idxd->evl)
+		return -EOPNOTSUPP;
+
+	return sysfs_emit(buf, "%u\n", idxd->evl->size);
+}
+
+static ssize_t event_log_size_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct idxd_device *idxd = confdev_to_idxd(dev);
+	unsigned long val;
+	int rc;
+
+	if (!idxd->evl)
+		return -EOPNOTSUPP;
+
+	rc = kstrtoul(buf, 10, &val);
+	if (rc < 0)
+		return -EINVAL;
+
+	if (idxd->state == IDXD_DEV_ENABLED)
+		return -EPERM;
+
+	if (!test_bit(IDXD_FLAG_CONFIGURABLE, &idxd->flags))
+		return -EPERM;
+
+	if (val < IDXD_EVL_SIZE_MIN || val > IDXD_EVL_SIZE_MAX ||
+	    (val * evl_ent_size(idxd) > ULONG_MAX - idxd->evl->dma))
+		return -EINVAL;
+
+	idxd->evl->size = val;
+	return count;
+}
+static DEVICE_ATTR_RW(event_log_size);
+
 static bool idxd_device_attr_max_batch_size_invisible(struct attribute *attr,
 						      struct idxd_device *idxd)
 {
@@ -1604,6 +1692,13 @@ static bool idxd_device_attr_iaa_cap_invisible(struct attribute *attr,
 	       idxd->hw.version < DEVICE_VERSION_2);
 }
 
+static bool idxd_device_attr_event_log_size_invisible(struct attribute *attr,
+						      struct idxd_device *idxd)
+{
+	return (attr == &dev_attr_event_log_size.attr &&
+		!idxd->hw.gen_cap.evl_support);
+}
+
 static umode_t idxd_device_attr_visible(struct kobject *kobj,
 					struct attribute *attr, int n)
 {
@@ -1614,6 +1709,9 @@ static umode_t idxd_device_attr_visible(struct kobject *kobj,
 		return 0;
 
 	if (idxd_device_attr_iaa_cap_invisible(attr, idxd))
+		return 0;
+
+	if (idxd_device_attr_event_log_size_invisible(attr, idxd))
 		return 0;
 
 	return attr->mode;
@@ -1643,6 +1741,7 @@ static struct attribute *idxd_device_attributes[] = {
 	&dev_attr_cmd_status.attr,
 	&dev_attr_wq_op_config.attr,
 	&dev_attr_iaa_cap.attr,
+	&dev_attr_event_log_size.attr,
 	NULL,
 };
 
@@ -1663,6 +1762,8 @@ static void idxd_conf_device_release(struct device *dev)
 	kfree(idxd->groups);
 	kfree(idxd->wqs);
 	kfree(idxd->engines);
+	kfree(idxd->evl);
+	kmem_cache_destroy(idxd->evl_cache);
 	ida_free(&idxd_ida, idxd->id);
 	bitmap_free(idxd->opcap_bmap);
 	kfree(idxd);

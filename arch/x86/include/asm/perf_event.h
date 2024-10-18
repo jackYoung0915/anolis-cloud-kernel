@@ -31,6 +31,7 @@
 #define ARCH_PERFMON_EVENTSEL_ENABLE			(1ULL << 22)
 #define ARCH_PERFMON_EVENTSEL_INV			(1ULL << 23)
 #define ARCH_PERFMON_EVENTSEL_CMASK			0xFF000000ULL
+#define ARCH_PERFMON_EVENTSEL_BR_CNTR			(1ULL << 35)
 
 #define HSW_IN_TX					(1ULL << 32)
 #define HSW_IN_TX_CHECKPOINTED				(1ULL << 33)
@@ -47,6 +48,9 @@
 
 #define AMD64_EVENTSEL_EVENT	\
 	(ARCH_PERFMON_EVENTSEL_EVENT | (0x0FULL << 32))
+#define HYGON_F18H_EVENTSEL_EVENT	\
+	(AMD64_EVENTSEL_EVENT        |  \
+	 GENMASK_ULL(62, 61))
 #define INTEL_ARCH_EVENT_MASK	\
 	(ARCH_PERFMON_EVENTSEL_UMASK | ARCH_PERFMON_EVENTSEL_EVENT)
 
@@ -97,6 +101,18 @@
 #define AMD64_RAW_EVENT_MASK_NB		\
 	(AMD64_EVENTSEL_EVENT        |  \
 	 ARCH_PERFMON_EVENTSEL_UMASK)
+#define HYGON_F18H_M4H_EVENTSEL_UMASK_NB	0x0003FF00ULL
+#define HYGON_F18H_M6H_EVENTSEL_UMASK_NB	0x000FFF00ULL
+
+#define HYGON_F18H_RAW_EVENT_MASK_NB	\
+	(HYGON_F18H_EVENTSEL_EVENT  |		\
+	 ARCH_PERFMON_EVENTSEL_UMASK)
+#define HYGON_F18H_M4H_RAW_EVENT_MASK_NB	\
+	(HYGON_F18H_EVENTSEL_EVENT  |		\
+	 HYGON_F18H_M4H_EVENTSEL_UMASK_NB)
+#define HYGON_F18H_M6H_RAW_EVENT_MASK_NB	\
+	(HYGON_F18H_EVENTSEL_EVENT  |		\
+	 HYGON_F18H_M6H_EVENTSEL_UMASK_NB)
 
 #define AMD64_PERFMON_V2_EVENTSEL_EVENT_NB	\
 	(AMD64_EVENTSEL_EVENT	|		\
@@ -109,6 +125,13 @@
 #define AMD64_PERFMON_V2_RAW_EVENT_MASK_NB		\
 	(AMD64_PERFMON_V2_EVENTSEL_EVENT_NB	|	\
 	 AMD64_PERFMON_V2_EVENTSEL_UMASK_NB)
+
+#define AMD64_PERFMON_V2_ENABLE_UMC			BIT_ULL(31)
+#define AMD64_PERFMON_V2_EVENTSEL_EVENT_UMC		GENMASK_ULL(7, 0)
+#define AMD64_PERFMON_V2_EVENTSEL_RDWRMASK_UMC		GENMASK_ULL(9, 8)
+#define AMD64_PERFMON_V2_RAW_EVENT_MASK_UMC		\
+	(AMD64_PERFMON_V2_EVENTSEL_EVENT_UMC	|	\
+	 AMD64_PERFMON_V2_EVENTSEL_RDWRMASK_UMC)
 
 #define AMD64_NUM_COUNTERS				4
 #define AMD64_NUM_COUNTERS_CORE				6
@@ -211,6 +234,9 @@ union cpuid28_ecx {
 		unsigned int    lbr_timed_lbr:1;
 		/* Branch Type Field Supported */
 		unsigned int    lbr_br_type:1;
+		unsigned int	reserved:13;
+		/* Branch counters (Event Logging) Supported */
+		unsigned int	lbr_counters:4;
 	} split;
 	unsigned int            full;
 };
@@ -223,9 +249,12 @@ union cpuid_0x80000022_ebx {
 	struct {
 		/* Number of Core Performance Counters */
 		unsigned int	num_core_pmc:4;
-		unsigned int	reserved:6;
+		/* Number of available LBR Stack Entries */
+		unsigned int	lbr_v2_stack_sz:6;
 		/* Number of Data Fabric Counters */
 		unsigned int	num_df_pmc:6;
+		/* Number of Unified Memory Controller Counters */
+		unsigned int	num_umc_pmc:6;
 	} split;
 	unsigned int		full;
 };
@@ -238,6 +267,7 @@ struct x86_pmu_capability {
 	int		bit_width_fixed;
 	unsigned int	events_mask;
 	int		events_mask_len;
+	unsigned int	pebs_ept	:1;
 };
 
 /*
@@ -476,8 +506,10 @@ struct pebs_xmm {
 
 #ifdef CONFIG_X86_LOCAL_APIC
 extern u32 get_ibs_caps(void);
+extern int forward_event_to_ibs(struct perf_event *event);
 #else
 static inline u32 get_ibs_caps(void) { return 0; }
+static inline int forward_event_to_ibs(struct perf_event *event) { return -ENOENT; }
 #endif
 
 #ifdef CONFIG_PERF_EVENTS
@@ -544,10 +576,10 @@ static inline void perf_check_microcode(void) { }
 #endif
 
 #if defined(CONFIG_PERF_EVENTS) && defined(CONFIG_CPU_SUP_INTEL)
-extern struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr);
+extern struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr, void *data);
 extern int x86_perf_get_lbr(struct x86_pmu_lbr *lbr);
 #else
-static inline struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr)
+static inline struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr, void *data)
 {
 	*nr = 0;
 	return NULL;

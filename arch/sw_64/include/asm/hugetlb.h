@@ -18,7 +18,7 @@ extern pte_t huge_ptep_get_and_clear(struct mm_struct *mm,
 					unsigned long addr, pte_t *ptep);
 
 #define __HAVE_ARCH_HUGE_PTEP_CLEAR_FLUSH
-extern void huge_ptep_clear_flush(struct vm_area_struct *vma, unsigned long addr,
+extern pte_t huge_ptep_clear_flush(struct vm_area_struct *vma, unsigned long addr,
 					pte_t *ptep);
 
 #define __HAVE_ARCH_HUGE_PTEP_SET_WRPROTECT

@@ -54,9 +54,6 @@ MODULE_PARM_DESC(max_user_congthresh,
 
 #define FUSE_DEFAULT_BLKSIZE 512
 
-/** Maximum number of outstanding background requests */
-#define FUSE_DEFAULT_MAX_BACKGROUND 12
-
 /** Congestion starts at 75% of maximum */
 #define FUSE_DEFAULT_CONGESTION_THRESHOLD (FUSE_DEFAULT_MAX_BACKGROUND * 3 / 4)
 
@@ -147,12 +144,12 @@ static void fuse_evict_inode(struct inode *inode)
 	}
 }
 
-static int fuse_reconfigure(struct fs_context *fc)
+static int fuse_reconfigure(struct fs_context *fsc)
 {
-	struct super_block *sb = fc->root->d_sb;
+	struct super_block *sb = fsc->root->d_sb;
 
 	sync_filesystem(sb);
-	if (fc->sb_flags & SB_MANDLOCK)
+	if (fsc->sb_flags & SB_MANDLOCK)
 		return -EINVAL;
 
 	return 0;
@@ -353,6 +350,14 @@ void fuse_change_attributes(struct inode *inode, struct fuse_attr *attr,
 		fuse_dax_dontcache(inode, attr->flags);
 }
 
+static void fuse_inode_common_init(struct inode *inode)
+{
+	struct fuse_inode *fi = get_fuse_inode(inode);
+
+	fi->bg_queue_index[FUSE_BG_DEFAULT] = FUSE_BG_INDEX_NONE;
+	fi->bg_queue_index[FUSE_BG_WRITE] = FUSE_BG_INDEX_NONE;
+}
+
 static void fuse_init_inode(struct inode *inode, struct fuse_attr *attr)
 {
 	inode->i_mode = attr->mode & S_IFMT;
@@ -361,6 +366,7 @@ static void fuse_init_inode(struct inode *inode, struct fuse_attr *attr)
 	inode->i_mtime.tv_nsec = attr->mtimensec;
 	inode->i_ctime.tv_sec  = attr->ctime;
 	inode->i_ctime.tv_nsec = attr->ctimensec;
+	fuse_inode_common_init(inode);
 	if (S_ISREG(inode->i_mode)) {
 		fuse_init_common(inode);
 		fuse_init_file_inode(inode, attr->flags);
@@ -436,8 +442,11 @@ retry:
 	} else if (fuse_stale_inode(inode, generation, attr)) {
 		/* nodeid was reused, any I/O on the old inode should fail */
 		fuse_make_bad(inode);
-		iput(inode);
-		goto retry;
+		if (inode != d_inode(sb->s_root)) {
+			remove_inode_hash(inode);
+			iput(inode);
+			goto retry;
+		}
 	}
 done:
 	fi = get_fuse_inode(inode);
@@ -601,6 +610,7 @@ enum {
 	OPT_ALLOW_OTHER,
 	OPT_MAX_READ,
 	OPT_BLKSIZE,
+	OPT_RESCUE_UID,
 	OPT_ERR
 };
 
@@ -616,41 +626,44 @@ static const struct fs_parameter_spec fuse_fs_parameters[] = {
 	fsparam_u32	("max_read",		OPT_MAX_READ),
 	fsparam_u32	("blksize",		OPT_BLKSIZE),
 	fsparam_string	("subtype",		OPT_SUBTYPE),
+	fsparam_u32	("rescue_uid",		OPT_RESCUE_UID),
 	{}
 };
 
-static int fuse_parse_param(struct fs_context *fc, struct fs_parameter *param)
+static int fuse_parse_param(struct fs_context *fsc, struct fs_parameter *param)
 {
 	struct fs_parse_result result;
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 	int opt;
+	kuid_t kuid;
+	kgid_t kgid;
 
-	if (fc->purpose == FS_CONTEXT_FOR_RECONFIGURE) {
+	if (fsc->purpose == FS_CONTEXT_FOR_RECONFIGURE) {
 		/*
 		 * Ignore options coming from mount(MS_REMOUNT) for backward
 		 * compatibility.
 		 */
-		if (fc->oldapi)
+		if (fsc->oldapi)
 			return 0;
 
-		return invalfc(fc, "No changes allowed in reconfigure");
+		return invalfc(fsc, "No changes allowed in reconfigure");
 	}
 
-	opt = fs_parse(fc, fuse_fs_parameters, param, &result);
+	opt = fs_parse(fsc, fuse_fs_parameters, param, &result);
 	if (opt < 0)
 		return opt;
 
 	switch (opt) {
 	case OPT_SOURCE:
-		if (fc->source)
-			return invalfc(fc, "Multiple sources specified");
-		fc->source = param->string;
+		if (fsc->source)
+			return invalfc(fsc, "Multiple sources specified");
+		fsc->source = param->string;
 		param->string = NULL;
 		break;
 
 	case OPT_SUBTYPE:
 		if (ctx->subtype)
-			return invalfc(fc, "Multiple subtypes specified");
+			return invalfc(fsc, "Multiple subtypes specified");
 		ctx->subtype = param->string;
 		param->string = NULL;
 		return 0;
@@ -668,22 +681,36 @@ static int fuse_parse_param(struct fs_context *fc, struct fs_parameter *param)
 
 	case OPT_ROOTMODE:
 		if (!fuse_valid_type(result.uint_32))
-			return invalfc(fc, "Invalid rootmode");
+			return invalfc(fsc, "Invalid rootmode");
 		ctx->rootmode = result.uint_32;
 		ctx->rootmode_present = true;
 		break;
 
 	case OPT_USER_ID:
-		ctx->user_id = make_kuid(fc->user_ns, result.uint_32);
-		if (!uid_valid(ctx->user_id))
-			return invalfc(fc, "Invalid user_id");
+		kuid =  make_kuid(fsc->user_ns, result.uint_32);
+		if (!uid_valid(kuid))
+			return invalfc(fsc, "Invalid user_id");
+		/*
+		 * The requested uid must be representable in the
+		 * filesystem's idmapping.
+		 */
+		if (!kuid_has_mapping(fsc->user_ns, kuid))
+			return invalfc(fsc, "Invalid user_id");
+		ctx->user_id = kuid;
 		ctx->user_id_present = true;
 		break;
 
 	case OPT_GROUP_ID:
-		ctx->group_id = make_kgid(fc->user_ns, result.uint_32);
-		if (!gid_valid(ctx->group_id))
-			return invalfc(fc, "Invalid group_id");
+		kgid = make_kgid(fsc->user_ns, result.uint_32);;
+		if (!gid_valid(kgid))
+			return invalfc(fsc, "Invalid group_id");
+		/*
+		 * The requested gid must be representable in the
+		 * filesystem's idmapping.
+		 */
+		if (!kgid_has_mapping(fsc->user_ns, kgid))
+			return invalfc(fsc, "Invalid group_id");
+		ctx->group_id = kgid;
 		ctx->group_id_present = true;
 		break;
 
@@ -701,8 +728,23 @@ static int fuse_parse_param(struct fs_context *fc, struct fs_parameter *param)
 
 	case OPT_BLKSIZE:
 		if (!ctx->is_bdev)
-			return invalfc(fc, "blksize only supported for fuseblk");
+			return invalfc(fsc, "blksize only supported for fuseblk");
 		ctx->blksize = result.uint_32;
+		break;
+
+	case OPT_RESCUE_UID:
+		kuid = make_kuid(fsc->user_ns, result.uint_32);
+		if (!uid_valid(kuid))
+			return invalfc(fsc, "Invalid rescue_uid");
+		/*
+		 * The requested uid must be representable in the
+		 * filesystem's idmapping.
+		 */
+		if (!kuid_has_mapping(fsc->user_ns, kuid))
+			return invalfc(fsc, "Invalid rescue_uid");
+
+		ctx->rescue_uid = kuid;
+		ctx->rescue_uid_present = true;
 		break;
 
 	default:
@@ -712,9 +754,9 @@ static int fuse_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	return 0;
 }
 
-static void fuse_free_fc(struct fs_context *fc)
+static void fuse_free_fsc(struct fs_context *fsc)
 {
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 
 	if (ctx) {
 		kfree(ctx->subtype);
@@ -769,6 +811,21 @@ static void fuse_iqueue_init(struct fuse_iqueue *fiq,
 	fiq->priv = priv;
 }
 
+static void fuse_sbg_queue_init(struct fuse_conn *fc)
+{
+	unsigned int i, j;
+
+	for (i = 0; i < FUSE_BG_TYPES; i++) {
+		struct fuse_bg_table *table = &fc->bg_table[i];
+
+		for (j = 0; j < FUSE_BG_HASH_SIZE; j++)
+			INIT_LIST_HEAD(&table->bg_queue[j].queue);
+
+		table->reserved_background = UINT_MAX;
+		table->max_background_pages = UINT_MAX;
+	}
+}
+
 static void fuse_pqueue_init(struct fuse_pqueue *fpq)
 {
 	unsigned int i;
@@ -793,6 +850,7 @@ void fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
 	atomic_set(&fc->dev_count, 1);
 	init_waitqueue_head(&fc->blocked_waitq);
 	fuse_iqueue_init(&fc->iq, fiq_ops, fiq_priv);
+	fuse_sbg_queue_init(fc);
 	INIT_LIST_HEAD(&fc->bg_queue);
 	INIT_LIST_HEAD(&fc->entry);
 	INIT_LIST_HEAD(&fc->devices);
@@ -854,13 +912,6 @@ void fuse_mount_put(struct fuse_mount *fm)
 }
 EXPORT_SYMBOL_GPL(fuse_mount_put);
 
-struct fuse_mount *fuse_mount_get(struct fuse_mount *fm)
-{
-	refcount_inc(&fm->count);
-	return fm;
-}
-EXPORT_SYMBOL_GPL(fuse_mount_get);
-
 static struct inode *fuse_get_root_inode(struct super_block *sb, unsigned mode)
 {
 	struct fuse_attr attr;
@@ -869,7 +920,7 @@ static struct inode *fuse_get_root_inode(struct super_block *sb, unsigned mode)
 	attr.mode = mode;
 	attr.ino = FUSE_ROOT_ID;
 	attr.nlink = 1;
-	return fuse_iget(sb, 1, 0, &attr, 0, 0, 0, 1);
+	return fuse_iget(sb, FUSE_ROOT_ID, 0, &attr, 0, 0, 0, 1);
 }
 
 struct fuse_inode_handle {
@@ -1012,6 +1063,11 @@ static struct dentry *fuse_get_parent(struct dentry *child)
 	return parent;
 }
 
+/* only for fid encoding; no support for file handle */
+static const struct export_operations fuse_export_fid_operations = {
+	.encode_fh	= fuse_encode_fh,
+};
+
 static const struct export_operations fuse_export_operations = {
 	.fh_to_dentry	= fuse_fh_to_dentry,
 	.fh_to_parent	= fuse_fh_to_parent,
@@ -1057,6 +1113,23 @@ static int set_global_limit(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
+/* initialize sbg limits from max_background if not configured with fusectl yet */
+static void fuse_init_sbg_limits(struct fuse_conn *fc)
+{
+	int type;
+
+	for (type = 0; type < FUSE_BG_TYPES; type++) {
+		struct fuse_bg_table *table = &fc->bg_table[type];
+
+		if (!table->max_background)
+			table->max_background = fc->max_background;
+
+		if (table->reserved_background == UINT_MAX)
+			table->reserved_background =
+				fc->max_background / FUSE_BG_HASH_SIZE;
+	}
+}
+
 static void process_init_limits(struct fuse_conn *fc, struct fuse_init_out *arg)
 {
 	int cap_sys_admin = capable(CAP_SYS_ADMIN);
@@ -1081,6 +1154,7 @@ static void process_init_limits(struct fuse_conn *fc, struct fuse_init_out *arg)
 		    fc->congestion_threshold > max_user_congthresh)
 			fc->congestion_threshold = max_user_congthresh;
 	}
+	fuse_init_sbg_limits(fc);
 	spin_unlock(&fc->bg_lock);
 }
 
@@ -1194,6 +1268,24 @@ static void process_init_reply(struct fuse_mount *fm, struct fuse_args *args,
 				fc->invaldir_allentry = 1;
 			if (flags & FUSE_DELETE_STALE)
 				fc->delete_stale = 1;
+			if (flags & FUSE_NO_EXPORT_SUPPORT)
+				fm->sb->s_export_op = &fuse_export_fid_operations;
+			if (flags & FUSE_SEPARATE_BACKGROUND)
+				fc->separate_background = 1;
+			if (flags & FUSE_HAS_RECOVERY) {
+				if (fc->tag[0] == '\0') {
+					pr_err("tag is required for server recovery\n");
+					ok = false;
+				} else if (!fc->rescue_uid_present) {
+					pr_err("rescue_uid is required for server recovery\n");
+					ok = false;
+				} else {
+					fc->recovery = 1;
+					pr_info("server recovery enabled for tag %s\n", fc->tag);
+				}
+			}
+			if (flags & FUSE_WRITE_ALIGNMENT)
+				fc->write_alignment = 1;
 		} else {
 			ra_pages = fc->max_read / PAGE_SIZE;
 			fc->no_lock = 1;
@@ -1205,6 +1297,12 @@ static void process_init_reply(struct fuse_mount *fm, struct fuse_args *args,
 		fc->minor = arg->minor;
 		fc->max_write = arg->minor < 5 ? 4096 : arg->max_write;
 		fc->max_write = max_t(unsigned, 4096, fc->max_write);
+		if (fc->write_alignment) {
+			if (fc->max_write % PAGE_SIZE)
+				ok = false;
+			else
+				fc->write_align_pages = fc->max_write >> PAGE_SHIFT;
+		}
 		fc->conn_init = 1;
 	}
 	kfree(ia);
@@ -1239,7 +1337,9 @@ static void fuse_prepare_send_init(struct fuse_mount *fm,
 		FUSE_HANDLE_KILLPRIV_V2 | FUSE_INIT_EXT | FUSE_PASSTHROUGH |
 		FUSE_INVAL_CACHE_INFAIL | FUSE_CLOSE_TO_OPEN |
 		FUSE_INVALDIR_ALLENTRY | FUSE_DELETE_STALE |
-		FUSE_DIRECT_IO_ALLOW_MMAP;
+		FUSE_DIRECT_IO_ALLOW_MMAP | FUSE_NO_EXPORT_SUPPORT |
+		FUSE_HAS_RESEND | FUSE_SEPARATE_BACKGROUND | FUSE_HAS_RECOVERY |
+		FUSE_WRITE_ALIGNMENT;
 #ifdef CONFIG_FUSE_DAX
 	if (fm->fc->dax)
 		flags |= FUSE_MAP_ALIGNMENT;
@@ -1426,8 +1526,8 @@ static void fuse_fill_attr_from_inode(struct fuse_attr *attr,
 		.ctimensec	= fi->inode.i_ctime.tv_nsec,
 		.mode		= fi->inode.i_mode,
 		.nlink		= fi->inode.i_nlink,
-		.uid		= fi->inode.i_uid.val,
-		.gid		= fi->inode.i_gid.val,
+		.uid		= __kuid_val(fi->inode.i_uid),
+		.gid		= __kgid_val(fi->inode.i_gid),
 		.rdev		= fi->inode.i_rdev,
 		.blksize	= 1u << fi->inode.i_blkbits,
 	};
@@ -1469,6 +1569,7 @@ int fuse_fill_super_submount(struct super_block *sb,
 	sb->s_bdi = bdi_get(parent_sb->s_bdi);
 
 	sb->s_xattr = parent_sb->s_xattr;
+	sb->s_export_op = parent_sb->s_export_op;
 	sb->s_time_gran = parent_sb->s_time_gran;
 	sb->s_blocksize = parent_sb->s_blocksize;
 	sb->s_blocksize_bits = parent_sb->s_blocksize_bits;
@@ -1557,6 +1658,8 @@ int fuse_fill_super_common(struct super_block *sb, struct fuse_fs_context *ctx)
 	fc->destroy = ctx->destroy;
 	fc->no_control = ctx->no_control;
 	fc->no_force_umount = ctx->no_force_umount;
+	fc->rescue_uid = ctx->rescue_uid;
+	fc->rescue_uid_present = ctx->rescue_uid_present;
 
 	err = -ENOMEM;
 	root = fuse_get_root_inode(sb, ctx->rootmode);
@@ -1706,9 +1809,9 @@ static int fuse_test_super(struct super_block *sb, struct fs_context *fsc)
 	return fsc->sget_key && fsc->sget_key == get_fuse_conn_super(sb);
 }
 
-static int fuse_get_tree(struct fs_context *fc)
+static int fuse_get_tree(struct fs_context *fsc)
 {
-	struct fuse_fs_context *ctx = fc->fs_private;
+	struct fuse_fs_context *ctx = fsc->fs_private;
 	struct fuse_dev *fud;
 	struct super_block *sb;
 	struct file *file;
@@ -1721,7 +1824,7 @@ static int fuse_get_tree(struct fs_context *fc)
 
 #ifdef CONFIG_BLOCK
 	if (ctx->is_bdev)
-		return get_tree_bdev(fc, fuse_fill_super);
+		return get_tree_bdev(fsc, fuse_fill_super);
 #endif
 	/*
 	 * While block dev mount can be initialized with a dummy device fd
@@ -1740,16 +1843,16 @@ static int fuse_get_tree(struct fs_context *fc)
 	is_virtfuse = is_virtfuse_device(file);
 	fud = READ_ONCE(file->private_data);
 	if ((file->f_op == &fuse_dev_operations || is_virtfuse) && fud) {
-		fc->sget_key = fud->fc;
-		sb = sget_fc(fc, fuse_test_super, fuse_set_no_super);
+		fsc->sget_key = fud->fc;
+		sb = sget_fc(fsc, fuse_test_super, fuse_set_no_super);
 		err = PTR_ERR_OR_ZERO(sb);
 		if (!IS_ERR(sb))
-			fc->root = dget(sb->s_root);
+			fsc->root = dget(sb->s_root);
 	} else {
 		/* bind sb to init_user_ns for virtfuse */
 		if (is_virtfuse)
-			fc->global = true;
-		err = get_tree_nodev(fc, fuse_fill_super);
+			fsc->global = true;
+		err = get_tree_nodev(fsc, fuse_fill_super);
 	}
 
 	if (is_virtfuse && !err) {
@@ -1758,7 +1861,7 @@ static int fuse_get_tree(struct fs_context *fc)
 		else
 			err = fuse_mount_callback(file);
 		if (err)
-			fc_drop_locked(fc);
+			fc_drop_locked(fsc);
 	}
 
 	fput(file);
@@ -1766,7 +1869,7 @@ static int fuse_get_tree(struct fs_context *fc)
 }
 
 static const struct fs_context_operations fuse_context_ops = {
-	.free		= fuse_free_fc,
+	.free		= fuse_free_fsc,
 	.parse_param	= fuse_parse_param,
 	.reconfigure	= fuse_reconfigure,
 	.get_tree	= fuse_get_tree,
@@ -1775,7 +1878,7 @@ static const struct fs_context_operations fuse_context_ops = {
 /*
  * Set up the filesystem mount context.
  */
-static int fuse_init_fs_context(struct fs_context *fc)
+static int fuse_init_fs_context(struct fs_context *fsc)
 {
 	struct fuse_fs_context *ctx;
 
@@ -1788,14 +1891,14 @@ static int fuse_init_fs_context(struct fs_context *fc)
 	ctx->legacy_opts_show = true;
 
 #ifdef CONFIG_BLOCK
-	if (fc->fs_type == &fuseblk_fs_type) {
+	if (fsc->fs_type == &fuseblk_fs_type) {
 		ctx->is_bdev = true;
 		ctx->destroy = true;
 	}
 #endif
 
-	fc->fs_private = ctx;
-	fc->ops = &fuse_context_ops;
+	fsc->fs_private = ctx;
+	fsc->ops = &fuse_context_ops;
 	return 0;
 }
 

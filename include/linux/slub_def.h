@@ -136,6 +136,9 @@ struct kmem_cache {
 	unsigned int useroffset;	/* Usercopy region offset */
 	unsigned int usersize;		/* Usercopy region size */
 
+	struct list_head oot_page_list;
+	spinlock_t oot_lock;
+	unsigned int oot_page_num;
 	struct kmem_cache_node *node[MAX_NUMNODES];
 };
 

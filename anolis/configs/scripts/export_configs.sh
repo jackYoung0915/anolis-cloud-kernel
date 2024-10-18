@@ -8,23 +8,22 @@
 set -e
 
 SCRIPT_DIR=$(realpath $(dirname $0))
+BASE_CONFIG_DIR=$(realpath ${SCRIPT_DIR}/..)
+FILE_LIST=${DIST_OUTPUT}/file_list
+LEVEL_INFO=${DIST_OUTPUT}/level_info
 
 mkdir -p ${DIST_OUTPUT}
-arch_list="x86 arm64"
-sort_ref_list=""
 
-pushd ${DIST_SRCROOT} > /dev/null
-    files=
-    for arch in ${arch_list}
-    do
-        ARCH=${arch} CROSS_COMPILE=scripts/dummy-tools/ make allyesconfig
-        sort_name=${DIST_OUTPUT}/sorted_ref-${arch}
-        cp .config ${sort_name}
-        sort_ref_list="${sort_ref_list} ${sort_name}"
-    done
-popd > /dev/null
+sh ${SCRIPT_DIR}/generate_configs.sh | tee ${FILE_LIST}
 
-python3 ${SCRIPT_DIR}/anolis_kconfig.py export\
-        --input_dir ${SCRIPT_DIR}/../ \
+python3 ${SCRIPT_DIR}/anolis_kconfig.py collect_level --top_dir ${BASE_CONFIG_DIR} \
+    --dist ${DIST_CONFIG_KERNEL_NAME}  > ${LEVEL_INFO}
+
+files=$(cat ${FILE_LIST} | grep "generated" | awk '{print $4}' | xargs)
+
+python3 ${SCRIPT_DIR}/anolis_kconfig.py export \
+        --level_info ${LEVEL_INFO} \
         --output ${DIST_OUTPUT}/configs.xlsx\
-        ${sort_ref_list}
+        ${files}
+
+echo "* file generated: ${DIST_OUTPUT}/configs.xlsx"

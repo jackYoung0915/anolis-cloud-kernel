@@ -489,3 +489,9 @@ config DRM_PANEL_ORIENTATION_QUIRKS
 config DRM_LIB_RANDOM
 	bool
 	default n
+
+config HYDCU_FIXUP_HEADER
+	bool "Enable fixup header support for HYDCU"
+	help
+	  Choose this option if you want to use pci passthrough with HYDCU
+	  HYDCU cannot support pci reset, so enable this module to disable pci reset

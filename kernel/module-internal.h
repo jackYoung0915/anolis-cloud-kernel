@@ -26,6 +26,8 @@ struct load_info {
 	struct {
 		unsigned int sym, str, mod, vers, info, pcpu;
 	} index;
+
+	unsigned long subsys;
 };
 
 extern int mod_verify_sig(const void *mod, struct load_info *info);

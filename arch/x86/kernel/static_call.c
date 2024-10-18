@@ -12,6 +12,12 @@ enum insn_type {
 };
 
 /*
+ * data16 data16 xorq %rax, %rax - a single 5 byte instruction that clears %rax
+ * The REX.W cancels the effect of any data16.
+ */
+static const u8 xor5rax[] = { 0x66, 0x66, 0x48, 0x31, 0xc0 };
+
+/*
  * ud1 %esp, %ecx - a 3 byte #UD that is unique to trampolines, chosen such
  * that there is no false-positive trampoline identification while also being a
  * speculation stop.
@@ -23,16 +29,22 @@ static const u8 retinsn[] = { RET_INSN_OPCODE, 0xcc, 0xcc, 0xcc, 0xcc };
 static void __ref __static_call_transform(void *insn, enum insn_type type,
 					  void *func, bool modinit)
 {
+	const void *emulate = NULL;
 	int size = CALL_INSN_SIZE;
 	const void *code;
 
 	switch (type) {
 	case CALL:
 		code = text_gen_insn(CALL_INSN_OPCODE, insn, func);
+		if (func == &__static_call_return0) {
+			emulate = code;
+			code = &xor5rax;
+		}
+
 		break;
 
 	case NOP:
-		code = ideal_nops[NOP_ATOMIC5];
+		code = x86_nops[5];
 		break;
 
 	case JMP:
@@ -41,7 +53,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 
 	case RET:
 		if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
-			code = text_gen_insn(JMP32_INSN_OPCODE, insn, &__x86_return_thunk);
+			code = text_gen_insn(JMP32_INSN_OPCODE, insn, x86_return_thunk);
 		else
 			code = &retinsn;
 		break;
@@ -53,7 +65,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 	if (system_state == SYSTEM_BOOTING || modinit)
 		return text_poke_early(insn, code, size);
 
-	text_poke_bp(insn, code, size, NULL);
+	text_poke_bp(insn, code, size, emulate);
 }
 
 static void __static_call_validate(void *insn, bool tail)
@@ -66,7 +78,8 @@ static void __static_call_validate(void *insn, bool tail)
 			return;
 	} else {
 		if (opcode == CALL_INSN_OPCODE ||
-		    !memcmp(insn, ideal_nops[NOP_ATOMIC5], 5))
+		    !memcmp(insn, x86_nops[5], 5) ||
+		    !memcmp(insn, xor5rax, 5))
 			return;
 	}
 
@@ -123,6 +136,19 @@ EXPORT_SYMBOL_GPL(arch_static_call_transform);
  */
 bool __static_call_fixup(void *tramp, u8 op, void *dest)
 {
+	unsigned long addr = (unsigned long)tramp;
+	/*
+	 * Not all .return_sites are a static_call trampoline (most are not).
+	 * Check if the 3 bytes after the return are still kernel text, if not,
+	 * then this definitely is not a trampoline and we need not worry
+	 * further.
+	 *
+	 * This avoids the memcmp() below tripping over pagefaults etc..
+	 */
+	if (((addr >> PAGE_SHIFT) != ((addr + 7) >> PAGE_SHIFT)) &&
+	    !kernel_text_address(addr + 7))
+		return false;
+
 	if (memcmp(tramp+5, tramp_ud, 3)) {
 		/* Not a trampoline site, not our problem. */
 		return false;

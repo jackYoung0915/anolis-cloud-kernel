@@ -846,6 +846,7 @@ static void __init mm_init(void)
 	init_espfix_bsp();
 	/* Should be run after espfix64 is set up. */
 	pti_init();
+	mm_cache_init();
 }
 
 void __init __weak arch_call_rest_init(void)
@@ -911,7 +912,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	prandom_init_early();
 	trap_init();
 	mm_init();
-
+	poking_init();
 	ftrace_init();
 
 	/* trace_printk can be enabled here */
@@ -1052,7 +1053,6 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	taskstats_init_early();
 	delayacct_init();
 
-	poking_init();
 	check_bugs();
 
 	acpi_subsystem_init();

@@ -92,13 +92,14 @@ void rdt_last_cmd_printf(const char *fmt, ...)
 static bool resctrl_is_mbm_enabled(void)
 {
 	return (resctrl_arch_is_mbm_total_enabled() ||
-		resctrl_arch_is_mbm_local_enabled());
+		resctrl_arch_is_mbm_local_enabled() ||
+		resctrl_arch_is_mbm_bps_enabled());
 }
 
 static bool resctrl_is_mbm_event(int e)
 {
 	return (e >= QOS_L3_MBM_TOTAL_EVENT_ID &&
-		e <= QOS_L3_MBM_LOCAL_EVENT_ID);
+		e <= QOS_MC_MBM_BPS_EVENT_ID);
 }
 
 /*
@@ -159,6 +160,37 @@ static int closid_alloc(void)
 void closid_free(int closid)
 {
 	closid_free_map |= 1UL << closid;
+}
+
+/*
+ * Counter bitmap for tracking the available counters.
+ * ABMC feature provides set of hardware counters for enabling events.
+ * Each event takes one hardware counter. Kernel needs to keep track
+ * of number of available counters.
+ */
+static DECLARE_BITMAP(mbm_cntrs_free_map, 64);
+
+static void mbm_cntrs_init(struct rdt_resource *r)
+{
+	bitmap_fill(mbm_cntrs_free_map, r->mon.num_mbm_cntrs);
+}
+
+int mbm_cntr_alloc(struct rdt_resource *r)
+{
+	int cntr_id;
+
+	cntr_id = find_first_bit(mbm_cntrs_free_map, r->mon.num_mbm_cntrs);
+	if (cntr_id >= r->mon.num_mbm_cntrs)
+		return -ENOSPC;
+
+	__clear_bit(cntr_id, mbm_cntrs_free_map);
+
+	return cntr_id;
+}
+
+void mbm_cntr_free(u32 cntr_id)
+{
+	__set_bit(cntr_id, mbm_cntrs_free_map);
 }
 
 /**
@@ -331,7 +363,6 @@ static int rdtgroup_cpus_show(struct kernfs_open_file *of,
 static void
 update_closid_rmid(const struct cpumask *cpu_mask, struct rdtgroup *r)
 {
-	int cpu = get_cpu();
 	struct resctrl_cpu_sync defaults;
 	struct resctrl_cpu_sync *defaults_p = NULL;
 
@@ -341,11 +372,7 @@ update_closid_rmid(const struct cpumask *cpu_mask, struct rdtgroup *r)
 		defaults_p = &defaults;
 	}
 
-	if (cpumask_test_cpu(cpu, cpu_mask))
-		resctrl_arch_sync_cpu_defaults(defaults_p);
-	smp_call_function_many(cpu_mask, resctrl_arch_sync_cpu_defaults,
-			       defaults_p, 1);
-	put_cpu();
+	on_each_cpu_mask(cpu_mask, resctrl_arch_sync_cpu_defaults, defaults_p, 1);
 }
 
 static int cpus_mon_write(struct rdtgroup *rdtgrp, cpumask_var_t newmask,
@@ -550,7 +577,7 @@ static void _update_task_closid_rmid(void *task)
 	 * Otherwise, the MSR is updated when the task is scheduled in.
 	 */
 	if (task == current)
-		resctrl_sched_in();
+		resctrl_sched_in(task);
 }
 
 static void update_task_closid_rmid(struct task_struct *t)
@@ -603,8 +630,10 @@ static int __rdtgroup_move_task(struct task_struct *tsk,
 	/*
 	 * Ensure the task's closid and rmid are written before determining if
 	 * the task is current that will decide if it will be interrupted.
+	 * This pairs with the full barrier between the rq->curr update and
+	 * resctrl_sched_in() during context switch.
 	 */
-	barrier();
+	smp_mb();
 
 	/*
 	 * By now, the task's closid and rmid are set. If the task is current
@@ -767,6 +796,475 @@ static int rdtgroup_tasks_show(struct kernfs_open_file *of,
 	rdtgroup_kn_unlock(of->kn);
 
 	return ret;
+}
+
+static int rdtgroup_mbm_mode_show(struct kernfs_open_file *of,
+				  struct seq_file *s, void *v)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+
+	if (r->mon.mbm_cntr_assignable) {
+		if (resctrl_arch_get_abmc_enabled()) {
+			seq_puts(s, "[mbm_cntr_assign]\n");
+			seq_puts(s, "legacy\n");
+		} else {
+			seq_puts(s, "mbm_cntr_assign\n");
+			seq_puts(s, "[legacy]\n");
+		}
+	} else {
+		seq_puts(s, "[legacy]\n");
+	}
+
+	return 0;
+}
+
+static void rdtgroup_mbm_cntr_reset(struct rdt_resource *r)
+{
+	struct rdtgroup *prgrp, *crgrp;
+	struct rdt_domain *dom;
+
+	mbm_cntrs_init(r);
+
+	list_for_each_entry(dom, &r->domains, list)
+		bitmap_zero(dom->mbm_cntr_map, r->mon.num_mbm_cntrs);
+
+	/* Reset the cntr_id's for all the monitor groups */
+	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
+		prgrp->mon.cntr_id[0] = MON_CNTR_UNSET;
+		prgrp->mon.cntr_id[1] = MON_CNTR_UNSET;
+		list_for_each_entry(crgrp, &prgrp->mon.crdtgrp_list,
+				    mon.crdtgrp_list) {
+			crgrp->mon.cntr_id[0] = MON_CNTR_UNSET;
+			crgrp->mon.cntr_id[1] = MON_CNTR_UNSET;
+		}
+	}
+}
+
+static ssize_t rdtgroup_mbm_mode_write(struct kernfs_open_file *of,
+				       char *buf, size_t nbytes,
+				       loff_t off)
+{
+	int mbm_cntr_assign = resctrl_arch_get_abmc_enabled();
+	struct rdt_resource *r = of->kn->parent->priv;
+	int ret = 0;
+
+	/* Valid input requires a trailing newline */
+	if (nbytes == 0 || buf[nbytes - 1] != '\n')
+		return -EINVAL;
+
+	buf[nbytes - 1] = '\0';
+
+	cpus_read_lock();
+	mutex_lock(&rdtgroup_mutex);
+
+	rdt_last_cmd_clear();
+
+	if (!strcmp(buf, "legacy")) {
+		if (mbm_cntr_assign)
+			resctrl_arch_mbm_cntr_assign_disable();
+	} else if (!strcmp(buf, "mbm_cntr_assign")) {
+		if (!mbm_cntr_assign) {
+			rdtgroup_mbm_cntr_reset(r);
+			ret = resctrl_arch_mbm_cntr_assign_enable();
+		}
+	} else {
+		ret = -EINVAL;
+	}
+
+	mutex_unlock(&rdtgroup_mutex);
+	cpus_read_unlock();
+
+	return ret ?: nbytes;
+}
+
+static int rdtgroup_num_mbm_cntrs_show(struct kernfs_open_file *of,
+				       struct seq_file *s, void *v)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+
+	seq_printf(s, "%d\n", r->mon.num_mbm_cntrs);
+
+	return 0;
+}
+
+static char *rdtgroup_mon_state_to_str(struct rdtgroup *rdtgrp,
+				       struct rdt_domain *d, char *str)
+{
+	char *tmp = str;
+	int index;
+
+	/*
+	 * Query the monitor state for the domain.
+	 * Index 0 for evtid == QOS_L3_MBM_TOTAL_EVENT_ID
+	 * Index 1 for evtid == QOS_L3_MBM_LOCAL_EVENT_ID
+	 */
+	index = mon_event_config_index_get(QOS_L3_MBM_TOTAL_EVENT_ID);
+	if (rdtgrp->mon.cntr_id[index] != MON_CNTR_UNSET &&
+	    test_bit(rdtgrp->mon.cntr_id[index], d->mbm_cntr_map))
+		*tmp++ = 't';
+
+	index = mon_event_config_index_get(QOS_L3_MBM_LOCAL_EVENT_ID);
+	if (rdtgrp->mon.cntr_id[index] != MON_CNTR_UNSET &&
+	    test_bit(rdtgrp->mon.cntr_id[index], d->mbm_cntr_map))
+		*tmp++ = 'l';
+
+	if (tmp == str)
+		*tmp++ = '_';
+
+	*tmp = '\0';
+	return str;
+}
+
+static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
+				     struct seq_file *s, void *v)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+	struct rdt_domain *dom;
+	struct rdtgroup *rdtg;
+	char str[10];
+
+	if (!resctrl_arch_get_mbm_cntr_assign_enable()) {
+		rdt_last_cmd_puts("ABMC feature is not enabled\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&rdtgroup_mutex);
+
+	list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
+		struct rdtgroup *crg;
+
+		seq_printf(s, "%s//", rdtg->kn->name);
+
+		list_for_each_entry(dom, &r->domains, list)
+			seq_printf(s, "%d=%s;", dom->id,
+				   rdtgroup_mon_state_to_str(rdtg, dom, str));
+		seq_putc(s, '\n');
+
+		list_for_each_entry(crg, &rdtg->mon.crdtgrp_list,
+				    mon.crdtgrp_list) {
+			seq_printf(s, "%s/%s/", rdtg->kn->name, crg->kn->name);
+
+			list_for_each_entry(dom, &r->domains, list)
+				seq_printf(s, "%d=%s;", dom->id,
+					   rdtgroup_mon_state_to_str(crg, dom, str));
+			seq_putc(s, '\n');
+		}
+	}
+
+	mutex_unlock(&rdtgroup_mutex);
+	return 0;
+}
+
+/*
+ * Update the assign states for the domain.
+ *
+ * If this is a new assignment for the group then allocate a counter and update
+ * the assignment else just update the assign state
+ */
+static int rdtgroup_assign_update(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid,
+				  struct rdt_domain *d)
+{
+	int ret, index;
+
+	index = mon_event_config_index_get(evtid);
+	if (index == INVALID_CONFIG_INDEX)
+		return -EINVAL;
+
+	if (rdtgrp->mon.cntr_id[index] == MON_CNTR_UNSET) {
+		ret = rdtgroup_alloc_cntr(rdtgrp, index);
+		if (ret < 0)
+			goto out_done;
+	}
+
+	/* Update the state on all domains if d == NULL */
+	if (d == NULL) {
+		ret = rdtgroup_assign_cntr(rdtgrp, evtid);
+	} else {
+		ret = resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
+					       rdtgrp->mon.cntr_id[index],
+					       rdtgrp->closid, 1);
+		if (!ret)
+			set_bit(rdtgrp->mon.cntr_id[index], d->mbm_cntr_map);
+	}
+
+out_done:
+	return ret;
+}
+
+/*
+ * Update the unassign state for the domain.
+ *
+ * Free the counter if it is unassigned on all the domains else just
+ * update the unassign state
+ */
+static int rdtgroup_unassign_update(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid,
+				    struct rdt_domain *d)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	int ret = 0, index;
+
+	index = mon_event_config_index_get(evtid);
+	if (index == INVALID_CONFIG_INDEX)
+		return -EINVAL;
+
+	if (rdtgrp->mon.cntr_id[index] == MON_CNTR_UNSET)
+		goto out_done;
+
+	if (d == NULL) {
+		ret = rdtgroup_unassign_cntr(rdtgrp, evtid);
+	} else {
+		ret = resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
+					       rdtgrp->mon.cntr_id[index],
+					       rdtgrp->closid, 0);
+		if (!ret) {
+			clear_bit(rdtgrp->mon.cntr_id[index], d->mbm_cntr_map);
+			rdtgroup_free_cntr(r, rdtgrp, index);
+		}
+	}
+
+out_done:
+	return ret;
+}
+
+static int rdtgroup_str_to_mon_state(char *flag)
+{
+	int i, mon_state = 0;
+
+	for (i = 0; i < strlen(flag); i++) {
+		switch (*(flag + i)) {
+		case 't':
+			mon_state |= ASSIGN_TOTAL;
+			break;
+		case 'l':
+			mon_state |= ASSIGN_LOCAL;
+			break;
+		case '_':
+			mon_state = ASSIGN_NONE;
+			break;
+		default:
+			break;
+		}
+	}
+
+	return mon_state;
+}
+
+static struct rdtgroup *rdtgroup_find_grp(enum rdt_group_type rtype, char *p_grp, char *c_grp)
+{
+	struct rdtgroup *rdtg, *crg;
+
+	if (rtype == RDTCTRL_GROUP && *p_grp == '\0') {
+		return &rdtgroup_default;
+	} else if (rtype == RDTCTRL_GROUP) {
+		list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list)
+			if (!strcmp(p_grp, rdtg->kn->name))
+				return rdtg;
+	} else if (rtype == RDTMON_GROUP) {
+		list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
+			if (!strcmp(p_grp, rdtg->kn->name)) {
+				list_for_each_entry(crg, &rdtg->mon.crdtgrp_list,
+						    mon.crdtgrp_list) {
+					if (!strcmp(c_grp, crg->kn->name))
+						return crg;
+				}
+			}
+		}
+	}
+
+	return NULL;
+}
+
+static int rdtgroup_process_flags(struct rdt_resource *r,
+				  enum rdt_group_type rtype,
+				  char *p_grp, char *c_grp, char *tok)
+{
+	int op, mon_state, assign_state, unassign_state;
+	char *dom_str, *id_str, *op_str;
+	struct rdt_domain *d;
+	struct rdtgroup *rdtgrp;
+	unsigned long dom_id;
+	int ret, found = 0;
+
+	rdtgrp = rdtgroup_find_grp(rtype, p_grp, c_grp);
+
+	if (!rdtgrp) {
+		rdt_last_cmd_puts("Not a valid resctrl group\n");
+		return -EINVAL;
+	}
+
+next:
+	if (!tok || tok[0] == '\0')
+		return 0;
+
+	/* Start processing the strings for each domain */
+	dom_str = strim(strsep(&tok, ";"));
+
+	op_str = strpbrk(dom_str, "=+-");
+
+	if (op_str) {
+		op = *op_str;
+	} else {
+		rdt_last_cmd_puts("Missing operation =, +, -, _ character\n");
+		return -EINVAL;
+	}
+
+	id_str = strsep(&dom_str, "=+-");
+
+	/* Check for domain id '*' which means all domains */
+	if (id_str && *id_str == '*') {
+		d = NULL;
+		goto check_state;
+	} else if (!id_str || kstrtoul(id_str, 10, &dom_id)) {
+		rdt_last_cmd_puts("Missing domain id\n");
+		return -EINVAL;
+	}
+
+	/* Verify if the dom_id is valid */
+	list_for_each_entry(d, &r->domains, list) {
+		if (d->id == dom_id) {
+			found = 1;
+			break;
+		}
+	}
+
+	if (!found) {
+		rdt_last_cmd_printf("Invalid domain id %ld\n", dom_id);
+		return -EINVAL;
+	}
+
+check_state:
+	mon_state = rdtgroup_str_to_mon_state(dom_str);
+
+	assign_state = 0;
+	unassign_state = 0;
+
+	switch (op) {
+	case '+':
+		if (mon_state == ASSIGN_NONE) {
+			rdt_last_cmd_puts("Invalid assign opcode\n");
+			goto out_fail;
+		}
+		assign_state = mon_state;
+		break;
+	case '-':
+		if (mon_state == ASSIGN_NONE) {
+			rdt_last_cmd_puts("Invalid assign opcode\n");
+			goto out_fail;
+		}
+		unassign_state = mon_state;
+		break;
+	case '=':
+		assign_state = mon_state;
+		unassign_state = (ASSIGN_TOTAL | ASSIGN_LOCAL) & ~assign_state;
+		break;
+	default:
+		break;
+	}
+
+	if (assign_state & ASSIGN_TOTAL) {
+		ret = rdtgroup_assign_update(rdtgrp, QOS_L3_MBM_TOTAL_EVENT_ID, d);
+		if (ret)
+			goto out_fail;
+	}
+
+	if (assign_state & ASSIGN_LOCAL) {
+		ret = rdtgroup_assign_update(rdtgrp, QOS_L3_MBM_LOCAL_EVENT_ID, d);
+		if (ret)
+			goto out_fail;
+	}
+
+	if (unassign_state & ASSIGN_TOTAL) {
+		ret = rdtgroup_unassign_update(rdtgrp, QOS_L3_MBM_TOTAL_EVENT_ID, d);
+		if (ret)
+			goto out_fail;
+	}
+
+	if (unassign_state & ASSIGN_LOCAL) {
+		ret = rdtgroup_unassign_update(rdtgrp, QOS_L3_MBM_LOCAL_EVENT_ID, d);
+		if (ret)
+			goto out_fail;
+	}
+
+	goto next;
+
+out_fail:
+
+	return -EINVAL;
+}
+
+static ssize_t rdtgroup_mbm_control_write(struct kernfs_open_file *of,
+					  char *buf, size_t nbytes,
+					  loff_t off)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+	char *token, *cmon_grp, *mon_grp;
+	int ret;
+
+	if (!resctrl_arch_get_abmc_enabled())
+		return -EINVAL;
+
+	/* Valid input requires a trailing newline */
+	if (nbytes == 0 || buf[nbytes - 1] != '\n')
+		return -EINVAL;
+
+	buf[nbytes - 1] = '\0';
+
+	cpus_read_lock();
+	mutex_lock(&rdtgroup_mutex);
+	rdt_last_cmd_clear();
+
+	while ((token = strsep(&buf, "\n")) != NULL) {
+		if (strstr(token, "//")) {
+			/*
+			 * The CTRL_MON group processing:
+			 * default CTRL_MON group: "//<flags>"
+			 * non-default CTRL_MON group: "<CTRL_MON group>//flags"
+			 * The CTRL_MON group will be empty string if it is a
+			 * default group.
+			 */
+			cmon_grp = strsep(&token, "//");
+
+			/*
+			 * strsep returns empty string for contiguous delimiters.
+			 * Make sure check for two consecutive delimiters and
+			 * advance the token.
+			 */
+			mon_grp = strsep(&token, "//");
+			if (*mon_grp != '\0') {
+				rdt_last_cmd_printf("Invalid CTRL_MON group format %s\n", token);
+				ret = -EINVAL;
+				break;
+			}
+
+			ret = rdtgroup_process_flags(r, RDTCTRL_GROUP, cmon_grp, mon_grp, token);
+			if (ret)
+				break;
+		} else if (strstr(token, "/")) {
+			/*
+			 * MON group processing:
+			 * MON_GROUP inside default CTRL_MON group: "/<MON group>/<flags>"
+			 * MON_GROUP within CTRL_MON group: "<CTRL_MON group>/<MON group>/<flags>"
+			 */
+			cmon_grp = strsep(&token, "/");
+
+			/* Extract the MON_GROUP. It cannot be empty string */
+			mon_grp = strsep(&token, "/");
+			if (*mon_grp == '\0') {
+				rdt_last_cmd_printf("Invalid MON_GROUP format %s\n", token);
+				ret = -EINVAL;
+				break;
+			}
+
+			ret = rdtgroup_process_flags(r, RDTMON_GROUP, cmon_grp, mon_grp, token);
+			if (ret)
+				break;
+		}
+	}
+
+	mutex_unlock(&rdtgroup_mutex);
+	cpus_read_unlock();
+
+	return ret ?: nbytes;
 }
 
 #ifdef CONFIG_PROC_CPU_RESCTRL
@@ -1022,7 +1520,7 @@ static int rdt_num_rmids_show(struct kernfs_open_file *of,
 {
 	struct rdt_resource *r = of->kn->parent->priv;
 
-	seq_printf(seq, "%d\n", r->num_rmid);
+	seq_printf(seq, "%d\n", r->mon.num_rmid);
 
 	return 0;
 }
@@ -1033,9 +1531,11 @@ static int rdt_mon_features_show(struct kernfs_open_file *of,
 	struct rdt_resource *r = of->kn->parent->priv;
 	struct mon_evt *mevt;
 
-	list_for_each_entry(mevt, &r->evt_list, list) {
+	list_for_each_entry(mevt, &r->mon.evt_list, list) {
 		if (resctrl_arch_event_is_free_running(mevt->evtid))
 			seq_printf(seq, "%s\n", mevt->name);
+		if (mevt->configurable)
+			seq_printf(seq, "%s_config\n", mevt->name);
 	}
 
 	return 0;
@@ -1132,6 +1632,17 @@ static enum resctrl_conf_type resctrl_peer_type(enum resctrl_conf_type my_type)
 	case CDP_NONE:
 		return CDP_NONE;
 	}
+}
+
+static int rdt_has_sparse_bitmasks_show(struct kernfs_open_file *of,
+					struct seq_file *seq, void *v)
+{
+	struct resctrl_schema *s = of->kn->parent->priv;
+	struct rdt_resource *r = s->res;
+
+	seq_printf(seq, "%u\n", r->cache.arch_has_sparse_bitmasks);
+
+	return 0;
 }
 
 /**
@@ -1250,7 +1761,7 @@ static bool rdtgroup_mode_test_exclusive(struct rdtgroup *rdtgrp)
 
 	list_for_each_entry(s, &resctrl_schema_all, list) {
 		r = s->res;
-		if (r->rid == RDT_RESOURCE_MBA)
+		if (r->rid == RDT_RESOURCE_MBA || r->rid == RDT_RESOURCE_SMBA)
 			continue;
 		has_cache = true;
 		list_for_each_entry(d, &r->domains, list) {
@@ -1440,7 +1951,8 @@ static int rdtgroup_size_show(struct kernfs_open_file *of,
 					ctrl = resctrl_arch_get_config(r, d,
 								       closid,
 								       type);
-				if (r->rid == RDT_RESOURCE_MBA)
+				if (r->rid == RDT_RESOURCE_MBA ||
+				    r->rid == RDT_RESOURCE_SMBA)
 					size = ctrl;
 				else
 					size = rdtgroup_cbm_to_size(r, d, ctrl);
@@ -1455,6 +1967,256 @@ out:
 	rdtgroup_kn_unlock(of->kn);
 
 	return ret;
+}
+
+static int mbm_config_show(struct seq_file *s, struct rdt_resource *r, u32 evtid)
+{
+	struct rdt_domain *dom;
+	bool sep = false;
+	u32 val;
+
+	mutex_lock(&rdtgroup_mutex);
+
+	list_for_each_entry(dom, &r->domains, list) {
+		if (sep)
+			seq_puts(s, ";");
+
+		val = resctrl_arch_event_config_get(dom, evtid);
+		if (val == INVALID_CONFIG_VALUE)
+			break;
+
+		seq_printf(s, "%d=0x%02x", dom->id, val);
+		sep = true;
+	}
+	seq_puts(s, "\n");
+
+	mutex_unlock(&rdtgroup_mutex);
+
+	return 0;
+}
+
+static int mbm_total_bytes_config_show(struct kernfs_open_file *of,
+				       struct seq_file *seq, void *v)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+
+	mbm_config_show(seq, r, QOS_L3_MBM_TOTAL_EVENT_ID);
+
+	return 0;
+}
+
+static int mbm_local_bytes_config_show(struct kernfs_open_file *of,
+				       struct seq_file *seq, void *v)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+
+	mbm_config_show(seq, r, QOS_L3_MBM_LOCAL_EVENT_ID);
+
+	return 0;
+}
+
+/*
+ * Get the counter index for the assignable counter
+ * 0 for evtid == QOS_L3_MBM_TOTAL_EVENT_ID
+ * 1 for evtid == QOS_L3_MBM_LOCAL_EVENT_ID
+ */
+#define MBM_EVENT_ARRAY_INDEX(_event) ((_event) - 2)
+
+static bool resctrl_mbm_event_assigned(struct rdtgroup *rdtg,
+				       struct rdt_domain *d, u32 evtid)
+{
+	int index = MBM_EVENT_ARRAY_INDEX(evtid);
+	int cntr_id = rdtg->mon.cntr_id[index];
+
+	return  (cntr_id != MON_CNTR_UNSET && test_bit(cntr_id, d->mbm_cntr_map));
+}
+
+static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
+					   struct rdt_domain *d, u32 evtid)
+{
+	struct rdt_domain *dom;
+	struct rdtgroup *rdtg;
+	int ret = 0;
+
+	if (!resctrl_arch_get_mbm_cntr_assign_enable())
+		return ret;
+
+	list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
+		struct rdtgroup *crg;
+
+		list_for_each_entry(dom, &r->domains, list) {
+			if (d == dom && resctrl_mbm_event_assigned(rdtg, dom, evtid)) {
+				ret = rdtgroup_assign_cntr(rdtg, evtid);
+				if (ret)
+					goto out_done;
+			}
+		}
+
+		list_for_each_entry(crg, &rdtg->mon.crdtgrp_list, mon.crdtgrp_list) {
+			list_for_each_entry(dom, &r->domains, list) {
+				if (d == dom && resctrl_mbm_event_assigned(crg, dom, evtid)) {
+					ret = rdtgroup_assign_cntr(crg, evtid);
+					if (ret)
+						goto out_done;
+				}
+			}
+		}
+	}
+
+out_done:
+	return ret;
+}
+
+static int mon_config_write(struct rdt_resource *r, char *tok, u32 evtid)
+{
+	char *dom_str = NULL, *id_str;
+	unsigned long dom_id, val;
+	struct rdt_domain *d;
+	int ret = 0;
+
+next:
+	if (!tok || tok[0] == '\0')
+		return 0;
+
+	/* Start processing the strings for each domain */
+	dom_str = strim(strsep(&tok, ";"));
+	id_str = strsep(&dom_str, "=");
+
+	if (!id_str || kstrtoul(id_str, 10, &dom_id)) {
+		rdt_last_cmd_puts("Missing '=' or non-numeric domain id\n");
+		return -EINVAL;
+	}
+
+	if (!dom_str || kstrtoul(dom_str, 16, &val)) {
+		rdt_last_cmd_puts("Non-numeric event configuration value\n");
+		return -EINVAL;
+	}
+
+	list_for_each_entry(d, &r->domains, list) {
+		if (d->id == dom_id) {
+			ret = resctrl_arch_mbm_config_write_domain(r, d, evtid, val);
+			if (ret) {
+				rdt_last_cmd_puts("Invalid event configuration\n");
+				return -EINVAL;
+			}
+
+			/*
+			 * Counter assignments needs to be updated to match the event
+			 * configuration.
+			 */
+			ret = resctrl_mbm_event_update_assign(r, d, evtid);
+			if (ret) {
+				rdt_last_cmd_puts("Assign failed, event will be Unavailable\n");
+				return -EINVAL;
+			}
+
+			goto next;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static ssize_t mbm_total_bytes_config_write(struct kernfs_open_file *of,
+					    char *buf, size_t nbytes,
+					    loff_t off)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+	int ret;
+
+	/* Valid input requires a trailing newline */
+	if (nbytes == 0 || buf[nbytes - 1] != '\n')
+		return -EINVAL;
+
+	mutex_lock(&rdtgroup_mutex);
+
+	rdt_last_cmd_clear();
+
+	buf[nbytes - 1] = '\0';
+
+	ret = mon_config_write(r, buf, QOS_L3_MBM_TOTAL_EVENT_ID);
+
+	mutex_unlock(&rdtgroup_mutex);
+
+	return ret ?: nbytes;
+}
+
+static ssize_t mbm_local_bytes_config_write(struct kernfs_open_file *of,
+					    char *buf, size_t nbytes,
+					    loff_t off)
+{
+	struct rdt_resource *r = of->kn->parent->priv;
+	int ret;
+
+	/* Valid input requires a trailing newline */
+	if (nbytes == 0 || buf[nbytes - 1] != '\n')
+		return -EINVAL;
+
+	mutex_lock(&rdtgroup_mutex);
+
+	rdt_last_cmd_clear();
+
+	buf[nbytes - 1] = '\0';
+
+	ret = mon_config_write(r, buf, QOS_L3_MBM_LOCAL_EVENT_ID);
+
+	mutex_unlock(&rdtgroup_mutex);
+
+	return ret ?: nbytes;
+}
+
+/* Allocate a new counter id if the event is unassigned */
+int rdtgroup_alloc_cntr(struct rdtgroup *rdtgrp, int index)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	int cntr_id;
+
+	/* Nothing to do if event has been assigned already */
+	if (rdtgrp->mon.cntr_id[index] != MON_CNTR_UNSET) {
+		rdt_last_cmd_puts("ABMC counter is assigned already\n");
+		return 0;
+	}
+
+	/*
+	 * Allocate a new counter id and update domains
+	 */
+	cntr_id = mbm_cntr_alloc(r);
+	if (cntr_id < 0) {
+		rdt_last_cmd_puts("Out of ABMC counters\n");
+		return -ENOSPC;
+	}
+
+	rdtgrp->mon.cntr_id[index] = cntr_id;
+
+	return 0;
+}
+
+/*
+ * Assign a hardware counter to the group and assign the counter
+ * all the domains in the group. It will try to allocate the mbm
+ * counter if the counter is available.
+ */
+int rdtgroup_assign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	struct rdt_domain *d;
+	int index;
+
+	index = mon_event_config_index_get(evtid);
+	if (index == INVALID_CONFIG_INDEX)
+		return -EINVAL;
+
+	if (rdtgroup_alloc_cntr(rdtgrp, index))
+		return -EINVAL;
+
+	list_for_each_entry(d, &r->domains, list) {
+		resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
+					 rdtgrp->mon.cntr_id[index],
+					 rdtgrp->closid, true);
+		set_bit(rdtgrp->mon.cntr_id[index], d->mbm_cntr_map);
+	}
+
+	return 0;
 }
 
 static inline u64 resctrl_id_encode(u32 closid, u32 rmid)
@@ -1561,6 +2323,57 @@ static int rdtgroup_rmid_show(struct kernfs_open_file *of,
 	return 0;
 }
 
+static int rdtgroup_mbm_cntr_test(struct rdt_resource *r, u32 cntr_id)
+{
+	struct rdt_domain *d;
+
+	list_for_each_entry(d, &r->domains, list)
+		if (test_bit(cntr_id, d->mbm_cntr_map))
+			return 1;
+
+	return 0;
+}
+
+/* Free the counter id after the event is unassigned */
+void rdtgroup_free_cntr(struct rdt_resource *r, struct rdtgroup *rdtgrp,
+			int index)
+{
+	/* Update the counter bitmap */
+	if (!rdtgroup_mbm_cntr_test(r, rdtgrp->mon.cntr_id[index])) {
+		mbm_cntr_free(rdtgrp->mon.cntr_id[index]);
+		rdtgrp->mon.cntr_id[index] = MON_CNTR_UNSET;
+	}
+}
+
+/*
+ * Unassign a hardware counter from the group and update all the domains
+ * in the group.
+ */
+int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	struct rdt_domain *d;
+	int index;
+
+	index = mon_event_config_index_get(evtid);
+	if (index == INVALID_CONFIG_INDEX)
+		return -EINVAL;
+
+	if (rdtgrp->mon.cntr_id[index] != MON_CNTR_UNSET) {
+		list_for_each_entry(d, &r->domains, list) {
+			resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
+						 rdtgrp->mon.cntr_id[index],
+						 rdtgrp->closid, false);
+			clear_bit(rdtgrp->mon.cntr_id[index],
+				  d->mbm_cntr_map);
+		}
+
+		/* Free the counter at group level */
+		rdtgroup_free_cntr(r, rdtgrp, index);
+	}
+
+	return 0;
+}
 
 /* rdtgroup information files for one cache resource. */
 static struct rftype res_common_files[] = {
@@ -1661,12 +2474,47 @@ static struct rftype res_common_files[] = {
 		.fflags		= RF_MON_INFO | RFTYPE_RES_CACHE,
 	},
 	{
+		.name		= "mbm_total_bytes_config",
+		.mode		= 0644,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= mbm_total_bytes_config_show,
+		.write		= mbm_total_bytes_config_write,
+	},
+	{
+		.name		= "mbm_local_bytes_config",
+		.mode		= 0644,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= mbm_local_bytes_config_show,
+		.write		= mbm_local_bytes_config_write,
+	},
+	{
+		.name		= "mbm_mode",
+		.mode		= 0644,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= rdtgroup_mbm_mode_show,
+		.write		= rdtgroup_mbm_mode_write,
+		.fflags		= RF_MON_INFO,
+	},
+	{
 		.name		= "cpus",
 		.mode		= 0644,
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.write		= rdtgroup_cpus_write,
 		.seq_show	= rdtgroup_cpus_show,
 		.fflags		= RFTYPE_BASE,
+	},
+	{
+		.name		= "num_mbm_cntrs",
+		.mode		= 0444,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= rdtgroup_num_mbm_cntrs_show,
+	},
+	{
+		.name		= "mbm_control",
+		.mode		= 0644,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= rdtgroup_mbm_control_show,
+		.write		= rdtgroup_mbm_control_write,
 	},
 	{
 		.name		= "cpus_list",
@@ -1707,6 +2555,13 @@ static struct rftype res_common_files[] = {
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.seq_show	= rdtgroup_size_show,
 		.fflags		= RF_CTRL_BASE,
+	},
+	{
+		.name		= "sparse_masks",
+		.mode		= 0444,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= rdt_has_sparse_bitmasks_show,
+		.fflags		= RF_CTRL_INFO | RFTYPE_RES_CACHE,
 	},
 	{
 		.name		= "id",
@@ -1778,17 +2633,23 @@ static struct rftype *rdtgroup_get_rftype_by_name(const char *name)
 static void thread_throttle_mode_init(void)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
-	struct rftype *rft;
 
 	if (!r->alloc_capable ||
 	    r->membw.throttle_mode == THREAD_THROTTLE_UNDEFINED)
 		return;
 
-	rft = rdtgroup_get_rftype_by_name("thread_throttle_mode");
-	if (!rft)
-		return;
+	resctrl_file_fflags_init("thread_throttle_mode",
+				 RF_CTRL_INFO | RFTYPE_RES_MB);
+}
 
-	rft->fflags = RF_CTRL_INFO | RFTYPE_RES_MB;
+void resctrl_file_fflags_init(const char *config,
+			      unsigned long fflags)
+{
+	struct rftype *rft;
+
+	rft = rdtgroup_get_rftype_by_name(config);
+	if (rft)
+		rft->fflags = fflags;
 }
 
 /**
@@ -2301,6 +3162,46 @@ static void schemata_list_destroy(void)
 	}
 }
 
+/*
+ * Called when new group is created. Assign the counters if ABMC is
+ * already enabled. Two counters are required per group, one for total
+ * event and one for local event. With limited number of counters,
+ * the assignments can fail in some cases. But, it is not required to
+ * fail the group creation. Users have the option to modify the
+ * assignments after the group creation.
+ */
+static int rdtgroup_assign_cntrs(struct rdtgroup *rdtgrp)
+{
+	int ret = 0;
+
+	if (!resctrl_arch_get_abmc_enabled())
+		return 0;
+
+	if (resctrl_arch_is_mbm_total_enabled())
+		ret = rdtgroup_assign_cntr(rdtgrp, QOS_L3_MBM_TOTAL_EVENT_ID);
+
+	if (!ret && resctrl_arch_is_mbm_local_enabled())
+		ret = rdtgroup_assign_cntr(rdtgrp, QOS_L3_MBM_LOCAL_EVENT_ID);
+
+	return ret;
+}
+
+static int rdtgroup_unassign_cntrs(struct rdtgroup *rdtgrp)
+{
+	int ret = 0;
+
+	if (!resctrl_arch_get_abmc_enabled())
+		return 0;
+
+	if (resctrl_arch_is_mbm_total_enabled())
+		ret = rdtgroup_unassign_cntr(rdtgrp, QOS_L3_MBM_TOTAL_EVENT_ID);
+
+	if (!ret && resctrl_arch_is_mbm_local_enabled())
+		ret = rdtgroup_unassign_cntr(rdtgrp, QOS_L3_MBM_LOCAL_EVENT_ID);
+
+	return ret;
+}
+
 static int rdt_get_tree(struct fs_context *fc)
 {
 	struct rdt_resource *l3 = resctrl_arch_get_resource(RDT_RESOURCE_L3);
@@ -2334,6 +3235,8 @@ static int rdt_get_tree(struct fs_context *fc)
 	if (ret < 0)
 		goto out_schemata_free;
 
+	mbm_cntrs_init(resctrl_arch_get_resource(RDT_RESOURCE_L3));
+
 	if (resctrl_arch_mon_capable()) {
 		ret = mongroup_create_dir(rdtgroup_default.kn,
 					  &rdtgroup_default, "mon_groups",
@@ -2346,6 +3249,8 @@ static int rdt_get_tree(struct fs_context *fc)
 		if (ret < 0)
 			goto out_mongrp;
 		rdtgroup_default.mon.mon_data_kn = kn_mondata;
+
+		rdtgroup_assign_cntrs(&rdtgroup_default);
 	}
 
 	if (IS_ENABLED(CONFIG_RESCTRL_FS_PSEUDO_LOCK)) {
@@ -2377,6 +3282,7 @@ out_psl:
 	if (IS_ENABLED(CONFIG_RESCTRL_FS_PSEUDO_LOCK))
 		rdt_pseudo_lock_release();
 out_mondata:
+	rdtgroup_unassign_cntrs(&rdtgroup_default);
 	if (resctrl_arch_mon_capable())
 		kernfs_remove(kn_mondata);
 out_mongrp:
@@ -2499,6 +3405,14 @@ static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
 						     to->mon.rmid);
 
 			/*
+			 * Order the closid/rmid stores above before the loads
+			 * in task_curr(). This pairs with the full barrier
+			 * between the rq->curr update and resctrl_sched_in()
+			 * during context switch.
+			 */
+			smp_mb();
+
+			/*
 			 * If the task is on a CPU, set the CPU in the mask.
 			 * The detection is inaccurate as tasks might move or
 			 * schedule before the smp function call takes place.
@@ -2598,6 +3512,8 @@ static void rdt_kill_sb(struct super_block *sb)
 		resctrl_arch_disable_alloc();
 	if (resctrl_arch_mon_capable())
 		resctrl_arch_disable_mon();
+
+	rdtgroup_unassign_cntrs(&rdtgroup_default);
 	resctrl_mounted = false;
 	kernfs_kill_sb(sb);
 	mutex_unlock(&rdtgroup_mutex);
@@ -2672,14 +3588,14 @@ static int mkdir_mondata_subdir(struct kernfs_node *parent_kn,
 	if (ret)
 		goto out_destroy;
 
-	if (WARN_ON(list_empty(&r->evt_list))) {
+	if (WARN_ON(list_empty(&r->mon.evt_list))) {
 		ret = -EPERM;
 		goto out_destroy;
 	}
 
 	priv.u.rid = r->rid;
 	priv.u.domid = d->id;
-	list_for_each_entry(mevt, &r->evt_list, list) {
+	list_for_each_entry(mevt, &r->mon.evt_list, list) {
 		if (!resctrl_arch_event_is_free_running(mevt->evtid))
 			continue;
 
@@ -2955,7 +3871,8 @@ static int rdtgroup_init_alloc(struct rdtgroup *rdtgrp)
 
 	list_for_each_entry(s, &resctrl_schema_all, list) {
 		r = s->res;
-		if (r->rid == RDT_RESOURCE_MBA) {
+		if (r->rid == RDT_RESOURCE_MBA ||
+		    r->rid == RDT_RESOURCE_SMBA) {
 			rdtgroup_init_mba(r, rdtgrp->closid);
 			if (is_mba_sc(r))
 				continue;
@@ -2983,6 +3900,10 @@ static int mkdir_rdt_prepare_rmid(struct rdtgroup *rdtgrp, u32 rmid)
 	int ret;
 
 	rdtgrp->mon.rmid = rmid;
+
+	rdtgrp->mon.cntr_id[0] = MON_CNTR_UNSET;
+	rdtgrp->mon.cntr_id[1] = MON_CNTR_UNSET;
+
 	ret = mkdir_mondata_all(rdtgrp->kn, rdtgrp, &rdtgrp->mon.mon_data_kn);
 	if (ret) {
 		rdt_last_cmd_puts("kernfs subdir error\n");
@@ -3109,6 +4030,8 @@ static int rdtgroup_mkdir_mon(struct kernfs_node *parent_kn,
 			goto out_rmid_free;
 	}
 
+	rdtgroup_assign_cntrs(rdtgrp);
+
 	/*
 	 * Add the rdtgrp to the list of rdtgrps the parent
 	 * ctrl_mon group has to track.
@@ -3172,6 +4095,8 @@ static int rdtgroup_mkdir_ctrl_mon(struct kernfs_node *parent_kn,
 			goto out_rmid_free;
 	}
 
+	rdtgroup_assign_cntrs(rdtgrp);
+
 	ret = rdtgroup_init_alloc(rdtgrp);
 	if (ret < 0)
 		goto out_rmid_free;
@@ -3195,6 +4120,7 @@ static int rdtgroup_mkdir_ctrl_mon(struct kernfs_node *parent_kn,
 out_del_list:
 	list_del(&rdtgrp->rdtgroup_list);
 out_rmid_free:
+	rdtgroup_unassign_cntrs(rdtgrp);
 	if (resctrl_arch_mon_capable())
 		free_rmid(rdtgrp->closid, rmid);
 out_closid_free:
@@ -3269,6 +4195,9 @@ static int rdtgroup_rmdir_mon(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 	update_closid_rmid(tmpmask, NULL);
 
 	rdtgrp->flags = RDT_DELETED;
+
+	rdtgroup_unassign_cntrs(rdtgrp);
+
 	free_rmid(rdtgrp->closid, rdtgrp->mon.rmid);
 
 	/*
@@ -3315,6 +4244,8 @@ static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 	 */
 	cpumask_or(tmpmask, tmpmask, &rdtgrp->cpu_mask);
 	update_closid_rmid(tmpmask, NULL);
+
+	rdtgroup_unassign_cntrs(rdtgrp);
 
 	free_rmid(rdtgrp->closid, rdtgrp->mon.rmid);
 	closid_free(rdtgrp->closid);
@@ -3412,6 +4343,9 @@ static int rdtgroup_setup_root(void)
 	rdtgroup_default.closid = 0;
 	rdtgroup_default.mon.rmid = 0;
 	rdtgroup_default.type = RDTCTRL_GROUP;
+	rdtgroup_default.mon.cntr_id[0] = MON_CNTR_UNSET;
+	rdtgroup_default.mon.cntr_id[1] = MON_CNTR_UNSET;
+
 	INIT_LIST_HEAD(&rdtgroup_default.mon.crdtgrp_list);
 
 	list_add(&rdtgroup_default.rdtgroup_list, &rdt_all_groups);
@@ -3433,6 +4367,7 @@ out:
 
 static void domain_destroy_mon_state(struct rdt_domain *d)
 {
+	bitmap_free(d->mbm_cntr_map);
 	bitmap_free(d->rmid_busy_llc);
 	kfree(d->mbm_total);
 	kfree(d->mbm_local);
@@ -3504,6 +4439,15 @@ static int domain_setup_mon_state(struct rdt_resource *r, struct rdt_domain *d)
 		if (!d->mbm_local) {
 			bitmap_free(d->rmid_busy_llc);
 			kfree(d->mbm_total);
+			return -ENOMEM;
+		}
+	}
+	if (resctrl_is_mbm_enabled()) {
+		d->mbm_cntr_map = bitmap_zalloc(r->mon.num_mbm_cntrs, GFP_KERNEL);
+		if (!d->mbm_cntr_map) {
+			bitmap_free(d->rmid_busy_llc);
+			kfree(d->mbm_total);
+			kfree(d->mbm_local);
 			return -ENOMEM;
 		}
 	}

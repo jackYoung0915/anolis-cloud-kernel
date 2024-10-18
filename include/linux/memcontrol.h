@@ -525,13 +525,17 @@ struct mem_cgroup {
 	bool allow_pgtable_bind;
 #endif
 
+#ifdef CONFIG_PRE_OOM
+	bool pre_oom;
+#endif
+
 #ifdef CONFIG_LRU_GEN
-	CK_KABI_USE(1, unsigned long mglru_batch_size)
-	CK_KABI_USE(2, unsigned long mglru_reclaim_pages)
-#else
+	unsigned long mglru_batch_size;
+	unsigned long mglru_reclaim_pages;
+#endif
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
-#endif
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
 	CK_KABI_RESERVE(5)
@@ -2025,5 +2029,13 @@ static inline struct mem_cgroup *mem_cgroup_from_obj(void *p)
 }
 
 #endif /* CONFIG_MEMCG_KMEM */
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+extern void reclaim_coldpgs_stats_mlock_refault(void);
+#else
+static inline void reclaim_coldpgs_stats_mlock_refault(void)
+{
+}
+#endif
 
 #endif /* _LINUX_MEMCONTROL_H */

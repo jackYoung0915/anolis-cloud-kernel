@@ -372,7 +372,7 @@ static void print_prog_header_json(struct bpf_prog_info *info)
 	}
 }
 
-static void print_prog_json(struct bpf_prog_info *info, int fd)
+static void print_prog_json(struct bpf_prog_info *info, int fd, bool orphaned)
 {
 	char *memlock;
 
@@ -391,6 +391,7 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 		jsonw_uint_field(json_wtr, "uid", info->created_by_uid);
 	}
 
+	jsonw_bool_field(json_wtr, "orphaned", orphaned);
 	jsonw_uint_field(json_wtr, "bytes_xlated", info->xlated_prog_len);
 
 	if (info->jited_prog_len) {
@@ -451,7 +452,7 @@ static void print_prog_header_plain(struct bpf_prog_info *info)
 	printf("\n");
 }
 
-static void print_prog_plain(struct bpf_prog_info *info, int fd)
+static void print_prog_plain(struct bpf_prog_info *info, int fd, bool orphaned)
 {
 	char *memlock;
 
@@ -477,6 +478,9 @@ static void print_prog_plain(struct bpf_prog_info *info, int fd)
 	if (memlock)
 		printf("  memlock %sB", memlock);
 	free(memlock);
+
+	if (orphaned)
+		printf("  orphaned");
 
 	if (info->nr_map_ids)
 		show_prog_maps(fd, info->nr_map_ids);
@@ -507,15 +511,16 @@ static int show_prog(int fd)
 	int err;
 
 	err = bpf_obj_get_info_by_fd(fd, &info, &len);
-	if (err) {
+	err = err < 0 ? -errno : err; /* libbpf_err_errno() */
+	if (err && err != -ENODEV) {
 		p_err("can't get prog info: %s", strerror(errno));
 		return -1;
 	}
 
 	if (json_output)
-		print_prog_json(&info, fd);
+		print_prog_json(&info, fd, err == -ENODEV);
 	else
-		print_prog_plain(&info, fd);
+		print_prog_plain(&info, fd, err == -ENODEV);
 
 	return 0;
 }

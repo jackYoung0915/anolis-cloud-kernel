@@ -297,7 +297,7 @@ static int clear_page_hw(struct page *page, int order, int node)
 			ret = -EIO;
 			goto err_prep;
 		}
-		status = dma_async_is_tx_complete(dma_chan, cookie);
+		status = dma_async_is_tx_complete(dma_chan, cookie, NULL, NULL);
 		if (status != DMA_COMPLETE) {
 			pr_info("Failed to check DMA completion status on node %d\n", node);
 			ret = -EIO;

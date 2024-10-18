@@ -440,6 +440,8 @@ struct kvm_pmc {
 	 * ctrl value for fixed counters.
 	 */
 	u64 current_config;
+	bool is_paused;
+	bool intr;
 };
 
 #define KVM_PMC_MAX_FIXED	3
@@ -448,6 +450,7 @@ struct kvm_pmu {
 	unsigned nr_arch_fixed_counters;
 	unsigned available_event_types;
 	u64 fixed_ctr_ctrl;
+	u64 fixed_ctr_ctrl_mask;
 	u64 global_ctrl;
 	u64 global_status;
 	u64 global_ovf_ctrl;
@@ -455,6 +458,7 @@ struct kvm_pmu {
 	u64 global_ctrl_mask;
 	u64 global_ovf_ctrl_mask;
 	u64 reserved_bits;
+	u64 raw_event_mask;
 	u8 version;
 	struct kvm_pmc gp_counters[INTEL_PMC_MAX_GENERIC];
 	struct kvm_pmc fixed_counters[KVM_PMC_MAX_FIXED];
@@ -462,6 +466,21 @@ struct kvm_pmu {
 	DECLARE_BITMAP(reprogram_pmi, X86_PMC_IDX_MAX);
 	DECLARE_BITMAP(all_valid_pmc_idx, X86_PMC_IDX_MAX);
 	DECLARE_BITMAP(pmc_in_use, X86_PMC_IDX_MAX);
+
+	u64 ds_area;
+	u64 pebs_enable;
+	u64 pebs_enable_mask;
+	u64 pebs_data_cfg;
+	u64 pebs_data_cfg_mask;
+
+	/*
+	 * If a guest counter is cross-mapped to host counter with different
+	 * index, its PEBS capability will be temporarily disabled.
+	 *
+	 * The user should make sure that this mask is updated
+	 * after disabling interrupts and before perf_guest_get_msrs();
+	 */
+	u64 host_cross_mapped_mask;
 
 	/*
 	 * The gate to release perf_events not marked in
@@ -840,19 +859,30 @@ struct kvm_arch_memory_slot {
 };
 
 /*
- * We use as the mode the number of bits allocated in the LDR for the
- * logical processor ID.  It happens that these are all powers of two.
- * This makes it is very easy to detect cases where the APICs are
- * configured for multiple modes; in that case, we cannot use the map and
- * hence cannot use kvm_irq_delivery_to_apic_fast either.
+ * Track the mode of the optimized logical map, as the rules for decoding the
+ * destination vary per mode.  Enabling the optimized logical map requires all
+ * software-enabled local APIs to be in the same mode, each addressable APIC to
+ * be mapped to only one MDA, and each MDA to map to at most one APIC.
  */
-#define KVM_APIC_MODE_XAPIC_CLUSTER          4
-#define KVM_APIC_MODE_XAPIC_FLAT             8
-#define KVM_APIC_MODE_X2APIC                16
+enum kvm_apic_logical_mode {
+	/* All local APICs are software disabled. */
+	KVM_APIC_MODE_SW_DISABLED,
+	/* All software enabled local APICs in xAPIC cluster addressing mode. */
+	KVM_APIC_MODE_XAPIC_CLUSTER,
+	/* All software enabled local APICs in xAPIC flat addressing mode. */
+	KVM_APIC_MODE_XAPIC_FLAT,
+	/* All software enabled local APICs in x2APIC mode. */
+	KVM_APIC_MODE_X2APIC,
+	/*
+	 * Optimized map disabled, e.g. not all local APICs in the same logical
+	 * mode, same logical ID assigned to multiple APICs, etc.
+	 */
+	KVM_APIC_MODE_MAP_DISABLED,
+};
 
 struct kvm_apic_map {
 	struct rcu_head rcu;
-	u8 mode;
+	enum kvm_apic_logical_mode logical_mode;
 	u32 max_apic_id;
 	union {
 		struct kvm_lapic *xapic_flat_map[8];
@@ -1337,6 +1367,8 @@ struct kvm_x86_ops {
 
 	int (*control_pre_system_reset)(struct kvm *kvm);
 	int (*control_post_system_reset)(struct kvm *kvm);
+
+	int (*arch_hypercall)(struct kvm *kvm, u64 nr, u64 a0, u64 a1, u64 a2, u64 a3);
 };
 
 struct kvm_x86_nested_ops {

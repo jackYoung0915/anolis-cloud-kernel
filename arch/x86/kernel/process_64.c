@@ -55,6 +55,7 @@
 #include <asm/resctrl.h>
 #include <asm/unistd.h>
 #include <asm/fsgsbase.h>
+#include <asm/fpu/internal.h>
 #ifdef CONFIG_IA32_EMULATION
 /* Not included via unistd.h */
 #include <asm/unistd_32_ia32.h>
@@ -568,6 +569,8 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	if (!test_thread_flag(TIF_NEED_FPU_LOAD))
 		switch_fpu_prepare(prev_fpu, cpu);
 
+	switch_kernel_fpu_prepare(prev_p, cpu);
+
 	/* We must save %fs and %gs before load_TLS() because
 	 * %fs and %gs may be cleared by load_TLS().
 	 *
@@ -622,6 +625,8 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 
 	switch_fpu_finish();
 
+	switch_kernel_fpu_finish(next_p);
+
 	/* Reload sp0. */
 	update_task_stack(next_p);
 
@@ -656,7 +661,7 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	}
 
 	/* Load the Intel cache allocation PQR MSR. */
-	resctrl_sched_in();
+	resctrl_sched_in(next_p);
 
 	return prev_p;
 }

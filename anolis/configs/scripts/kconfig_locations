@@ -1,9 +1,0 @@
-# The locations of legacy kconfig files
-# It is used by `make dist-configs-import`
-
-# The meanings of each column are :
-# arch name path
-arm64 arm64 arch/arm64/configs/anolis_defconfig
-arm64 arm64-debug arch/arm64/configs/anolis-debug_defconfig
-x86 x86 arch/x86/configs/anolis_defconfig
-x86 x86-debug arch/x86/configs/anolis-debug_defconfig

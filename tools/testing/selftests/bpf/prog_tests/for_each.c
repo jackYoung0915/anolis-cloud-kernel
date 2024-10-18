@@ -4,6 +4,7 @@
 #include <network_helpers.h>
 #include "for_each_hash_map_elem.skel.h"
 #include "for_each_array_map_elem.skel.h"
+#include "for_each_multi_maps.skel.h"
 
 static unsigned int duration;
 
@@ -121,10 +122,69 @@ out:
 	for_each_array_map_elem__destroy(skel);
 }
 
+static void test_multi_maps(void)
+{
+	struct for_each_multi_maps *skel;
+	__u64 val, array_total, hash_total;
+	__u32 key, max_entries, retval;
+	int i, err, map_fd;
+
+	skel = for_each_multi_maps__open_and_load();
+	if (!ASSERT_OK_PTR(skel, "for_each_multi_maps__open_and_load"))
+		return;
+
+	array_total = 0;
+	map_fd = bpf_map__fd(skel->maps.arraymap);
+	max_entries = bpf_map__max_entries(skel->maps.arraymap);
+	for (i = 0; i < max_entries; i++) {
+		key = i;
+		val = i + 1;
+		array_total += val;
+		err = bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
+		if (!ASSERT_OK(err, "array_map_update"))
+			goto out;
+	}
+
+	hash_total = 0;
+	map_fd = bpf_map__fd(skel->maps.hashmap);
+	max_entries = bpf_map__max_entries(skel->maps.hashmap);
+	for (i = 0; i < max_entries; i++) {
+		key = i + 100;
+		val = i + 1;
+		hash_total += val;
+		err = bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
+		if (!ASSERT_OK(err, "hash_map_update"))
+			goto out;
+	}
+
+	skel->bss->data_output = 0;
+	skel->bss->use_array = 1;
+	err = bpf_prog_test_run(bpf_program__fd(skel->progs.test_pkt_access),
+				1, &pkt_v4, sizeof(pkt_v4), NULL, NULL,
+				&retval, &duration);
+	ASSERT_OK(err, "bpf_prog_test_run_opts");
+	ASSERT_OK(retval, "retval");
+	ASSERT_EQ(skel->bss->data_output, array_total, "array output");
+
+	skel->bss->data_output = 0;
+	skel->bss->use_array = 0;
+	err = bpf_prog_test_run(bpf_program__fd(skel->progs.test_pkt_access),
+				1, &pkt_v4, sizeof(pkt_v4), NULL, NULL,
+				&retval, &duration);
+	ASSERT_OK(err, "bpf_prog_test_run_opts");
+	ASSERT_OK(retval, "retval");
+	ASSERT_EQ(skel->bss->data_output, hash_total, "hash output");
+
+out:
+	for_each_multi_maps__destroy(skel);
+}
+
 void test_for_each(void)
 {
 	if (test__start_subtest("hash_map"))
 		test_hash_map();
 	if (test__start_subtest("array_map"))
 		test_array_map();
+	if (test__start_subtest("multi_maps"))
+		test_multi_maps();
 }

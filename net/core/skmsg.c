@@ -599,6 +599,7 @@ struct sk_psock *sk_psock_init(struct sock *sk, int node)
 	psock->eval = __SK_NONE;
 	psock->sk_proto = prot;
 	psock->saved_unhash = prot->unhash;
+	psock->saved_destroy = prot->destroy;
 	psock->saved_close = prot->close;
 	psock->saved_write_space = sk->sk_write_space;
 
@@ -744,13 +745,16 @@ int sk_psock_msg_verdict(struct sock *sk, struct sk_psock *psock,
 	ret = sk_psock_map_verd(ret, msg->sk_redir);
 	psock->apply_bytes = msg->apply_bytes;
 	if (ret == __SK_REDIRECT) {
-		if (psock->sk_redir)
+		if (psock->sk_redir) {
 			sock_put(psock->sk_redir);
-		psock->sk_redir = msg->sk_redir;
-		if (!psock->sk_redir) {
+			psock->sk_redir = NULL;
+		}
+		if (!msg->sk_redir) {
 			ret = __SK_DROP;
 			goto out;
 		}
+		psock->redir_ingress = sk_msg_to_ingress(msg);
+		psock->sk_redir = msg->sk_redir;
 		sock_hold(psock->sk_redir);
 	}
 out:

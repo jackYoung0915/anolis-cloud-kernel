@@ -2,8 +2,6 @@
 #ifndef _UAPI_ASM_SW64_MMAN_H
 #define _UAPI_ASM_SW64_MMAN_H
 
-#include <asm-generic/mman-common.h>
-
 #define PROT_READ		0x1		/* page can be read */
 #define PROT_WRITE		0x2		/* page can be written */
 #define PROT_EXEC		0x4		/* page can be executed */
@@ -73,6 +71,9 @@
 
 #define MADV_COLD		20		/* deactivate these pages */
 #define MADV_PAGEOUT		21		/* reclaim these pages */
+
+#define MADV_HWPOISON		100		/* poison a page for testing */
+#define MADV_SOFT_OFFLINE	101		/* soft offline page for testing */
 
 /* compatibility flags */
 #define MAP_FILE		0

@@ -1032,4 +1032,10 @@ config PAGETABLE_SHARE
 
 	  If unsure, say N.
 
+config PRE_OOM
+	bool "Enable pre oom control"
+	depends on MEMCG
+	help
+	  This feature is used to ensure that higher priority tasks would not enter the direct
+	  reclaim path when applying for memory allocation.
 endmenu

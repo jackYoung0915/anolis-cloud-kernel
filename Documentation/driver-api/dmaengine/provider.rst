@@ -535,6 +535,13 @@ where to put them)
 - Makes sure that dependent operations are run before marking it
   as complete.
 
+dma_cookie_t
+
+- it's a DMA transaction ID that will increment over time.
+
+- Not really relevant any more since the introduction of ``virt-dma``
+  that abstracts it away.
+
 DMA_CTRL_ACK
 
 - If clear, the descriptor cannot be reused by provider until the

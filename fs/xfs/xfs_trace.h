@@ -37,6 +37,7 @@ struct xfs_trans_res;
 struct xfs_inobt_rec_incore;
 union xfs_btree_ptr;
 struct xfs_dqtrx;
+struct xfs_eofblocks;
 
 #define XFS_ATTR_FILTER_FLAGS \
 	{ XFS_ATTR_ROOT,	"ROOT" }, \
@@ -134,12 +135,86 @@ DEFINE_EVENT(xfs_perag_class, name,	\
 DEFINE_PERAG_REF_EVENT(xfs_perag_get);
 DEFINE_PERAG_REF_EVENT(xfs_perag_get_tag);
 DEFINE_PERAG_REF_EVENT(xfs_perag_put);
-DEFINE_PERAG_REF_EVENT(xfs_perag_set_reclaim);
-DEFINE_PERAG_REF_EVENT(xfs_perag_clear_reclaim);
-DEFINE_PERAG_REF_EVENT(xfs_perag_set_eofblocks);
-DEFINE_PERAG_REF_EVENT(xfs_perag_clear_eofblocks);
-DEFINE_PERAG_REF_EVENT(xfs_perag_set_cowblocks);
-DEFINE_PERAG_REF_EVENT(xfs_perag_clear_cowblocks);
+DEFINE_PERAG_REF_EVENT(xfs_perag_set_inode_tag);
+DEFINE_PERAG_REF_EVENT(xfs_perag_clear_inode_tag);
+
+TRACE_EVENT(xfs_inodegc_worker,
+	TP_PROTO(struct xfs_mount *mp, unsigned int shrinker_hits),
+	TP_ARGS(mp, shrinker_hits),
+	TP_STRUCT__entry(
+		__field(dev_t, dev)
+		__field(unsigned int, shrinker_hits)
+	),
+	TP_fast_assign(
+		__entry->dev = mp->m_super->s_dev;
+		__entry->shrinker_hits = shrinker_hits;
+	),
+	TP_printk("dev %d:%d shrinker_hits %u",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  __entry->shrinker_hits)
+);
+
+DECLARE_EVENT_CLASS(xfs_fs_class,
+	TP_PROTO(struct xfs_mount *mp, void *caller_ip),
+	TP_ARGS(mp, caller_ip),
+	TP_STRUCT__entry(
+		__field(dev_t, dev)
+		__field(unsigned long long, mflags)
+		__field(unsigned long, opstate)
+		__field(unsigned long, sbflags)
+		__field(void *, caller_ip)
+	),
+	TP_fast_assign(
+		if (mp) {
+			__entry->dev = mp->m_super->s_dev;
+			__entry->mflags = mp->m_flags;
+			__entry->opstate = mp->m_opstate;
+			__entry->sbflags = mp->m_super->s_flags;
+		}
+		__entry->caller_ip = caller_ip;
+	),
+	TP_printk("dev %d:%d m_flags 0x%llx opstate (%s) s_flags 0x%lx caller %pS",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  __entry->mflags,
+		  __print_flags(__entry->opstate, "|", XFS_OPSTATE_STRINGS),
+		  __entry->sbflags,
+		  __entry->caller_ip)
+);
+
+#define DEFINE_FS_EVENT(name)	\
+DEFINE_EVENT(xfs_fs_class, name,					\
+	TP_PROTO(struct xfs_mount *mp, void *caller_ip), \
+	TP_ARGS(mp, caller_ip))
+DEFINE_FS_EVENT(xfs_inodegc_flush);
+DEFINE_FS_EVENT(xfs_inodegc_start);
+DEFINE_FS_EVENT(xfs_inodegc_stop);
+DEFINE_FS_EVENT(xfs_inodegc_queue);
+DEFINE_FS_EVENT(xfs_inodegc_throttle);
+DEFINE_FS_EVENT(xfs_fs_sync_fs);
+DEFINE_FS_EVENT(xfs_blockgc_start);
+DEFINE_FS_EVENT(xfs_blockgc_stop);
+DEFINE_FS_EVENT(xfs_blockgc_worker);
+DEFINE_FS_EVENT(xfs_blockgc_flush_all);
+
+TRACE_EVENT(xfs_inodegc_shrinker_scan,
+	TP_PROTO(struct xfs_mount *mp, struct shrink_control *sc,
+		 void *caller_ip),
+	TP_ARGS(mp, sc, caller_ip),
+	TP_STRUCT__entry(
+		__field(dev_t, dev)
+		__field(unsigned long, nr_to_scan)
+		__field(void *, caller_ip)
+	),
+	TP_fast_assign(
+		__entry->dev = mp->m_super->s_dev;
+		__entry->nr_to_scan = sc->nr_to_scan;
+		__entry->caller_ip = caller_ip;
+	),
+	TP_printk("dev %d:%d nr_to_scan %lu caller %pS",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  __entry->nr_to_scan,
+		  __entry->caller_ip)
+);
 
 DECLARE_EVENT_CLASS(xfs_ag_class,
 	TP_PROTO(struct xfs_mount *mp, xfs_agnumber_t agno),
@@ -600,14 +675,17 @@ DECLARE_EVENT_CLASS(xfs_inode_class,
 	TP_STRUCT__entry(
 		__field(dev_t, dev)
 		__field(xfs_ino_t, ino)
+		__field(unsigned long, iflags)
 	),
 	TP_fast_assign(
 		__entry->dev = VFS_I(ip)->i_sb->s_dev;
 		__entry->ino = ip->i_ino;
+		__entry->iflags = ip->i_flags;
 	),
-	TP_printk("dev %d:%d ino 0x%llx",
+	TP_printk("dev %d:%d ino 0x%llx iflags 0x%lx",
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
-		  __entry->ino)
+		  __entry->ino,
+		  __entry->iflags)
 )
 
 #define DEFINE_INODE_EVENT(name) \
@@ -615,8 +693,8 @@ DEFINE_EVENT(xfs_inode_class, name, \
 	TP_PROTO(struct xfs_inode *ip), \
 	TP_ARGS(ip))
 DEFINE_INODE_EVENT(xfs_iget_skip);
-DEFINE_INODE_EVENT(xfs_iget_reclaim);
-DEFINE_INODE_EVENT(xfs_iget_reclaim_fail);
+DEFINE_INODE_EVENT(xfs_iget_recycle);
+DEFINE_INODE_EVENT(xfs_iget_recycle_fail);
 DEFINE_INODE_EVENT(xfs_iget_hit);
 DEFINE_INODE_EVENT(xfs_iget_miss);
 
@@ -651,6 +729,10 @@ DEFINE_INODE_EVENT(xfs_inode_free_eofblocks_invalid);
 DEFINE_INODE_EVENT(xfs_inode_set_cowblocks_tag);
 DEFINE_INODE_EVENT(xfs_inode_clear_cowblocks_tag);
 DEFINE_INODE_EVENT(xfs_inode_free_cowblocks_invalid);
+DEFINE_INODE_EVENT(xfs_inode_set_reclaimable);
+DEFINE_INODE_EVENT(xfs_inode_reclaiming);
+DEFINE_INODE_EVENT(xfs_inode_set_need_inactive);
+DEFINE_INODE_EVENT(xfs_inode_inactivating);
 
 /*
  * ftrace's __print_symbolic requires that all enum values be wrapped in the
@@ -3869,6 +3951,50 @@ DEFINE_EVENT(xfs_timestamp_range_class, name, \
 	TP_ARGS(mp, min, max))
 DEFINE_TIMESTAMP_RANGE_EVENT(xfs_inode_timestamp_range);
 DEFINE_TIMESTAMP_RANGE_EVENT(xfs_quota_expiry_range);
+
+DECLARE_EVENT_CLASS(xfs_eofblocks_class,
+	TP_PROTO(struct xfs_mount *mp, struct xfs_eofblocks *eofb,
+		 unsigned long caller_ip),
+	TP_ARGS(mp, eofb, caller_ip),
+	TP_STRUCT__entry(
+		__field(dev_t, dev)
+		__field(__u32, flags)
+		__field(uint32_t, uid)
+		__field(uint32_t, gid)
+		__field(prid_t, prid)
+		__field(__u64, min_file_size)
+		__field(int, scan_limit)
+		__field(unsigned long, caller_ip)
+	),
+	TP_fast_assign(
+		__entry->dev = mp->m_super->s_dev;
+		__entry->flags = eofb ? eofb->eof_flags : 0;
+		__entry->uid = eofb ? from_kuid(mp->m_super->s_user_ns,
+						eofb->eof_uid) : 0;
+		__entry->gid = eofb ? from_kgid(mp->m_super->s_user_ns,
+						eofb->eof_gid) : 0;
+		__entry->prid = eofb ? eofb->eof_prid : 0;
+		__entry->min_file_size = eofb ? eofb->eof_min_file_size : 0;
+		__entry->scan_limit = eofb ? eofb->icw_scan_limit : 0;
+		__entry->caller_ip = caller_ip;
+	),
+	TP_printk("dev %d:%d flags 0x%x uid %u gid %u prid %u minsize %llu scan_limit %d caller %pS",
+		  MAJOR(__entry->dev), MINOR(__entry->dev),
+		  __entry->flags,
+		  __entry->uid,
+		  __entry->gid,
+		  __entry->prid,
+		  __entry->min_file_size,
+		  __entry->scan_limit,
+		  (char *)__entry->caller_ip)
+);
+#define DEFINE_EOFBLOCKS_EVENT(name)	\
+DEFINE_EVENT(xfs_eofblocks_class, name,	\
+	TP_PROTO(struct xfs_mount *mp, struct xfs_eofblocks *eofb, \
+		 unsigned long caller_ip), \
+	TP_ARGS(mp, eofb, caller_ip))
+DEFINE_EOFBLOCKS_EVENT(xfs_ioc_free_eofblocks);
+DEFINE_EOFBLOCKS_EVENT(xfs_blockgc_free_space);
 
 #endif /* _TRACE_XFS_H */
 

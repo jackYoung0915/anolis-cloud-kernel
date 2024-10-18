@@ -144,6 +144,8 @@ enum vcpu_sysreg {
 	AFSR1_EL1,	/* Auxiliary Fault Status Register 1 */
 	FAR_EL1,	/* Fault Address Register */
 	MAIR_EL1,	/* Memory Attribute Indirection Register */
+	MPAM1_EL1,	/* MPAM context for EL1 execution */
+	MPAM0_EL1,	/* MPAM context for EL0 execution */
 	VBAR_EL1,	/* Vector Base Address Register */
 	CONTEXTIDR_EL1,	/* Context ID Register */
 	TPIDR_EL0,	/* Thread ID, User R/W */
@@ -380,6 +382,12 @@ struct kvm_vcpu_arch {
 		u64 last_steal;
 		gpa_t base;
 	} steal;
+
+	/* Guest default MPAM register states */
+	u64 mpam0_el1;
+	u64 mpam1_el1;
+
+	struct id_registers idregs;
 };
 
 /* Pointer to the vcpu's SVE FFR for sve_{save,load}_state() */

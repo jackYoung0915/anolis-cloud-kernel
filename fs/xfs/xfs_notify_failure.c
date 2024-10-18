@@ -21,6 +21,7 @@
 
 #include <linux/mm.h>
 #include <linux/dax.h>
+#include <linux/pfn_t.h>
 
 struct xfs_failure_info {
 	xfs_agblock_t		startblock;
@@ -168,6 +169,128 @@ xfs_dax_notify_ddev_failure(
 }
 
 static int
+xfs_mf_dax_kill_procs(
+	struct xfs_mount	*mp,
+	struct address_space	*mapping,
+	pgoff_t			pgoff,
+	unsigned long		nrpages,
+	int			mf_flags,
+	bool			share)
+{
+	int rc, rc2 = 0;
+
+	if (share) {
+		struct xfs_inode *ip = XFS_I(mapping->host);
+
+		mutex_lock(&mp->m_reflink_opt_lock);
+		if (ip->i_reflink_opt_ip) {
+			rc2 = mf_dax_kill_procs(VFS_I(ip->i_reflink_opt_ip)->i_mapping,
+						pgoff, nrpages, mf_flags);
+		} else {
+			xfs_warn(mp, "this mode should be only used with REFLINK_PRIMARY|REFLINK_SECONDARY @ ino %llu",
+				 ip->i_ino);
+		}
+		mutex_unlock(&mp->m_reflink_opt_lock);
+	}
+	rc = mf_dax_kill_procs(mapping, pgoff, nrpages, mf_flags);
+	iput(mapping->host);
+	return rc ? rc : rc2;
+}
+
+static int
+xfs_dax_notify_ddev_failure2(
+	struct dax_device	*dax_dev,
+	struct xfs_mount	*mp,
+	loff_t			pos,
+	size_t			size,
+	int			mf_flags)
+{
+	struct address_space *lmapping = NULL;
+	bool lshare = false;
+	pfn_t pfn;
+	pgoff_t pgoff, lpgoff;
+	unsigned long nrpages;
+	long length;
+	int rc, id;
+
+	rc = bdev_dax_pgoff(mp->m_ddev_targp->bt_bdev, pos >> SECTOR_SHIFT,
+			    size, &pgoff);
+	if (rc)
+		return rc;
+	id = dax_read_lock();
+	length = dax_direct_access(dax_dev, pgoff, PHYS_PFN(size),
+				   NULL, &pfn);
+	if (length < 0) {
+		rc = length;
+		goto out;
+	}
+
+	if (PFN_PHYS(length) < size) {
+		rc = -EINVAL;
+		goto out;
+	}
+	rc = 0;
+	while (length) {
+		struct page *page;
+		struct address_space *mapping;
+		bool share = false;
+
+		page = pfn_t_to_page(pfn);
+		pfn.val++;
+		--length;
+
+retry:
+		rcu_read_lock();
+		mapping = page ? READ_ONCE(page->mapping) : NULL;
+		if (mapping) {
+			share = (unsigned long)mapping & PAGE_MAPPING_DAX_SHARED;
+			mapping = (void *)((unsigned long)mapping & ~PAGE_MAPPING_DAX_SHARED);
+			if (!igrab(mapping->host)) {
+				rcu_read_unlock();
+				goto retry;
+			}
+			/* paired with smp_mb() in dax_page_share_get() to ensure valid index */
+			smp_mb();
+			if (!share) {
+				pgoff = READ_ONCE(page->index);
+			} else {
+				WARN_ON(!test_bit(AS_FSDAX_NORMAP, &mapping->flags));
+				pgoff = READ_ONCE(page->private);
+			}
+		}
+		rcu_read_unlock();
+
+		if (lmapping) {
+			if (mapping != lmapping || share != lshare ||
+			    lpgoff + nrpages != pgoff) {
+				rc = xfs_mf_dax_kill_procs(mp, lmapping, lpgoff,
+							   nrpages, mf_flags, lshare);
+				if (rc)
+					break;
+			} else {
+				nrpages++;
+				continue;
+			}
+		}
+		lmapping = mapping;
+		lpgoff = pgoff;
+		lshare = share;
+		nrpages = 1;
+	}
+
+	if (lmapping) {
+		int rc2;
+
+		rc2 = xfs_mf_dax_kill_procs(mp, lmapping, lpgoff, nrpages, mf_flags, lshare);
+		if (!rc)
+			rc = rc2;
+	}
+out:
+	dax_read_unlock(id);
+	return rc;
+}
+
+static int
 xfs_dax_notify_failure(
 	struct dax_device	*dax_dev,
 	u64			offset,
@@ -196,11 +319,6 @@ xfs_dax_notify_failure(
 		return -EFSCORRUPTED;
 	}
 
-	if (!xfs_sb_version_hasrmapbt(&mp->m_sb)) {
-		xfs_debug(mp, "notify_failure() needs rmapbt enabled!");
-		return -EOPNOTSUPP;
-	}
-
 	ddev_start = get_start_sect(mp->m_ddev_targp->bt_bdev) << SECTOR_SHIFT;
 	ddev_end = ddev_start +
 		i_size_read(mp->m_ddev_targp->bt_bdev->bd_inode) - 1;
@@ -221,6 +339,9 @@ xfs_dax_notify_failure(
 	if (offset + len - 1 > ddev_end)
 		len = ddev_end - offset + 1;
 
+	if (!xfs_sb_version_hasrmapbt(&mp->m_sb))
+		return xfs_dax_notify_ddev_failure2(dax_dev, mp, offset, len,
+						   mf_flags);
 	return xfs_dax_notify_ddev_failure(mp, BTOBB(offset), BTOBB(len),
 			mf_flags);
 }

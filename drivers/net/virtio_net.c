@@ -28,6 +28,9 @@
 /* skip virtio_check_driver_offered_feature check for force_xdp  */
 #define virtio_has_feature __virtio_test_bit
 
+#define u64_stats_fetch_begin u64_stats_fetch_begin_irq
+#define u64_stats_fetch_retry u64_stats_fetch_retry_irq
+
 static int napi_weight = NAPI_POLL_WEIGHT;
 module_param(napi_weight, int, 0444);
 
@@ -48,6 +51,13 @@ module_param(gso, bool, 0444);
 module_param(napi_tx, bool, 0644);
 module_param(force_xdp, bool, 0644);
 module_param(lro, bool, 0644);
+
+/* 7 days are long enough by default. */
+static unsigned int cvq_timeout = 7 * 24 * 3600 * 1000;
+module_param(cvq_timeout, uint, 0644);
+
+#define VIRTNET_DIM_TUNE_TRAFFIC 1
+#define VIRTNET_DIM_NEVENTS 128
 
 /* FIXME: MTU in config. */
 #define GOOD_PACKET_LEN (ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
@@ -141,35 +151,124 @@ struct virtnet_xsk_hdr {
 
 #define VIRTNET_XSK_TXNAPI_RUNNING 0
 
-#define VIRTNET_SQ_STAT(m)	offsetof(struct virtnet_sq_stats, m)
-#define VIRTNET_RQ_STAT(m)	offsetof(struct virtnet_rq_stats, m)
+#define VIRTNET_SQ_STAT(name, m) {name, offsetof(struct virtnet_sq_stats, m)}
+#define VIRTNET_RQ_STAT(name, m) {name, offsetof(struct virtnet_rq_stats, m)}
 
 static const struct virtnet_stat_desc virtnet_sq_stats_desc[] = {
-	{ "packets",		VIRTNET_SQ_STAT(packets) },
-	{ "bytes",		VIRTNET_SQ_STAT(bytes) },
-	{ "xdp_tx",		VIRTNET_SQ_STAT(xdp_tx) },
-	{ "xdp_tx_drops",	VIRTNET_SQ_STAT(xdp_tx_drops) },
-	{ "kicks",		VIRTNET_SQ_STAT(kicks) },
-	{ "tx_timeouts",	VIRTNET_SQ_STAT(tx_timeouts) },
+	VIRTNET_SQ_STAT("packets",            packets),
+	VIRTNET_SQ_STAT("bytes",              bytes),
+	VIRTNET_SQ_STAT("xdp_tx",             xdp_tx),
+	VIRTNET_SQ_STAT("xdp_tx_drops",       xdp_tx_drops),
+	VIRTNET_SQ_STAT("kicks",              kicks),
+	VIRTNET_SQ_STAT("tx_timeouts",        tx_timeouts),
+	VIRTNET_SQ_STAT("xsk_wakeup",         xsk_wakeup),
+	VIRTNET_SQ_STAT("xsk_wakeup_recycle", xsk_wakeup_recycle),
+	VIRTNET_SQ_STAT("xsk_run",            xsk_run),
+	VIRTNET_SQ_STAT("xsk_devfull",        xsk_devfull),
+	VIRTNET_SQ_STAT("xsk_timer",          xsk_timer),
+	VIRTNET_SQ_STAT("xsk_timer_run",      xsk_timer_run),
 };
 
 static const struct virtnet_stat_desc virtnet_rq_stats_desc[] = {
-	{ "packets",		VIRTNET_RQ_STAT(packets) },
-	{ "bytes",		VIRTNET_RQ_STAT(bytes) },
-	{ "drops",		VIRTNET_RQ_STAT(drops) },
-	{ "xdp_packets",	VIRTNET_RQ_STAT(xdp_packets) },
-	{ "xdp_tx",		VIRTNET_RQ_STAT(xdp_tx) },
-	{ "xdp_redirects",	VIRTNET_RQ_STAT(xdp_redirects) },
-	{ "xdp_drops",		VIRTNET_RQ_STAT(xdp_drops) },
-	{ "kicks",		VIRTNET_RQ_STAT(kicks) },
+	VIRTNET_RQ_STAT("packets",       packets),
+	VIRTNET_RQ_STAT("bytes",         bytes),
+	VIRTNET_RQ_STAT("drops",         drops),
+	VIRTNET_RQ_STAT("xdp_packets",   xdp_packets),
+	VIRTNET_RQ_STAT("xdp_tx",        xdp_tx),
+	VIRTNET_RQ_STAT("xdp_redirects", xdp_redirects),
+	VIRTNET_RQ_STAT("xdp_drops",     xdp_drops),
+	VIRTNET_RQ_STAT("kicks",         kicks),
 };
 
-#define VIRTNET_SQ_STATS_LEN	ARRAY_SIZE(virtnet_sq_stats_desc)
-#define VIRTNET_RQ_STATS_LEN	ARRAY_SIZE(virtnet_rq_stats_desc)
+#define VIRTNET_STATS_DESC_CQ(name) \
+	{#name, offsetof(struct virtio_net_stats_cvq, name)}
+
+#define VIRTNET_STATS_DESC_RX(class, name) \
+	{#name, offsetof(struct virtio_net_stats_rx_ ## class, rx_ ## name)}
+
+#define VIRTNET_STATS_DESC_TX(class, name) \
+	{#name, offsetof(struct virtio_net_stats_tx_ ## class, tx_ ## name)}
+
+static const struct virtnet_stat_desc virtnet_stats_cvq_desc[] = {
+	VIRTNET_STATS_DESC_CQ(command_num),
+	VIRTNET_STATS_DESC_CQ(ok_num),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_rx_basic_desc[] = {
+	VIRTNET_STATS_DESC_RX(basic, packets),
+	VIRTNET_STATS_DESC_RX(basic, bytes),
+
+	VIRTNET_STATS_DESC_RX(basic, notifications),
+	VIRTNET_STATS_DESC_RX(basic, interrupts),
+
+	VIRTNET_STATS_DESC_RX(basic, drops),
+	VIRTNET_STATS_DESC_RX(basic, drop_overruns),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_tx_basic_desc[] = {
+	VIRTNET_STATS_DESC_TX(basic, packets),
+	VIRTNET_STATS_DESC_TX(basic, bytes),
+
+	VIRTNET_STATS_DESC_TX(basic, notifications),
+	VIRTNET_STATS_DESC_TX(basic, interrupts),
+
+	VIRTNET_STATS_DESC_TX(basic, drops),
+	VIRTNET_STATS_DESC_TX(basic, drop_malformed),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_rx_csum_desc[] = {
+	VIRTNET_STATS_DESC_RX(csum, csum_valid),
+	VIRTNET_STATS_DESC_RX(csum, csum_none),
+	VIRTNET_STATS_DESC_RX(csum, csum_bad),
+	VIRTNET_STATS_DESC_RX(csum, needs_csum),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_tx_csum_desc[] = {
+	VIRTNET_STATS_DESC_TX(csum, csum_none),
+	VIRTNET_STATS_DESC_TX(csum, needs_csum),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_rx_gso_desc[] = {
+	VIRTNET_STATS_DESC_RX(gso, gso_packets),
+	VIRTNET_STATS_DESC_RX(gso, gso_bytes),
+	VIRTNET_STATS_DESC_RX(gso, gso_packets_coalesced),
+	VIRTNET_STATS_DESC_RX(gso, gso_bytes_coalesced),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_tx_gso_desc[] = {
+	VIRTNET_STATS_DESC_TX(gso, gso_packets),
+	VIRTNET_STATS_DESC_TX(gso, gso_bytes),
+	VIRTNET_STATS_DESC_TX(gso, gso_segments),
+	VIRTNET_STATS_DESC_TX(gso, gso_segments_bytes),
+
+	VIRTNET_STATS_DESC_TX(gso, gso_packets_noseg),
+	VIRTNET_STATS_DESC_TX(gso, gso_bytes_noseg),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_rx_speed_desc[] = {
+	VIRTNET_STATS_DESC_RX(speed, ratelimit_packets),
+	VIRTNET_STATS_DESC_RX(speed, ratelimit_bytes),
+};
+
+static const struct virtnet_stat_desc virtnet_stats_tx_speed_desc[] = {
+	VIRTNET_STATS_DESC_TX(speed, ratelimit_packets),
+	VIRTNET_STATS_DESC_TX(speed, ratelimit_bytes),
+};
+
+#define VIRTNET_Q_TYPE_RX 0
+#define VIRTNET_Q_TYPE_TX 1
+#define VIRTNET_Q_TYPE_CQ 2
 
 struct virtnet_interrupt_coalesce {
 	u32 max_packets;
 	u32 max_usecs;
+};
+
+struct virtnet_coal_node {
+	struct virtio_net_ctrl_hdr hdr;
+	virtio_net_ctrl_ack status;
+	struct virtio_net_ctrl_coal_vq coal_vqs;
+	struct list_head list;
 };
 
 /* Internal representation of a send virtqueue */
@@ -217,6 +316,9 @@ struct send_queue {
 		 */
 		struct hrtimer          timer;
 	} xsk;
+
+	/* Record whether sq is in reset state. */
+	bool reset;
 };
 
 /* Internal representation of a receive virtqueue */
@@ -286,15 +388,6 @@ struct virtio_net_ctrl_rss {
 struct control_buf {
 	struct virtio_net_ctrl_hdr hdr;
 	virtio_net_ctrl_ack status;
-	struct virtio_net_ctrl_mq mq;
-	u8 promisc;
-	u8 allmulti;
-	__virtio16 vid;
-	__virtio64 offloads;
-	struct virtio_net_ctrl_rss rss;
-	struct virtio_net_ctrl_coal_tx coal_tx;
-	struct virtio_net_ctrl_coal_rx coal_rx;
-	struct virtio_net_ctrl_coal_vq coal_vq;
 };
 
 struct virtnet_info {
@@ -330,9 +423,13 @@ struct virtnet_info {
 	u16 rss_indir_table_size;
 	u32 rss_hash_types_supported;
 	u32 rss_hash_types_saved;
+	struct virtio_net_ctrl_rss rss;
 
 	/* Has control virtqueue */
 	bool has_cvq;
+
+	/* Lock to protect the control VQ */
+	struct mutex cvq_lock;
 
 	/* Host can handle any s/g split between our header and packet data */
 	bool any_header_sg;
@@ -340,11 +437,23 @@ struct virtnet_info {
 	/* Packet virtio header size */
 	u8 hdr_len;
 
-	/* Work struct for refilling if we run low on memory. */
+	/* Work struct for delayed refilling if we run low on memory. */
 	struct delayed_work refill;
+
+	/* Is delayed refill enabled? */
+	bool refill_enabled;
+
+	/* The lock to synchronize the access to refill_enabled */
+	spinlock_t refill_lock;
 
 	/* Work struct for config space updates */
 	struct work_struct config_work;
+
+	/* Work struct for setting rx mode */
+	struct work_struct rx_mode_work;
+
+	/* OK to queue work setting RX mode? */
+	bool rx_mode_work_enabled;
 
 	/* Does the affinity hint is set for virtqueues? */
 	bool affinity_hint_set;
@@ -366,11 +475,24 @@ struct virtnet_info {
 	struct virtnet_interrupt_coalesce intr_coal_tx;
 	struct virtnet_interrupt_coalesce intr_coal_rx;
 
+	/* Used by dim cmds for concurrent delivery */
+	int dim_cmd_nums;
+	struct delayed_work get_cvq;
+
+	/* OK to queue work getting cvq response? */
+	bool get_cvq_work_enabled;
+
+	/* Free nodes for dim filled by rx_dim_work. */
+	struct mutex coal_free_lock;
+	struct list_head coal_free_list;
+
 	unsigned long guest_offloads;
 	unsigned long guest_offloads_capable;
 
 	/* failover when STANDBY feature enabled */
 	struct failover *failover;
+
+	u64 device_stats_cap;
 };
 
 struct padded_vnet_hdr {
@@ -389,6 +511,8 @@ static void __free_old_xmit_ptr(struct send_queue *sq, bool in_napi,
 static void free_old_xmit_skbs(struct send_queue *sq, bool in_napi);
 static int virtnet_xsk_run(struct send_queue *sq,
 			   struct xsk_buff_pool *pool, int budget);
+static void virtnet_rq_free_unused_buf(struct virtqueue *vq, void *buf);
+static void virtnet_sq_free_unused_buf(struct virtqueue *vq, void *buf);
 
 static bool is_xdp_frame(void *ptr)
 {
@@ -433,6 +557,17 @@ static int rxq2vq(int rxq)
 	return rxq * 2;
 }
 
+static int vq_type(struct virtnet_info *vi, int qid)
+{
+	if (qid == vi->max_queue_pairs * 2)
+		return VIRTNET_Q_TYPE_CQ;
+
+	if (qid % 2)
+		return VIRTNET_Q_TYPE_TX;
+
+	return VIRTNET_Q_TYPE_RX;
+}
+
 static inline struct virtio_net_hdr_mrg_rxbuf *skb_vnet_hdr(struct sk_buff *skb)
 {
 	return (struct virtio_net_hdr_mrg_rxbuf *)skb->cb;
@@ -463,6 +598,34 @@ static struct page *get_a_page(struct receive_queue *rq, gfp_t gfp_mask)
 	} else
 		p = alloc_page(gfp_mask);
 	return p;
+}
+
+static void enable_delayed_refill(struct virtnet_info *vi)
+{
+	spin_lock_bh(&vi->refill_lock);
+	vi->refill_enabled = true;
+	spin_unlock_bh(&vi->refill_lock);
+}
+
+static void disable_delayed_refill(struct virtnet_info *vi)
+{
+	spin_lock_bh(&vi->refill_lock);
+	vi->refill_enabled = false;
+	spin_unlock_bh(&vi->refill_lock);
+}
+
+static void enable_rx_mode_work(struct virtnet_info *vi)
+{
+	rtnl_lock();
+	vi->rx_mode_work_enabled = true;
+	rtnl_unlock();
+}
+
+static void disable_rx_mode_work(struct virtnet_info *vi)
+{
+	rtnl_lock();
+	vi->rx_mode_work_enabled = false;
+	rtnl_unlock();
 }
 
 static void virtqueue_napi_schedule(struct napi_struct *napi,
@@ -606,6 +769,10 @@ static struct sk_buff *page_to_skb(struct virtnet_info *vi,
 
 		skb_reserve(skb, p - buf);
 		skb_put(skb, len);
+
+		page = (struct page *)page->private;
+		if (page)
+			give_pages(rq, page);
 		goto ok;
 	}
 
@@ -1564,6 +1731,172 @@ static bool try_fill_recv(struct virtnet_info *vi, struct receive_queue *rq,
 	return !oom;
 }
 
+static void virtnet_process_dim_cmd(struct virtnet_info *vi, void *res)
+{
+	struct virtnet_coal_node *node;
+	u16 qnum;
+
+	node = (struct virtnet_coal_node *)res;
+	qnum = le16_to_cpu(node->coal_vqs.vqn) / 2;
+
+	vi->rq[qnum].intr_coal.max_usecs =
+		le32_to_cpu(node->coal_vqs.coal.max_usecs);
+	vi->rq[qnum].intr_coal.max_packets =
+		le32_to_cpu(node->coal_vqs.coal.max_packets);
+	vi->rq[qnum].dim.state = DIM_START_MEASURE;
+
+	mutex_lock(&vi->coal_free_lock);
+	list_add(&node->list, &vi->coal_free_list);
+	mutex_unlock(&vi->coal_free_lock);
+
+	vi->dim_cmd_nums--;
+}
+
+static int virtnet_cvq_wait_timeout(struct virtnet_info *vi,
+				    unsigned long time_end)
+{
+	if (time_after_eq(jiffies, time_end)) {
+		netdev_warn(vi->dev,
+			    "Timeout occurs when waiting the CVQ "
+			    "request, break the virtio device.\n");
+		virtio_break_device(vi->vdev);
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * virtnet_cvq_response - get the response for filled ctrlq requests
+ * @poll: keep polling ctrlq when a NULL buffer is obtained.
+ * @dim_oneshot: process a dim cmd then exit, excluding user commands.
+ *
+ * Note that user commands must be processed synchronously
+ *  (poll = true, dim_oneshot = false).
+ */
+static int virtnet_cvq_response(struct virtnet_info *vi,
+				bool poll,
+				bool dim_oneshot)
+{
+	unsigned long time_end = jiffies + msecs_to_jiffies(cvq_timeout);
+	unsigned tmp;
+	void *res;
+
+	while (true) {
+		res = virtqueue_get_buf(vi->cvq, &tmp);
+		if (virtqueue_is_broken(vi->cvq)) {
+			dev_warn(&vi->dev->dev, "Control vq is broken.\n");
+			return -EIO;
+		}
+
+		if (!res) {
+			if (!poll)
+				return 0;
+
+			cpu_relax();
+			if (virtnet_cvq_wait_timeout(vi, time_end))
+				return -EBUSY;
+			continue;
+		}
+
+		/* this does not occur inside the process of waiting dim */
+		if (res == ((void *)vi))
+			return 0;
+
+		virtnet_process_dim_cmd(vi, res);
+		/* When it is a user command, we must wait until the
+		 * processing result is processed synchronously.
+		 */
+		if (dim_oneshot)
+			return 0;
+	}
+}
+
+static void enable_get_cvq_work(struct virtnet_info *vi)
+{
+	rtnl_lock();
+	vi->get_cvq_work_enabled = true;
+	rtnl_unlock();
+}
+
+static void disable_get_cvq_work(struct virtnet_info *vi)
+{
+	rtnl_lock();
+	vi->get_cvq_work_enabled = false;
+	rtnl_unlock();
+}
+
+static void __virtnet_add_dim_command(struct virtnet_info *vi,
+				      struct virtnet_coal_node *ctrl)
+{
+	struct scatterlist *sgs[4], hdr, stat, out;
+	unsigned int out_num = 0;
+	int ret;
+
+	BUG_ON(!virtio_has_feature(vi->vdev, VIRTIO_NET_F_CTRL_VQ));
+
+	ctrl->hdr.class = VIRTIO_NET_CTRL_NOTF_COAL;
+	ctrl->hdr.cmd = VIRTIO_NET_CTRL_NOTF_COAL_VQ_SET;
+
+	sg_init_one(&hdr, &ctrl->hdr, sizeof(ctrl->hdr));
+	sgs[out_num++] = &hdr;
+
+	sg_init_one(&out, &ctrl->coal_vqs, sizeof(ctrl->coal_vqs));
+	sgs[out_num++] = &out;
+
+	ctrl->status = VIRTIO_NET_OK;
+	sg_init_one(&stat, &ctrl->status, sizeof(ctrl->status));
+	sgs[out_num] = &stat;
+
+	BUG_ON(out_num + 1 > ARRAY_SIZE(sgs));
+	ret = virtqueue_add_sgs(vi->cvq, sgs, out_num, 1, ctrl, GFP_ATOMIC);
+	if (ret == -ENOSPC) {
+		ret = virtnet_cvq_response(vi, true, true);
+		if (ret)
+			goto err_ret;
+
+		ret = virtqueue_add_sgs(vi->cvq, sgs, out_num, 1, ctrl, GFP_ATOMIC);
+	}
+
+err_ret:
+	if (ret < 0) {
+		mutex_lock(&vi->coal_free_lock);
+		list_add(&ctrl->list, &vi->coal_free_list);
+		mutex_unlock(&vi->coal_free_lock);
+		return;
+	}
+
+	virtqueue_kick(vi->cvq);
+	vi->dim_cmd_nums++;
+	if (vi->dim_cmd_nums && vi->get_cvq_work_enabled)
+		schedule_delayed_work(&vi->get_cvq, 1);
+}
+
+static void virtnet_add_dim_command(struct virtnet_info *vi,
+				    struct virtnet_coal_node *ctrl)
+{
+	mutex_lock(&vi->cvq_lock);
+	__virtnet_add_dim_command(vi, ctrl);
+	mutex_unlock(&vi->cvq_lock);
+}
+
+static void virtnet_get_cvq_work(struct work_struct *work)
+{
+	struct virtnet_info *vi =
+		container_of(work, struct virtnet_info, get_cvq.work);
+
+	mutex_lock(&vi->cvq_lock);
+
+	if (virtnet_cvq_response(vi, false, false))
+		goto out;
+
+	if (vi->dim_cmd_nums && vi->get_cvq_work_enabled)
+		schedule_delayed_work(&vi->get_cvq, 1);
+
+out:
+	mutex_unlock(&vi->cvq_lock);
+}
+
 static void skb_recv_done(struct virtqueue *rvq)
 {
 	struct virtnet_info *vi = rvq->vdev->priv;
@@ -1659,13 +1992,17 @@ static int virtnet_receive(struct receive_queue *rq, int budget,
 	}
 
 	if (rq->vq->num_free > min((unsigned int)budget, virtqueue_get_vring_size(rq->vq)) / 2) {
-		if (!try_fill_recv(vi, rq, GFP_ATOMIC))
-			schedule_delayed_work(&vi->refill, 0);
+		if (!try_fill_recv(vi, rq, GFP_ATOMIC)) {
+			spin_lock(&vi->refill_lock);
+			if (vi->refill_enabled)
+				schedule_delayed_work(&vi->refill, 0);
+			spin_unlock(&vi->refill_lock);
+		}
 	}
 
 	u64_stats_set(&stats.packets, packets);
 	u64_stats_update_begin(&rq->stats.syncp);
-	for (i = 0; i < VIRTNET_RQ_STATS_LEN; i++) {
+	for (i = 0; i < ARRAY_SIZE(virtnet_rq_stats_desc); i++) {
 		size_t offset = virtnet_rq_stats_desc[i].offset;
 		u64_stats_t *item, *src;
 
@@ -1803,6 +2140,11 @@ static void virtnet_poll_cleantx(struct receive_queue *rq)
 		return;
 
 	if (__netif_tx_trylock(txq)) {
+		if (sq->reset) {
+			__netif_tx_unlock(txq);
+			return;
+		}
+
 		do {
 			virtqueue_disable_cb(sq->vq);
 			free_old_xmit_skbs(sq, true);
@@ -1829,7 +2171,8 @@ static void virtnet_rx_dim_update(struct virtnet_info *vi, struct receive_queue 
 			  &cur_sample);
 	u64_stats_update_end(&rq->stats.syncp);
 
-	net_dim(&rq->dim, cur_sample);
+	net_dim_tune(&rq->dim, cur_sample, VIRTNET_DIM_NEVENTS,
+		     VIRTNET_DIM_TUNE_TRAFFIC);
 	rq->packets_in_napi = 0;
 }
 
@@ -1848,15 +2191,15 @@ static int virtnet_poll(struct napi_struct *napi, int budget)
 	received = virtnet_receive(rq, budget, &xdp_xmit);
 	rq->packets_in_napi += received;
 
+	if (xdp_xmit & VIRTIO_XDP_REDIR)
+		xdp_do_flush();
+
 	/* Out of packets? */
 	if (received < budget) {
 		napi_complete = virtqueue_napi_complete(napi, rq->vq, received);
 		if (napi_complete && rq->dim_enabled)
 			virtnet_rx_dim_update(vi, rq);
 	}
-
-	if (xdp_xmit & VIRTIO_XDP_REDIR)
-		xdp_do_flush();
 
 	if (xdp_xmit & VIRTIO_XDP_TX) {
 		sq = virtnet_xdp_get_sq(vi);
@@ -1875,6 +2218,8 @@ static int virtnet_open(struct net_device *dev)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i, err;
+
+	enable_delayed_refill(vi);
 
 	for (i = 0; i < vi->max_queue_pairs; i++) {
 		if (i < vi->curr_queue_pairs)
@@ -2066,20 +2411,97 @@ static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
+static void virtnet_cancel_dim(struct virtnet_info *vi, struct dim *dim)
+{
+	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL))
+		return;
+	net_dim_work_cancel(dim);
+}
+
+static int virtnet_rx_resize(struct virtnet_info *vi,
+			     struct receive_queue *rq, u32 ring_num)
+{
+	bool running = netif_running(vi->dev);
+	int err, qindex;
+
+	qindex = rq - vi->rq;
+
+	if (running) {
+		napi_disable(&rq->napi);
+		virtnet_cancel_dim(vi, &rq->dim);
+	}
+
+	err = virtqueue_resize(rq->vq, ring_num, virtnet_rq_free_unused_buf);
+	if (err)
+		netdev_err(vi->dev, "resize rx fail: rx queue index: %d err: %d\n", qindex, err);
+
+	if (!try_fill_recv(vi, rq, GFP_KERNEL))
+		schedule_delayed_work(&vi->refill, 0);
+
+	if (running)
+		virtnet_napi_enable(rq->vq, &rq->napi);
+	return err;
+}
+
+static int virtnet_tx_resize(struct virtnet_info *vi,
+			     struct send_queue *sq, u32 ring_num)
+{
+	bool running = netif_running(vi->dev);
+	struct netdev_queue *txq;
+	int err, qindex;
+
+	qindex = sq - vi->sq;
+
+	if (running)
+		virtnet_napi_tx_disable(&sq->napi);
+
+	txq = netdev_get_tx_queue(vi->dev, qindex);
+
+	/* 1. wait all ximt complete
+	 * 2. fix the race of netif_stop_subqueue() vs netif_start_subqueue()
+	 */
+	__netif_tx_lock_bh(txq);
+
+	/* Prevent rx poll from accessing sq. */
+	sq->reset = true;
+
+	/* Prevent the upper layer from trying to send packets. */
+	netif_stop_subqueue(vi->dev, qindex);
+
+	__netif_tx_unlock_bh(txq);
+
+	err = virtqueue_resize(sq->vq, ring_num, virtnet_sq_free_unused_buf);
+	if (err)
+		netdev_err(vi->dev, "resize tx fail: tx queue index: %d err: %d\n", qindex, err);
+
+	__netif_tx_lock_bh(txq);
+	sq->reset = false;
+	netif_tx_wake_queue(txq);
+	__netif_tx_unlock_bh(txq);
+
+	if (running)
+		virtnet_napi_tx_enable(vi, sq->vq, &sq->napi);
+	return err;
+}
+
 /*
  * Send command via the control virtqueue and check status.  Commands
  * supported by the hypervisor, as indicated by feature bits, should
  * never fail unless improperly formatted.
  */
-static bool virtnet_send_command(struct virtnet_info *vi, u8 class, u8 cmd,
-				 struct scatterlist *out)
+static bool virtnet_send_command_reply(struct virtnet_info *vi, u8 class, u8 cmd,
+				       struct scatterlist *out,
+				       struct scatterlist *in)
 {
-	struct scatterlist *sgs[4], hdr, stat;
-	unsigned out_num = 0, tmp;
+	struct scatterlist *sgs[5], hdr, stat;
+	u32 out_num = 0, in_num = 0;
+	bool ok;
+	int ret;
 
 	/* Caller should know better */
 	BUG_ON(!virtio_has_feature(vi->vdev, VIRTIO_NET_F_CTRL_VQ));
 
+	mutex_lock(&vi->cvq_lock);
 	vi->ctrl->status = ~0;
 	vi->ctrl->hdr.class = class;
 	vi->ctrl->hdr.cmd = cmd;
@@ -2092,22 +2514,46 @@ static bool virtnet_send_command(struct virtnet_info *vi, u8 class, u8 cmd,
 
 	/* Add return status. */
 	sg_init_one(&stat, &vi->ctrl->status, sizeof(vi->ctrl->status));
-	sgs[out_num] = &stat;
+	sgs[out_num + in_num++] = &stat;
 
-	BUG_ON(out_num + 1 > ARRAY_SIZE(sgs));
-	virtqueue_add_sgs(vi->cvq, sgs, out_num, 1, vi, GFP_ATOMIC);
+	if (in)
+		sgs[out_num + in_num++] = in;
+
+	BUG_ON(out_num + in_num > ARRAY_SIZE(sgs));
+	ret = virtqueue_add_sgs(vi->cvq, sgs, out_num, in_num, vi, GFP_ATOMIC);
+	if (ret == -ENOSPC) {
+		ret = virtnet_cvq_response(vi, true, true);
+		if (ret)
+			goto err_out;
+
+		ret = virtqueue_add_sgs(vi->cvq, sgs, out_num, in_num, vi, GFP_ATOMIC);
+	}
+	if (ret < 0)
+		goto err_out;
 
 	if (unlikely(!virtqueue_kick(vi->cvq)))
-		return vi->ctrl->status == VIRTIO_NET_OK;
+		goto unlock;
 
-	/* Spin for a response, the kick causes an ioport write, trapping
-	 * into the hypervisor, so the request should be handled immediately.
-	 */
-	while (!virtqueue_get_buf(vi->cvq, &tmp) &&
-	       !virtqueue_is_broken(vi->cvq))
-		cpu_relax();
+	ret = virtnet_cvq_response(vi, true, false);
+	if (ret)
+		goto err_out;
 
-	return vi->ctrl->status == VIRTIO_NET_OK;
+unlock:
+	ok = vi->ctrl->status == VIRTIO_NET_OK;
+	mutex_unlock(&vi->cvq_lock);
+	return ok;
+
+err_out:
+	dev_warn(&vi->vdev->dev,
+		 "Failed to add sgs for command vq: %d\n.", ret);
+	mutex_unlock(&vi->cvq_lock);
+	return false;
+}
+
+static bool virtnet_send_command(struct virtnet_info *vi, u8 class, u8 cmd,
+				 struct scatterlist *out)
+{
+	return virtnet_send_command_reply(vi, class, cmd, out, NULL);
 }
 
 static int virtnet_set_mac_address(struct net_device *dev, void *p)
@@ -2170,18 +2616,18 @@ static void virtnet_stats(struct net_device *dev,
 		struct send_queue *sq = &vi->sq[i];
 
 		do {
-			start = u64_stats_fetch_begin_irq(&sq->stats.syncp);
+			start = u64_stats_fetch_begin(&sq->stats.syncp);
 			tpackets = u64_stats_read(&sq->stats.packets);
 			tbytes   = u64_stats_read(&sq->stats.bytes);
 			terrors  = u64_stats_read(&sq->stats.tx_timeouts);
-		} while (u64_stats_fetch_retry_irq(&sq->stats.syncp, start));
+		} while (u64_stats_fetch_retry(&sq->stats.syncp, start));
 
 		do {
-			start = u64_stats_fetch_begin_irq(&rq->stats.syncp);
+			start = u64_stats_fetch_begin(&rq->stats.syncp);
 			rpackets = u64_stats_read(&rq->stats.packets);
 			rbytes   = u64_stats_read(&rq->stats.bytes);
 			rdrops   = u64_stats_read(&rq->stats.drops);
-		} while (u64_stats_fetch_retry_irq(&rq->stats.syncp, start));
+		} while (u64_stats_fetch_retry(&rq->stats.syncp, start));
 
 		tot->rx_packets += rpackets;
 		tot->tx_packets += tpackets;
@@ -2199,29 +2645,34 @@ static void virtnet_stats(struct net_device *dev,
 
 static void virtnet_ack_link_announce(struct virtnet_info *vi)
 {
-	rtnl_lock();
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_ANNOUNCE,
 				  VIRTIO_NET_CTRL_ANNOUNCE_ACK, NULL))
 		dev_warn(&vi->dev->dev, "Failed to ack link announce.\n");
-	rtnl_unlock();
 }
 
-static int _virtnet_set_queues(struct virtnet_info *vi, u16 queue_pairs)
+static int virtnet_set_queues(struct virtnet_info *vi, u16 queue_pairs)
 {
-	struct scatterlist sg;
+	struct virtio_net_ctrl_mq *mq = NULL;
 	struct net_device *dev = vi->dev;
+	struct scatterlist sg;
+	int ret = 0;
 
 	if (!vi->has_cvq || !virtio_has_feature(vi->vdev, VIRTIO_NET_F_MQ))
 		return 0;
 
-	vi->ctrl->mq.virtqueue_pairs = cpu_to_virtio16(vi->vdev, queue_pairs);
-	sg_init_one(&sg, &vi->ctrl->mq, sizeof(vi->ctrl->mq));
+	mq = kzalloc(sizeof(*mq), GFP_KERNEL);
+	if (!mq)
+		return -ENOMEM;
+
+	mq->virtqueue_pairs = cpu_to_virtio16(vi->vdev, queue_pairs);
+	sg_init_one(&sg, mq, sizeof(*mq));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_MQ,
 				  VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET, &sg)) {
 		dev_warn(&dev->dev, "Fail to set num of queue pairs to %d\n",
 			 queue_pairs);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	} else {
 		vi->curr_queue_pairs = queue_pairs;
 		/* virtnet_open() will refill when device is going to up. */
@@ -2229,17 +2680,9 @@ static int _virtnet_set_queues(struct virtnet_info *vi, u16 queue_pairs)
 			schedule_delayed_work(&vi->refill, 0);
 	}
 
-	return 0;
-}
-
-static int virtnet_set_queues(struct virtnet_info *vi, u16 queue_pairs)
-{
-	int err;
-
-	rtnl_lock();
-	err = _virtnet_set_queues(vi, queue_pairs);
-	rtnl_unlock();
-	return err;
+out:
+	kfree(mq);
+	return ret;
 }
 
 static int virtnet_close(struct net_device *dev)
@@ -2247,25 +2690,30 @@ static int virtnet_close(struct net_device *dev)
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i;
 
+	/* Make sure NAPI doesn't schedule refill work */
+	disable_delayed_refill(vi);
 	/* Make sure refill_work doesn't re-enable napi! */
 	cancel_delayed_work_sync(&vi->refill);
 
 	for (i = 0; i < vi->max_queue_pairs; i++) {
-		xdp_rxq_info_unreg(&vi->rq[i].xdp_rxq);
 		napi_disable(&vi->rq[i].napi);
+		xdp_rxq_info_unreg(&vi->rq[i].xdp_rxq);
 		virtnet_napi_tx_disable(&vi->sq[i].napi);
-		cancel_work_sync(&vi->rq[i].dim.work);
+		virtnet_cancel_dim(vi, &vi->rq[i].dim);
 	}
 
 	return 0;
 }
 
-static void virtnet_set_rx_mode(struct net_device *dev)
+static void virtnet_rx_mode_work(struct work_struct *work)
 {
-	struct virtnet_info *vi = netdev_priv(dev);
+	struct virtnet_info *vi =
+		container_of(work, struct virtnet_info, rx_mode_work);
+	struct net_device *dev = vi->dev;
 	struct scatterlist sg[2];
 	struct virtio_net_ctrl_mac *mac_data;
 	struct netdev_hw_addr *ha;
+	u8 *promisc_allmulti;
 	int uc_count;
 	int mc_count;
 	void *buf;
@@ -2275,22 +2723,31 @@ static void virtnet_set_rx_mode(struct net_device *dev)
 	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_CTRL_RX))
 		return;
 
-	vi->ctrl->promisc = ((dev->flags & IFF_PROMISC) != 0);
-	vi->ctrl->allmulti = ((dev->flags & IFF_ALLMULTI) != 0);
+	promisc_allmulti = kzalloc(sizeof(*promisc_allmulti), GFP_KERNEL);
+	if (!promisc_allmulti) {
+		dev_warn(&dev->dev, "Failed to set RX mode, no memory.\n");
+		return;
+	}
 
-	sg_init_one(sg, &vi->ctrl->promisc, sizeof(vi->ctrl->promisc));
+	rtnl_lock();
+
+	*promisc_allmulti = !!(dev->flags & IFF_PROMISC);
+	sg_init_one(sg, promisc_allmulti, sizeof(*promisc_allmulti));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_RX,
 				  VIRTIO_NET_CTRL_RX_PROMISC, sg))
 		dev_warn(&dev->dev, "Failed to %sable promisc mode.\n",
-			 vi->ctrl->promisc ? "en" : "dis");
+			 *promisc_allmulti ? "en" : "dis");
 
-	sg_init_one(sg, &vi->ctrl->allmulti, sizeof(vi->ctrl->allmulti));
+	*promisc_allmulti = !!(dev->flags & IFF_ALLMULTI);
+	sg_init_one(sg, promisc_allmulti, sizeof(*promisc_allmulti));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_RX,
 				  VIRTIO_NET_CTRL_RX_ALLMULTI, sg))
 		dev_warn(&dev->dev, "Failed to %sable allmulti mode.\n",
-			 vi->ctrl->allmulti ? "en" : "dis");
+			 *promisc_allmulti ? "en" : "dis");
+
+	netif_addr_lock_bh(dev);
 
 	uc_count = netdev_uc_count(dev);
 	mc_count = netdev_mc_count(dev);
@@ -2298,8 +2755,12 @@ static void virtnet_set_rx_mode(struct net_device *dev)
 	buf = kzalloc(((uc_count + mc_count) * ETH_ALEN) +
 		      (2 * sizeof(mac_data->entries)), GFP_ATOMIC);
 	mac_data = buf;
-	if (!buf)
+	if (!buf) {
+		netif_addr_unlock_bh(dev);
+		rtnl_unlock();
+		kfree(promisc_allmulti);
 		return;
+	}
 
 	sg_init_table(sg, 2);
 
@@ -2320,6 +2781,8 @@ static void virtnet_set_rx_mode(struct net_device *dev)
 	netdev_for_each_mc_addr(ha, dev)
 		memcpy(&mac_data->macs[i++][0], ha->addr, ETH_ALEN);
 
+	netif_addr_unlock_bh(dev);
+
 	sg_set_buf(&sg[1], mac_data,
 		   sizeof(mac_data->entries) + (mc_count * ETH_ALEN));
 
@@ -2327,21 +2790,39 @@ static void virtnet_set_rx_mode(struct net_device *dev)
 				  VIRTIO_NET_CTRL_MAC_TABLE_SET, sg))
 		dev_warn(&dev->dev, "Failed to set MAC filter table.\n");
 
+	rtnl_unlock();
+
 	kfree(buf);
+	kfree(promisc_allmulti);
+}
+
+static void virtnet_set_rx_mode(struct net_device *dev)
+{
+	struct virtnet_info *vi = netdev_priv(dev);
+
+	if (vi->rx_mode_work_enabled)
+		schedule_work(&vi->rx_mode_work);
 }
 
 static int virtnet_vlan_rx_add_vid(struct net_device *dev,
 				   __be16 proto, u16 vid)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
+	__virtio16 *_vid = NULL;
 	struct scatterlist sg;
 
-	vi->ctrl->vid = cpu_to_virtio16(vi->vdev, vid);
-	sg_init_one(&sg, &vi->ctrl->vid, sizeof(vi->ctrl->vid));
+	_vid = kzalloc(sizeof(*_vid), GFP_KERNEL);
+	if (!_vid)
+		return -ENOMEM;
+
+	*_vid = cpu_to_virtio16(vi->vdev, vid);
+	sg_init_one(&sg, _vid, sizeof(*_vid));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_VLAN,
 				  VIRTIO_NET_CTRL_VLAN_ADD, &sg))
 		dev_warn(&dev->dev, "Failed to add VLAN ID %d.\n", vid);
+
+	kfree(_vid);
 	return 0;
 }
 
@@ -2349,14 +2830,20 @@ static int virtnet_vlan_rx_kill_vid(struct net_device *dev,
 				    __be16 proto, u16 vid)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
+	__virtio16 *_vid = NULL;
 	struct scatterlist sg;
 
-	vi->ctrl->vid = cpu_to_virtio16(vi->vdev, vid);
-	sg_init_one(&sg, &vi->ctrl->vid, sizeof(vi->ctrl->vid));
+	_vid = kzalloc(sizeof(*_vid), GFP_KERNEL);
+	if (!_vid)
+		return -ENOMEM;
+
+	*_vid = cpu_to_virtio16(vi->vdev, vid);
+	sg_init_one(&sg, _vid, sizeof(*_vid));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_VLAN,
 				  VIRTIO_NET_CTRL_VLAN_DEL, &sg))
 		dev_warn(&dev->dev, "Failed to kill VLAN ID %d.\n", vid);
+	kfree(_vid);
 	return 0;
 }
 
@@ -2465,19 +2952,26 @@ static void virtnet_cpu_notif_remove(struct virtnet_info *vi)
 static int virtnet_send_ctrl_coal_vq_cmd(struct virtnet_info *vi,
 					 u16 vqn, u32 max_usecs, u32 max_packets)
 {
+	struct virtio_net_ctrl_coal_vq *coal_vq = NULL;
 	struct scatterlist sgs;
+	int ret = 0;
 
-	vi->ctrl->coal_vq.vqn = cpu_to_le16(vqn);
-	vi->ctrl->coal_vq.coal.max_usecs = cpu_to_le32(max_usecs);
-	vi->ctrl->coal_vq.coal.max_packets = cpu_to_le32(max_packets);
-	sg_init_one(&sgs, &vi->ctrl->coal_vq, sizeof(vi->ctrl->coal_vq));
+	coal_vq = kzalloc(sizeof(*coal_vq), GFP_KERNEL);
+	if (!coal_vq)
+		return -ENOMEM;
+
+	coal_vq->vqn = cpu_to_le16(vqn);
+	coal_vq->coal.max_usecs = cpu_to_le32(max_usecs);
+	coal_vq->coal.max_packets = cpu_to_le32(max_packets);
+	sg_init_one(&sgs, coal_vq, sizeof(*coal_vq));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_NOTF_COAL,
 				  VIRTIO_NET_CTRL_NOTF_COAL_VQ_SET,
 				  &sgs))
-		return -EINVAL;
+		ret = -EINVAL;
 
-	return 0;
+	kfree(coal_vq);
+	return ret;
 }
 
 static int virtnet_send_rx_ctrl_coal_vq_cmd(struct virtnet_info *vi,
@@ -2485,6 +2979,9 @@ static int virtnet_send_rx_ctrl_coal_vq_cmd(struct virtnet_info *vi,
 					    u32 max_packets)
 {
 	int err;
+
+	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL))
+		return -EOPNOTSUPP;
 
 	err = virtnet_send_ctrl_coal_vq_cmd(vi, rxq2vq(queue),
 					    max_usecs, max_packets);
@@ -2503,6 +3000,9 @@ static int virtnet_send_tx_ctrl_coal_vq_cmd(struct virtnet_info *vi,
 {
 	int err;
 
+	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL))
+		return -EOPNOTSUPP;
+
 	err = virtnet_send_ctrl_coal_vq_cmd(vi, txq2vq(queue),
 					    max_usecs, max_packets);
 	if (err)
@@ -2519,10 +3019,80 @@ static void virtnet_get_ringparam(struct net_device *dev,
 {
 	struct virtnet_info *vi = netdev_priv(dev);
 
-	ring->rx_max_pending = virtqueue_get_vring_size(vi->rq[0].vq);
-	ring->tx_max_pending = virtqueue_get_vring_size(vi->sq[0].vq);
-	ring->rx_pending = ring->rx_max_pending;
-	ring->tx_pending = ring->tx_max_pending;
+	ring->rx_max_pending = vi->rq[0].vq->num_max;
+	ring->tx_max_pending = vi->sq[0].vq->num_max;
+	ring->rx_pending = virtqueue_get_vring_size(vi->rq[0].vq);
+	ring->tx_pending = virtqueue_get_vring_size(vi->sq[0].vq);
+}
+
+static int virtnet_send_ctrl_coal_vq_cmd(struct virtnet_info *vi,
+					 u16 vqn, u32 max_usecs, u32 max_packets);
+
+static int virtnet_set_ringparam(struct net_device *dev,
+				 struct ethtool_ringparam *ring)
+{
+	struct virtnet_info *vi = netdev_priv(dev);
+	u32 rx_pending, tx_pending;
+	struct receive_queue *rq;
+	struct send_queue *sq;
+	int i, err;
+
+	if (ring->rx_mini_pending || ring->rx_jumbo_pending)
+		return -EINVAL;
+
+	rx_pending = virtqueue_get_vring_size(vi->rq[0].vq);
+	tx_pending = virtqueue_get_vring_size(vi->sq[0].vq);
+
+	if (ring->rx_pending == rx_pending &&
+	    ring->tx_pending == tx_pending)
+		return 0;
+
+	if (ring->rx_pending > vi->rq[0].vq->num_max)
+		return -EINVAL;
+
+	if (ring->tx_pending > vi->sq[0].vq->num_max)
+		return -EINVAL;
+
+	for (i = 0; i < vi->max_queue_pairs; i++) {
+		rq = vi->rq + i;
+		sq = vi->sq + i;
+
+		if (ring->tx_pending != tx_pending) {
+			err = virtnet_tx_resize(vi, sq, ring->tx_pending);
+			if (err)
+				return err;
+
+			/* Upon disabling and re-enabling a transmit virtqueue, the device must
+			 * set the coalescing parameters of the virtqueue to those configured
+			 * through the VIRTIO_NET_CTRL_NOTF_COAL_TX_SET command, or, if the driver
+			 * did not set any TX coalescing parameters, to 0.
+			 */
+			err = virtnet_send_tx_ctrl_coal_vq_cmd(vi, i,
+							       vi->intr_coal_tx.max_usecs,
+							       vi->intr_coal_tx.max_packets);
+
+			/* Don't break the tx resize action if the vq coalescing is not
+			 * supported. The same is true for rx resize below.
+			 */
+			if (err && err != -EOPNOTSUPP)
+				return err;
+		}
+
+		if (ring->rx_pending != rx_pending) {
+			err = virtnet_rx_resize(vi, rq, ring->rx_pending);
+			if (err)
+				return err;
+
+			/* The reason is same as the transmit virtqueue reset */
+			err = virtnet_send_rx_ctrl_coal_vq_cmd(vi, i,
+							       vi->intr_coal_rx.max_usecs,
+							       vi->intr_coal_rx.max_packets);
+			if (err && err != -EOPNOTSUPP)
+				return err;
+		}
+	}
+
+	return 0;
 }
 
 static bool virtnet_commit_rss_command(struct virtnet_info *vi)
@@ -2535,25 +3105,28 @@ static bool virtnet_commit_rss_command(struct virtnet_info *vi)
 	sg_init_table(sgs, 4);
 
 	sg_buf_size = offsetof(struct virtio_net_ctrl_rss, indirection_table);
-	sg_set_buf(&sgs[0], &vi->ctrl->rss, sg_buf_size);
+	sg_set_buf(&sgs[0], &vi->rss, sg_buf_size);
 
-	sg_buf_size = sizeof(uint16_t) * (vi->ctrl->rss.indirection_table_mask + 1);
-	sg_set_buf(&sgs[1], vi->ctrl->rss.indirection_table, sg_buf_size);
+	sg_buf_size = sizeof(uint16_t) * (vi->rss.indirection_table_mask + 1);
+	sg_set_buf(&sgs[1], vi->rss.indirection_table, sg_buf_size);
 
 	sg_buf_size = offsetof(struct virtio_net_ctrl_rss, key)
 			- offsetof(struct virtio_net_ctrl_rss, max_tx_vq);
-	sg_set_buf(&sgs[2], &vi->ctrl->rss.max_tx_vq, sg_buf_size);
+	sg_set_buf(&sgs[2], &vi->rss.max_tx_vq, sg_buf_size);
 
 	sg_buf_size = vi->rss_key_size;
-	sg_set_buf(&sgs[3], vi->ctrl->rss.key, sg_buf_size);
+	sg_set_buf(&sgs[3], vi->rss.key, sg_buf_size);
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_MQ,
 				  vi->has_rss ? VIRTIO_NET_CTRL_MQ_RSS_CONFIG
-				  : VIRTIO_NET_CTRL_MQ_HASH_CONFIG, sgs)) {
-		dev_warn(&dev->dev, "VIRTIONET issue with committing RSS sgs\n");
-		return false;
-	}
+				  : VIRTIO_NET_CTRL_MQ_HASH_CONFIG, sgs))
+		goto err;
+
 	return true;
+
+err:
+	dev_warn(&dev->dev, "VIRTIONET issue with committing RSS sgs\n");
+	return false;
 }
 
 static void virtnet_init_default_rss(struct virtnet_info *vi)
@@ -2561,21 +3134,21 @@ static void virtnet_init_default_rss(struct virtnet_info *vi)
 	u32 indir_val = 0;
 	int i = 0;
 
-	vi->ctrl->rss.hash_types = vi->rss_hash_types_supported;
+	vi->rss.hash_types = vi->rss_hash_types_supported;
 	vi->rss_hash_types_saved = vi->rss_hash_types_supported;
-	vi->ctrl->rss.indirection_table_mask = vi->rss_indir_table_size
+	vi->rss.indirection_table_mask = vi->rss_indir_table_size
 						? vi->rss_indir_table_size - 1 : 0;
-	vi->ctrl->rss.unclassified_queue = 0;
+	vi->rss.unclassified_queue = 0;
 
 	for (; i < vi->rss_indir_table_size; ++i) {
 		indir_val = ethtool_rxfh_indir_default(i, vi->curr_queue_pairs);
-		vi->ctrl->rss.indirection_table[i] = indir_val;
+		vi->rss.indirection_table[i] = indir_val;
 	}
 
-	vi->ctrl->rss.max_tx_vq = vi->has_rss ? vi->curr_queue_pairs : 0;
-	vi->ctrl->rss.hash_key_length = vi->rss_key_size;
+	vi->rss.max_tx_vq = vi->has_rss ? vi->curr_queue_pairs : 0;
+	vi->rss.hash_key_length = vi->rss_key_size;
 
-	netdev_rss_key_fill(vi->ctrl->rss.key, vi->rss_key_size);
+	netdev_rss_key_fill(vi->rss.key, vi->rss_key_size);
 }
 
 static void virtnet_get_hashflow(const struct virtnet_info *vi, struct ethtool_rxnfc *info)
@@ -2686,7 +3259,7 @@ static bool virtnet_set_hashflow(struct virtnet_info *vi, struct ethtool_rxnfc *
 
 	if (new_hashtypes != vi->rss_hash_types_saved) {
 		vi->rss_hash_types_saved = new_hashtypes;
-		vi->ctrl->rss.hash_types = vi->rss_hash_types_saved;
+		vi->rss.hash_types = vi->rss_hash_types_saved;
 		if (vi->dev->features & NETIF_F_RXHASH)
 			return virtnet_commit_rss_command(vi);
 	}
@@ -2731,7 +3304,7 @@ static int virtnet_set_channels(struct net_device *dev,
 		return -EINVAL;
 
 	get_online_cpus();
-	err = _virtnet_set_queues(vi, queue_pairs);
+	err = virtnet_set_queues(vi, queue_pairs);
 	if (err) {
 		put_online_cpus();
 		goto err;
@@ -2745,29 +3318,522 @@ static int virtnet_set_channels(struct net_device *dev,
 	return err;
 }
 
+static void virtnet_stats_sprintf(u8 **p, const char *fmt, const char *noq_fmt,
+				  int num, int qid, const struct virtnet_stat_desc *desc)
+{
+	int i;
+
+	if (qid < 0) {
+		for (i = 0; i < num; ++i)
+			ethtool_sprintf(p, noq_fmt, desc[i].desc);
+	} else {
+		for (i = 0; i < num; ++i)
+			ethtool_sprintf(p, fmt, qid, desc[i].desc);
+	}
+}
+
+/* qid == -1: for rx/tx queue total field */
+static void virtnet_get_stats_string(struct virtnet_info *vi, int type, int qid, u8 **data)
+{
+	const struct virtnet_stat_desc *desc;
+	const char *fmt, *noq_fmt;
+	u8 *p = *data;
+	u32 num;
+
+	if (type == VIRTNET_Q_TYPE_CQ && qid >= 0) {
+		noq_fmt = "cq_hw_%s";
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_CVQ) {
+			desc = &virtnet_stats_cvq_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_cvq_desc);
+
+			virtnet_stats_sprintf(&p, NULL, noq_fmt, num, -1, desc);
+		}
+	}
+
+	if (type == VIRTNET_Q_TYPE_RX) {
+		fmt = "rx%u_%s";
+		noq_fmt = "rx_%s";
+
+		desc = &virtnet_rq_stats_desc[0];
+		num = ARRAY_SIZE(virtnet_rq_stats_desc);
+
+		virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+
+		fmt = "rx%u_hw_%s";
+		noq_fmt = "rx_hw_%s";
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_BASIC) {
+			desc = &virtnet_stats_rx_basic_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_rx_basic_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_CSUM) {
+			desc = &virtnet_stats_rx_csum_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_rx_csum_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_GSO) {
+			desc = &virtnet_stats_rx_gso_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_rx_gso_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_SPEED) {
+			desc = &virtnet_stats_rx_speed_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_rx_speed_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+	}
+
+	if (type == VIRTNET_Q_TYPE_TX) {
+		fmt = "tx%u_%s";
+		noq_fmt = "tx_%s";
+
+		desc = &virtnet_sq_stats_desc[0];
+		num = ARRAY_SIZE(virtnet_sq_stats_desc);
+
+		virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+
+		fmt = "tx%u_hw_%s";
+		noq_fmt = "tx_hw_%s";
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_BASIC) {
+			desc = &virtnet_stats_tx_basic_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_tx_basic_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_CSUM) {
+			desc = &virtnet_stats_tx_csum_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_tx_csum_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_GSO) {
+			desc = &virtnet_stats_tx_gso_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_tx_gso_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+
+		if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_SPEED) {
+			desc = &virtnet_stats_tx_speed_desc[0];
+			num = ARRAY_SIZE(virtnet_stats_tx_speed_desc);
+
+			virtnet_stats_sprintf(&p, fmt, noq_fmt, num, qid, desc);
+		}
+	}
+
+	*data = p;
+}
+
+struct virtnet_stats_ctx {
+	/* Used to calculate the offset inside the output buffer. */
+	u32 desc_num[3];
+
+	/* The actual supported stat types. */
+	u32 bitmap[3];
+
+	/* Used to calculate the reply buffer size. */
+	u32 size[3];
+
+	/* Record the output buffer. */
+	u64 *data;
+};
+
+static void virtnet_stats_ctx_init(struct virtnet_info *vi,
+				   struct virtnet_stats_ctx *ctx,
+				   u64 *data)
+{
+	u32 queue_type;
+
+	ctx->data = data;
+
+	ctx->desc_num[VIRTNET_Q_TYPE_RX] = ARRAY_SIZE(virtnet_rq_stats_desc);
+	ctx->desc_num[VIRTNET_Q_TYPE_TX] = ARRAY_SIZE(virtnet_sq_stats_desc);
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_CVQ) {
+		queue_type = VIRTNET_Q_TYPE_CQ;
+
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_CVQ;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_cvq_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_cvq);
+	}
+
+	queue_type = VIRTNET_Q_TYPE_RX;
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_BASIC) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_RX_BASIC;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_rx_basic_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_rx_basic);
+	}
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_CSUM) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_RX_CSUM;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_rx_csum_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_rx_csum);
+	}
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_GSO) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_RX_GSO;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_rx_gso_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_rx_gso);
+	}
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_RX_SPEED) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_RX_SPEED;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_rx_speed_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_rx_speed);
+	}
+
+	queue_type = VIRTNET_Q_TYPE_TX;
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_BASIC) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_TX_BASIC;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_tx_basic_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_tx_basic);
+	}
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_CSUM) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_TX_CSUM;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_tx_csum_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_tx_csum);
+	}
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_GSO) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_TX_GSO;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_tx_gso_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_tx_gso);
+	}
+
+	if (vi->device_stats_cap & VIRTIO_NET_STATS_TYPE_TX_SPEED) {
+		ctx->bitmap[queue_type]   |= VIRTIO_NET_STATS_TYPE_TX_SPEED;
+		ctx->desc_num[queue_type] += ARRAY_SIZE(virtnet_stats_tx_speed_desc);
+		ctx->size[queue_type]     += sizeof(struct virtio_net_stats_tx_speed);
+	}
+}
+
+/* stats_sum_queue - Calculate the sum of the same fields in sq or rq.
+ * @sum: the position to store the sum values
+ * @num: field num
+ * @q_value: the first queue fields
+ * @q_num: number of the queues
+ */
+static void stats_sum_queue(u64 *sum, u32 num, u64 *q_value, u32 q_num)
+{
+	u32 step = num;
+	int i, j;
+	u64 *p;
+
+	for (i = 0; i < num; ++i) {
+		p = sum + i;
+		*p = 0;
+
+		for (j = 0; j < q_num; ++j)
+			*p += *(q_value + i + j * step);
+	}
+}
+
+static void virtnet_fill_total_fields(struct virtnet_info *vi,
+				      struct virtnet_stats_ctx *ctx)
+{
+	u64 *data, *first_rx_q, *first_tx_q;
+	u32 num_cq, num_rx, num_tx;
+
+	num_cq = ctx->desc_num[VIRTNET_Q_TYPE_CQ];
+	num_rx = ctx->desc_num[VIRTNET_Q_TYPE_RX];
+	num_tx = ctx->desc_num[VIRTNET_Q_TYPE_TX];
+
+	first_rx_q = ctx->data + num_rx + num_tx + num_cq;
+	first_tx_q = first_rx_q + vi->curr_queue_pairs * num_rx;
+
+	data = ctx->data;
+
+	stats_sum_queue(data, num_rx, first_rx_q, vi->curr_queue_pairs);
+
+	data = ctx->data + num_rx;
+
+	stats_sum_queue(data, num_tx, first_tx_q, vi->curr_queue_pairs);
+}
+
+/* virtnet_fill_stats - copy the stats to ethtool -S
+ * The stats source is the device or the driver.
+ *
+ * @vi: virtio net info
+ * @qid: the vq id
+ * @ctx: stats ctx (initiated by virtnet_stats_ctx_init())
+ * @base: pointer to the device reply or the driver stats structure.
+ * @drv_stats: designate the base type (device reply, driver stats)
+ * @type: the type of the device reply (if drv_stats is true, this must be zero)
+ */
+static void virtnet_fill_stats(struct virtnet_info *vi, u32 qid,
+			       struct virtnet_stats_ctx *ctx,
+			       const u8 *base, bool drv_stats, u8 reply_type)
+{
+	u32 queue_type, num_rx, num_tx, num_cq;
+	const struct virtnet_stat_desc *desc;
+	const u64_stats_t *v_stat;
+	u64 offset, bitmap;
+	const __le64 *v;
+	int i, num;
+
+	num_cq = ctx->desc_num[VIRTNET_Q_TYPE_CQ];
+	num_rx = ctx->desc_num[VIRTNET_Q_TYPE_RX];
+	num_tx = ctx->desc_num[VIRTNET_Q_TYPE_TX];
+
+	queue_type = vq_type(vi, qid);
+	bitmap = ctx->bitmap[queue_type];
+
+	/* skip the total fields of pairs */
+	offset = num_rx + num_tx;
+
+	if (queue_type == VIRTNET_Q_TYPE_TX) {
+		offset += num_cq + num_rx * vi->curr_queue_pairs + num_tx * (qid / 2);
+
+		num = ARRAY_SIZE(virtnet_sq_stats_desc);
+		if (drv_stats) {
+			desc = &virtnet_sq_stats_desc[0];
+			goto drv_stats;
+		}
+
+		offset += num;
+
+	} else if (queue_type == VIRTNET_Q_TYPE_RX) {
+		offset += num_cq + num_rx * (qid / 2);
+
+		num = ARRAY_SIZE(virtnet_rq_stats_desc);
+		if (drv_stats) {
+			desc = &virtnet_rq_stats_desc[0];
+			goto drv_stats;
+		}
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_CVQ) {
+		desc = &virtnet_stats_cvq_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_cvq_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_CVQ)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_RX_BASIC) {
+		desc = &virtnet_stats_rx_basic_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_rx_basic_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_RX_BASIC)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_RX_CSUM) {
+		desc = &virtnet_stats_rx_csum_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_rx_csum_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_RX_CSUM)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_RX_GSO) {
+		desc = &virtnet_stats_rx_gso_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_rx_gso_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_RX_GSO)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_RX_SPEED) {
+		desc = &virtnet_stats_rx_speed_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_rx_speed_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_RX_SPEED)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_TX_BASIC) {
+		desc = &virtnet_stats_tx_basic_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_tx_basic_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_TX_BASIC)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_TX_CSUM) {
+		desc = &virtnet_stats_tx_csum_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_tx_csum_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_TX_CSUM)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_TX_GSO) {
+		desc = &virtnet_stats_tx_gso_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_tx_gso_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_TX_GSO)
+			goto found;
+
+		offset += num;
+	}
+
+	if (bitmap & VIRTIO_NET_STATS_TYPE_TX_SPEED) {
+		desc = &virtnet_stats_tx_speed_desc[0];
+		num = ARRAY_SIZE(virtnet_stats_tx_speed_desc);
+		if (reply_type == VIRTIO_NET_STATS_TYPE_REPLY_TX_SPEED)
+			goto found;
+
+		offset += num;
+	}
+
+	return;
+
+found:
+	for (i = 0; i < num; ++i) {
+		v = (const __le64 *)(base + desc[i].offset);
+		ctx->data[offset + i] = le64_to_cpu(*v);
+	}
+
+	return;
+
+drv_stats:
+	for (i = 0; i < num; ++i) {
+		v_stat = (const u64_stats_t *)(base + desc[i].offset);
+		ctx->data[offset + i] = u64_stats_read(v_stat);
+	}
+}
+
+static int __virtnet_get_hw_stats(struct virtnet_info *vi,
+				  struct virtnet_stats_ctx *ctx,
+				  struct virtio_net_ctrl_queue_stats *req,
+				  int req_size, void *reply, int res_size)
+{
+	struct virtio_net_stats_reply_hdr *hdr;
+	struct scatterlist sgs_in, sgs_out;
+	void *p;
+	u32 qid;
+	int ok;
+
+	sg_init_one(&sgs_out, req, req_size);
+	sg_init_one(&sgs_in, reply, res_size);
+
+	ok = virtnet_send_command_reply(vi, VIRTIO_NET_CTRL_STATS,
+					VIRTIO_NET_CTRL_STATS_GET,
+					&sgs_out, &sgs_in);
+
+	if (!ok)
+		return ok;
+
+	for (p = reply; p - reply < res_size; p += le16_to_cpu(hdr->size)) {
+		hdr = p;
+		qid = le16_to_cpu(hdr->vq_index);
+		virtnet_fill_stats(vi, qid, ctx, p, false, hdr->type);
+	}
+
+	return 0;
+}
+
+static void virtnet_make_stat_req(struct virtnet_info *vi,
+				  struct virtnet_stats_ctx *ctx,
+				  struct virtio_net_ctrl_queue_stats *req,
+				  int qid, int *idx)
+{
+	int qtype = vq_type(vi, qid);
+	u64 bitmap = ctx->bitmap[qtype];
+
+	if (!bitmap)
+		return;
+
+	req->stats[*idx].vq_index = cpu_to_le16(qid);
+	req->stats[*idx].types_bitmap[0] = cpu_to_le64(bitmap);
+	*idx += 1;
+}
+
+static int virtnet_get_hw_stats(struct virtnet_info *vi,
+				struct virtnet_stats_ctx *ctx)
+{
+	struct virtio_net_ctrl_queue_stats *req;
+	int qnum, i, j, res_size, qtype, last_vq;
+	void *reply;
+	int ok;
+
+	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_DEVICE_STATS))
+		return 0;
+
+	last_vq = vi->curr_queue_pairs * 2 - 1;
+
+	qnum = 0;
+	res_size = 0;
+	for (i = 0; i <= last_vq ; ++i) {
+		qtype = vq_type(vi, i);
+		if (ctx->bitmap[qtype]) {
+			++qnum;
+			res_size += ctx->size[qtype];
+		}
+	}
+
+	if (ctx->bitmap[VIRTNET_Q_TYPE_CQ]) {
+		res_size += ctx->size[VIRTNET_Q_TYPE_CQ];
+		qnum += 1;
+	}
+
+	req = kcalloc(qnum, sizeof(*req), GFP_KERNEL);
+	if (!req)
+		return -ENOMEM;
+
+	reply = kmalloc(res_size, GFP_KERNEL);
+	if (!reply) {
+		kfree(req);
+		return -ENOMEM;
+	}
+
+	j = 0;
+	for (i = 0; i <= last_vq ; ++i)
+		virtnet_make_stat_req(vi, ctx, req, i, &j);
+
+	virtnet_make_stat_req(vi, ctx, req, vi->max_queue_pairs * 2, &j);
+
+	ok = __virtnet_get_hw_stats(vi, ctx, req, sizeof(*req) * j, reply, res_size);
+
+	kfree(req);
+	kfree(reply);
+
+	return ok;
+}
+
 static void virtnet_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
-	char *p = (char *)data;
-	unsigned int i, j;
+	unsigned int i;
+	u8 *p = data;
 
 	switch (stringset) {
 	case ETH_SS_STATS:
-		for (i = 0; i < vi->curr_queue_pairs; i++) {
-			for (j = 0; j < VIRTNET_RQ_STATS_LEN; j++) {
-				snprintf(p, ETH_GSTRING_LEN, "rx_queue_%u_%s",
-					 i, virtnet_rq_stats_desc[j].desc);
-				p += ETH_GSTRING_LEN;
-			}
-		}
+		/* Generate the total field names. */
+		virtnet_get_stats_string(vi, VIRTNET_Q_TYPE_RX, -1, &p);
+		virtnet_get_stats_string(vi, VIRTNET_Q_TYPE_TX, -1, &p);
 
-		for (i = 0; i < vi->curr_queue_pairs; i++) {
-			for (j = 0; j < VIRTNET_SQ_STATS_LEN; j++) {
-				snprintf(p, ETH_GSTRING_LEN, "tx_queue_%u_%s",
-					 i, virtnet_sq_stats_desc[j].desc);
-				p += ETH_GSTRING_LEN;
-			}
-		}
+		virtnet_get_stats_string(vi, VIRTNET_Q_TYPE_CQ, 0, &p);
+
+		for (i = 0; i < vi->curr_queue_pairs; ++i)
+			virtnet_get_stats_string(vi, VIRTNET_Q_TYPE_RX, i, &p);
+
+		for (i = 0; i < vi->curr_queue_pairs; ++i)
+			virtnet_get_stats_string(vi, VIRTNET_Q_TYPE_TX, i, &p);
 		break;
 	}
 }
@@ -2775,11 +3841,17 @@ static void virtnet_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 static int virtnet_get_sset_count(struct net_device *dev, int sset)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
+	struct virtnet_stats_ctx ctx = {0};
+	u32 pair_count;
 
 	switch (sset) {
 	case ETH_SS_STATS:
-		return vi->curr_queue_pairs * (VIRTNET_RQ_STATS_LEN +
-					       VIRTNET_SQ_STATS_LEN);
+		virtnet_stats_ctx_init(vi, &ctx, NULL);
+
+		pair_count = ctx.desc_num[VIRTNET_Q_TYPE_RX] + ctx.desc_num[VIRTNET_Q_TYPE_TX];
+
+		return pair_count + ctx.desc_num[VIRTNET_Q_TYPE_CQ] +
+			vi->curr_queue_pairs * pair_count;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -2789,40 +3861,32 @@ static void virtnet_get_ethtool_stats(struct net_device *dev,
 				      struct ethtool_stats *stats, u64 *data)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
-	unsigned int idx = 0, start, i, j;
+	struct virtnet_stats_ctx ctx = {0};
+	unsigned int start, i;
 	const u8 *stats_base;
-	const u64_stats_t *p;
-	size_t offset;
+
+	virtnet_stats_ctx_init(vi, &ctx, data);
+	if (virtnet_get_hw_stats(vi, &ctx))
+		dev_warn(&vi->dev->dev, "Failed to get hw stats.\n");
 
 	for (i = 0; i < vi->curr_queue_pairs; i++) {
 		struct receive_queue *rq = &vi->rq[i];
+		struct send_queue *sq = &vi->sq[i];
 
 		stats_base = (const u8 *)&rq->stats;
 		do {
-			start = u64_stats_fetch_begin_irq(&rq->stats.syncp);
-			for (j = 0; j < VIRTNET_RQ_STATS_LEN; j++) {
-				offset = virtnet_rq_stats_desc[j].offset;
-				p = (const u64_stats_t *)(stats_base + offset);
-				data[idx + j] = u64_stats_read(p);
-			}
-		} while (u64_stats_fetch_retry_irq(&rq->stats.syncp, start));
-		idx += VIRTNET_RQ_STATS_LEN;
-	}
-
-	for (i = 0; i < vi->curr_queue_pairs; i++) {
-		struct send_queue *sq = &vi->sq[i];
+			start = u64_stats_fetch_begin(&rq->stats.syncp);
+			virtnet_fill_stats(vi, i * 2, &ctx, stats_base, true, 0);
+		} while (u64_stats_fetch_retry(&rq->stats.syncp, start));
 
 		stats_base = (const u8 *)&sq->stats;
 		do {
-			start = u64_stats_fetch_begin_irq(&sq->stats.syncp);
-			for (j = 0; j < VIRTNET_SQ_STATS_LEN; j++) {
-				offset = virtnet_sq_stats_desc[j].offset;
-				p = (const u64_stats_t *)(stats_base + offset);
-				data[idx + j] = u64_stats_read(p);
-			}
-		} while (u64_stats_fetch_retry_irq(&sq->stats.syncp, start));
-		idx += VIRTNET_SQ_STATS_LEN;
+			start = u64_stats_fetch_begin(&sq->stats.syncp);
+			virtnet_fill_stats(vi, i * 2 + 1, &ctx, stats_base, true, 0);
+		} while (u64_stats_fetch_retry(&sq->stats.syncp, start));
 	}
+
+	virtnet_fill_total_fields(vi, &ctx);
 }
 
 static void virtnet_get_channels(struct net_device *dev,
@@ -2862,17 +3926,24 @@ static int virtnet_get_link_ksettings(struct net_device *dev,
 static int virtnet_send_tx_notf_coal_cmds(struct virtnet_info *vi,
 					  struct ethtool_coalesce *ec)
 {
+	struct virtio_net_ctrl_coal_tx *coal_tx = NULL;
 	struct scatterlist sgs_tx;
-	int i;
+	int i, ret = 0;
 
-	vi->ctrl->coal_tx.tx_usecs = cpu_to_le32(ec->tx_coalesce_usecs);
-	vi->ctrl->coal_tx.tx_max_packets = cpu_to_le32(ec->tx_max_coalesced_frames);
-	sg_init_one(&sgs_tx, &vi->ctrl->coal_tx, sizeof(vi->ctrl->coal_tx));
+	coal_tx = kzalloc(sizeof(*coal_tx), GFP_KERNEL);
+	if (!coal_tx)
+		return -ENOMEM;
+
+	coal_tx->tx_usecs = cpu_to_le32(ec->tx_coalesce_usecs);
+	coal_tx->tx_max_packets = cpu_to_le32(ec->tx_max_coalesced_frames);
+	sg_init_one(&sgs_tx, coal_tx, sizeof(*coal_tx));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_NOTF_COAL,
 				  VIRTIO_NET_CTRL_NOTF_COAL_TX_SET,
-				  &sgs_tx))
-		return -EINVAL;
+				  &sgs_tx)) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	vi->intr_coal_tx.max_usecs = ec->tx_coalesce_usecs;
 	vi->intr_coal_tx.max_packets = ec->tx_max_coalesced_frames;
@@ -2881,15 +3952,18 @@ static int virtnet_send_tx_notf_coal_cmds(struct virtnet_info *vi,
 		vi->sq[i].intr_coal.max_packets = ec->tx_max_coalesced_frames;
 	}
 
-	return 0;
+out:
+	kfree(coal_tx);
+	return ret;
 }
 
 static int virtnet_send_rx_notf_coal_cmds(struct virtnet_info *vi,
 					  struct ethtool_coalesce *ec)
 {
 	bool rx_ctrl_dim_on = !!ec->use_adaptive_rx_coalesce;
+	struct virtio_net_ctrl_coal_rx *coal_rx = NULL;
 	struct scatterlist sgs_rx;
-	int i;
+	int i, ret = 0;
 
 	if (rx_ctrl_dim_on && !virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL))
 		return -EOPNOTSUPP;
@@ -2905,6 +3979,10 @@ static int virtnet_send_rx_notf_coal_cmds(struct virtnet_info *vi,
 		return 0;
 	}
 
+	coal_rx = kzalloc(sizeof(*coal_rx), GFP_KERNEL);
+	if (!coal_rx)
+		return -ENOMEM;
+
 	if (!rx_ctrl_dim_on && vi->rx_dim_enabled) {
 		vi->rx_dim_enabled = false;
 		for (i = 0; i < vi->max_queue_pairs; i++)
@@ -2915,14 +3993,16 @@ static int virtnet_send_rx_notf_coal_cmds(struct virtnet_info *vi,
 	 * we need apply the global new params even if they
 	 * are not updated.
 	 */
-	vi->ctrl->coal_rx.rx_usecs = cpu_to_le32(ec->rx_coalesce_usecs);
-	vi->ctrl->coal_rx.rx_max_packets = cpu_to_le32(ec->rx_max_coalesced_frames);
-	sg_init_one(&sgs_rx, &vi->ctrl->coal_rx, sizeof(vi->ctrl->coal_rx));
+	coal_rx->rx_usecs = cpu_to_le32(ec->rx_coalesce_usecs);
+	coal_rx->rx_max_packets = cpu_to_le32(ec->rx_max_coalesced_frames);
+	sg_init_one(&sgs_rx, coal_rx, sizeof(*coal_rx));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_NOTF_COAL,
 				  VIRTIO_NET_CTRL_NOTF_COAL_RX_SET,
-				  &sgs_rx))
-		return -EINVAL;
+				  &sgs_rx)) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	vi->intr_coal_rx.max_usecs = ec->rx_coalesce_usecs;
 	vi->intr_coal_rx.max_packets = ec->rx_max_coalesced_frames;
@@ -2931,7 +4011,9 @@ static int virtnet_send_rx_notf_coal_cmds(struct virtnet_info *vi,
 		vi->rq[i].intr_coal.max_packets = ec->rx_max_coalesced_frames;
 	}
 
-	return 0;
+out:
+	kfree(coal_rx);
+	return ret;
 }
 
 static int virtnet_send_notf_coal_cmds(struct virtnet_info *vi,
@@ -2955,10 +4037,11 @@ static int virtnet_send_rx_notf_coal_vq_cmds(struct virtnet_info *vi,
 					     u16 queue)
 {
 	bool rx_ctrl_dim_on = !!ec->use_adaptive_rx_coalesce;
-	bool cur_rx_dim = vi->rq[queue].dim_enabled;
 	u32 max_usecs, max_packets;
+	bool cur_rx_dim;
 	int err;
 
+	cur_rx_dim = vi->rq[queue].dim_enabled;
 	max_usecs = vi->rq[queue].intr_coal.max_usecs;
 	max_packets = vi->rq[queue].intr_coal.max_packets;
 
@@ -2980,10 +4063,7 @@ static int virtnet_send_rx_notf_coal_vq_cmds(struct virtnet_info *vi,
 	err = virtnet_send_rx_ctrl_coal_vq_cmd(vi, queue,
 					       ec->rx_coalesce_usecs,
 					       ec->rx_max_coalesced_frames);
-	if (err)
-		return err;
-
-	return 0;
+	return err;
 }
 
 static int virtnet_send_notf_coal_vq_cmds(struct virtnet_info *vi,
@@ -3005,47 +4085,52 @@ static int virtnet_send_notf_coal_vq_cmds(struct virtnet_info *vi,
 	return 0;
 }
 
+static struct virtnet_coal_node *virtnet_wait_space(struct virtnet_info *vi)
+{
+	struct virtnet_coal_node *node;
+	bool no_free_node = true;
+
+	while (no_free_node) {
+		mutex_lock(&vi->coal_free_lock);
+		if (!list_empty(&vi->coal_free_list)) {
+			no_free_node = false;
+			node = list_first_entry(&vi->coal_free_list,
+						struct virtnet_coal_node,
+						list);
+			list_del(&node->list);
+		}
+		mutex_unlock(&vi->coal_free_lock);
+		if (no_free_node)
+			usleep_range(1000, 2000);
+	}
+
+	return node;
+}
+
 static void virtnet_rx_dim_work(struct work_struct *work)
 {
 	struct dim *dim = container_of(work, struct dim, work);
 	struct receive_queue *rq = container_of(dim,
 			struct receive_queue, dim);
 	struct virtnet_info *vi = rq->vq->vdev->priv;
-	struct net_device *dev = vi->dev;
+	struct virtnet_coal_node *avail_coal;
 	struct dim_cq_moder update_moder;
-	int i, qnum, err;
 
-	if (!rtnl_trylock())
+	if (!rq->dim_enabled ||
+	    (update_moder.usec == rq->intr_coal.max_usecs &&
+	     update_moder.pkts == rq->intr_coal.max_packets)) {
+		rq->dim.state = DIM_START_MEASURE;
 		return;
-
-	/* Each rxq's work is queued by "net_dim()->schedule_work()"
-	 * in response to NAPI traffic changes. Note that dim->profile_ix
-	 * for each rxq is updated prior to the queuing action.
-	 * So we only need to traverse and update profiles for all rxqs
-	 * in the work which is holding rtnl_lock.
-	 */
-	for (i = 0; i < vi->curr_queue_pairs; i++) {
-		rq = &vi->rq[i];
-		dim = &rq->dim;
-		qnum = rq - vi->rq;
-
-		if (!rq->dim_enabled)
-			continue;
-
-		update_moder = net_dim_get_rx_moderation(dim->mode, dim->profile_ix);
-		if (update_moder.usec != rq->intr_coal.max_usecs ||
-		    update_moder.pkts != rq->intr_coal.max_packets) {
-			err = virtnet_send_rx_ctrl_coal_vq_cmd(vi, qnum,
-							       update_moder.usec,
-							       update_moder.pkts);
-			if (err)
-				pr_debug("%s: Failed to send dim parameters on rxq%d\n",
-					 dev->name, qnum);
-			dim->state = DIM_START_MEASURE;
-		}
 	}
 
-	rtnl_unlock();
+	update_moder = net_dim_get_rx_irq_moder(vi->dev, dim);
+
+	avail_coal = virtnet_wait_space(vi);
+	avail_coal->coal_vqs.vqn = cpu_to_le16(rxq2vq(rq - vi->rq));
+	avail_coal->coal_vqs.coal.max_usecs = cpu_to_le32(update_moder.usec);
+	avail_coal->coal_vqs.coal.max_packets = cpu_to_le32(update_moder.pkts);
+
+	virtnet_add_dim_command(vi, avail_coal);
 }
 
 static int virtnet_coal_params_supported(struct ethtool_coalesce *ec)
@@ -3059,6 +4144,47 @@ static int virtnet_coal_params_supported(struct ethtool_coalesce *ec)
 	if (ec->tx_max_coalesced_frames > 1 ||
 	    ec->rx_max_coalesced_frames != 1)
 		return -EINVAL;
+
+	return 0;
+}
+
+static void virtnet_del_coal_free_list(struct virtnet_info *vi)
+{
+	struct virtnet_coal_node *coal_node, *tmp;
+
+	list_for_each_entry_safe(coal_node, tmp, &vi->coal_free_list, list) {
+		list_del(&coal_node->list);
+		kfree(coal_node);
+	}
+}
+
+static int virtnet_init_coal_list(struct virtnet_info *vi)
+{
+	struct virtnet_coal_node *coal_node;
+	int batch_dim_nums;
+	int i;
+
+	INIT_LIST_HEAD(&vi->coal_free_list);
+	mutex_init(&vi->coal_free_lock);
+
+	INIT_DELAYED_WORK(&vi->get_cvq, virtnet_get_cvq_work);
+
+	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL))
+		return 0;
+
+	enable_get_cvq_work(vi);
+
+	vi->dim_cmd_nums = 0;
+	batch_dim_nums = min((unsigned int)vi->max_queue_pairs,
+			     virtqueue_get_vring_size(vi->cvq) / 3);
+	for (i = 0; i < batch_dim_nums; i++) {
+		coal_node = kzalloc(sizeof(*coal_node), GFP_KERNEL);
+		if (!coal_node) {
+			virtnet_del_coal_free_list(vi);
+			return -ENOMEM;
+		}
+		list_add(&coal_node->list, &vi->coal_free_list);
+	}
 
 	return 0;
 }
@@ -3238,11 +4364,11 @@ static int virtnet_get_rxfh(struct net_device *dev, u32 *indir, u8 *key, u8 *hfu
 
 	if (indir) {
 		for (i = 0; i < vi->rss_indir_table_size; ++i)
-			indir[i] = vi->ctrl->rss.indirection_table[i];
+			indir[i] = vi->rss.indirection_table[i];
 	}
 
 	if (key)
-		memcpy(key, vi->ctrl->rss.key, vi->rss_key_size);
+		memcpy(key, vi->rss.key, vi->rss_key_size);
 
 	if (hfunc)
 		*hfunc = ETH_RSS_HASH_TOP;
@@ -3253,19 +4379,35 @@ static int virtnet_get_rxfh(struct net_device *dev, u32 *indir, u8 *key, u8 *hfu
 static int virtnet_set_rxfh(struct net_device *dev, const u32 *indir, const u8 *key, const u8 hfunc)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
+	bool update = false;
 	int i;
 
 	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
 	if (indir) {
-		for (i = 0; i < vi->rss_indir_table_size; ++i)
-			vi->ctrl->rss.indirection_table[i] = indir[i];
-	}
-	if (key)
-		memcpy(vi->ctrl->rss.key, key, vi->rss_key_size);
+		if (!vi->has_rss)
+			return -EOPNOTSUPP;
 
-	virtnet_commit_rss_command(vi);
+		for (i = 0; i < vi->rss_indir_table_size; ++i)
+			vi->rss.indirection_table[i] = indir[i];
+		update = true;
+	}
+
+	if (key) {
+		/* If either _F_HASH_REPORT or _F_RSS are negotiated, the
+		 * device provides hash calculation capabilities, that is,
+		 * hash_key is configured.
+		 */
+		if (!vi->has_rss && !vi->has_rss_hash_report)
+			return -EOPNOTSUPP;
+
+		memcpy(vi->rss.key, key, vi->rss_key_size);
+		update = true;
+	}
+
+	if (update)
+		virtnet_commit_rss_command(vi);
 
 	return 0;
 }
@@ -3313,6 +4455,7 @@ static const struct ethtool_ops virtnet_ethtool_ops = {
 	.get_drvinfo = virtnet_get_drvinfo,
 	.get_link = ethtool_op_get_link,
 	.get_ringparam = virtnet_get_ringparam,
+	.set_ringparam = virtnet_set_ringparam,
 	.get_strings = virtnet_get_strings,
 	.get_sset_count = virtnet_get_sset_count,
 	.get_ethtool_stats = virtnet_get_ethtool_stats,
@@ -3339,6 +4482,10 @@ static void virtnet_freeze_down(struct virtio_device *vdev)
 
 	/* Make sure no work handler is accessing the device */
 	flush_work(&vi->config_work);
+	disable_rx_mode_work(vi);
+	flush_work(&vi->rx_mode_work);
+	disable_get_cvq_work(vi);
+	flush_delayed_work(&vi->get_cvq);
 
 	netif_tx_lock_bh(vi->dev);
 	netif_device_detach(vi->dev);
@@ -3360,6 +4507,10 @@ static int virtnet_restore_up(struct virtio_device *vdev)
 
 	virtio_device_ready(vdev);
 
+	enable_delayed_refill(vi);
+	enable_rx_mode_work(vi);
+	enable_get_cvq_work(vi);
+
 	if (netif_running(vi->dev)) {
 		err = virtnet_open(vi->dev);
 		if (err)
@@ -3374,18 +4525,26 @@ static int virtnet_restore_up(struct virtio_device *vdev)
 
 static int virtnet_set_guest_offloads(struct virtnet_info *vi, u64 offloads)
 {
+	__virtio64 *_offloads = NULL;
 	struct scatterlist sg;
-	vi->ctrl->offloads = cpu_to_virtio64(vi->vdev, offloads);
+	int ret = 0;
 
-	sg_init_one(&sg, &vi->ctrl->offloads, sizeof(vi->ctrl->offloads));
+	_offloads = kzalloc(sizeof(*_offloads), GFP_KERNEL);
+	if (!_offloads)
+		return -ENOMEM;
+
+	*_offloads = cpu_to_virtio64(vi->vdev, offloads);
+
+	sg_init_one(&sg, _offloads, sizeof(*_offloads));
 
 	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_GUEST_OFFLOADS,
 				  VIRTIO_NET_CTRL_GUEST_OFFLOADS_SET, &sg)) {
 		dev_warn(&vi->dev->dev, "Fail to set guest offload.\n");
-		return -EINVAL;
+		ret = -EINVAL;
 	}
 
-	return 0;
+	kfree(_offloads);
+	return ret;
 }
 
 static int virtnet_clear_guest_offloads(struct virtnet_info *vi)
@@ -3475,7 +4634,7 @@ static int virtnet_xdp_set(struct net_device *dev, struct bpf_prog *prog,
 		synchronize_net();
 	}
 
-	err = _virtnet_set_queues(vi, curr_qp + xdp_qp);
+	err = virtnet_set_queues(vi, curr_qp + xdp_qp);
 	if (err)
 		goto err;
 	netif_set_real_num_rx_queues(dev, curr_qp + xdp_qp);
@@ -3921,9 +5080,9 @@ static int virtnet_set_features(struct net_device *dev,
 
 	if ((dev->features ^ features) & NETIF_F_RXHASH) {
 		if (features & NETIF_F_RXHASH)
-			vi->ctrl->rss.hash_types = vi->rss_hash_types_saved;
+			vi->rss.hash_types = vi->rss_hash_types_saved;
 		else
-			vi->ctrl->rss.hash_types = VIRTIO_NET_HASH_REPORT_NONE;
+			vi->rss.hash_types = VIRTIO_NET_HASH_REPORT_NONE;
 
 		if (!virtnet_commit_rss_command(vi))
 			return -EINVAL;
@@ -3952,6 +5111,36 @@ static void virtnet_tx_timeout(struct net_device *dev, unsigned int txqueue)
 			    i, sq->name, sq->vq->index, sq->vq->name,
 			    jiffies_to_usecs(jiffies - dev_queue->trans_start));
 	}
+}
+
+static int virtnet_init_irq_moder(struct virtnet_info *vi)
+{
+	u8 profile_flags = 0, coal_flags = 0;
+	int ret, i;
+
+	profile_flags |= DIM_PROFILE_RX;
+	coal_flags |= DIM_COALESCE_USEC | DIM_COALESCE_PKTS;
+	ret = net_dim_init_irq_moder(vi->dev, profile_flags, coal_flags,
+				     DIM_CQ_PERIOD_MODE_START_FROM_EQE,
+				     0, virtnet_rx_dim_work, NULL);
+
+	if (ret)
+		return ret;
+
+	for (i = 0; i < vi->max_queue_pairs; i++)
+		net_dim_setting(vi->dev, &vi->rq[i].dim, false);
+
+	return 0;
+}
+
+static void virtnet_free_irq_moder(struct virtnet_info *vi)
+{
+	if (!virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL))
+		return;
+
+	rtnl_lock();
+	net_dim_free_irq_moder(vi->dev);
+	rtnl_unlock();
 }
 
 static const struct net_device_ops virtnet_netdev = {
@@ -4150,10 +5339,11 @@ static int virtnet_find_vqs(struct virtnet_info *vi)
 {
 	vq_callback_t **callbacks;
 	struct virtqueue **vqs;
-	int ret = -ENOMEM;
-	int i, total_vqs;
 	const char **names;
+	int ret = -ENOMEM;
+	int total_vqs;
 	bool *ctx;
+	u16 i;
 
 	/* We expect 1 RX virtqueue followed by 1 TX virtqueue, followed by
 	 * possible N-1 RX/TX queue pairs used in multiqueue mode, followed by
@@ -4190,8 +5380,8 @@ static int virtnet_find_vqs(struct virtnet_info *vi)
 	for (i = 0; i < vi->max_queue_pairs; i++) {
 		callbacks[rxq2vq(i)] = skb_recv_done;
 		callbacks[txq2vq(i)] = skb_xmit_done;
-		sprintf(vi->rq[i].name, "input.%d", i);
-		sprintf(vi->sq[i].name, "output.%d", i);
+		sprintf(vi->rq[i].name, "input.%u", i);
+		sprintf(vi->sq[i].name, "output.%u", i);
 		names[rxq2vq(i)] = vi->rq[i].name;
 		names[txq2vq(i)] = vi->sq[i].name;
 		if (ctx)
@@ -4251,9 +5441,6 @@ static int virtnet_alloc_queues(struct virtnet_info *vi)
 			       napi_weight);
 		netif_tx_napi_add(vi->dev, &vi->sq[i].napi, virtnet_poll_tx,
 				  napi_tx ? napi_weight : 0);
-
-		INIT_WORK(&vi->rq[i].dim.work, virtnet_rx_dim_work);
-		vi->rq[i].dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
 
 		sg_init_table(vi->rq[i].sg, ARRAY_SIZE(vi->rq[i].sg));
 		ewma_pkt_len_init(&vi->rq[i].mrg_avg_pkt_len);
@@ -4396,8 +5583,59 @@ static int virtnet_validate(struct virtio_device *vdev)
 	return 0;
 }
 
+/* This operation should not fail anything, if it fails it will be as
+ * if this operation never happened, i.e. everything else continues
+ * normally and all coalescing parameters remain 0.
+ */
+static int virtnet_get_coal_init_value(struct virtnet_info *vi,
+				       u16 vqn, bool is_tx)
+{
+	struct virtio_net_ctrl_coal_vq *coal_vq = NULL;
+	struct scatterlist sgs_in, sgs_out;
+	u32 usecs, pkts, i;
+	bool ret;
+
+	coal_vq = kzalloc(sizeof(*coal_vq), GFP_KERNEL);
+	if (!coal_vq)
+		return -ENOMEM;
+
+	coal_vq->vqn = vqn;
+	sg_init_one(&sgs_out, &coal_vq->vqn, sizeof(coal_vq->vqn));
+	sg_init_one(&sgs_in, &coal_vq->coal, sizeof(coal_vq->coal));
+	ret = virtnet_send_command_reply(vi, VIRTIO_NET_CTRL_NOTF_COAL,
+					 VIRTIO_NET_CTRL_NOTF_COAL_VQ_GET,
+					 &sgs_out, &sgs_in);
+	if (!ret) {
+		kfree(coal_vq);
+		dev_warn(&vi->dev->dev, "getting initial coalescing failed\n");
+		return !ret;
+	}
+
+	usecs = le32_to_cpu(coal_vq->coal.max_usecs);
+	pkts = le32_to_cpu(coal_vq->coal.max_packets);
+	if (is_tx) {
+		vi->intr_coal_tx.max_usecs = usecs;
+		vi->intr_coal_tx.max_packets = pkts;
+		for (i = 0; i < vi->max_queue_pairs; i++) {
+			vi->sq[i].intr_coal.max_usecs = usecs;
+			vi->sq[i].intr_coal.max_packets = pkts;
+		}
+	} else {
+		vi->intr_coal_rx.max_usecs = usecs;
+		vi->intr_coal_rx.max_packets = pkts;
+		for (i = 0; i < vi->max_queue_pairs; i++) {
+			vi->rq[i].intr_coal.max_usecs = usecs;
+			vi->rq[i].intr_coal.max_packets = pkts;
+		}
+	}
+
+	kfree(coal_vq);
+	return 0;
+}
+
 static int virtnet_probe(struct virtio_device *vdev)
 {
+	struct virtio_net_stats_capabilities *stats_cap = NULL;
 	int i, err = -ENOMEM;
 	struct net_device *dev;
 	struct virtnet_info *vi;
@@ -4490,6 +5728,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 	vdev->priv = vi;
 
 	INIT_WORK(&vi->config_work, virtnet_config_changed_work);
+	INIT_WORK(&vi->rx_mode_work, virtnet_rx_mode_work);
+	spin_lock_init(&vi->refill_lock);
 
 	/* If we can receive ANY GSO packets, we must allocate large ones. */
 	if (virtio_has_feature(vdev, VIRTIO_NET_F_GUEST_TSO4) ||
@@ -4507,13 +5747,15 @@ static int virtnet_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_NET_F_HASH_REPORT))
 		vi->has_rss_hash_report = true;
 
-	if (virtio_has_feature(vdev, VIRTIO_NET_F_RSS))
+	if (virtio_has_feature(vdev, VIRTIO_NET_F_RSS)) {
 		vi->has_rss = true;
 
-	if (vi->has_rss || vi->has_rss_hash_report) {
 		vi->rss_indir_table_size =
 			virtio_cread16(vdev, offsetof(struct virtio_net_config,
 				rss_max_indirection_table_length));
+	}
+
+	if (vi->has_rss || vi->has_rss_hash_report) {
 		vi->rss_key_size =
 			virtio_cread8(vdev, offsetof(struct virtio_net_config, rss_max_key_size));
 
@@ -4541,6 +5783,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 
 	if (virtio_has_feature(vdev, VIRTIO_NET_F_CTRL_VQ))
 		vi->has_cvq = true;
+
+	mutex_init(&vi->cvq_lock);
 
 	if (virtio_has_feature(vdev, VIRTIO_NET_F_MTU)) {
 		mtu = virtio_cread16(vdev,
@@ -4580,6 +5824,9 @@ static int virtnet_probe(struct virtio_device *vdev)
 	if (err)
 		goto free;
 
+	if (virtnet_init_coal_list(vi))
+		goto free;
+
 	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_NOTF_COAL)) {
 		vi->intr_coal_rx.max_usecs = 0;
 		vi->intr_coal_tx.max_usecs = 0;
@@ -4592,13 +5839,6 @@ static int virtnet_probe(struct virtio_device *vdev)
 			vi->intr_coal_tx.max_packets = 1;
 		else
 			vi->intr_coal_tx.max_packets = 0;
-	}
-
-	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL)) {
-		/* The reason is the same as VIRTIO_NET_F_NOTF_COAL. */
-		for (i = 0; i < vi->max_queue_pairs; i++)
-			if (vi->sq[i].napi.weight)
-				vi->sq[i].intr_coal.max_packets = 1;
 	}
 
 #ifdef CONFIG_SYSFS
@@ -4621,6 +5861,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 	if (vi->has_rss || vi->has_rss_hash_report)
 		virtnet_init_default_rss(vi);
 
+	enable_rx_mode_work(vi);
+
 	/* serialize netdev register + virtio_device_ready() with ndo_open() */
 	rtnl_lock();
 
@@ -4633,15 +5875,58 @@ static int virtnet_probe(struct virtio_device *vdev)
 
 	virtio_device_ready(vdev);
 
+	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_DEVICE_STATS)) {
+		struct scatterlist sg;
+		__le64 v;
+
+		stats_cap = kzalloc(sizeof(*stats_cap), GFP_KERNEL);
+		if (!stats_cap) {
+			rtnl_unlock();
+			err = -ENOMEM;
+			goto free_unregister_netdev;
+		}
+
+		sg_init_one(&sg, stats_cap, sizeof(*stats_cap));
+
+		if (!virtnet_send_command_reply(vi, VIRTIO_NET_CTRL_STATS,
+						VIRTIO_NET_CTRL_STATS_QUERY,
+						NULL, &sg)) {
+			pr_debug("virtio_net: fail to get stats capability\n");
+			rtnl_unlock();
+			err = -EINVAL;
+			goto free_stats;
+		}
+
+		v = stats_cap->supported_stats_types[0];
+		vi->device_stats_cap = le64_to_cpu(v);
+	}
+
 	rtnl_unlock();
 
 	err = virtnet_cpu_notif_add(vi);
 	if (err) {
 		pr_debug("virtio_net: registering cpu notifier failed\n");
-		goto free_unregister_netdev;
+		goto free_stats;
 	}
 
 	virtnet_set_queues(vi, vi->curr_queue_pairs);
+
+	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL)) {
+		/* The reason is the same as VIRTIO_NET_F_NOTF_COAL. */
+		for (i = 0; i < vi->max_queue_pairs; i++)
+			if (vi->sq[i].napi.weight)
+				vi->sq[i].intr_coal.max_packets = 1;
+
+		err = virtnet_init_irq_moder(vi);
+		if (err)
+			goto free;
+
+		/* Getting the initial irq values from the first rxq
+		 * and txq. Even if it fails, the probe should continue.
+		 */
+		virtnet_get_coal_init_value(vi, rxq2vq(0), false);
+		virtnet_get_coal_init_value(vi, txq2vq(0), true);
+	}
 
 	/* Assume link up if device can't report link status,
 	   otherwise get link status from config. */
@@ -4664,6 +5949,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 
 	return 0;
 
+free_stats:
+	kfree(stats_cap);
 free_unregister_netdev:
 	vi->vdev->config->reset(vdev);
 
@@ -4701,10 +5988,18 @@ static void virtnet_remove(struct virtio_device *vdev)
 
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vi->config_work);
+	disable_rx_mode_work(vi);
+	flush_work(&vi->rx_mode_work);
+	disable_get_cvq_work(vi);
+	flush_delayed_work(&vi->get_cvq);
 
 	unregister_netdev(vi->dev);
 
+	virtnet_free_irq_moder(vi);
+
 	net_failover_destroy(vi->failover);
+
+	virtnet_del_coal_free_list(vi);
 
 	remove_vq_common(vi);
 
@@ -4761,7 +6056,7 @@ static struct virtio_device_id id_table[] = {
 	VIRTIO_NET_F_MTU, VIRTIO_NET_F_CTRL_GUEST_OFFLOADS, \
 	VIRTIO_NET_F_SPEED_DUPLEX, VIRTIO_NET_F_STANDBY, \
 	VIRTIO_NET_F_RSS, VIRTIO_NET_F_HASH_REPORT, VIRTIO_NET_F_NOTF_COAL, \
-	VIRTIO_NET_F_VQ_NOTF_COAL
+	VIRTIO_NET_F_VQ_NOTF_COAL, VIRTIO_NET_F_DEVICE_STATS
 
 static unsigned int features[] = {
 	VIRTNET_FEATURES,
@@ -4786,6 +6081,7 @@ static unsigned int features_force_xdp[] = {
 	VIRTIO_NET_F_SPEED_DUPLEX, VIRTIO_NET_F_STANDBY,
 	VIRTIO_NET_F_RSS, VIRTIO_NET_F_HASH_REPORT,
 	VIRTIO_NET_F_NOTF_COAL, VIRTIO_NET_F_VQ_NOTF_COAL,
+	VIRTIO_NET_F_DEVICE_STATS,
 	/* legacy */
 	VIRTIO_NET_F_GSO,
 	VIRTIO_F_ANY_LAYOUT,

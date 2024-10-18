@@ -4,12 +4,7 @@
 
 #include <linux/bits.h>
 
-/*
- * CPU model specific register (MSR) numbers.
- *
- * Do not add new entries to this file unless the definitions are shared
- * between multiple compilation units.
- */
+/* CPU model specific register (MSR) numbers. */
 
 /* x86-64 specific MSRs */
 #define MSR_EFER		0xc0000080 /* extended feature register */
@@ -56,8 +51,13 @@
 #define SPEC_CTRL_RRSBA_DIS_S_SHIFT	6	   /* Disable RRSBA behavior */
 #define SPEC_CTRL_RRSBA_DIS_S		BIT(SPEC_CTRL_RRSBA_DIS_S_SHIFT)
 
+/* A mask for bits which the kernel toggles when controlling mitigations */
+#define SPEC_CTRL_MITIGATIONS_MASK	(SPEC_CTRL_IBRS | SPEC_CTRL_STIBP | SPEC_CTRL_SSBD \
+							| SPEC_CTRL_RRSBA_DIS_S)
+
 #define MSR_IA32_PRED_CMD		0x00000049 /* Prediction Command */
 #define PRED_CMD_IBPB			BIT(0)	   /* Indirect Branch Prediction Barrier */
+#define PRED_CMD_SBPB			BIT(7)	   /* Selective Branch Prediction Barrier */
 
 #define MSR_PPIN_CTL			0x0000004e
 #define MSR_PPIN			0x0000004f
@@ -225,6 +225,11 @@
 #define LBR_INFO_CYCLES			0xffff
 #define LBR_INFO_BR_TYPE_OFFSET		56
 #define LBR_INFO_BR_TYPE		(0xfull << LBR_INFO_BR_TYPE_OFFSET)
+#define LBR_INFO_BR_CNTR_OFFSET		32
+#define LBR_INFO_BR_CNTR_NUM		4
+#define LBR_INFO_BR_CNTR_BITS		2
+#define LBR_INFO_BR_CNTR_MASK		GENMASK_ULL(LBR_INFO_BR_CNTR_BITS - 1, 0)
+#define LBR_INFO_BR_CNTR_FULL_MASK	GENMASK_ULL(LBR_INFO_BR_CNTR_NUM * LBR_INFO_BR_CNTR_BITS - 1, 0)
 
 #define MSR_ARCH_LBR_CTL		0x000014ce
 #define ARCH_LBR_CTL_LBREN		BIT(0)
@@ -247,6 +252,12 @@
 #define PERF_CAP_PT_IDX			16
 
 #define MSR_PEBS_LD_LAT_THRESHOLD	0x000003f6
+#define PERF_CAP_PEBS_TRAP             BIT_ULL(6)
+#define PERF_CAP_ARCH_REG              BIT_ULL(7)
+#define PERF_CAP_PEBS_FORMAT           0xf00
+#define PERF_CAP_PEBS_BASELINE         BIT_ULL(14)
+#define PERF_CAP_PEBS_MASK	(PERF_CAP_PEBS_TRAP | PERF_CAP_ARCH_REG | \
+				 PERF_CAP_PEBS_FORMAT | PERF_CAP_PEBS_BASELINE)
 
 #define MSR_IA32_RTIT_CTL		0x00000570
 #define RTIT_CTL_TRACEEN		BIT(0)
@@ -368,6 +379,7 @@
 
 /* Run Time Average Power Limiting (RAPL) Interface */
 
+#define MSR_VR_CURRENT_CONFIG	0x00000601
 #define MSR_RAPL_POWER_UNIT		0x00000606
 
 #define MSR_PKG_POWER_LIMIT		0x00000610
@@ -401,6 +413,7 @@
 #define MSR_TURBO_ACTIVATION_RATIO	0x0000064C
 
 #define MSR_PLATFORM_ENERGY_STATUS	0x0000064D
+#define MSR_SECONDARY_TURBO_RATIO_LIMIT	0x00000650
 
 #define MSR_PKG_WEIGHTED_CORE_C0_RES	0x00000658
 #define MSR_PKG_ANY_CORE_C0_RES		0x00000659
@@ -577,11 +590,23 @@
 #define MSR_AMD64_PERF_CNTR_GLOBAL_CTL		0xc0000301
 #define MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_CLR	0xc0000302
 
-/* Fam 17h MSRs */
-#define MSR_F17H_IRPERF			0xc00000e9
+/* AMD Last Branch Record MSRs */
+#define MSR_AMD64_LBR_SELECT			0xc000010e
 
+/* Fam 19h MSRs */
+#define MSR_F19H_UMC_PERF_CTL		0xc0010800
+#define MSR_F19H_UMC_PERF_CTR		0xc0010801
+
+/* Zen4 */
+#define MSR_ZEN4_BP_CFG			0xc001102e
+#define MSR_ZEN4_BP_CFG_SHARED_BTB_FIX_BIT 5
+
+/* Zen 2 */
 #define MSR_ZEN2_SPECTRAL_CHICKEN	0xc00110e3
 #define MSR_ZEN2_SPECTRAL_CHICKEN_BIT	BIT_ULL(1)
+
+/* Fam 17h MSRs */
+#define MSR_F17H_IRPERF			0xc00000e9
 
 /* Fam 16h MSRs */
 #define MSR_F16H_L2I_PERF_CTL		0xc0010230
@@ -751,6 +776,8 @@
 /* AMD Branch Sampling configuration */
 #define MSR_AMD_DBG_EXTN_CFG		0xc000010f
 #define MSR_AMD_SAMP_BR_FROM		0xc0010300
+
+#define DBG_EXTN_CFG_LBRV2EN		BIT_ULL(6)
 
 #define MSR_IA32_MPERF			0x000000e7
 #define MSR_IA32_APERF			0x000000e8
@@ -1047,6 +1074,25 @@
 #define VMX_BASIC_MEM_TYPE_MASK	0x003c000000000000LLU
 #define VMX_BASIC_MEM_TYPE_WB	6LLU
 #define VMX_BASIC_INOUT		0x0040000000000000LLU
+
+/* Resctrl MSRs: */
+/* - Intel: */
+#define MSR_IA32_L3_QOS_CFG		0xc81
+#define MSR_IA32_L2_QOS_CFG		0xc82
+#define MSR_IA32_QM_EVTSEL		0xc8d
+#define MSR_IA32_QM_CTR			0xc8e
+#define MSR_IA32_PQR_ASSOC		0xc8f
+#define MSR_IA32_L3_CBM_BASE		0xc90
+#define MSR_IA32_L2_CBM_BASE		0xd10
+#define MSR_IA32_MBA_THRTL_BASE		0xd50
+
+/* - AMD: */
+#define MSR_IA32_MBA_BW_BASE		0xc0000200
+#define MSR_IA32_SMBA_BW_BASE		0xc0000280
+#define MSR_IA32_EVT_CFG_BASE		0xc0000400
+#define MSR_IA32_L3_QOS_EXT_CFG		0xc00003ff
+#define MSR_IA32_L3_QOS_ABMC_CFG	0xc00003fd
+#define MSR_IA32_L3_QOS_ABMC_DSC	0xc00003fe
 
 /* MSR_IA32_VMX_MISC bits */
 #define MSR_IA32_VMX_MISC_INTEL_PT                 (1ULL << 14)

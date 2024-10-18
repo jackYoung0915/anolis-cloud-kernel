@@ -2,6 +2,7 @@
 #ifndef __LINUX_ENTRYCOMMON_H
 #define __LINUX_ENTRYCOMMON_H
 
+#include <linux/static_call_types.h>
 #include <linux/tracehook.h>
 #include <linux/syscalls.h>
 #include <linux/seccomp.h>
@@ -403,7 +404,8 @@ irqentry_state_t noinstr irqentry_enter(struct pt_regs *regs);
  *
  * Conditional reschedule with additional sanity checks.
  */
-void irqentry_exit_cond_resched(void);
+void raw_irqentry_exit_cond_resched(void);
+#define irqentry_exit_cond_resched()	raw_irqentry_exit_cond_resched()
 
 /**
  * irqentry_exit - Handle return from exception that used irqentry_enter()

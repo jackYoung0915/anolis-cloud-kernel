@@ -1219,6 +1219,22 @@ static bool blk_mq_mark_tag_wait(struct blk_mq_hw_ctx *hctx,
 	__add_wait_queue(wq, wait);
 
 	/*
+	 * Add one explicit barrier since blk_mq_get_driver_tag() may
+	 * not imply barrier in case of failure.
+	 *
+	 * Order adding us to wait queue and allocating driver tag.
+	 *
+	 * The pair is the one implied in sbitmap_queue_wake_up() which
+	 * orders clearing sbitmap tag bits and waitqueue_active() in
+	 * __sbitmap_queue_wake_up(), since waitqueue_active() is lockless
+	 *
+	 * Otherwise, re-order of adding wait queue and getting driver tag
+	 * may cause __sbitmap_queue_wake_up() to wake up nothing because
+	 * the waitqueue_active() may not observe us in wait queue.
+	 */
+	smp_mb();
+
+	/*
 	 * It's possible that a tag was freed in the window between the
 	 * allocation failure and adding the hardware queue to the wait
 	 * queue.
@@ -1516,31 +1532,6 @@ static void __blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx)
 	int srcu_idx;
 
 	/*
-	 * We should be running this queue from one of the CPUs that
-	 * are mapped to it.
-	 *
-	 * There are at least two related races now between setting
-	 * hctx->next_cpu from blk_mq_hctx_next_cpu() and running
-	 * __blk_mq_run_hw_queue():
-	 *
-	 * - hctx->next_cpu is found offline in blk_mq_hctx_next_cpu(),
-	 *   but later it becomes online, then this warning is harmless
-	 *   at all
-	 *
-	 * - hctx->next_cpu is found online in blk_mq_hctx_next_cpu(),
-	 *   but later it becomes offline, then the warning can't be
-	 *   triggered, and we depend on blk-mq timeout handler to
-	 *   handle dispatched requests to this hctx
-	 */
-	if (!cpumask_test_cpu(raw_smp_processor_id(), hctx->cpumask) &&
-		cpu_online(hctx->next_cpu)) {
-		printk(KERN_WARNING "run queue from wrong CPU %d, hctx %s\n",
-			raw_smp_processor_id(),
-			cpumask_empty(hctx->cpumask) ? "inactive": "active");
-		dump_stack();
-	}
-
-	/*
 	 * We can't run the queue inline with ints disabled. Ensure that
 	 * we catch bad users of this early.
 	 */
@@ -1683,6 +1674,41 @@ void blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async)
 }
 EXPORT_SYMBOL(blk_mq_run_hw_queue);
 
+/*
+ * Is the request queue handled by an IO scheduler that does not respect
+ * hardware queues when dispatching?
+ */
+static bool blk_mq_has_sqsched(struct request_queue *q)
+{
+	struct elevator_queue *e = q->elevator;
+
+	if (e && e->type->ops.dispatch_request &&
+	    !(e->type->elevator_features & ELEVATOR_F_MQ_AWARE))
+		return true;
+	return false;
+}
+
+/*
+ * Return prefered queue to dispatch from (if any) for non-mq aware IO
+ * scheduler.
+ */
+static struct blk_mq_hw_ctx *blk_mq_get_sq_hctx(struct request_queue *q)
+{
+	struct blk_mq_ctx *ctx = blk_mq_get_ctx(q);
+	/*
+	 * If the IO scheduler does not respect hardware queues when
+	 * dispatching, we just don't bother with multiple HW queues and
+	 * dispatch from hctx for the current CPU since running multiple queues
+	 * just causes lock contention inside the scheduler and pointless cache
+	 * bouncing.
+	 */
+	struct blk_mq_hw_ctx *hctx = blk_mq_map_queue(q, 0, ctx);
+
+	if (!blk_mq_hctx_stopped(hctx))
+		return hctx;
+	return NULL;
+}
+
 /**
  * blk_mq_run_hw_queues - Run all hardware queues in a request queue.
  * @q: Pointer to the request queue to run.
@@ -1690,14 +1716,23 @@ EXPORT_SYMBOL(blk_mq_run_hw_queue);
  */
 void blk_mq_run_hw_queues(struct request_queue *q, bool async)
 {
-	struct blk_mq_hw_ctx *hctx;
+	struct blk_mq_hw_ctx *hctx, *sq_hctx;
 	int i;
 
+	sq_hctx = NULL;
+	if (blk_mq_has_sqsched(q))
+		sq_hctx = blk_mq_get_sq_hctx(q);
 	queue_for_each_hw_ctx(q, hctx, i) {
 		if (blk_mq_hctx_stopped(hctx))
 			continue;
-
-		blk_mq_run_hw_queue(hctx, async);
+		/*
+		 * Dispatch from this hctx either if there's no hctx preferred
+		 * by IO scheduler or if it has requests that bypass the
+		 * scheduler.
+		 */
+		if (!sq_hctx || sq_hctx == hctx ||
+		    !list_empty_careful(&hctx->dispatch))
+			blk_mq_run_hw_queue(hctx, async);
 	}
 }
 EXPORT_SYMBOL(blk_mq_run_hw_queues);
@@ -1709,14 +1744,23 @@ EXPORT_SYMBOL(blk_mq_run_hw_queues);
  */
 void blk_mq_delay_run_hw_queues(struct request_queue *q, unsigned long msecs)
 {
-	struct blk_mq_hw_ctx *hctx;
+	struct blk_mq_hw_ctx *hctx, *sq_hctx;
 	int i;
 
+	sq_hctx = NULL;
+	if (blk_mq_has_sqsched(q))
+		sq_hctx = blk_mq_get_sq_hctx(q);
 	queue_for_each_hw_ctx(q, hctx, i) {
 		if (blk_mq_hctx_stopped(hctx))
 			continue;
-
-		blk_mq_delay_run_hw_queue(hctx, msecs);
+		/*
+		 * Dispatch from this hctx either if there's no hctx preferred
+		 * by IO scheduler or if it has requests that bypass the
+		 * scheduler.
+		 */
+		if (!sq_hctx || sq_hctx == hctx ||
+		    !list_empty_careful(&hctx->dispatch))
+			blk_mq_delay_run_hw_queue(hctx, msecs);
 	}
 }
 EXPORT_SYMBOL(blk_mq_delay_run_hw_queues);
@@ -2772,7 +2816,6 @@ blk_mq_alloc_hctx(struct request_queue *q, struct blk_mq_tag_set *set,
 		goto free_hctx;
 
 	atomic_set(&hctx->nr_active, 0);
-	atomic_set(&hctx->elevator_queued, 0);
 	if (node == NUMA_NO_NODE)
 		node = set->numa_node;
 	hctx->numa_node = node;

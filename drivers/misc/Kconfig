@@ -352,12 +352,13 @@ config HMC6352
 	  providing configuration and heading data via sysfs.
 
 config SUNWAY_GED
-	tristate "sunway generic device driver for memhotplug"
+	tristate "sunway generic device driver for memhotplug and cpuhotplug"
 	depends on SW64
-	depends on MEMORY_HOTPLUG
+	depends on MEMORY_HOTPLUG || HOTPLUG_CPU
 	help
 	  This driver provides support for sunway generic device driver for
-	  memhotplug, providing configuration and heading data via sysfs.
+	  memhotplug and cpuhotplug, providing configuration and heading
+	  data via sysfs.
 
 config DS1682
 	tristate "Dallas DS1682 Total Elapsed Time Recorder with Alarm"
@@ -473,6 +474,15 @@ config HISI_HIKEY_USB
 	  found on HiKey 960/970 boards, which is necessary to support
 	  switching between the dual-role USB-C port and the USB-A host ports
 	  using only one USB controller.
+
+config VIRT_PLAT_DEV
+	bool "virt platform device driver"
+        depends on KVM && ARM64 && ARCH_HISI
+        default n
+        help
+          Enable this configuration option to probe the virtual platform device,
+          which created for the Qemu emulated device to implement virtual MSI
+          direct injection.
 
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"

@@ -346,13 +346,14 @@ ssize_t tcp_splice_read(struct socket *sk, loff_t *ppos,
 			struct pipe_inode_info *pipe, size_t len,
 			unsigned int flags);
 
-void tcp_enter_quickack_mode(struct sock *sk, unsigned int max_quickacks);
-static inline void tcp_dec_quickack_mode(struct sock *sk,
-					 const unsigned int pkts)
+static inline void tcp_dec_quickack_mode(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	if (icsk->icsk_ack.quick) {
+		/* How many ACKs S/ACKing new data have we sent? */
+		const unsigned int pkts = inet_csk_ack_scheduled(sk) ? 1 : 0;
+
 		if (pkts >= icsk->icsk_ack.quick) {
 			icsk->icsk_ack.quick = 0;
 			/* Leaving quickack mode we deflate ATO. */
@@ -397,6 +398,7 @@ __poll_t tcp_poll(struct file *file, struct socket *sock,
 		      struct poll_table_struct *wait);
 int tcp_getsockopt(struct sock *sk, int level, int optname,
 		   char __user *optval, int __user *optlen);
+bool tcp_bpf_bypass_getsockopt(int level, int optname);
 int tcp_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval,
 		   unsigned int optlen);
 void tcp_set_keepalive(struct sock *sk, int val);
@@ -779,7 +781,7 @@ static inline u32 tcp_time_stamp(const struct tcp_sock *tp)
 }
 
 /* Convert a nsec timestamp into TCP TSval timestamp (ms based currently) */
-static inline u32 tcp_ns_to_ts(u64 ns)
+static inline u64 tcp_ns_to_ts(u64 ns)
 {
 	return div_u64(ns, NSEC_PER_SEC / TCP_TS_HZ);
 }
@@ -822,6 +824,19 @@ static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
 
 #define TCPHDR_SYN_ECN	(TCPHDR_SYN | TCPHDR_ECE | TCPHDR_CWR)
 
+/* State flags for sacked in struct tcp_skb_cb */
+enum tcp_skb_cb_sacked_flags {
+	TCPCB_SACKED_ACKED	= (1 << 0),	/* SKB ACK'd by a SACK block	*/
+	TCPCB_SACKED_RETRANS	= (1 << 1),	/* SKB retransmitted		*/
+	TCPCB_LOST		= (1 << 2),	/* SKB is lost			*/
+	TCPCB_TAGBITS		= (TCPCB_SACKED_ACKED | TCPCB_SACKED_RETRANS |
+				   TCPCB_LOST),	/* All tag bits			*/
+	TCPCB_REPAIRED		= (1 << 4),	/* SKB repaired (no skb_mstamp_ns)	*/
+	TCPCB_EVER_RETRANS	= (1 << 7),	/* Ever retransmitted frame	*/
+	TCPCB_RETRANS		= (TCPCB_SACKED_RETRANS | TCPCB_EVER_RETRANS |
+				   TCPCB_REPAIRED),
+};
+
 /* This is what the send packet queuing engine uses to pass
  * TCP per-packet control information to the transmission code.
  * We also store the host-order sequence numbers in here too.
@@ -847,15 +862,6 @@ struct tcp_skb_cb {
 	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
 
 	__u8		sacked;		/* State flags for SACK.	*/
-#define TCPCB_SACKED_ACKED	0x01	/* SKB ACK'd by a SACK block	*/
-#define TCPCB_SACKED_RETRANS	0x02	/* SKB retransmitted		*/
-#define TCPCB_LOST		0x04	/* SKB is lost			*/
-#define TCPCB_TAGBITS		0x07	/* All tag bits			*/
-#define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp_ns)	*/
-#define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*/
-#define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS| \
-				TCPCB_REPAIRED)
-
 	__u8		ip_dsfield;	/* IPv4 tos or IPv6 dsfield	*/
 	__u8		txstamp_ack:1,	/* Record TX timestamp for ack? */
 			eor:1,		/* Is skb MSG_EOR marked? */
@@ -1058,6 +1064,7 @@ struct rate_sample {
 	bool is_ack_delayed;	/* is this (likely) a delayed ACK? */
 
 	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 struct tcp_congestion_ops {
@@ -1287,11 +1294,14 @@ static inline bool tcp_is_cwnd_limited(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
+	if (tp->is_cwnd_limited)
+		return true;
+
 	/* If in slow start, ensure cwnd grows to twice what was ACKed. */
 	if (tcp_in_slow_start(tp))
 		return tp->snd_cwnd < 2 * tp->max_packets_out;
 
-	return tp->is_cwnd_limited;
+	return false;
 }
 
 /* BBR congestion control needs pacing.
@@ -2248,8 +2258,8 @@ static inline void tcp_bpf_clone(const struct sock *sk, struct sock *newsk)
 #endif /* CONFIG_BPF_STREAM_PARSER */
 
 #ifdef CONFIG_NET_SOCK_MSG
-int tcp_bpf_sendmsg_redir(struct sock *sk, struct sk_msg *msg, u32 bytes,
-			  int flags);
+int tcp_bpf_sendmsg_redir(struct sock *sk, bool ingress,
+			  struct sk_msg *msg, u32 bytes, int flags);
 int __tcp_bpf_recvmsg(struct sock *sk, struct sk_psock *psock,
 		      struct msghdr *msg, int len, int flags);
 #endif /* CONFIG_NET_SOCK_MSG */
@@ -2365,10 +2375,10 @@ static inline bool tcp_bpf_ca_needs_ecn(struct sock *sk)
 	return (tcp_call_bpf(sk, BPF_SOCK_OPS_NEEDS_ECN, 0, NULL) == 1);
 }
 
-static inline void tcp_bpf_rtt(struct sock *sk)
+static inline void tcp_bpf_rtt(struct sock *sk, long mrtt, u32 srtt)
 {
 	if (BPF_SOCK_OPS_TEST_FLAG(tcp_sk(sk), BPF_SOCK_OPS_RTT_CB_FLAG))
-		tcp_call_bpf(sk, BPF_SOCK_OPS_RTT_CB, 0, NULL);
+		tcp_call_bpf_2arg(sk, BPF_SOCK_OPS_RTT_CB, mrtt, srtt);
 }
 
 #if IS_ENABLED(CONFIG_SMC)

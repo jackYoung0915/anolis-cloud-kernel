@@ -1,0 +1,4 @@
+cgroup.memory=nokmem
+crashkernel=0M-2G:0M,2G-8G:192M,8G-:256M
+kfence.sample_interval=100 kfence.booting_max=0-2G:0,2G-32G:2M,32G-:32M
+preempt=none

@@ -48,7 +48,7 @@ static inline bool vma_is_pgtable_shadow(const struct vm_area_struct *vma)
 		vma->vm_mm == vma->pgtable_share_data->mm;
 }
 
-DECLARE_STATIC_KEY_TRUE(pgtable_share_enabled_key);
+DECLARE_STATIC_KEY_FALSE(pgtable_share_enabled_key);
 static inline bool pgtable_share_enable(void)
 {
 	return static_branch_unlikely(&pgtable_share_enabled_key);

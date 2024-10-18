@@ -801,13 +801,14 @@ for cfg in kernel-%{version}-*.config; do
   fi
 done
 
-# enable GCOV kernel config options if gcov is on
-%if %{with_gcov}
-for i in *.config
-do
-  sed -i 's/# CONFIG_GCOV_KERNEL is not set/CONFIG_GCOV_KERNEL=y\nCONFIG_GCOV_PROFILE_ALL=y\n/' $i
-done
-%endif
+# GCOV related kconfigs has been enabled in *.config, so we do not need this kconfig in spec anymore.
+#
+# %if %{with_gcov}
+# for i in *.config
+# do
+#   sed -i 's/# CONFIG_GCOV_KERNEL is not set/CONFIG_GCOV_KERNEL=y\nCONFIG_GCOV_PROFILE_ALL=y\n/' $i
+# done
+# %endif
 
 # now run oldconfig over all the config files
 for i in *.config
@@ -1555,9 +1556,9 @@ fi\
 %{expand:%%posttrans %{?1:%{1}-}modules}\
 /bin/kernel-install add %{KVERREL}%{?1:+%{1}} /lib/modules/%{KVERREL}%{?1:+%{1}}/vmlinuz || exit $?\
 %ifarch aarch64  \
-grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="cgroup.memory=nokmem crashkernel=0M-2G:0M,2G-64G:256M,64G-:384M iommu.passthrough=1 iommu.strict=0 nospectre_bhb ssbd=force-off"\
+grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="%%ARM_CMDLINE%%"\
 %else \
-grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="cgroup.memory=nokmem crashkernel=0M-2G:0M,2G-8G:192M,8G-:256M"\
+grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="%%X86_CMDLINE%%"\
 %endif  \
 %{nil}
 
@@ -1573,9 +1574,9 @@ then\
 fi\
 /bin/kernel-install add %{KVERREL}%{?1:+%{1}} /lib/modules/%{KVERREL}%{?1:+%{1}}/vmlinuz || exit $?\
 %ifarch aarch64  \
-grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="cgroup.memory=nokmem crashkernel=0M-2G:0M,2G-64G:256M,64G-:384M iommu.passthrough=1 iommu.strict=0 nospectre_bhb ssbd=force-off kfence.sample_interval=100 kfence.booting_max=0-2G:0,2G-32G:2M,32G-:32M"\
+grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="%%ARM_CMDLINE%%"\
 %else \
-grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="cgroup.memory=nokmem crashkernel=0M-2G:0M,2G-8G:192M,8G-:256M kfence.sample_interval=100 kfence.booting_max=0-2G:0,2G-32G:2M,32G-:32M"\
+grubby --update-kernel /boot/vmlinuz-%{KVERREL}%{?1:+%{1}} --args="%%X86_CMDLINE%%"\
 %endif  \
 %{nil}
 
@@ -1809,9 +1810,7 @@ fi
 /usr/src/kernels/%{KVERREL}%{?2:+%{2}}\
 %{expand:%%files -f %{name}-%{?2:%{2}-}modules-extra.list %{?2:%{2}-}modules-extra}\
 %defattr(-,root,root)\
-%ifnarch sw_64\
 %config(noreplace) /etc/modprobe.d/*-blacklist.conf\
-%endif\
 %{expand:%%files -f %{name}-%{?2:%{2}-}modules-internal.list %{?2:%{2}-}modules-internal}\
 %if %{with_debuginfo}\
 %ifnarch noarch\

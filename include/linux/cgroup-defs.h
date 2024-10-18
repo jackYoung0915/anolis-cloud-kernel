@@ -363,12 +363,13 @@ struct cgroup_rstat_cpu {
 	 */
 	struct u64_stats_sync bsync;
 	struct cgroup_base_stat bstat;
-
+	struct cgroup_base_stat_task bstat_task;
 	/*
 	 * Snapshots at the last reading.  These are used to calculate the
 	 * deltas to propagate to the global counters.
 	 */
 	struct cgroup_base_stat last_bstat;
+	struct cgroup_base_stat_task last_bstat_task;
 
 	/*
 	 * Child cgroups with stat updates on this cpu since the last read
@@ -383,8 +384,11 @@ struct cgroup_rstat_cpu {
 	 */
 	struct cgroup *updated_children;	/* terminated by self cgroup */
 	struct cgroup *updated_next;		/* NULL iff not on the list */
-	CK_KABI_EXTEND(struct cgroup_base_stat_task bstat_task)
-	CK_KABI_EXTEND(struct cgroup_base_stat_task last_bstat_task)
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 struct cgroup_freezer_state {
@@ -507,7 +511,9 @@ struct cgroup {
 
 	/* cgroup basic resource statistics */
 	struct cgroup_base_stat last_bstat;
+	struct cgroup_base_stat_task last_bstat_task;
 	struct cgroup_base_stat bstat;
+	struct cgroup_base_stat_task bstat_task;
 	struct prev_cputime prev_cputime;	/* for printing out cputime */
 
 	/*
@@ -544,8 +550,10 @@ struct cgroup {
 	struct kernfs_root *hidden_place; /* tree to hide cgroup in pool. */
 	struct delayed_work supply_pool_work;
 
-	CK_KABI_USE(1, 2, struct cgroup_base_stat_task last_bstat_task)
-	CK_KABI_USE(3, 4, struct cgroup_base_stat_task bstat_task)
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 
 	/* ids of the ancestors at each level including self */
 	u64 ancestor_ids[];

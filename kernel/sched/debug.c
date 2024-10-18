@@ -167,6 +167,68 @@ static const struct file_operations sched_feat_fops = {
 	.release	= single_release,
 };
 
+#ifdef CONFIG_PREEMPT_DYNAMIC
+
+static ssize_t sched_dynamic_write(struct file *filp, const char __user *ubuf,
+				   size_t cnt, loff_t *ppos)
+{
+	char buf[16];
+	int mode;
+
+	if (cnt > 15)
+		cnt = 15;
+
+	if (copy_from_user(&buf, ubuf, cnt))
+		return -EFAULT;
+
+	buf[cnt] = 0;
+	mode = sched_dynamic_mode(strstrip(buf));
+	if (mode < 0)
+		return mode;
+
+	sched_dynamic_update(mode);
+
+	*ppos += cnt;
+
+	return cnt;
+}
+
+static int sched_dynamic_show(struct seq_file *m, void *v)
+{
+	static const char * preempt_modes[] = {
+		"none", "voluntary", "full"
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(preempt_modes); i++) {
+		if (preempt_dynamic_mode == i)
+			seq_puts(m, "(");
+		seq_puts(m, preempt_modes[i]);
+		if (preempt_dynamic_mode == i)
+			seq_puts(m, ")");
+
+		seq_puts(m, " ");
+	}
+
+	seq_puts(m, "\n");
+	return 0;
+}
+
+static int sched_dynamic_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, sched_dynamic_show, NULL);
+}
+
+static const struct file_operations sched_dynamic_fops = {
+	.open		= sched_dynamic_open,
+	.write		= sched_dynamic_write,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+#endif /* CONFIG_PREEMPT_DYNAMIC */
+
 __read_mostly bool sched_debug_enabled;
 
 static __init int sched_init_debug(void)
@@ -176,6 +238,9 @@ static __init int sched_init_debug(void)
 
 	debugfs_create_bool("sched_debug", 0644, NULL,
 			&sched_debug_enabled);
+#ifdef CONFIG_PREEMPT_DYNAMIC
+	debugfs_create_file("sched_preempt", 0644, NULL, NULL, &sched_dynamic_fops);
+#endif
 
 	return 0;
 }
@@ -451,7 +516,9 @@ static void print_cfs_group_stats(struct seq_file *m, int cpu, struct task_group
 		PN_SCHEDSTAT(se->statistics.wait_max);
 		PN_SCHEDSTAT(se->statistics.wait_sum);
 		PN_SCHEDSTAT(se->statistics.parent_wait_contrib);
+#ifdef CONFIG_SCHED_CORE
 		PN_SCHEDSTAT(se->statistics.forceidled_sum);
+#endif
 		P_SCHEDSTAT(se->statistics.wait_count);
 	}
 
@@ -989,7 +1056,9 @@ void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 		PN_SCHEDSTAT(se.statistics.wait_max);
 		PN_SCHEDSTAT(se.statistics.wait_sum);
 		PN_SCHEDSTAT(se.statistics.parent_wait_contrib);
+#ifdef CONFIG_SCHED_CORE
 		PN_SCHEDSTAT(se.statistics.forceidled_sum);
+#endif
 		P_SCHEDSTAT(se.statistics.wait_count);
 		PN_SCHEDSTAT(se.statistics.iowait_sum);
 		P_SCHEDSTAT(se.statistics.iowait_count);

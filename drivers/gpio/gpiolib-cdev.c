@@ -816,6 +816,7 @@ static int edge_detector_update(struct line *line,
 				unsigned int line_idx,
 				u64 eflags, bool polarity_change)
 {
+	int ret;
 	unsigned int debounce_period_us =
 		gpio_v2_line_config_debounce_period(lc, line_idx);
 
@@ -827,6 +828,17 @@ static int edge_detector_update(struct line *line,
 	if (debounce_period_us && READ_ONCE(line->sw_debounced)) {
 		line->eflags = eflags;
 		WRITE_ONCE(line->desc->debounce_period_us, debounce_period_us);
+		/*
+		 * ensure event fifo is initialised if edge detection
+		 * is now enabled.
+		 */
+		if (eflags && !kfifo_initialized(&line->req->events)) {
+			ret = kfifo_alloc(&line->req->events,
+					  line->req->event_buffer_size,
+					  GFP_KERNEL);
+			if (ret)
+				return ret;
+		}
 		return 0;
 	}
 
@@ -2313,9 +2325,9 @@ static int gpio_chrdev_release(struct inode *inode, struct file *file)
 	struct gpio_chardev_data *cdev = file->private_data;
 	struct gpio_device *gdev = cdev->gdev;
 
-	bitmap_free(cdev->watched_lines);
 	blocking_notifier_chain_unregister(&gdev->notifier,
 					   &cdev->lineinfo_changed_nb);
+	bitmap_free(cdev->watched_lines);
 	put_device(&gdev->dev);
 	kfree(cdev);
 

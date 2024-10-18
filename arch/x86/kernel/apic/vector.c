@@ -128,6 +128,34 @@ static void apic_update_irq_cfg(struct irq_data *irqd, unsigned int vector,
 			    apicd->hw_irq_cfg.dest_apicid);
 }
 
+static void check_and_clear_shutdown_vector(unsigned int cpu, unsigned int vec)
+{
+	int timeout = USEC_PER_MSEC;
+
+	if (per_cpu(vector_irq, cpu)[vec] != VECTOR_SHUTDOWN)
+		return;
+
+	if (irqs_disabled() && (cpu == smp_processor_id()))
+		return;
+
+	if (cpu != smp_processor_id())
+		apic->send_IPI(cpu, vec);
+	else
+		apic->send_IPI_self(vec);
+
+	/* wait vector to be cleared */
+	do {
+		if ((per_cpu(vector_irq, cpu)[vec]) == VECTOR_UNUSED)
+			break;
+
+		udelay(1);
+	} while (timeout--);
+
+	if (!timeout)
+		pr_warn_ratelimited("CPU%u: timeout when clearing vector %u.%u\n",
+							smp_processor_id(), cpu, vec);
+}
+
 static void apic_update_vector(struct irq_data *irqd, unsigned int newvec,
 			       unsigned int newcpu)
 {
@@ -171,6 +199,7 @@ setnew:
 	apicd->vector = newvec;
 	apicd->cpu = newcpu;
 	BUG_ON(!IS_ERR_OR_NULL(per_cpu(vector_irq, newcpu)[newvec]));
+	check_and_clear_shutdown_vector(newcpu, newvec);
 	per_cpu(vector_irq, newcpu)[newvec] = desc;
 }
 

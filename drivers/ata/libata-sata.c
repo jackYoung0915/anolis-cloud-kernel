@@ -317,7 +317,7 @@ int sata_link_resume(struct ata_link *link, const unsigned long *params,
 		 * immediately after resuming.  Delay 200ms before
 		 * debouncing.
 		 */
-		if (!(link->flags & ATA_LFLAG_NO_DB_DELAY))
+		if (!(link->flags & ATA_LFLAG_NO_DEBOUNCE_DELAY))
 			ata_msleep(link->ap, 200);
 
 		/* is SControl restored correctly? */
@@ -394,10 +394,23 @@ int sata_link_scr_lpm(struct ata_link *link, enum ata_lpm_policy policy,
 	case ATA_LPM_MED_POWER_WITH_DIPM:
 	case ATA_LPM_MIN_POWER_WITH_PARTIAL:
 	case ATA_LPM_MIN_POWER:
-		if (ata_link_nr_enabled(link) > 0)
-			/* no restrictions on LPM transitions */
+		if (ata_link_nr_enabled(link) > 0) {
+			/* assume no restrictions on LPM transitions */
 			scontrol &= ~(0x7 << 8);
-		else {
+
+			/*
+			 * If the controller does not support partial, slumber,
+			 * or devsleep, then disallow these transitions.
+			 */
+			if (link->ap->host->flags & ATA_HOST_NO_PART)
+				scontrol |= (0x1 << 8);
+
+			if (link->ap->host->flags & ATA_HOST_NO_SSC)
+				scontrol |= (0x2 << 8);
+
+			if (link->ap->host->flags & ATA_HOST_NO_DEVSLP)
+				scontrol |= (0x4 << 8);
+		} else {
 			/* empty port, power off */
 			scontrol &= ~0xf;
 			scontrol |= (0x1 << 2);
@@ -502,6 +515,21 @@ int sata_set_spd(struct ata_link *link)
 }
 EXPORT_SYMBOL_GPL(sata_set_spd);
 
+#ifdef CONFIG_SW64
+unsigned int port_reset_delay __read_mostly = 1;
+static int __init port_reset_setup(char *str)
+{
+	int delay;
+
+	get_option(&str, &delay);
+	if (delay > 0)
+		port_reset_delay = delay;
+
+	return 0;
+}
+__setup("ata_hrst_delay=", port_reset_setup);
+#endif
+
 /**
  *	sata_link_hardreset - reset link via SATA phy reset
  *	@link: link to reset
@@ -567,8 +595,11 @@ int sata_link_hardreset(struct ata_link *link, const unsigned long *timing,
 	/* Couldn't find anything in SATA I/II specs, but AHCI-1.1
 	 * 10.4.2 says at least 1 ms.
 	 */
-	ata_msleep(link->ap, 1);
-
+#ifdef CONFIG_SW64
+		ata_msleep(link->ap, port_reset_delay);
+#else
+		ata_msleep(link->ap, 1);
+#endif
 	/* bring link back */
 	rc = sata_link_resume(link, timing, deadline);
 	if (rc)

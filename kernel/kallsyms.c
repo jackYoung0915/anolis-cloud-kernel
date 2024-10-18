@@ -27,28 +27,7 @@
 #include <linux/kprobes.h>
 #include <linux/compiler.h>
 
-/*
- * These will be re-linked against their real values
- * during the second link stage.
- */
-extern const unsigned long kallsyms_addresses[] __weak;
-extern const int kallsyms_offsets[] __weak;
-extern const u8 kallsyms_names[] __weak;
-
-/*
- * Tell the compiler that the count isn't in the small data section if the arch
- * has one (eg: FRV).
- */
-extern const unsigned int kallsyms_num_syms
-__section(".rodata") __attribute__((weak));
-
-extern const unsigned long kallsyms_relative_base
-__section(".rodata") __attribute__((weak));
-
-extern const char kallsyms_token_table[] __weak;
-extern const u16 kallsyms_token_index[] __weak;
-
-extern const unsigned int kallsyms_markers[] __weak;
+#include "kallsyms_internal.h"
 
 /*
  * Expand a compressed symbol data into the resulting uncompressed string,
@@ -179,19 +158,121 @@ static unsigned long kallsyms_sym_address(int idx)
 	return kallsyms_relative_base - 1 - kallsyms_offsets[idx];
 }
 
+#if defined(CONFIG_CFI_CLANG) && defined(CONFIG_LTO_CLANG_THIN)
+/*
+ * LLVM appends a hash to static function names when ThinLTO and CFI are
+ * both enabled, i.e. foo() becomes foo$707af9a22804d33c81801f27dcfe489b.
+ * This causes confusion and potentially breaks user space tools, so we
+ * strip the suffix from expanded symbol names.
+ */
+static inline bool cleanup_symbol_name(char *s)
+{
+	char *res;
+
+	res = strrchr(s, '$');
+	if (res)
+		*res = '\0';
+
+	return res != NULL;
+}
+#else
+static inline bool cleanup_symbol_name(char *s) { return false; }
+#endif
+
+static int compare_symbol_name(const char *name, char *namebuf)
+{
+	int ret;
+
+	ret = strcmp(name, namebuf);
+	if (!ret)
+		return ret;
+
+	if (cleanup_symbol_name(namebuf) && !strcmp(name, namebuf))
+		return 0;
+
+	return ret;
+}
+
+static unsigned int get_symbol_seq(int index)
+{
+	unsigned int i, seq = 0;
+
+	for (i = 0; i < 3; i++)
+		seq = (seq << 8) | kallsyms_seqs_of_names[3 * index + i];
+
+	return seq;
+}
+
+static int kallsyms_lookup_names(const char *name,
+				 unsigned int *start,
+				 unsigned int *end)
+{
+	int ret;
+	int low, mid, high;
+	unsigned int seq, off;
+	char namebuf[KSYM_NAME_LEN];
+
+	low = 0;
+	high = kallsyms_num_syms - 1;
+
+	while (low <= high) {
+		mid = low + (high - low) / 2;
+		seq = get_symbol_seq(mid);
+		off = get_symbol_offset(seq);
+		kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+		ret = compare_symbol_name(name, namebuf);
+		if (ret > 0)
+			low = mid + 1;
+		else if (ret < 0)
+			high = mid - 1;
+		else
+			break;
+	}
+
+	if (low > high)
+		return -ESRCH;
+
+	low = mid;
+	while (low) {
+		seq = get_symbol_seq(low - 1);
+		off = get_symbol_offset(seq);
+		kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+		if (compare_symbol_name(name, namebuf))
+			break;
+		low--;
+	}
+	*start = low;
+
+	if (end) {
+		high = mid;
+		while (high < kallsyms_num_syms - 1) {
+			seq = get_symbol_seq(high + 1);
+			off = get_symbol_offset(seq);
+			kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+			if (compare_symbol_name(name, namebuf))
+				break;
+			high++;
+		}
+		*end = high;
+	}
+
+	return 0;
+}
+
 /* Lookup the address for this symbol. Returns 0 if not found. */
 unsigned long kallsyms_lookup_name(const char *name)
 {
-	char namebuf[KSYM_NAME_LEN];
-	unsigned long i;
-	unsigned int off;
+	int ret;
+	unsigned int i;
 
-	for (i = 0, off = 0; i < kallsyms_num_syms; i++) {
-		off = kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+	/* Skip the search for empty string. */
+	if (!*name)
+		return 0;
 
-		if (strcmp(namebuf, name) == 0)
-			return kallsyms_sym_address(i);
-	}
+	ret = kallsyms_lookup_names(name, &i, NULL);
+	if (!ret)
+		return kallsyms_sym_address(get_symbol_seq(i));
+
 	return module_kallsyms_lookup_name(name);
 }
 EXPORT_SYMBOL_GPL(kallsyms_lookup_name);
@@ -214,6 +295,24 @@ int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *,
 	return module_kallsyms_on_each_symbol(fn, data);
 }
 EXPORT_SYMBOL_GPL(kallsyms_on_each_symbol);
+
+int kallsyms_on_each_match_symbol(int (*fn)(void *, unsigned long),
+				  const char *name, void *data)
+{
+	int ret;
+	unsigned int i, start, end;
+
+	ret = kallsyms_lookup_names(name, &start, &end);
+	if (ret)
+		return 0;
+
+	for (i = start; !ret && i <= end; i++) {
+		ret = fn(data, kallsyms_sym_address(get_symbol_seq(i)));
+		cond_resched();
+	}
+
+	return ret;
+}
 
 static unsigned long get_symbol_pos(unsigned long addr,
 				    unsigned long *symbolsize,
@@ -317,7 +416,9 @@ const char *kallsyms_lookup(unsigned long addr,
 				       namebuf, KSYM_NAME_LEN);
 		if (modname)
 			*modname = NULL;
-		return namebuf;
+
+		ret = namebuf;
+		goto found;
 	}
 
 	/* See if it's in a module or a BPF JITed image. */
@@ -330,11 +431,16 @@ const char *kallsyms_lookup(unsigned long addr,
 	if (!ret)
 		ret = ftrace_mod_address_lookup(addr, symbolsize,
 						offset, modname, namebuf);
+
+found:
+	cleanup_symbol_name(namebuf);
 	return ret;
 }
 
 int lookup_symbol_name(unsigned long addr, char *symname)
 {
+	int res;
+
 	symname[0] = '\0';
 	symname[KSYM_NAME_LEN - 1] = '\0';
 
@@ -345,15 +451,23 @@ int lookup_symbol_name(unsigned long addr, char *symname)
 		/* Grab name */
 		kallsyms_expand_symbol(get_symbol_offset(pos),
 				       symname, KSYM_NAME_LEN);
-		return 0;
+		goto found;
 	}
 	/* See if it's in a module. */
-	return lookup_module_symbol_name(addr, symname);
+	res = lookup_module_symbol_name(addr, symname);
+	if (res)
+		return res;
+
+found:
+	cleanup_symbol_name(symname);
+	return 0;
 }
 
 int lookup_symbol_attrs(unsigned long addr, unsigned long *size,
 			unsigned long *offset, char *modname, char *name)
 {
+	int res;
+
 	name[0] = '\0';
 	name[KSYM_NAME_LEN - 1] = '\0';
 
@@ -365,10 +479,16 @@ int lookup_symbol_attrs(unsigned long addr, unsigned long *size,
 		kallsyms_expand_symbol(get_symbol_offset(pos),
 				       name, KSYM_NAME_LEN);
 		modname[0] = '\0';
-		return 0;
+		goto found;
 	}
 	/* See if it's in a module. */
-	return lookup_module_symbol_attrs(addr, size, offset, modname, name);
+	res = lookup_module_symbol_attrs(addr, size, offset, modname, name);
+	if (res)
+		return res;
+
+found:
+	cleanup_symbol_name(name);
+	return 0;
 }
 
 /* Look up a kernel symbol and return it in a text buffer. */

@@ -213,15 +213,14 @@ void txgbe_enable_sriov(struct txgbe_adapter *adapter)
 			 "Virtual Functions already enabled for this device\n");
 	} else {
 		int err;
-		int match;
 		/* The sapphire supports up to 64 VFs per physical function
 		 * but this implementation limits allocation to 63 so that
 		 * basic networking resources are still available to the
 		 * physical function.  If the user requests greater thn
 		 * 63 VFs then it is an error - reset to default of zero.
 		 */
-		match = min_t(unsigned int, adapter->vf_mode, TXGBE_MAX_VFS_DRV_LIMIT);
-		adapter->num_vfs = min_t(unsigned int, adapter->num_vfs, match);
+		adapter->num_vfs = min_t(unsigned int, adapter->num_vfs,
+					 TXGBE_MAX_VFS_DRV_LIMIT);
 
 		err = pci_enable_sriov(adapter->pdev, adapter->num_vfs);
 		if (err) {
@@ -602,12 +601,7 @@ static int txgbe_get_vf_queues(struct txgbe_adapter *adapter,
 		msgbuf[TXGBE_VF_TRANS_VLAN] = 0;
 
 	/* notify VF of default queue */
-	if (adapter->vf_mode == 63)
-		msgbuf[TXGBE_VF_DEF_QUEUE] = default_tc;
-	else if (adapter->vf_mode == 31)
-		msgbuf[TXGBE_VF_DEF_QUEUE] = 4;
-	else
-		msgbuf[TXGBE_VF_DEF_QUEUE] = default_tc;
+	msgbuf[TXGBE_VF_DEF_QUEUE] = default_tc;
 
 	return 0;
 }
@@ -809,7 +803,7 @@ static int txgbe_set_vf_mac_addr(struct txgbe_adapter *adapter,
 		return -1;
 	}
 
-	if (adapter->vfinfo[vf].pf_set_mac &&
+	if (adapter->vfinfo[vf].pf_set_mac && !adapter->vfinfo[vf].trusted &&
 	    memcmp(adapter->vfinfo[vf].vf_mac_addresses, new_mac,
 		   ETH_ALEN)) {
 		e_warn(drv,
@@ -911,7 +905,9 @@ static int txgbe_set_vf_vlan_msg(struct txgbe_adapter *adapter,
 		 * is cleared if the PF only added itself to the pool
 		 * because the PF is in promiscuous mode.
 		 */
-		if ((vlvf & VLAN_VID_MASK) == vid && !bits)
+		if ((vlvf & VLAN_VID_MASK) == vid &&
+		    !test_bit(vid, adapter->active_vlans) &&
+			!bits)
 			txgbe_set_vf_vlan(adapter, add, vid, VMDQ_P(0));
 	}
 
@@ -928,7 +924,7 @@ static int txgbe_set_vf_macvlan_msg(struct txgbe_adapter *adapter,
 		    TXGBE_VT_MSGINFO_SHIFT;
 	int err;
 
-	if (adapter->vfinfo[vf].pf_set_mac && index > 0) {
+	if (adapter->vfinfo[vf].pf_set_mac && !adapter->vfinfo[vf].trusted && index > 0) {
 		e_warn(drv,
 		       "VF %d requested MACVLAN filter but is administratively denied\n",
 			vf);
@@ -978,6 +974,12 @@ static int txgbe_update_vf_xcast_mode(struct txgbe_adapter *adapter,
 	default:
 		return -EOPNOTSUPP;
 	}
+
+	if (xcast_mode > TXGBEVF_XCAST_MODE_MULTI &&
+	    !adapter->vfinfo[vf].trusted) {
+		xcast_mode = TXGBEVF_XCAST_MODE_MULTI;
+	}
+
 	if (adapter->vfinfo[vf].xcast_mode == xcast_mode)
 		goto out;
 
@@ -1032,6 +1034,31 @@ static int txgbe_get_vf_link_state(struct txgbe_adapter *adapter,
 	}
 
 	*link_state = adapter->vfinfo[vf].link_enable;
+
+	return 0;
+}
+
+static int txgbe_get_fw_version(struct txgbe_adapter *adapter,
+				u32 *msgbuf, u32 vf)
+{
+	unsigned long *fw_version = (unsigned long *)&msgbuf[1];
+	int ret;
+
+	/* verify the PF is supporting the correct API */
+	switch (adapter->vfinfo[vf].vf_api) {
+	case txgbe_mbox_api_12:
+	case txgbe_mbox_api_13:
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	ret = kstrtoul(adapter->eeprom_id, 16, fw_version);
+	if (ret < 0)
+		return ret;
+
+	if (*fw_version == 0)
+		return -EOPNOTSUPP;
 
 	return 0;
 }
@@ -1101,6 +1128,9 @@ static int txgbe_rcv_msg_from_vf(struct txgbe_adapter *adapter, u16 vf)
 		break;
 	case TXGBE_VF_GET_LINK_STATE:
 		retval = txgbe_get_vf_link_state(adapter, msgbuf, vf);
+		break;
+	case TXGBE_VF_GET_FW_VERSION:
+		retval = txgbe_get_fw_version(adapter, msgbuf, vf);
 		break;
 	case TXGBE_VF_BACKUP:
 #ifdef CONFIG_PCI_IOV
@@ -1268,13 +1298,14 @@ static int txgbe_pci_sriov_enable(struct pci_dev __maybe_unused *dev,
 	for (i = 0; i < adapter->num_vfs; i++)
 		txgbe_vf_configuration(dev, (i | 0x10000000));
 
+	txgbe_sriov_reinit(adapter);
+
 	err = pci_enable_sriov(dev, num_vfs);
 	if (err) {
 		e_dev_warn("Failed to enable PCI sriov: %d\n", err);
 		goto err_out;
 	}
 	txgbe_get_vfs(adapter);
-	txgbe_sriov_reinit(adapter);
 
 out:
 	return num_vfs;
@@ -1317,25 +1348,47 @@ int txgbe_ndo_set_vf_mac(struct net_device *netdev, int vf, u8 *mac)
 	s32 retval = 0;
 	struct txgbe_adapter *adapter = netdev_priv(netdev);
 
-	if (!is_valid_ether_addr(mac) || vf >= adapter->num_vfs)
+	if (vf < 0 || vf >= adapter->num_vfs)
 		return -EINVAL;
 
-	dev_info(pci_dev_to_dev(adapter->pdev),
-		 "setting MAC %pM on VF %d\n", mac, vf);
-	dev_info(pci_dev_to_dev(adapter->pdev),
-		 "Reload the VF driver to make this change effective.\n");
-	retval = txgbe_set_vf_mac(adapter, vf, mac);
-	if (retval >= 0) {
-		adapter->vfinfo[vf].pf_set_mac = true;
-		if (test_bit(__TXGBE_DOWN, &adapter->state)) {
+	if (is_valid_ether_addr(mac)) {
+		dev_info(pci_dev_to_dev(adapter->pdev),
+			 "setting MAC %pM on VF %d\n", mac, vf);
+		dev_info(pci_dev_to_dev(adapter->pdev),
+			 "Reload the VF driver to make this change effective.\n");
+		retval = txgbe_set_vf_mac(adapter, vf, mac);
+		if (retval >= 0) {
+			adapter->vfinfo[vf].pf_set_mac = true;
+			if (test_bit(__TXGBE_DOWN, &adapter->state)) {
+				dev_warn(pci_dev_to_dev(adapter->pdev),
+					 "The VF MAC address has been set, but the PF device is not up.\n");
+				dev_warn(pci_dev_to_dev(adapter->pdev),
+					 "Bring the PF device up before attempting to use the VF device.\n");
+			}
+		} else {
 			dev_warn(pci_dev_to_dev(adapter->pdev),
-				 "The VF MAC address has been set, but the PF device is not up.\n");
-			dev_warn(pci_dev_to_dev(adapter->pdev),
-				 "Bring the PF device up before attempting to use the VF device.\n");
+				"The VF MAC address was NOT set due to invalid or duplicate MAC address.\n");
+		}
+	} else if (is_zero_ether_addr(mac)) {
+		unsigned char *vf_mac_addr =
+						adapter->vfinfo[vf].vf_mac_addresses;
+
+		/* nothing to do */
+		if (is_zero_ether_addr(vf_mac_addr))
+			return 0;
+
+		dev_info(pci_dev_to_dev(adapter->pdev), "removing MAC on VF %d\n",
+			 vf);
+
+		retval = txgbe_del_mac_filter(adapter, vf_mac_addr, vf);
+		if (retval >= 0) {
+			adapter->vfinfo[vf].pf_set_mac = false;
+			memcpy(vf_mac_addr, mac, ETH_ALEN);
+		} else {
+			dev_warn(pci_dev_to_dev(adapter->pdev), "Could NOT remove the VF MAC address.\n");
 		}
 	} else {
-		dev_warn(pci_dev_to_dev(adapter->pdev),
-			 "The VF MAC address was NOT set due to invalid or duplicate MAC address.\n");
+		retval = -EINVAL;
 	}
 
 	return retval;
@@ -1404,7 +1457,7 @@ int txgbe_ndo_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan,
 	if (vf >= adapter->num_vfs || vlan > VLAN_VID_MASK - 1 || qos > 7)
 		return -EINVAL;
 
-	if (vlan_proto != htons(ETH_P_8021Q))
+	if (vlan_proto != htons(ETH_P_8021Q)  && vlan_proto != htons(ETH_P_8021AD))
 		return -EPROTONOSUPPORT;
 
 	if (vlan || qos) {

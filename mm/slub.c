@@ -1619,15 +1619,32 @@ static void *setup_object(struct kmem_cache *s, struct page *page,
 static inline struct page *alloc_slab_page(struct kmem_cache *s,
 		gfp_t flags, int node, struct kmem_cache_order_objects oo)
 {
-	struct page *page;
+	struct page *page, *t;
 	unsigned int order = oo_order(oo);
 
 	flags |= __GFP_NOKFENCE;
+
+	if (unlikely(s->flags & SLAB_OOT)) {
+		spin_lock(&s->oot_lock);
+		list_for_each_entry_safe(page, t, &s->oot_page_list, slab_list) {
+			if (page_to_nid(page) == node ||
+				(node == NUMA_NO_NODE &&
+				page_to_nid(page) == numa_node_id())) {
+				list_del(&page->slab_list);
+				s->oot_page_num--;
+				spin_unlock(&s->oot_lock);
+				goto find;
+			}
+		}
+		spin_unlock(&s->oot_lock);
+	}
+
 	if (node == NUMA_NO_NODE)
 		page = alloc_pages(flags, order);
 	else
 		page = __alloc_pages_node(node, flags, order);
 
+find:
 	if (page)
 		account_slab_page(page, order, s);
 
@@ -1839,6 +1856,8 @@ static struct page *new_slab(struct kmem_cache *s, gfp_t flags, int node)
 		flags & (GFP_RECLAIM_MASK | GFP_CONSTRAINT_MASK), node);
 }
 
+extern unsigned int oot_page_limit;
+
 static void __free_slab(struct kmem_cache *s, struct page *page)
 {
 	int order = compound_order(page);
@@ -1860,6 +1879,20 @@ static void __free_slab(struct kmem_cache *s, struct page *page)
 	if (current->reclaim_state)
 		current->reclaim_state->reclaimed_slab += pages;
 	unaccount_slab_page(page, order, s);
+
+#ifdef CONFIG_MODULES
+	if (unlikely(s->flags & SLAB_OOT)) {
+		if (s->oot_page_num < oot_page_limit) {
+			spin_lock(&s->oot_lock);
+			list_add(&page->slab_list, &s->oot_page_list);
+			s->oot_page_num++;
+			spin_unlock(&s->oot_lock);
+			return;
+		}
+		pr_info_once("Page in buddy may tained by module in oot list\n");
+	}
+#endif
+
 	__free_pages(page, order);
 }
 
@@ -4010,6 +4043,47 @@ void *__kmalloc(size_t size, gfp_t flags)
 }
 EXPORT_SYMBOL(__kmalloc);
 
+#define DEFINE_OOT_FUNC___kmalloc(index)				\
+void *oot___kmalloc_ ## index(size_t size, gfp_t flags)			\
+{									\
+	struct kmem_cache *s;						\
+	void *ret;							\
+									\
+	if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))			\
+		return kmalloc_large(size, flags);			\
+									\
+	s = oot_kmalloc_slab(index, size, flags);			\
+									\
+	if (unlikely(ZERO_OR_NULL_PTR(s)))				\
+		return s;						\
+									\
+	ret = slab_alloc(s, flags, _RET_IP_, size);			\
+									\
+	trace_kmalloc(_RET_IP_, ret, size, s->size, flags);		\
+									\
+	ret = kasan_kmalloc(s, ret, size, flags);			\
+									\
+	return ret;							\
+}									\
+EXPORT_SYMBOL(oot___kmalloc_ ## index)
+
+DEFINE_OOT_FUNC___kmalloc(0);
+DEFINE_OOT_FUNC___kmalloc(1);
+DEFINE_OOT_FUNC___kmalloc(2);
+DEFINE_OOT_FUNC___kmalloc(3);
+DEFINE_OOT_FUNC___kmalloc(4);
+DEFINE_OOT_FUNC___kmalloc(5);
+DEFINE_OOT_FUNC___kmalloc(6);
+DEFINE_OOT_FUNC___kmalloc(7);
+DEFINE_OOT_FUNC___kmalloc(8);
+DEFINE_OOT_FUNC___kmalloc(9);
+DEFINE_OOT_FUNC___kmalloc(10);
+DEFINE_OOT_FUNC___kmalloc(11);
+DEFINE_OOT_FUNC___kmalloc(12);
+DEFINE_OOT_FUNC___kmalloc(13);
+DEFINE_OOT_FUNC___kmalloc(14);
+DEFINE_OOT_FUNC___kmalloc(15);
+
 #ifdef CONFIG_NUMA
 static void *kmalloc_large_node(size_t size, gfp_t flags, int node)
 {
@@ -4057,6 +4131,55 @@ void *__kmalloc_node(size_t size, gfp_t flags, int node)
 	return ret;
 }
 EXPORT_SYMBOL(__kmalloc_node);
+
+#define DEFINE_OOT_FUNC___kmalloc_node(index)				\
+void *oot___kmalloc_node_ ## index(size_t size, gfp_t flags, int node)	\
+{									\
+	struct kmem_cache *s;						\
+	void *ret;							\
+									\
+	if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {			\
+		ret = kmalloc_large_node(size, flags, node);		\
+									\
+		trace_kmalloc_node(_RET_IP_, ret,			\
+				   size, PAGE_SIZE << get_order(size),	\
+				   flags, node);			\
+									\
+		return ret;						\
+	}								\
+									\
+	s = oot_kmalloc_slab(index, size, flags);			\
+									\
+	if (unlikely(ZERO_OR_NULL_PTR(s)))				\
+		return s;						\
+									\
+	ret = slab_alloc_node(s, flags, node, _RET_IP_, size);		\
+									\
+	trace_kmalloc_node(_RET_IP_, ret, size, s->size, flags, node);	\
+									\
+	ret = kasan_kmalloc(s, ret, size, flags);			\
+									\
+	return ret;							\
+}									\
+EXPORT_SYMBOL(oot___kmalloc_node_ ## index)
+
+DEFINE_OOT_FUNC___kmalloc_node(0);
+DEFINE_OOT_FUNC___kmalloc_node(1);
+DEFINE_OOT_FUNC___kmalloc_node(2);
+DEFINE_OOT_FUNC___kmalloc_node(3);
+DEFINE_OOT_FUNC___kmalloc_node(4);
+DEFINE_OOT_FUNC___kmalloc_node(5);
+DEFINE_OOT_FUNC___kmalloc_node(6);
+DEFINE_OOT_FUNC___kmalloc_node(7);
+DEFINE_OOT_FUNC___kmalloc_node(8);
+DEFINE_OOT_FUNC___kmalloc_node(9);
+DEFINE_OOT_FUNC___kmalloc_node(10);
+DEFINE_OOT_FUNC___kmalloc_node(11);
+DEFINE_OOT_FUNC___kmalloc_node(12);
+DEFINE_OOT_FUNC___kmalloc_node(13);
+DEFINE_OOT_FUNC___kmalloc_node(14);
+DEFINE_OOT_FUNC___kmalloc_node(15);
+
 #endif	/* CONFIG_NUMA */
 
 #ifdef CONFIG_HARDENED_USERCOPY
@@ -4427,6 +4550,7 @@ void __init kmem_cache_init(void)
 	/* Now we can use the kmem_cache to allocate kmalloc slabs */
 	setup_kmalloc_cache_index_table();
 	create_kmalloc_caches(0);
+	create_oot_kmalloc_caches(SLAB_OOT);
 
 	/* Setup random freelists for each cache */
 	init_freelist_randomization();
@@ -5092,6 +5216,13 @@ static ssize_t order_show(struct kmem_cache *s, char *buf)
 }
 SLAB_ATTR_RO(order);
 
+static ssize_t oot_page_show(struct kmem_cache *s, char *buf)
+{
+	return sprintf(buf, "%d\n", s->oot_page_num);
+}
+
+SLAB_ATTR_RO(oot_page);
+
 static ssize_t min_partial_show(struct kmem_cache *s, char *buf)
 {
 	return sprintf(buf, "%lu\n", s->min_partial);
@@ -5479,6 +5610,7 @@ static struct attribute *slab_attrs[] = {
 	&object_size_attr.attr,
 	&objs_per_slab_attr.attr,
 	&order_attr.attr,
+	&oot_page_attr.attr,
 	&min_partial_attr.attr,
 	&cpu_partial_attr.attr,
 	&objects_attr.attr,

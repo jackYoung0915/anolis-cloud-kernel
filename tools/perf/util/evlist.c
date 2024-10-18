@@ -1982,3 +1982,28 @@ struct evsel *evlist__find_evsel(struct evlist *evlist, int idx)
 	}
 	return NULL;
 }
+
+void evlist__check_mem_load_aux(struct evlist *evlist)
+{
+	struct evsel *leader, *evsel, *pos;
+
+	/*
+	 * For some platforms, the 'mem-loads' event is required to use
+	 * together with 'mem-loads-aux' within a group and 'mem-loads-aux'
+	 * must be the group leader. Now we disable this group before reporting
+	 * because 'mem-loads-aux' is just an auxiliary event. It doesn't carry
+	 * any valid memory load information.
+	 */
+	evlist__for_each_entry(evlist, evsel) {
+		leader = evsel__leader(evsel);
+		if (leader == evsel)
+			continue;
+
+		if (leader->name && strstr(leader->name, "mem-loads-aux")) {
+			for_each_group_evsel(pos, leader) {
+				evsel__set_leader(pos, pos);
+				pos->core.nr_members = 0;
+			}
+		}
+	}
+}

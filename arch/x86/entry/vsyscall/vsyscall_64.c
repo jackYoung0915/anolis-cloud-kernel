@@ -42,9 +42,11 @@
 #define CREATE_TRACE_POINTS
 #include "vsyscall_trace.h"
 
-static enum { EMULATE, XONLY, NONE } vsyscall_mode __ro_after_init =
+static enum { EMULATE, NATIVE, XONLY, NONE } vsyscall_mode __ro_after_init =
 #ifdef CONFIG_LEGACY_VSYSCALL_NONE
 	NONE;
+#elif defined(CONFIG_LEGACY_VSYSCALL_NATIVE)
+	NATIVE;
 #elif defined(CONFIG_LEGACY_VSYSCALL_XONLY)
 	XONLY;
 #else
@@ -56,6 +58,8 @@ static int __init vsyscall_setup(char *str)
 	if (str) {
 		if (!strcmp("emulate", str))
 			vsyscall_mode = EMULATE;
+		else if (!strcmp("native", str))
+			vsyscall_mode = NATIVE;
 		else if (!strcmp("xonly", str))
 			vsyscall_mode = XONLY;
 		else if (!strcmp("none", str))
@@ -149,6 +153,10 @@ bool emulate_vsyscall(unsigned long error_code,
 	 */
 
 	WARN_ON_ONCE(address != regs->ip);
+
+	/* This should be unreachable in NATIVE mode. */
+	if (WARN_ON(vsyscall_mode == NATIVE))
+		return false;
 
 	if (vsyscall_mode == NONE) {
 		warn_bad_vsyscall(KERN_INFO, regs,
@@ -386,6 +394,12 @@ void __init map_vsyscall(void)
 	if (vsyscall_mode == EMULATE) {
 		__set_fixmap(VSYSCALL_PAGE, physaddr_vsyscall,
 			     PAGE_KERNEL_VVAR);
+		set_vsyscall_pgtable_user_bits(swapper_pg_dir);
+	}
+
+	if (vsyscall_mode == NATIVE) {
+		__set_fixmap(VSYSCALL_PAGE, physaddr_vsyscall,
+			     PAGE_KERNEL_VSYSCALL);
 		set_vsyscall_pgtable_user_bits(swapper_pg_dir);
 	}
 

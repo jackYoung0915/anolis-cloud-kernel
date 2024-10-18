@@ -168,6 +168,7 @@ static inline void dma_pernuma_cma_reserve(void) { }
 #ifdef CONFIG_DMA_DECLARE_COHERENT
 int dma_declare_coherent_memory(struct device *dev, phys_addr_t phys_addr,
 		dma_addr_t device_addr, size_t size);
+void dma_release_coherent_memory(struct device *dev);
 int dma_alloc_from_dev_coherent(struct device *dev, ssize_t size,
 		dma_addr_t *dma_handle, void **ret);
 int dma_release_from_dev_coherent(struct device *dev, int order, void *vaddr);
@@ -186,6 +187,8 @@ static inline int dma_declare_coherent_memory(struct device *dev,
 {
 	return -ENOSYS;
 }
+
+#define dma_release_coherent_memory(dev) (0)
 #define dma_alloc_from_dev_coherent(dev, size, handle, ret) (0)
 #define dma_release_from_dev_coherent(dev, order, vaddr) (0)
 #define dma_mmap_from_dev_coherent(dev, vma, vaddr, order, ret) (0)
@@ -348,5 +351,35 @@ static inline void debug_dma_dump_mappings(struct device *dev)
 #endif /* CONFIG_DMA_API_DEBUG */
 
 extern const struct dma_map_ops dma_dummy_ops;
+
+#if defined CONFIG_PCI && defined CONFIG_X86_64
+#define ZHAOXIN_P2CW_NODE_CHECK		BIT(0)
+#define ZHAOXIN_PATCH_CODE_DEFAULT	ZHAOXIN_P2CW_NODE_CHECK
+#define ZHAOXIN_PATCH_CODE_MAX		ZHAOXIN_P2CW_NODE_CHECK
+extern unsigned long zhaoxin_patch_code;
+bool is_zhaoxin_kh40000(void);
+
+void patch_p2cw_single_map(struct device *dev, dma_addr_t paddr,
+			   enum dma_data_direction dir, const struct dma_map_ops *ops);
+void patch_p2cw_sg_map(struct device *dev, struct scatterlist *sglist,
+		       int nelems, enum dma_data_direction dir, const struct dma_map_ops *ops);
+#else
+static inline bool is_zhaoxin_kh40000(void)
+{
+	return false;
+}
+
+static inline void patch_p2cw_single_map(struct device *dev, dma_addr_t paddr,
+					 enum dma_data_direction dir, const struct dma_map_ops *ops)
+{
+}
+
+static inline void patch_p2cw_sg_map(struct device *dev, struct scatterlist *sglist,
+				     int nelems, enum dma_data_direction dir,
+				     const struct dma_map_ops *ops)
+{
+}
+
+#endif
 
 #endif /* _LINUX_DMA_MAP_OPS_H */

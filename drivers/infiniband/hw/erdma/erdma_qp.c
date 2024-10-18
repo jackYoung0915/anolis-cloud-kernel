@@ -7,8 +7,15 @@
 /* Copyright (c) 2008-2019, IBM Corporation */
 
 #include "kcompat.h"
+
+#include <linux/module.h>
+
 #include "erdma_cm.h"
 #include "erdma_verbs.h"
+
+bool wwi_perf;
+module_param(wwi_perf, bool, 0644);
+MODULE_PARM_DESC(wwi_perf, "Write with Immediate optimize");
 
 void erdma_qp_llp_close(struct erdma_qp *qp)
 {
@@ -61,17 +68,22 @@ static int erdma_modify_qp_state_to_rts(struct erdma_qp *qp,
 	struct sockaddr_storage local_addr, remote_addr;
 
 	if (qp->attrs.connect_without_cm) {
-		req.cookie = FIELD_PREP(ERDMA_CMD_MODIFY_QP_IW_OOB_MASK, 1) |
-			     FIELD_PREP(ERDMA_CMD_MODIFY_QP_RQPN_MASK, qp->attrs.remote_qp_num);
-		if (((struct sockaddr_in *)&qp->attrs.raddr)->sin_family == AF_INET) {
+		req.cookie = FIELD_PREP(ERDMA_CMD_MODIFY_QP_WWI_PERF_MASK, 1) |
+			     FIELD_PREP(ERDMA_CMD_MODIFY_QP_RQPN_MASK,
+					qp->attrs.remote_qp_num);
+		if (((struct sockaddr_in *)&qp->attrs.raddr)->sin_family ==
+		    AF_INET) {
 			req.dip = qp->attrs.raddr.in.sin_addr.s_addr;
 			req.sip = qp->attrs.laddr.in.sin_addr.s_addr;
 		} else if (dev->attrs.cap_flags & ERDMA_DEV_CAP_FLAGS_IPV6) {
-			memcpy(req.ipv6_daddr, &qp->attrs.raddr.in6.sin6_addr.s6_addr,
+			memcpy(req.ipv6_daddr,
+			       &qp->attrs.raddr.in6.sin6_addr.s6_addr,
 			       sizeof(struct in6_addr));
-			memcpy(req.ipv6_saddr, &qp->attrs.laddr.in6.sin6_addr.s6_addr,
+			memcpy(req.ipv6_saddr,
+			       &qp->attrs.laddr.in6.sin6_addr.s6_addr,
 			       sizeof(struct in6_addr));
-			req.cookie |= FIELD_PREP(ERDMA_CMD_MODIFY_QP_IPV6_MASK, 1);
+			req.cookie |=
+				FIELD_PREP(ERDMA_CMD_MODIFY_QP_IPV6_MASK, 1);
 			req.flow_label = 0;
 		} else {
 			return -EAFNOSUPPORT;
@@ -108,12 +120,13 @@ static int erdma_modify_qp_state_to_rts(struct erdma_qp *qp,
 		req.dport = to_sockaddr_in(remote_addr).sin_port;
 		req.sport = to_sockaddr_in(local_addr).sin_port;
 	} else if (dev->attrs.cap_flags & ERDMA_DEV_CAP_FLAGS_IPV6) {
-		req.cookie = FIELD_PREP(ERDMA_CMD_MODIFY_QP_IPV6_MASK, 1) |
-			     FIELD_PREP(ERDMA_CMD_MODIFY_QP_RQPN_MASK, req.cookie);
+		req.cookie =
+			FIELD_PREP(ERDMA_CMD_MODIFY_QP_IPV6_MASK, 1) |
+			FIELD_PREP(ERDMA_CMD_MODIFY_QP_RQPN_MASK, req.cookie);
 		memcpy(req.ipv6_daddr, &to_sockaddr_in6(remote_addr).sin6_addr,
-			sizeof(struct in6_addr));
+		       sizeof(struct in6_addr));
 		memcpy(req.ipv6_saddr, &to_sockaddr_in6(local_addr).sin6_addr,
-			sizeof(struct in6_addr));
+		       sizeof(struct in6_addr));
 		req.dport = to_sockaddr_in6(remote_addr).sin6_port;
 		req.sport = to_sockaddr_in6(local_addr).sin6_port;
 		req.flow_label = to_sockaddr_in6(remote_addr).sin6_flowinfo;
@@ -138,6 +151,9 @@ without_cep:
 		  FIELD_PREP(ERDMA_CMD_MODIFY_QP_CC_MASK, qp->attrs.cc) |
 		  FIELD_PREP(ERDMA_CMD_MODIFY_QP_QPN_MASK, QP_ID(qp));
 
+	if (wwi_perf || compat_mode)
+		req.cookie |= FIELD_PREP(ERDMA_CMD_MODIFY_QP_WWI_PERF_MASK, 1);
+
 	return erdma_post_cmd_wait(&dev->cmdq, &req, sizeof(req), NULL, NULL);
 }
 
@@ -156,7 +172,8 @@ static int erdma_modify_qp_state_to_rts_compat(struct erdma_qp *qp,
 	req.cfg = FIELD_PREP(ERDMA_CMD_MODIFY_QP_STATE_MASK, qp->attrs.state) |
 		  FIELD_PREP(ERDMA_CMD_MODIFY_QP_CC_MASK, qp->attrs.cc) |
 		  FIELD_PREP(ERDMA_CMD_MODIFY_QP_QPN_MASK, QP_ID(qp));
-	req.cookie = FIELD_PREP(ERDMA_CMD_MODIFY_QP_RQPN_MASK, qp->attrs.remote_qp_num);
+	req.cookie = FIELD_PREP(ERDMA_CMD_MODIFY_QP_RQPN_MASK,
+				qp->attrs.remote_qp_num);
 
 	if (((struct sockaddr_in *)&qp->attrs.raddr)->sin_family == AF_INET) {
 		req.dip = qp->attrs.raddr.in.sin_addr.s_addr;
@@ -180,6 +197,9 @@ static int erdma_modify_qp_state_to_rts_compat(struct erdma_qp *qp,
 
 	req.send_nxt = req.sport * 4;
 	req.recv_nxt = req.dport * 4;
+
+	if (wwi_perf || compat_mode)
+		req.cookie |= FIELD_PREP(ERDMA_CMD_MODIFY_QP_WWI_PERF_MASK, 1);
 
 	return erdma_post_cmd_wait(&dev->cmdq, &req, sizeof(req), NULL, NULL);
 }
@@ -501,8 +521,8 @@ static int erdma_push_one_sqe(struct erdma_qp *qp, u16 *pi,
 		regmr_sge->addr = cpu_to_le64(mr->ibmr.iova);
 		regmr_sge->length = cpu_to_le32(mr->ibmr.length);
 		regmr_sge->stag = cpu_to_le32(reg_wr(send_wr)->key);
-		regmr_sge->attr1 =
-			FIELD_PREP(ERDMA_SQE_MR_PGSZ_MASK, ilog2(mr->ibmr.page_size));
+		regmr_sge->attr1 = FIELD_PREP(ERDMA_SQE_MR_PGSZ_MASK,
+					      ilog2(mr->ibmr.page_size));
 		attrs = FIELD_PREP(ERDMA_SQE_MR_PGSZ_AVAIL_MASK, 1) |
 			FIELD_PREP(ERDMA_SQE_MR_ACCESS_MASK, mr->access) |
 			FIELD_PREP(ERDMA_SQE_MR_MTT_CNT_MASK,
@@ -513,7 +533,7 @@ static int erdma_push_one_sqe(struct erdma_qp *qp, u16 *pi,
 			/* Copy SGLs to SQE content to accelerate */
 			memcpy(get_queue_entry(qp->kern_qp.sq_buf, idx + 1,
 					       qp->attrs.sq_size, SQEBB_SHIFT),
-			       mr->mem.pbl->buf, MTT_SIZE(mr->mem.mtt_nents));
+			       mr->mem.mtt->buf, MTT_SIZE(mr->mem.mtt_nents));
 			wqe_size = sizeof(struct erdma_reg_mr_sqe) +
 				   MTT_SIZE(mr->mem.mtt_nents);
 		} else {
@@ -595,7 +615,7 @@ static void kick_sq_db(struct erdma_qp *qp, u16 pi)
 	u64 db_data = FIELD_PREP(ERDMA_SQE_HDR_QPN_MASK, QP_ID(qp)) |
 		      FIELD_PREP(ERDMA_SQE_HDR_WQEBB_INDEX_MASK, pi);
 
-	*(u64 *)qp->kern_qp.sq_db_info = db_data;
+	*(u64 *)qp->kern_qp.sq_dbrec = db_data;
 	writeq(db_data, qp->kern_qp.hw_sq_db);
 }
 
@@ -610,7 +630,6 @@ int erdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *send_wr,
 
 	if (!send_wr)
 		return -EINVAL;
-
 
 	spin_lock_irqsave(&qp->kern_qp.sq_lock, flags);
 	sq_pi = qp->kern_qp.sq_pi;
@@ -644,9 +663,9 @@ int erdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *send_wr,
 static int erdma_post_recv_one(struct erdma_qp *qp,
 			       const struct ib_recv_wr *recv_wr)
 {
-	struct erdma_rqe *rqe =
-		get_queue_entry(qp->kern_qp.rq_buf, qp->kern_qp.rq_pi,
-				qp->attrs.rq_size, RQE_SHIFT);
+	struct erdma_rqe *rqe = get_queue_entry(qp->kern_qp.rq_buf,
+						qp->kern_qp.rq_pi,
+						qp->attrs.rq_size, RQE_SHIFT);
 
 	rqe->qe_idx = cpu_to_le16(qp->kern_qp.rq_pi + 1);
 	rqe->qpn = cpu_to_le32(QP_ID(qp));
@@ -665,7 +684,7 @@ static int erdma_post_recv_one(struct erdma_qp *qp,
 		return -EINVAL;
 	}
 
-	*(u64 *)qp->kern_qp.rq_db_info = *(u64 *)rqe;
+	*(u64 *)qp->kern_qp.rq_dbrec = *(u64 *)rqe;
 	writeq(*(u64 *)rqe, qp->kern_qp.hw_rq_db);
 
 	qp->kern_qp.rwr_tbl[qp->kern_qp.rq_pi & (qp->attrs.rq_size - 1)] =
@@ -682,7 +701,6 @@ int erdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *recv_wr,
 	struct erdma_qp *qp = to_eqp(ibqp);
 	unsigned long flags;
 	int ret = 0;
-
 
 	spin_lock_irqsave(&qp->kern_qp.rq_lock, flags);
 

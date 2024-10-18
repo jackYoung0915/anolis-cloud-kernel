@@ -654,10 +654,18 @@ static inline bool retain_dentry(struct dentry *dentry)
 
 	/* retain; LRU fodder */
 	dentry->d_lockref.count--;
-	if (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST)))
+	if (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST))) {
 		d_lru_add(dentry);
-	else if (unlikely(!(dentry->d_flags & DCACHE_REFERENCED)))
+		return true;
+	}
+
+	if (unlikely(!(dentry->d_flags & DCACHE_REFERENCED)))
 		dentry->d_flags |= DCACHE_REFERENCED;
+#ifdef CONFIG_KIDLED
+	/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
+	if (unlikely(!(dentry->d_flags & DCACHE_KIDLED_YOUNG)))
+		dentry->d_flags |= DCACHE_KIDLED_YOUNG;
+#endif
 	return true;
 }
 
@@ -760,12 +768,12 @@ static inline bool fast_dput(struct dentry *dentry)
 	 */
 	if (unlikely(ret < 0)) {
 		spin_lock(&dentry->d_lock);
-		if (dentry->d_lockref.count > 1) {
-			dentry->d_lockref.count--;
+		if (WARN_ON_ONCE(dentry->d_lockref.count <= 0)) {
 			spin_unlock(&dentry->d_lock);
 			return true;
 		}
-		return false;
+		dentry->d_lockref.count--;
+		goto locked;
 	}
 
 	/*
@@ -823,6 +831,7 @@ static inline bool fast_dput(struct dentry *dentry)
 	 * else could have killed it and marked it dead. Either way, we
 	 * don't need to do anything else.
 	 */
+locked:
 	if (dentry->d_lockref.count) {
 		spin_unlock(&dentry->d_lock);
 		return true;
@@ -1250,10 +1259,19 @@ static enum lru_status dentry_lru_cold_count(struct list_head *item,
 	    kidled_is_slab_scanned(dentry_age, kidled_scan_rounds))
 		goto out;
 
-	if (READ_ONCE(dentry->d_lockref.count) ||
-	    (dentry->d_flags & DCACHE_REFERENCED)) {
+	if (READ_ONCE(dentry->d_lockref.count)) {
 		if (dentry_age)
 			kidled_set_slab_age(dentry, 0);
+		goto out;
+	}
+
+	if (dentry->d_flags & DCACHE_KIDLED_YOUNG) {
+		if (dentry_age)
+			kidled_set_slab_age(dentry, 0);
+		if (spin_trylock(&dentry->d_lock)) {
+			dentry->d_flags &= ~DCACHE_KIDLED_YOUNG;
+			spin_unlock(&dentry->d_lock);
+		}
 		goto out;
 	}
 
@@ -1283,7 +1301,11 @@ static inline bool valid_cold_dentry_check(struct dentry *dentry)
 	assert_spin_locked(&dentry->d_lock);
 	if (dentry->d_lockref.count)
 		return false;
-	if (dentry->d_flags & DCACHE_REFERENCED)
+	/*
+	 * Since RECLAIM_COLDPGS depends on KIDLED, check
+	 * DCACHE_KIDLED_YOUNG instead of DCACHE_REFERENCED.
+	 */
+	if (dentry->d_flags & DCACHE_KIDLED_YOUNG)
 		return false;
 
 	return true;
