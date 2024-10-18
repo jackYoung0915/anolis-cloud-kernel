@@ -1412,4 +1412,3 @@
 - netfilter: nfnetlink_osf: fix possible bogus match in nf_osf_find() (Pablo Neira Ayuso) {CVE-2022-42432}
 - rds: rds_rm_zerocopy_callback() use list_first_entry() (Pietro Borrello) {CVE-2023-1078}
 - anolis: RDMA/erdma: Add erdma to arm64 defconfig (Kai Shen)
-
