@@ -2370,4 +2370,3 @@
 - anolis: crypto: ccp: Add CCP/PSP PCI interface on Hygon hardware (Xin Jiang)
 - anolis: iommu/vt-d: fix alert message of PASID PT SRE checking for EMR (Fengqian Gao)
 - anolis: crypto: ccp: Fix PSP interrupt register's write race (fangbaoshun)
-
