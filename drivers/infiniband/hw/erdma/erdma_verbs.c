@@ -23,10 +23,6 @@
 #include "erdma_cm.h"
 #include "erdma_verbs.h"
 
-bool rand_qpn;
-module_param(rand_qpn, bool, 0444);
-MODULE_PARM_DESC(rand_qpn, "randomized qpn");
-
 static void assemble_qbuf_mtt_for_cmd(struct erdma_mem *mem, u32 *cfg,
 				      u64 *addr0, u64 *addr1)
 {
@@ -1101,7 +1097,6 @@ int erdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attrs,
 	struct erdma_qp *qp = to_eqp(ibqp);
 	struct erdma_ureq_create_qp ureq;
 	struct erdma_ucontext *uctx;
-	u32 next_idx;
 	int ret;
 
 	uctx = rdma_udata_to_drv_context(udata, struct erdma_ucontext,
@@ -1126,10 +1121,6 @@ int erdma_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attrs,
 	kref_init(&qp->ref);
 	init_completion(&qp->safe_free);
 
-	if (rand_qpn) {
-		get_random_bytes(&next_idx, sizeof(u32));
-		dev->next_alloc_qpn = next_idx % dev->attrs.max_qp;
-	}
 	ret = xa_alloc_cyclic(&dev->qp_xa, &qp->ibqp.qp_num, qp,
 			      XA_LIMIT(1, dev->attrs.max_qp - 1),
 			      &dev->next_alloc_qpn, GFP_KERNEL);

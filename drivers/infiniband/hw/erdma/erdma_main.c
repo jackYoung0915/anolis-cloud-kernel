@@ -27,6 +27,10 @@ static int default_cc = -1;
 module_param(default_cc, int, 0444);
 MODULE_PARM_DESC(default_cc, "default cc method");
 
+bool rand_qpn = true;
+module_param(rand_qpn, bool, 0444);
+MODULE_PARM_DESC(rand_qpn, "randomized qpn");
+
 static LIST_HEAD(dev_list);
 
 static void erdma_add_dev_to_list(struct erdma_dev *dev)
@@ -727,6 +731,7 @@ static int erdma_ib_device_add(struct pci_dev *pdev)
 {
 	struct erdma_dev *dev = pci_get_drvdata(pdev);
 	struct ib_device *ibdev = &dev->ibdev;
+	u32 tmp_idx;
 	u64 mac;
 	int ret;
 
@@ -778,6 +783,12 @@ static int erdma_ib_device_add(struct pci_dev *pdev)
 	xa_init_flags(&dev->cq_xa, XA_FLAGS_ALLOC1);
 	dev->next_alloc_cqn = 1;
 	dev->next_alloc_qpn = 1;
+	if (rand_qpn) {
+		get_random_bytes(&tmp_idx, sizeof(u32));
+		dev->next_alloc_qpn = tmp_idx % dev->attrs.max_qp;
+		if (!dev->next_alloc_qpn)
+			dev->next_alloc_qpn = 1;
+	}
 
 	ret = erdma_res_cb_init(dev);
 	if (ret)
