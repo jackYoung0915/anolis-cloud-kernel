@@ -8,17 +8,19 @@ ccp-$(CONFIG_CRYPTO_DEV_SP_CCP) += ccp-dev.o \
 	    ccp-dmaengine.o \
 	    hygon/ccp-dev-v5.o
 ccp-$(CONFIG_CRYPTO_DEV_CCP_DEBUGFS) += ccp-debugfs.o
-ccp-$(CONFIG_PCI) += sp-pci.o
+ccp-$(CONFIG_PCI) += sp-pci.o \
+                     hygon/sp-pci.o
 ccp-$(CONFIG_CRYPTO_DEV_SP_PSP) += psp-dev.o \
                                    sev-dev.o \
                                    tee-dev.o \
                                    platform-access.o \
                                    dbc.o \
-                                   psp-ringbuf.o \
-                                   csv-dev.o \
-                                   vpsp.o
+                                   hygon/psp-dev.o \
+                                   hygon/csv-dev.o \
+                                   hygon/ring-buffer.o \
+                                   hygon/vpsp.o
 
-ccp-$(CONFIG_TDM_DEV_HYGON) += tdm-dev.o
+ccp-$(CONFIG_TDM_DEV_HYGON) += hygon/tdm-dev.o
 obj-$(CONFIG_CRYPTO_DEV_HCT) += hygon/hct.o
 
 obj-$(CONFIG_CRYPTO_DEV_CCP_CRYPTO) += ccp-crypto.o
@@ -30,7 +32,7 @@ ccp-crypto-objs := ccp-crypto-main.o \
 		   ccp-crypto-des3.o \
 		   ccp-crypto-rsa.o \
 		   ccp-crypto-sha.o
-obj-$(CONFIG_TDM_KERNEL_GUARD) += tdm-kernel-guard.o
+obj-$(CONFIG_TDM_KERNEL_GUARD) += hygon/tdm-kernel-guard.o
 
 $(obj)/ccp_sm2_sign.asn1.o: $(obj)/ccp_sm2_sign.asn1.c $(obj)/ccp_sm2_sign.asn1.h
 $(obj)/ccp-crypto-sm2-hygon.o: $(obj)/ccp_sm2_sign.asn1.h
