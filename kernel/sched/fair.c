@@ -692,6 +692,12 @@ static inline bool id_load_balance(void)
 {
 	return sched_feat(ID_LOAD_BALANCE);
 }
+
+static inline bool id_expeller_share_core(void)
+{
+	return sched_feat(ID_EXPELLER_SHARE_CORE);
+}
+
 static inline bool need_expel(int this_cpu, bool *expel_by_smt_sibling)
 {
 	int cpu;
@@ -978,15 +984,19 @@ static inline bool is_idle_seeker_task(struct task_struct *p)
 	return ret;
 }
 
+struct lb_env;
 static noinline int
-id_can_migrate_task(struct task_struct *p, struct rq *src_rq, struct rq *dst_rq)
+id_can_migrate_task(struct task_struct *p, struct lb_env *env)
 {
+	struct rq *src_rq = env->src_rq;
+	struct rq *dst_rq = env->dst_rq;
+
 	/* Do not migrate the last highclass, try someone else */
 	if (sched_feat(ID_LAST_HIGHCLASS_STAY) && __is_highclass_task(p)
 	    && src_rq->nr_high_running < 2)
 		goto bad_dst;
 
-	if (!sched_feat(ID_EXPELLER_SHARE_CORE) &&
+	if (!id_expeller_share_core() && env->id_need_redo &&
 	    task_is_expeller(p) && __rq_on_expel(dst_rq))
 		goto bad_dst;
 
@@ -1119,7 +1129,7 @@ static inline bool is_cpu_in_sys_mode(int cpu)
 #endif
 
 static noinline bool
-id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
+id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle, bool *share_core)
 {
 	struct rq *rq;
 	bool need_expel;
@@ -1157,9 +1167,9 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 	 * highclass workload are heavy, for others they
 	 * don't really need to worry about this.
 	 */
-	if (!sched_feat(ID_EXPELLER_SHARE_CORE) &&
+	if (!id_expeller_share_core() && share_core &&
 	    task_is_expeller(p) && __rq_on_expel(rq))
-		return false;
+		*share_core = false;
 
 	if (need_expel)
 		return false;
@@ -2363,6 +2373,11 @@ static inline bool is_highclass(struct sched_entity *se)
 	return true;
 }
 
+static inline bool task_is_expeller(struct task_struct *p)
+{
+	return false;
+}
+
 static inline bool is_idle_seeker_task(struct task_struct *p)
 {
 	return false;
@@ -2425,9 +2440,15 @@ static inline bool id_load_balance(void)
 {
 	return false;
 }
+
+static inline bool id_expeller_share_core(void)
+{
+	return true;
+}
 #ifdef CONFIG_SMP
+struct lb_env;
 static int
-id_can_migrate_task(struct task_struct *p, struct rq *src_rq, struct rq *dst_rq)
+id_can_migrate_task(struct task_struct *p, struct lb_env *env)
 {
 	return -1;
 }
@@ -2452,7 +2473,7 @@ static inline bool is_cpu_in_sys_mode(int cpu)
 	return false;
 }
 static inline bool
-id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
+id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle, bool *share_core)
 {
 	bool is_idle = available_idle_cpu(cpu);
 
@@ -6972,7 +6993,7 @@ static void __push_expellee(struct rq *rq)
 			for_each_cpu_wrap(i, traverse_mask, cpu) {
 				struct rq *tmp_rq = cpu_rq(i);
 
-				if (id_idle_cpu(p, i, true, &idle)) {
+				if (id_idle_cpu(p, i, true, &idle, NULL)) {
 					dst_cpu = i;
 					dst_rq = cpu_rq(dst_cpu);
 					/*
@@ -8956,7 +8977,7 @@ static inline int find_idlest_cpu(struct sched_domain *sd, struct task_struct *p
 
 static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_backup)
 {
-	bool idle, is_expellee;
+	bool idle, is_expellee, share_core = true;
 
 	is_expellee = is_expellee_task(p);
 	/*
@@ -8965,11 +8986,11 @@ static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_back
 	 * a backup option, which will be pick only when
 	 * failed to locate a real idle one.
 	 */
-	if ((id_idle_cpu(p, cpu, is_expellee, &idle) ||
+	if ((id_idle_cpu(p, cpu, is_expellee, &idle, &share_core) ||
 	    (sched_idle_cpu(cpu) && !task_is_idle(p))) &&
 	    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
 		if (!group_identity_disabled()) {
-			if (idle)
+			if (idle && share_core)
 				return cpu;
 			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu))
 				*id_backup = cpu;
@@ -9084,7 +9105,7 @@ static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int t
 		if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)) ||
 		    !cpumask_test_cpu(cpu, sched_domain_span(sd)))
 			continue;
-		if (id_idle_cpu(p, cpu, is_expellee, NULL))
+		if (id_idle_cpu(p, cpu, is_expellee, NULL, NULL))
 			return cpu;
 		if (backup_cpu == -1 && sched_idle_cpu(cpu) && !task_is_idle(p))
 			backup_cpu = cpu;
@@ -9267,6 +9288,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	unsigned long task_util, util_min, util_max;
 	int i, recent_used_cpu, prev_aff = -1;
 	bool is_expellee = is_expellee_task(p);
+	bool share_core = true;
 
 	/*
 	 * On asymmetric system, update task utilization because we will check
@@ -9284,7 +9306,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	 */
 	lockdep_assert_irqs_disabled();
 
-	if ((id_idle_cpu(p, target, is_expellee, NULL) ||
+	if ((id_idle_cpu(p, target, is_expellee, NULL, &share_core) ||
 	    (sched_idle_cpu(target) && !task_is_idle(p))) &&
 	    asym_fits_cpu(task_util, util_min, util_max, target))
 		return target;
@@ -9293,7 +9315,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	 * If the previous CPU is cache affine and idle, don't be stupid:
 	 */
 	if (prev != target && cpus_share_cache(prev, target) &&
-	    (id_idle_cpu(p, prev, is_expellee, NULL) ||
+	    (id_idle_cpu(p, prev, is_expellee, NULL, &share_core) ||
 	    (sched_idle_cpu(prev) && !task_is_idle(p))) &&
 	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
 
@@ -9325,7 +9347,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	if (recent_used_cpu != prev &&
 	    recent_used_cpu != target &&
 	    cpus_share_cache(recent_used_cpu, target) &&
-	    (id_idle_cpu(p, recent_used_cpu, is_expellee, NULL) ||
+	    (id_idle_cpu(p, recent_used_cpu, is_expellee, NULL, &share_core) ||
 	    (sched_idle_cpu(recent_used_cpu) && !task_is_idle(p))) &&
 	    cpumask_test_cpu(p->recent_used_cpu, task_allowed_cpu(p)) &&
 	    asym_fits_cpu(task_util, util_min, util_max, recent_used_cpu)) {
@@ -9866,7 +9888,7 @@ select:
 		if (is_highclass_task(p) && found_id_idle_cpu()) {
 			rq = cpu_rq(new_cpu);
 			rq_lock(rq, &rf);
-			if (!id_idle_cpu(p, new_cpu, false, NULL)) {
+			if (!id_idle_cpu(p, new_cpu, false, NULL, NULL)) {
 				if (nr_tries > 0) {
 					nr_tries--;
 					rq_unlock(rq, &rf);
@@ -10777,7 +10799,7 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 	}
 
 	if (!group_identity_disabled()) {
-		ret = id_can_migrate_task(p, env->src_rq, env->dst_rq);
+		ret = id_can_migrate_task(p, env);
 		if (ret != -1)
 			return ret;
 	}
@@ -10828,6 +10850,9 @@ static struct task_struct *detach_one_task(struct lb_env *env)
 
 	lockdep_assert_rq_held(env->src_rq);
 
+#ifdef CONFIG_GROUP_IDENTITY
+redo:
+#endif
 	list_for_each_entry_reverse(p,
 			&env->src_rq->cfs_tasks, se.group_node) {
 		if (!can_migrate_task(p, env))
@@ -10844,6 +10869,12 @@ static struct task_struct *detach_one_task(struct lb_env *env)
 		schedstat_inc(env->sd->lb_gained[env->idle]);
 		return p;
 	}
+#ifdef CONFIG_GROUP_IDENTITY
+	if (!id_expeller_share_core() && env->id_need_redo) {
+		env->id_need_redo = false;
+		goto redo;
+	}
+#endif
 	return NULL;
 }
 
@@ -12980,7 +13011,8 @@ more_balance:
 	}
 
 #ifdef CONFIG_GROUP_IDENTITY
-	if (id_load_balance() && env.imbalance > 0 && env.id_need_redo) {
+	if ((!id_expeller_share_core() || id_load_balance()) &&
+	    env.imbalance > 0 && env.id_need_redo) {
 		env.id_need_redo = false;
 		goto redo;
 	}
@@ -13194,6 +13226,9 @@ static int active_load_balance_cpu_stop(void *data)
 			.src_cpu	= busiest_rq->cpu,
 			.src_rq		= busiest_rq,
 			.idle		= CPU_IDLE,
+#ifdef CONFIG_GROUP_IDENTITY
+			.id_need_redo	= true,
+#endif
 			/*
 			 * can_migrate_task() doesn't need to compute new_dst_cpu
 			 * for active balancing. Since we have CPU_IDLE, but no
