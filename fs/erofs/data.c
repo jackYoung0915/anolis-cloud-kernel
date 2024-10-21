@@ -179,7 +179,7 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 	if (map->m_la >= inode->i_size) {
 		/* leave out-of-bound access unmapped */
 		map->m_flags = 0;
-		map->m_plen = 0;
+		map->m_plen = map->m_llen;
 		goto out;
 	}
 
@@ -252,6 +252,7 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 	map->m_fp = EROFS_SB(sb)->bootstrap;
 #endif
 	map->m_fscache = EROFS_SB(sb)->s_fscache;
+	map->m_fmntp = EROFS_SB(sb)->fdev;
 
 	if (map->m_deviceid) {
 		down_read(&devs->rwsem);
@@ -271,6 +272,7 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 		map->m_fp = dif->blobfile;
 #endif
 		map->m_fscache = dif->fscache;
+		map->m_fmntp = dif->file;
 		up_read(&devs->rwsem);
 	} else if (devs->extra_devices && !devs->flatdev) {
 		down_read(&devs->rwsem);
@@ -291,12 +293,61 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 				map->m_fp = dif->blobfile;
 #endif
 				map->m_fscache = dif->fscache;
+				map->m_fmntp = dif->file;
 				break;
 			}
 		}
 		up_read(&devs->rwsem);
 	}
 	return 0;
+}
+
+/*
+ * bit 30: I/O error occurred on this page
+ * bit 0 - 29: remaining parts to complete this page
+ */
+#define Z_EROFS_PAGE_EIO			(1 << 30)
+
+void erofs_onlinepage_init(struct page *page)
+{
+	union {
+		atomic_t o;
+		unsigned long v;
+	} u = { .o = ATOMIC_INIT(1) };
+
+	set_page_private(page, u.v);
+	smp_wmb();
+	SetPagePrivate(page);
+}
+
+void erofs_onlinepage_split(struct page *page)
+{
+	atomic_inc((atomic_t *)&page->private);
+}
+
+void erofs_page_mark_eio(struct page *page)
+{
+	int orig;
+
+	do {
+		orig = atomic_read((atomic_t *)&page->private);
+	} while (atomic_cmpxchg((atomic_t *)&page->private, orig,
+				orig | Z_EROFS_PAGE_EIO) != orig);
+}
+
+void erofs_onlinepage_endio(struct page *page)
+{
+	unsigned int v;
+
+	DBG_BUGON(!PagePrivate(page));
+	v = atomic_dec_return((atomic_t *)&page->private);
+	if (!(v & ~Z_EROFS_PAGE_EIO)) {
+		set_page_private(page, 0);
+		ClearPagePrivate(page);
+		if (!(v & Z_EROFS_PAGE_EIO))
+			SetPageUptodate(page);
+		unlock_page(page);
+	}
 }
 
 static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,

@@ -391,6 +391,7 @@ struct page *erofs_grab_cache_page_nowait(struct address_space *mapping,
 extern const struct super_operations erofs_sops;
 
 extern const struct address_space_operations erofs_raw_access_aops;
+extern const struct address_space_operations erofs_fileio_aops;
 extern const struct address_space_operations z_erofs_aops;
 
 enum {
@@ -461,6 +462,7 @@ struct erofs_map_dev {
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *m_fp;
 #endif
+	struct file *m_fmntp;
 	erofs_off_t m_pa;
 	unsigned int m_deviceid;
 };
@@ -476,6 +478,11 @@ void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
 			 erofs_blk_t blkaddr, enum erofs_kmap_type type);
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *dev);
 int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map);
+void erofs_onlinepage_init(struct page *page);
+void erofs_onlinepage_split(struct page *page);
+void erofs_page_mark_eio(struct page *page);
+void erofs_onlinepage_endio(struct page *page);
+
 extern const struct file_operations erofs_file_fops;
 
 /* inode.c */

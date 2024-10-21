@@ -119,53 +119,6 @@ static inline unsigned int z_erofs_pclusterpages(struct z_erofs_pcluster *pcl)
 	return pcl->pclusterpages;
 }
 
-/*
- * bit 30: I/O error occurred on this page
- * bit 0 - 29: remaining parts to complete this page
- */
-#define Z_EROFS_PAGE_EIO			(1 << 30)
-
-static inline void z_erofs_onlinepage_init(struct page *page)
-{
-	union {
-		atomic_t o;
-		unsigned long v;
-	} u = { .o = ATOMIC_INIT(1) };
-
-	set_page_private(page, u.v);
-	smp_wmb();
-	SetPagePrivate(page);
-}
-
-static inline void z_erofs_onlinepage_split(struct page *page)
-{
-	atomic_inc((atomic_t *)&page->private);
-}
-
-static inline void z_erofs_page_mark_eio(struct page *page)
-{
-	int orig;
-
-	do {
-		orig = atomic_read((atomic_t *)&page->private);
-	} while (atomic_cmpxchg((atomic_t *)&page->private, orig,
-				orig | Z_EROFS_PAGE_EIO) != orig);
-}
-
-static inline void z_erofs_onlinepage_endio(struct page *page)
-{
-	unsigned int v;
-
-	DBG_BUGON(!PagePrivate(page));
-	v = atomic_dec_return((atomic_t *)&page->private);
-	if (!(v & ~Z_EROFS_PAGE_EIO)) {
-		set_page_private(page, 0);
-		ClearPagePrivate(page);
-		if (!(v & Z_EROFS_PAGE_EIO))
-			SetPageUptodate(page);
-		unlock_page(page);
-	}
-}
 
 #define Z_EROFS_ONSTACK_PAGES		32
 
@@ -808,7 +761,7 @@ static int z_erofs_do_read_page(struct z_erofs_decompress_frontend *fe,
 	int err = 0;
 
 	/* register locked file pages as online pages in pack */
-	z_erofs_onlinepage_init(page);
+	erofs_onlinepage_init(page);
 
 	spiltted = 0;
 	end = PAGE_SIZE;
@@ -907,7 +860,7 @@ hitted:
 	if (err)
 		goto out;
 
-	z_erofs_onlinepage_split(page);
+	erofs_onlinepage_split(page);
 	/* bump up the number of spiltted parts of a page */
 	++spiltted;
 	if (fe->pcl->pageofs_out != (map->m_la & ~PAGE_MASK))
@@ -931,8 +884,8 @@ next_part:
 
 out:
 	if (err)
-		z_erofs_page_mark_eio(page);
-	z_erofs_onlinepage_endio(page);
+		erofs_page_mark_eio(page);
+	erofs_onlinepage_endio(page);
 
 	erofs_dbg("%s, finish page: %pK spiltted: %u map->m_llen %llu",
 		  __func__, page, spiltted, map->m_llen);
@@ -1030,8 +983,8 @@ static void z_erofs_fill_other_copies(struct z_erofs_decompress_backend *be,
 		}
 		kunmap_atomic(dst);
 		if (err)
-			z_erofs_page_mark_eio(bvi->bvec.page);
-		z_erofs_onlinepage_endio(bvi->bvec.page);
+			erofs_page_mark_eio(bvi->bvec.page);
+		erofs_onlinepage_endio(bvi->bvec.page);
 		list_del(p);
 		kfree(bvi);
 	}
@@ -1202,8 +1155,8 @@ out:
 		if (z_erofs_put_shortlivedpage(be->pagepool, page))
 			continue;
 		if (err)
-			z_erofs_page_mark_eio(page);
-		z_erofs_onlinepage_endio(page);
+			erofs_page_mark_eio(page);
+		erofs_onlinepage_endio(page);
 	}
 
 	if (be->decompressed_pages != be->onstack_pages)

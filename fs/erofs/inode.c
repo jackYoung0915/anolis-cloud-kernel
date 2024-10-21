@@ -284,12 +284,14 @@ static int erofs_fill_inode(struct inode *inode)
 		goto out_unlock;
 	}
 
-	if (erofs_is_fileio_mode(EROFS_SB(inode->i_sb))) {
-		/* XXX: data I/Os will be implemented in the following patches */
-		err = -EOPNOTSUPP;
-		goto out_unlock;
-	} else if (erofs_inode_is_data_compressed(vi->datalayout)) {
+	if (erofs_inode_is_data_compressed(vi->datalayout)) {
 #ifdef CONFIG_EROFS_FS_ZIP
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+		if (erofs_is_fileio_mode(EROFS_SB(inode->i_sb))) {
+			err = -EOPNOTSUPP;
+			goto out_unlock;
+		}
+#endif
 		if (!erofs_is_fscache_mode(inode->i_sb) &&
 		    inode->i_sb->s_blocksize_bits == PAGE_SHIFT) {
 			inode->i_mapping->a_ops = &z_erofs_aops;
@@ -309,6 +311,10 @@ static int erofs_fill_inode(struct inode *inode)
 #endif
 	} else {
 		inode->i_mapping->a_ops = &erofs_raw_access_aops;
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+		if (erofs_is_fileio_mode(EROFS_SB(inode->i_sb)))
+			inode->i_mapping->a_ops = &erofs_fileio_aops;
+#endif
 	}
 
 out_unlock:
