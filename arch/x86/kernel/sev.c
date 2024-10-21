@@ -33,6 +33,7 @@
 #include <asm/insn-eval.h>
 #include <asm/fpu/xcr.h>
 #include <asm/processor.h>
+#include <asm/processor-hygon.h>
 #include <asm/realmode.h>
 #include <asm/setup.h>
 #include <asm/traps.h>
@@ -1867,7 +1868,7 @@ static bool vc_raw_handle_exception(struct pt_regs *regs, unsigned long error_co
 	 * codes here are in atomic context. If #VC comes from user mode, then
 	 * it's necessary to switch to atomic context manually.
 	 */
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON && !in_nmi())
+	if (is_x86_vendor_hygon() && !in_nmi())
 		__preempt_count_add(HARDIRQ_OFFSET);
 
 	ghcb = __sev_get_ghcb(&state);
@@ -1880,7 +1881,7 @@ static bool vc_raw_handle_exception(struct pt_regs *regs, unsigned long error_co
 
 	__sev_put_ghcb(&state);
 
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON && !in_nmi())
+	if (is_x86_vendor_hygon() && !in_nmi())
 		__preempt_count_sub(HARDIRQ_OFFSET);
 
 	/* Done - now check the result */
