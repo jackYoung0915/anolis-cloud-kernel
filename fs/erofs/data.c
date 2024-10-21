@@ -117,6 +117,9 @@ void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
 	if (erofs_is_fscache_mode(sb))
 		return erofs_bread(buf, EROFS_SB(sb)->s_fscache->inode,
 				   blkaddr, type);
+	else if (erofs_is_fileio_mode(EROFS_SB(sb)))
+		return erofs_bread(buf, EROFS_SB(sb)->fdev->f_inode,
+				   blkaddr, type);
 
 	return erofs_bread(buf, sb->s_bdev->bd_inode, blkaddr, type);
 }

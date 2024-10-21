@@ -51,6 +51,7 @@ typedef u32 erofs_blk_t;
 struct erofs_device_info {
 	char *path;
 	struct erofs_fscache *fscache;
+	struct file *file;
 	struct block_device *bdev;
 	struct dax_device *dax_dev;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
@@ -138,6 +139,7 @@ struct erofs_sb_info {
 	char *bootstrap_path;
 	char *blob_dir_path;
 #endif
+	struct file *fdev;
 	struct erofs_dev_context *devs;
 	struct dax_device *dax_dev;
 	u64 total_blocks;
@@ -199,11 +201,16 @@ static inline bool erofs_is_rafsv6_mode(struct super_block *sb)
 #endif
 }
 
+static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
+{
+	return IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) && sbi->fdev;
+}
+
 static inline bool erofs_is_fscache_mode(struct super_block *sb)
 {
 	/* to distinguish from rafsv6 which also works in nodev mode */
 	return IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && !sb->s_bdev &&
-	       EROFS_SB(sb)->fsid;
+	       !erofs_is_fileio_mode(EROFS_SB(sb)) && EROFS_SB(sb)->fsid;
 }
 
 enum {
