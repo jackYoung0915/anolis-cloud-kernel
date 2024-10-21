@@ -570,6 +570,14 @@ static inline void erofs_pcpubuf_init(void) {}
 static inline void erofs_pcpubuf_exit(void) {}
 #endif	/* !CONFIG_EROFS_FS_ZIP */
 
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+struct bio *erofs_fileio_bio_alloc(struct erofs_map_dev *mdev);
+void erofs_fileio_submit_bio(struct bio *bio);
+#else
+static inline struct bio *erofs_fileio_bio_alloc(struct erofs_map_dev *mdev) { return NULL; }
+static inline void erofs_fileio_submit_bio(struct bio *bio) {}
+#endif
+
 #ifdef CONFIG_EROFS_FS_ZIP_LZMA
 int z_erofs_lzma_init(void);
 void z_erofs_lzma_exit(void);
