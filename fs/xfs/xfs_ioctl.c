@@ -2478,7 +2478,8 @@ xfs_file_ioctl(
 			goto out;
 		}
 
-		if (!i_size_read(inode) || !inode->i_blocks) {
+		if (!XFS_ISIZE(ip) ||
+		    !XFS_FSB_TO_BB(mp, ip->i_d.di_nblocks + ip->i_delayed_blks)) {
 			/* set atomic write only after file is newly created */
 			xfs_info(mp, "set atomic write for inode %lld", ip->i_ino);
 			error = xfs_ioc_set_atomic_write(ip);
