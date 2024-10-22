@@ -2283,40 +2283,45 @@ static int sd_read_protection_type(struct scsi_disk *sdkp, unsigned char *buffer
 {
 	struct scsi_device *sdp = sdkp->device;
 	u8 type;
-	int ret = 0;
 
 	if (scsi_device_protection(sdp) == 0 || (buffer[12] & 1) == 0) {
 		sdkp->protection_type = 0;
-		return ret;
+		return 0;
 	}
 
 	type = ((buffer[12] >> 1) & 7) + 1; /* P_TYPE 0 = Type 1 */
 
-	if (type > T10_PI_TYPE3_PROTECTION)
-		ret = -ENODEV;
-	else if (scsi_host_dif_capable(sdp->host, type))
-		ret = 1;
-
-	if (sdkp->first_scan || type != sdkp->protection_type)
-		switch (ret) {
-		case -ENODEV:
-			sd_printk(KERN_ERR, sdkp, "formatted with unsupported" \
-				  " protection type %u. Disabling disk!\n",
-				  type);
-			break;
-		case 1:
-			sd_printk(KERN_NOTICE, sdkp,
-				  "Enabling DIF Type %u protection\n", type);
-			break;
-		case 0:
-			sd_printk(KERN_NOTICE, sdkp,
-				  "Disabling DIF Type %u protection\n", type);
-			break;
-		}
+	if (type > T10_PI_TYPE3_PROTECTION) {
+		sd_printk(KERN_ERR, sdkp, "formatted with unsupported"	\
+			  " protection type %u. Disabling disk!\n",
+			  type);
+		sdkp->protection_type = 0;
+		return -ENODEV;
+	}
 
 	sdkp->protection_type = type;
 
-	return ret;
+	return 0;
+}
+
+static void sd_config_protection(struct scsi_disk *sdkp)
+{
+	struct scsi_device *sdp = sdkp->device;
+
+	sd_dif_config_host(sdkp);
+
+	if (!sdkp->protection_type)
+		return;
+
+	if (!scsi_host_dif_capable(sdp->host, sdkp->protection_type)) {
+		sd_first_printk(KERN_NOTICE, sdkp,
+				"Disabling DIF Type %u protection\n",
+				sdkp->protection_type);
+		sdkp->protection_type = 0;
+	}
+
+	sd_first_printk(KERN_NOTICE, sdkp, "Enabling DIF Type %u protection\n",
+			sdkp->protection_type);
 }
 
 static void read_capacity_error(struct scsi_disk *sdkp, struct scsi_device *sdp,
@@ -3244,6 +3249,7 @@ static int sd_revalidate_disk(struct gendisk *disk)
 		sd_read_app_tag_own(sdkp, buffer);
 		sd_read_write_same(sdkp, buffer);
 		sd_read_security(sdkp, buffer);
+		sd_config_protection(sdkp);
 	}
 
 	/*
@@ -3490,11 +3496,7 @@ static int sd_probe(struct device *dev)
 			sdp->host->hostt->rpm_autosuspend_delay);
 	}
 	device_add_disk(dev, gd, NULL);
-	if (sdkp->capacity)
-		sd_dif_config_host(sdkp);
-
-	sd_revalidate_disk(gd);
-
+	blk_delete_region(disk_devt(sdkp->disk), SD_MINORS, sd_default_probe);
 	if (sdkp->security) {
 		sdkp->opal_dev = init_opal_dev(sdkp, &sd_sec_submit);
 		if (sdkp->opal_dev)
@@ -3658,6 +3660,7 @@ static int sd_suspend_common(struct device *dev, bool ignore_stop_errors)
 {
 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
 	struct scsi_sense_hdr sshdr;
+	int retries;
 	int ret = 0;
 
 	if (!sdkp)	/* E.g.: runtime suspend following sd_remove() */
@@ -3688,9 +3691,15 @@ static int sd_suspend_common(struct device *dev, bool ignore_stop_errors)
 	if (sdkp->device->manage_start_stop) {
 		sd_printk(KERN_NOTICE, sdkp, "Stopping disk\n");
 		/* an error is not worth aborting a system sleep */
-		ret = sd_start_stop_device(sdkp, 0);
-		if (ignore_stop_errors)
-			ret = 0;
+		for (retries = 3; retries > 0; --retries) {
+			ret = sd_start_stop_device(sdkp, 0);
+			if (!ret)
+				break;
+			if (ignore_stop_errors) {
+				ret = 0;
+				break;
+			}
+		}
 	}
 
 	return ret;
@@ -3709,6 +3718,7 @@ static int sd_suspend_runtime(struct device *dev)
 static int sd_resume(struct device *dev)
 {
 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
+	int retries;
 	int ret;
 
 	if (!sdkp)	/* E.g.: runtime resume at the start of sd_probe() */
@@ -3718,9 +3728,13 @@ static int sd_resume(struct device *dev)
 		return 0;
 
 	sd_printk(KERN_NOTICE, sdkp, "Starting disk\n");
-	ret = sd_start_stop_device(sdkp, 1);
-	if (!ret)
-		opal_unlock_from_suspend(sdkp->opal_dev);
+	for (retries = 3; retries > 0; --retries) {
+		ret = sd_start_stop_device(sdkp, 1);
+		if (!ret) {
+			opal_unlock_from_suspend(sdkp->opal_dev);
+			break;
+		}
+	}
 	return ret;
 }
 

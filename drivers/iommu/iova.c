@@ -727,7 +727,8 @@ EXPORT_SYMBOL_GPL(reserve_iova);
 /*
  * As kmalloc's buffer size is fixed to power of 2, 127 is chosen to
  * assure size of 'iova_magazine' to be 1024 bytes, so that no memory
- * will be wasted.
+ * will be wasted. Since only full magazines are inserted into the depot,
+ * we don't need to waste PFN capacity on a separate list head either.
  */
 #define IOVA_MAG_SIZE 127
 
