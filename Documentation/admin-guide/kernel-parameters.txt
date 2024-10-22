@@ -6069,6 +6069,10 @@
 			brightness level.
 			default: 1
 
+	virtio_blk.virtio_blk_irq_affinity= [0,1]
+			Let virtio_blk use kernel managed irq affinity or not
+			default: 1
+
 	virtio_mmio.device=
 			[VMMIO] Memory mapped virtio (platform) device.
 
@@ -6084,6 +6088,10 @@
 				virtio_mmio.device=1K@0x100b0000:48:7
 
 			Can be used multiple times for multiple devices.
+
+	virtio_scsi.virtio_scsi_irq_affinity= [0,1]
+			Let virtio_scsi use kernel managed irq affinity or not
+			default: 1
 
 	vga=		[BOOT,X86-32] Select a particular video mode
 			See Documentation/x86/boot.rst and
