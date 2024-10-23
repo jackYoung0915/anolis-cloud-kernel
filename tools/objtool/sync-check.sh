@@ -14,9 +14,11 @@ arch/x86/include/asm/nops.h
 arch/x86/include/asm/inat_types.h
 arch/x86/include/asm/orc_types.h
 arch/x86/include/asm/emulate_prefix.h
+arch/x86/include/asm/unwind_hints.h
 arch/x86/lib/x86-opcode-map.txt
 arch/x86/tools/gen-insn-attr-x86.awk
 include/linux/static_call_types.h
+include/linux/orc_entry.h
 "
 
 SYNC_CHECK_FILES='
@@ -25,6 +27,14 @@ arch/x86/include/asm/insn.h
 arch/x86/lib/inat.c
 arch/x86/lib/insn.c
 '
+fi
+
+if [ "$SRCARCH" = "arm64" ]; then
+FILES="$FILES
+arch/arm64/include/asm/unwind_hints.h
+arch/arm64/include/asm/orc_types.h
+include/linux/orc_entry.h
+"
 fi
 
 check_2 () {
