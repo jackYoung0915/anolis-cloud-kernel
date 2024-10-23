@@ -152,11 +152,6 @@ static inline struct virtio_fs_vq *vq_to_fsvq(struct virtqueue *vq)
 	return &fs->vqs[vq->index];
 }
 
-static inline struct fuse_pqueue *vq_to_fpq(struct virtqueue *vq)
-{
-	return &vq_to_fsvq(vq)->fud->pq;
-}
-
 /* Should be called with fsvq->lock held. */
 static inline void inc_in_flight_req(struct virtio_fs_vq *fsvq)
 {
@@ -990,8 +985,7 @@ out:
 }
 
 /* Free virtqueues (device must already be reset) */
-static void virtio_fs_cleanup_vqs(struct virtio_device *vdev,
-				  struct virtio_fs *fs)
+static void virtio_fs_cleanup_vqs(struct virtio_device *vdev)
 {
 	vdev->config->del_vqs(vdev);
 }
@@ -1005,7 +999,7 @@ static long virtio_fs_direct_access(struct dax_device *dax_dev, pgoff_t pgoff,
 {
 	struct virtio_fs *fs = dax_get_private(dax_dev);
 	phys_addr_t offset = PFN_PHYS(pgoff);
-	size_t max_nr_pages = fs->window_len/PAGE_SIZE - pgoff;
+	size_t max_nr_pages = fs->window_len / PAGE_SIZE - pgoff;
 
 	if (kaddr)
 		*kaddr = fs->window_kaddr + offset;
@@ -1192,7 +1186,7 @@ static int virtio_fs_probe(struct virtio_device *vdev)
 
 out_vqs:
 	vdev->config->reset(vdev);
-	virtio_fs_cleanup_vqs(vdev, fs);
+	virtio_fs_cleanup_vqs(vdev);
 
 out:
 	vdev->priv = NULL;
@@ -1227,7 +1221,7 @@ static void virtio_fs_remove(struct virtio_device *vdev)
 	virtio_fs_stop_all_queues(fs);
 	virtio_fs_drain_all_queues_locked(fs);
 	vdev->config->reset(vdev);
-	virtio_fs_cleanup_vqs(vdev, fs);
+	virtio_fs_cleanup_vqs(vdev);
 
 	vdev->priv = NULL;
 	/* Put device reference on virtio_fs object */
@@ -1739,15 +1733,18 @@ static int virtio_fs_get_tree(struct fs_context *fsc)
 
 	fsc->s_fs_info = fm;
 	sb = sget_fc(fsc, virtio_fs_test_super, set_anon_super_fc);
-	if (fsc->s_fs_info)
-		fuse_mount_put(fm);
+	if (fsc->s_fs_info) {
+		fuse_conn_put(fc);
+		kfree(fm);
+	}
 	if (IS_ERR(sb))
 		return PTR_ERR(sb);
 
 	if (!sb->s_root) {
 		err = virtio_fs_fill_super(sb, fsc);
 		if (err) {
-			fuse_mount_put(fm);
+			fuse_conn_put(fc);
+			kfree(fm);
 			sb->s_fs_info = NULL;
 			deactivate_locked_super(sb);
 			return err;

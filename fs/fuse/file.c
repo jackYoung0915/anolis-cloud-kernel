@@ -288,7 +288,7 @@ out_inode_unlock:
 }
 
 static void fuse_prepare_release(struct fuse_inode *fi, struct fuse_file *ff,
-				 int flags, int opcode)
+				 unsigned int flags, int opcode)
 {
 	struct fuse_conn *fc = ff->fm->fc;
 	struct fuse_release_args *ra = ff->release_args;
@@ -367,7 +367,8 @@ static int fuse_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-void fuse_sync_release(struct fuse_inode *fi, struct fuse_file *ff, int flags)
+void fuse_sync_release(struct fuse_inode *fi, struct fuse_file *ff,
+		       unsigned int flags)
 {
 	WARN_ON(refcount_read(&ff->count) > 1);
 	fuse_prepare_release(fi, ff, flags, FUSE_RELEASE);
@@ -667,7 +668,7 @@ static ssize_t fuse_get_res_by_io(struct fuse_io_priv *io)
  * == bytes_transferred or rw == WRITE, the caller sets 'pos' to -1.
  *
  * An example:
- * User requested DIO read of 64K. It was splitted into two 32K fuse requests,
+ * User requested DIO read of 64K. It was split into two 32K fuse requests,
  * both submitted asynchronously. The first of them was ACKed by userspace as
  * fully completed (req->out.args[0].size == 32K) resulting in pos == -1. The
  * second request was ACKed as short, e.g. only 1K was read, resulting in
@@ -1568,7 +1569,7 @@ static int fuse_get_user_pages(struct fuse_args_pages *ap, struct iov_iter *ii,
 		nbytes += ret;
 
 		ret += start;
-		npages = (ret + PAGE_SIZE - 1) / PAGE_SIZE;
+		npages = DIV_ROUND_UP(ret, PAGE_SIZE);
 
 		ap->descs[ap->num_pages].offset = start;
 		fuse_page_descs_length_init(ap->descs, ap->num_pages, npages);
@@ -1624,7 +1625,6 @@ ssize_t fuse_direct_io(struct fuse_io_priv *io, struct iov_iter *iter,
 		}
 	}
 
-	ia->io = io;
 	if (!cuse && fuse_range_is_writeback(inode, idx_from, idx_to)) {
 		if (!write)
 			inode_lock(inode);
@@ -2017,33 +2017,29 @@ static void fuse_writepage_end(struct fuse_mount *fm, struct fuse_args *args,
 	fuse_writepage_free(wpa);
 }
 
-static struct fuse_file *__fuse_write_file_get(struct fuse_conn *fc,
-					       struct fuse_inode *fi)
+static struct fuse_file *__fuse_write_file_get(struct fuse_inode *fi)
 {
-	struct fuse_file *ff = NULL;
+	struct fuse_file *ff;
 
 	spin_lock(&fi->lock);
-	if (!list_empty(&fi->write_files)) {
-		ff = list_entry(fi->write_files.next, struct fuse_file,
-				write_entry);
+	ff = list_first_entry_or_null(&fi->write_files, struct fuse_file,
+				      write_entry);
+	if (ff)
 		fuse_file_get(ff);
-	}
 	spin_unlock(&fi->lock);
 
 	return ff;
 }
 
-static struct fuse_file *fuse_write_file_get(struct fuse_conn *fc,
-					     struct fuse_inode *fi)
+static struct fuse_file *fuse_write_file_get(struct fuse_inode *fi)
 {
-	struct fuse_file *ff = __fuse_write_file_get(fc, fi);
+	struct fuse_file *ff = __fuse_write_file_get(fi);
 	WARN_ON(!ff);
 	return ff;
 }
 
 int fuse_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	struct fuse_conn *fc = get_fuse_conn(inode);
 	struct fuse_inode *fi = get_fuse_inode(inode);
 	struct fuse_file *ff;
 	int err;
@@ -2059,7 +2055,7 @@ int fuse_write_inode(struct inode *inode, struct writeback_control *wbc)
 	 */
 	WARN_ON(wbc->for_reclaim);
 
-	ff = __fuse_write_file_get(fc, fi);
+	ff = __fuse_write_file_get(fi);
 	err = fuse_flush_times(inode, ff);
 	if (ff)
 		fuse_file_put(ff, false, false);
@@ -2090,7 +2086,6 @@ static int fuse_writepage_locked(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
 	struct inode *inode = mapping->host;
-	struct fuse_conn *fc = get_fuse_conn(inode);
 	struct fuse_inode *fi = get_fuse_inode(inode);
 	struct fuse_writepage_args *wpa;
 	struct fuse_args_pages *ap;
@@ -2109,7 +2104,7 @@ static int fuse_writepage_locked(struct page *page)
 		goto err_free;
 
 	error = -EIO;
-	wpa->ia.ff = fuse_write_file_get(fc, fi);
+	wpa->ia.ff = fuse_write_file_get(fi);
 	if (!wpa->ia.ff)
 		goto err_nofile;
 
@@ -2332,7 +2327,7 @@ static int fuse_writepages_fill(struct page *page,
 
 	if (!data->ff) {
 		err = -EIO;
-		data->ff = fuse_write_file_get(fc, fi);
+		data->ff = fuse_write_file_get(fi);
 		if (!data->ff)
 			goto out_unlock;
 	}

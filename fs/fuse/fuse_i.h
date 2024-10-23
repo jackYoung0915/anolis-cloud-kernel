@@ -563,6 +563,7 @@ static inline bool fuse_is_inode_dax_mode(enum fuse_dax_mode mode)
 
 struct fuse_fs_context {
 	int fd;
+	struct file *file;
 	const char *tag;
 	unsigned int rootmode;
 	kuid_t user_id;
@@ -671,10 +672,10 @@ struct fuse_conn {
 	/** Maximum write size */
 	unsigned max_write;
 
-	/* Maxmum number of pages that write request should be aligned with */
+	/* Maximum number of pages that write request should be aligned with */
 	unsigned int write_align_pages;
 
-	/** Maxmum number of pages that can be used in a single request */
+	/** Maximum number of pages that can be used in a single request */
 	unsigned int max_pages;
 
 	/** Constrain ->max_pages to this value during feature negotiation */
@@ -844,7 +845,7 @@ struct fuse_conn {
 	/** Use enhanced/automatic page cache invalidation. */
 	unsigned auto_inval_data:1;
 
-	/** Filesystem is fully reponsible for page cache invalidation. */
+	/** Filesystem is fully responsible for page cache invalidation. */
 	unsigned explicit_inval_data:1;
 
 	/** Does the filesystem support readdirplus? */
@@ -998,9 +999,6 @@ struct fuse_conn {
 struct fuse_mount {
 	/* Underlying (potentially shared) connection to the FUSE server */
 	struct fuse_conn *fc;
-
-	/* Refcount */
-	refcount_t count;
 
 	/*
 	 * Super block for this connection (fc->killsb must be held when
@@ -1177,7 +1175,8 @@ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm);
 void fuse_file_free(struct fuse_file *ff);
 void fuse_finish_open(struct inode *inode, struct file *file);
 
-void fuse_sync_release(struct fuse_inode *fi, struct fuse_file *ff, int flags);
+void fuse_sync_release(struct fuse_inode *fi, struct fuse_file *ff,
+		       unsigned int flags);
 
 /**
  * Send RELEASE or RELEASEDIR request
@@ -1291,11 +1290,6 @@ void fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
  * Release reference to fuse_conn
  */
 void fuse_conn_put(struct fuse_conn *fc);
-
-/**
- * Release reference to fuse_mount
- */
-void fuse_mount_put(struct fuse_mount *fm);
 
 struct fuse_dev *fuse_dev_alloc_install(struct fuse_conn *fc);
 struct fuse_dev *fuse_dev_alloc(void);

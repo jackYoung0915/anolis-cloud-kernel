@@ -366,12 +366,11 @@ static struct vfsmount *fuse_dentry_automount(struct path *path)
 	if (!fm)
 		goto out_put_fsc;
 
-	refcount_set(&fm->count, 1);
 	fsc->s_fs_info = fm;
 	sb = sget_fc(fsc, NULL, set_anon_super_fc);
 	if (IS_ERR(sb)) {
 		err = PTR_ERR(sb);
-		fuse_mount_put(fm);
+		kfree(fm);
 		goto out_put_fsc;
 	}
 	fm->fc = fuse_conn_get(fc);
@@ -485,8 +484,6 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, const struct qstr *name
 		goto out_put_forget;
 
 	err = -EIO;
-	if (!outarg->nodeid)
-		goto out_put_forget;
 	if (fuse_invalid_attr(&outarg->attr))
 		goto out_put_forget;
 	if (outarg->nodeid == FUSE_ROOT_ID && outarg->generation != 0) {
@@ -572,7 +569,7 @@ static struct dentry *fuse_lookup(struct inode *dir, struct dentry *entry,
  * 'mknod' + 'open' requests.
  */
 static int fuse_create_open(struct inode *dir, struct dentry *entry,
-			    struct file *file, unsigned flags,
+			    struct file *file, unsigned int flags,
 			    umode_t mode)
 {
 	int err;
@@ -715,7 +712,8 @@ static int fuse_atomic_open(struct inode *dir, struct dentry *entry,
 	if (err == -ENOSYS) {
 		fc->no_create = 1;
 		goto mknod;
-	}
+	} else if (err == -EEXIST)
+		fuse_invalidate_entry(entry);
 out_dput:
 	dput(res);
 	return err;
@@ -793,6 +791,8 @@ static int create_new_entry(struct fuse_mount *fm, struct fuse_args *args,
 	return 0;
 
  out_put_forget_req:
+	if (err == -EEXIST)
+		fuse_invalidate_entry(entry);
 	kfree(forget);
 	return err;
 }
@@ -872,6 +872,7 @@ void fuse_flush_time_update(struct inode *inode)
 
 void fuse_update_ctime(struct inode *inode)
 {
+	fuse_invalidate_attr(inode);
 	if (!IS_NOCMTIME(inode)) {
 		inode->i_ctime = current_time(inode);
 		mark_inode_dirty_sync(inode);
@@ -909,11 +910,10 @@ static int fuse_unlink(struct inode *dir, struct dentry *entry)
 		if (inode->i_nlink > 0)
 			drop_nlink(inode);
 		spin_unlock(&fi->lock);
-		fuse_invalidate_attr(inode);
 		fuse_dir_changed(dir);
 		fuse_invalidate_entry_cache(entry);
 		fuse_update_ctime(inode);
-	} else if (err == -EINTR)
+	} else if (err == -EINTR || err == -ENOENT)
 		fuse_invalidate_entry(entry);
 	return err;
 }
@@ -937,7 +937,7 @@ static int fuse_rmdir(struct inode *dir, struct dentry *entry)
 		clear_nlink(d_inode(entry));
 		fuse_dir_changed(dir);
 		fuse_invalidate_entry_cache(entry);
-	} else if (err == -EINTR)
+	} else if (err == -EINTR || err == -ENOENT)
 		fuse_invalidate_entry(entry);
 	return err;
 }
@@ -966,13 +966,10 @@ static int fuse_rename_common(struct inode *olddir, struct dentry *oldent,
 	err = fuse_simple_request(fm, &args);
 	if (!err) {
 		/* ctime changes */
-		fuse_invalidate_attr(d_inode(oldent));
 		fuse_update_ctime(d_inode(oldent));
 
-		if (flags & RENAME_EXCHANGE) {
-			fuse_invalidate_attr(d_inode(newent));
+		if (flags & RENAME_EXCHANGE)
 			fuse_update_ctime(d_inode(newent));
-		}
 
 		fuse_dir_changed(olddir);
 		if (olddir != newdir)
@@ -980,11 +977,10 @@ static int fuse_rename_common(struct inode *olddir, struct dentry *oldent,
 
 		/* newent will end up negative */
 		if (!(flags & RENAME_EXCHANGE) && d_really_is_positive(newent)) {
-			fuse_invalidate_attr(d_inode(newent));
 			fuse_invalidate_entry_cache(newent);
 			fuse_update_ctime(d_inode(newent));
 		}
-	} else if (err == -EINTR) {
+	} else if (err == -EINTR || err == -ENOENT) {
 		/* If request was interrupted, DEITY only knows if the
 		   rename actually took place.  If the invalidation
 		   fails (e.g. some process has CWD under the renamed
@@ -1063,7 +1059,6 @@ static int fuse_link(struct dentry *entry, struct inode *newdir,
 		if (likely(inode->i_nlink < UINT_MAX))
 			inc_nlink(inode);
 		spin_unlock(&fi->lock);
-		fuse_invalidate_attr(inode);
 		fuse_update_ctime(inode);
 	} else if (err == -EINTR) {
 		fuse_invalidate_attr(inode);
