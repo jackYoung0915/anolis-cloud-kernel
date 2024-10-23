@@ -188,9 +188,6 @@ int arch_make_page_accessible(struct page *page);
 #define phys_to_pfn(phys)	((phys) >> PAGE_SHIFT)
 #define pfn_to_phys(pfn)	((pfn) << PAGE_SHIFT)
 
-#define phys_to_page(phys)	pfn_to_page(phys_to_pfn(phys))
-#define page_to_phys(page)	pfn_to_phys(page_to_pfn(page))
-
 static inline void *pfn_to_virt(unsigned long pfn)
 {
 	return __va(pfn_to_phys(pfn));
