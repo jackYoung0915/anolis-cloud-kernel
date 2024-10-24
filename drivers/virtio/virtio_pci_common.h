@@ -180,7 +180,7 @@ struct virtio_device *virtio_pci_vf_get_pf_dev(struct pci_dev *pdev);
 #else
 #define VIRTIO_ADMIN_CMD_BITMAP 0
 #endif
-
+bool vp_is_avq(struct virtio_device *vdev, unsigned int index);
 void vp_modern_avq_done(struct virtqueue *vq);
 int vp_modern_admin_cmd_exec(struct virtio_device *vdev,
 			     struct virtio_admin_cmd *cmd);
