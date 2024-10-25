@@ -444,6 +444,7 @@
 #define X86_FEATURE_AUTOIBRS		(20*32+ 8) /* "" Automatic IBRS */
 #define X86_FEATURE_NO_SMM_CTL_MSR	(20*32+ 9) /* "" SMM_CTL MSR is not present */
 
+#define X86_FEATURE_AMD_FAST_CPPC		(21*32 + 5) /* AMD Fast CPPC */
 /* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000006, word 23 */
 #define X86_FEATURE_ZXPAUSE		(23*32 + 0) /* ZHAOXIN ZXPAUSE */
 
