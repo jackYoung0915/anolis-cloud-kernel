@@ -1,0 +1,11 @@
+* Fri Oct 25 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-17.3_rc2%%DIST%%]
+- virt: tdx-guest: Add RTMR update interface (Kuppuswamy Sathyanarayanan)
+- KEYS: asymmetric: properly validate hash_algo and encoding (Eric Biggers)
+- KEYS: asymmetric: enforce that sig algo matches key algo (Eric Biggers)
+- ima: fix reference leak in asymmetric_verify() (Eric Biggers)
+- KEYS: asymmetric: Fix ECDSA use via keyctl uapi (Denis Kenzior)
+- crypto: ecdsa - Fix module auto-load on add-key (Stefan Berger)
+- crypto: ecdsa - Fix the public key format description (Jarkko Sakkinen)
+- crypto: ecc - handle unaligned input buffer in ecc_swap_digits (Mian Yousaf Kaukab)
+- anolis: kabi: fix 5.10.134-17.3 kabi broken (Guixin Liu)
+
