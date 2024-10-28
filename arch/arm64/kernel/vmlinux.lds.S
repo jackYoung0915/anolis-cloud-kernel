@@ -61,7 +61,6 @@
 #define RUNTIME_DISCARD_EXIT
 
 #include <asm-generic/vmlinux.lds.h>
-#include <asm-generic/orc_lookup.h>
 #include <asm/cache.h>
 #include <asm/kernel-pgtable.h>
 #include <asm/kexec.h>
@@ -307,8 +306,6 @@ SECTIONS
 		*(.mmuoff.data.read)
 		__mmuoff_data_end = .;
 	}
-
-	ORC_UNWIND_TABLE
 
 	PECOFF_EDATA_PADDING
 	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);

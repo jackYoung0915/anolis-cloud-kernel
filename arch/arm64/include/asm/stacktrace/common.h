@@ -11,7 +11,6 @@
 
 #include <linux/kprobes.h>
 #include <linux/types.h>
-#include <linux/objtool.h>
 
 struct stack_info {
 	unsigned long low;
@@ -24,7 +23,6 @@ struct stack_info {
  * @fp:          The fp value in the frame record (or the real fp)
  * @pc:          The lr value in the frame record (or the real lr)
  *
- * @prev_pc:     The lr value in the previous frame record.
  * @kr_cur:      When KRETPROBES is selected, holds the kretprobe instance
  *               associated with the most recently encountered replacement lr
  *               value.
@@ -34,15 +32,10 @@ struct stack_info {
  * @stack:       The stack currently being unwound.
  * @stacks:      An array of stacks which can be unwound.
  * @nr_stacks:   The number of stacks in @stacks.
- *
- * @cfa:         The sp value at the call site of the current function.
- * @unwind_type  The previous frame's unwind type.
- * @reliable:    Stack trace is reliable.
  */
 struct unwind_state {
 	unsigned long fp;
 	unsigned long pc;
-	unsigned long prev_pc;
 #ifdef CONFIG_KRETPROBES
 	struct llist_node *kr_cur;
 #endif
@@ -51,9 +44,6 @@ struct unwind_state {
 	struct stack_info stack;
 	struct stack_info *stacks;
 	int nr_stacks;
-	unsigned long cfa;
-	int unwind_type;
-	bool reliable;
 };
 
 static inline struct stack_info stackinfo_get_unknown(void)
@@ -80,15 +70,11 @@ static inline void unwind_init_common(struct unwind_state *state,
 				      struct task_struct *task)
 {
 	state->task = task;
-	state->prev_pc = 0;
 #ifdef CONFIG_KRETPROBES
 	state->kr_cur = NULL;
 #endif
 
 	state->stack = stackinfo_get_unknown();
-	state->reliable = true;
-	state->cfa = 0;
-	state->unwind_type = UNWIND_HINT_TYPE_CALL;
 }
 
 static struct stack_info *unwind_find_next_stack(const struct unwind_state *state,
@@ -181,7 +167,6 @@ unwind_next_frame_record(struct unwind_state *state)
 	/*
 	 * Record this frame record's values.
 	 */
-	state->prev_pc = state->pc;
 	state->fp = READ_ONCE(*(unsigned long *)(fp));
 	state->pc = READ_ONCE(*(unsigned long *)(fp + 8));
 
