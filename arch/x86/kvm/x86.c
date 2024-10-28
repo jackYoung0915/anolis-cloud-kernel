@@ -11176,7 +11176,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	kvm_vcpu_srcu_read_lock(vcpu);
 	if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED)) {
-		if (!vcpu->wants_to_run) {
+		if (kvm_run->immediate_exit) {
 			r = -EINTR;
 			goto out;
 		}
@@ -11254,7 +11254,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		WARN_ON_ONCE(vcpu->mmio_needed);
 	}
 
-	if (!vcpu->wants_to_run) {
+	if (kvm_run->immediate_exit) {
 		r = -EINTR;
 		goto out;
 	}
@@ -12357,6 +12357,18 @@ bool kvm_vcpu_is_bsp(struct kvm_vcpu *vcpu)
 
 __read_mostly DEFINE_STATIC_KEY_FALSE(kvm_has_noapic_vcpu);
 EXPORT_SYMBOL_GPL(kvm_has_noapic_vcpu);
+
+void kvm_arch_sched_in(struct kvm_vcpu *vcpu, int cpu)
+{
+	struct kvm_pmu *pmu = vcpu_to_pmu(vcpu);
+
+	vcpu->arch.l1tf_flush_l1d = true;
+	if (pmu->version && unlikely(pmu->event_count)) {
+		pmu->need_cleanup = true;
+		kvm_make_request(KVM_REQ_PMU, vcpu);
+	}
+	static_call(kvm_x86_sched_in)(vcpu, cpu);
+}
 
 void kvm_arch_free_vm(struct kvm *kvm)
 {
