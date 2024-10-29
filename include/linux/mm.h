@@ -2613,6 +2613,7 @@ extern void memmap_init_zone(unsigned long, int, unsigned long,
 		struct vmem_altmap *, int migratetype);
 extern void setup_per_zone_wmarks(void);
 extern int __meminit init_per_zone_wmark_min(void);
+extern int __meminit init_min_cache_kbytes(void);
 extern void mem_init(void);
 extern void __init mmap_init(void);
 extern void show_mem(unsigned int flags, nodemask_t *nodemask);
