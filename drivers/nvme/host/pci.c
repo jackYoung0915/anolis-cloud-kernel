@@ -63,6 +63,14 @@ MODULE_PARM_DESC(sgl_threshold,
 		"Use SGLs when average request segment size is larger or equal to "
 		"this size. Use 0 to disable SGLs.");
 
+static char *probe_mode;
+module_param(probe_mode, charp, 0444);
+MODULE_PARM_DESC(probe_mode,
+		"Set nvme probe_type{ default | async | sync }\n"
+		"default - PROBE_DEFAULT_STRATEGY async control by cmdline or module\n"
+		"async   - PROBE_PREFER_ASYNCHRONOUS\n"
+		"sync    - PROBE_FORCE_SYNCHRONOUS\n");
+
 #define NVME_PCI_MIN_QUEUE_SIZE 2
 #define NVME_PCI_MAX_QUEUE_SIZE 4095
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp);
@@ -3560,6 +3568,23 @@ static struct pci_driver nvme_driver = {
 	.err_handler	= &nvme_err_handler,
 };
 
+static bool probe_type_setup(char *str)
+{
+	if (!str)
+		return false;
+
+	if (!strncmp(str, "async", 5))
+		nvme_driver.driver.probe_type = PROBE_PREFER_ASYNCHRONOUS;
+	else if (!strncmp(str, "sync", 4))
+		nvme_driver.driver.probe_type = PROBE_FORCE_SYNCHRONOUS;
+	else if (!strncmp(str, "default", 7))
+		nvme_driver.driver.probe_type = PROBE_DEFAULT_STRATEGY;
+	else
+		return false;
+
+	return true;
+}
+
 static int __init nvme_init(void)
 {
 	BUILD_BUG_ON(sizeof(struct nvme_create_cq) != 64);
@@ -3569,6 +3594,9 @@ static int __init nvme_init(void)
 	BUILD_BUG_ON(NVME_MAX_SEGS > SGES_PER_PAGE);
 	BUILD_BUG_ON(sizeof(struct scatterlist) * NVME_MAX_SEGS > PAGE_SIZE);
 	BUILD_BUG_ON(nvme_pci_npages_prp() > NVME_MAX_NR_ALLOCATIONS);
+
+	if (probe_type_setup(probe_mode))
+		pr_info("nvme driver probe_type %s\n", probe_mode);
 
 	return pci_register_driver(&nvme_driver);
 }
