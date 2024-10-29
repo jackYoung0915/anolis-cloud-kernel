@@ -80,8 +80,10 @@ struct smc_stats_tech {
 	u64			tx_bytes;
 	u64			rx_cnt;
 	u64			tx_cnt;
+#ifndef __GENKSYMS__
 	u64			rx_rmbuse;
 	u64			tx_rmbuse;
+#endif
 };
 
 struct smc_stats {

@@ -13,7 +13,9 @@
 #ifndef _SMC_SYSCTL_H
 #define _SMC_SYSCTL_H
 
+#ifndef __GENKSYMS__
 #include <linux/swap.h>
+#endif
 
 static inline void smc_mem_init(struct net *net)
 {
