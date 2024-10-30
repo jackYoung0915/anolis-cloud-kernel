@@ -122,9 +122,6 @@ static inline void smc_clcsock_restore_cb(void (**target_cb)(struct sock *),
 	*saved_cb = NULL;
 }
 
-extern struct workqueue_struct	*smc_hs_wq;	/* wq for handshake work */
-extern struct workqueue_struct	*smc_close_wq;	/* wq for close work */
-
 #define SMC_SYSTEMID_LEN		8
 
 extern u8	local_systemid[SMC_SYSTEMID_LEN]; /* unique system identifier */

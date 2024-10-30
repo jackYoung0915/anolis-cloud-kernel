@@ -62,9 +62,6 @@
 static DEFINE_MUTEX(smc_server_lgr_pending);	/* serialize link group
 						 * creation on server
 						 */
-static struct workqueue_struct	*smc_tcp_ls_wq;	/* wq for tcp listen work */
-struct workqueue_struct	*smc_hs_wq;	/* wq for handshake work */
-struct workqueue_struct	*smc_close_wq;	/* wq for close work */
 
 static void smc_tcp_listen_work(struct work_struct *);
 static void smc_connect_work(struct work_struct *);
@@ -222,7 +219,7 @@ static bool smc_hs_congested(const struct sock *sk)
 	if (!smc)
 		return true;
 
-	if (workqueue_congested(WORK_CPU_UNBOUND, smc_hs_wq))
+	if (workqueue_congested(WORK_CPU_UNBOUND, sock_net(sk)->smc.smc_hs_wq))
 		return true;
 
 	if (smc_net_mem_exceeded(smc))
@@ -2006,7 +2003,7 @@ do_handshake:
 	sock_hold(&smc->sk); /* sock put in passive closing */
 
 	if (flags & O_NONBLOCK) {
-		if (queue_work(smc_hs_wq, &smc->connect_work))
+		if (queue_work(sock_net(&smc->sk)->smc.smc_hs_wq, &smc->connect_work))
 			smc->connect_nonblock = 1;
 		rc = -EINPROGRESS;
 		goto out;
@@ -2948,7 +2945,7 @@ static void smc_tcp_listen_work(struct work_struct *work)
 		INIT_WORK(&new_smc->smc_listen_work, smc_listen_work);
 		smc_copy_sock_settings_to_smc(new_smc);
 		sock_hold(&new_smc->sk); /* sock_put in passive closing */
-		if (!queue_work(smc_hs_wq, &new_smc->smc_listen_work))
+		if (!queue_work(sock_net(&new_smc->sk)->smc.smc_hs_wq, &new_smc->smc_listen_work))
 			sock_put(&new_smc->sk);
 	}
 
@@ -2968,7 +2965,8 @@ static void smc_clcsock_data_ready(struct sock *listen_clcsock)
 	lsmc->clcsk_data_ready(listen_clcsock);
 	if (smc_sk_state(&lsmc->sk) == SMC_LISTEN) {
 		sock_hold(&lsmc->sk); /* sock_put in smc_tcp_listen_work() */
-		if (!queue_work(smc_tcp_ls_wq, &lsmc->tcp_listen_work))
+		if (!queue_work(sock_net(listen_clcsock)->smc.smc_tcp_ls_wq,
+				&lsmc->tcp_listen_work))
 			sock_put(&lsmc->sk);
 	}
 out:
@@ -3861,13 +3859,51 @@ static void smc_net_release_ports(struct net *net)
 
 unsigned int smc_net_id;
 
+static int smc_net_init_wq(struct net *net)
+{
+	net->smc.smc_tcp_ls_wq = alloc_workqueue("smc_tcp_ls_wq", 0, 0);
+	if (!net->smc.smc_tcp_ls_wq)
+		goto err;
+
+	net->smc.smc_hs_wq = alloc_workqueue("smc_hs_wq", 0, 0);
+	if (!net->smc.smc_hs_wq)
+		goto out_hs_wq;
+
+	net->smc.smc_close_wq = alloc_workqueue("smc_close_wq", 0, 0);
+	if (!net->smc.smc_close_wq)
+		goto out_close_wq;
+
+	return 0;
+out_close_wq:
+	destroy_workqueue(net->smc.smc_hs_wq);
+	net->smc.smc_hs_wq = NULL;
+out_hs_wq:
+	destroy_workqueue(net->smc.smc_tcp_ls_wq);
+	net->smc.smc_tcp_ls_wq = NULL;
+err:
+	return -ENOMEM;
+}
+
+static void smc_net_release_wq(struct net *net)
+{
+	if (net->smc.smc_close_wq)
+		destroy_workqueue(net->smc.smc_close_wq);
+	if (net->smc.smc_hs_wq)
+		destroy_workqueue(net->smc.smc_hs_wq);
+	if (net->smc.smc_tcp_ls_wq)
+		destroy_workqueue(net->smc.smc_tcp_ls_wq);
+}
+
 static __net_init int smc_net_init(struct net *net)
 {
 	int rc;
 
-	rc = smc_net_reserve_ports(net);
+	rc = smc_net_init_wq(net);
 	if (rc)
 		return rc;
+	rc = smc_net_reserve_ports(net);
+	if (rc)
+		goto free_wq;
 	rc = smc_sysctl_net_init(net);
 	if (rc)
 		goto release_ports;
@@ -3878,6 +3914,8 @@ static __net_init int smc_net_init(struct net *net)
 
 release_ports:
 	smc_net_release_ports(net);
+free_wq:
+	smc_net_release_wq(net);
 	return rc;
 }
 
@@ -3886,6 +3924,7 @@ static void __net_exit smc_net_exit(struct net *net)
 	smc_net_release_ports(net);
 	smc_sysctl_net_exit(net);
 	smc_pnet_net_exit(net);
+	smc_net_release_wq(net);
 }
 
 static __net_init int smc_net_stat_init(struct net *net)
@@ -3984,7 +4023,7 @@ static int smc_inet_sock_do_handshake(struct sock *sk, bool sk_locked, bool sync
 	if (smc_inet_sock_is_active_open(sk)) {
 		INIT_WORK(&smc->connect_work, smc_inet_connect_work);
 		if (!sync) {
-			queue_work(smc_hs_wq, &smc->connect_work);
+			queue_work(sock_net(sk)->smc.smc_hs_wq, &smc->connect_work);
 			return 0;
 		}
 		if (sk_locked)
@@ -4000,7 +4039,7 @@ static int smc_inet_sock_do_handshake(struct sock *sk, bool sk_locked, bool sync
 	sock_hold(&smc->listen_smc->sk);
 
 	if (!sync) {
-		queue_work(smc_hs_wq, &smc->smc_listen_work);
+		queue_work(sock_net(&smc->sk)->smc.smc_hs_wq, &smc->smc_listen_work);
 	} else {
 		smc_inet_listen_work(&smc->smc_listen_work);
 	}
@@ -4749,7 +4788,7 @@ static void smc_inet_sock_data_ready(struct sock *sk)
 		if (mask & SMC_REQSK_TCP || !smc_accept_queue_empty(sk))
 			smc->clcsk_data_ready(sk);
 		if (mask & SMC_REQSK_SMC)
-			queue_work(smc_tcp_ls_wq, &smc->tcp_listen_work);
+			queue_work(sock_net(sk)->smc.smc_tcp_ls_wq, &smc->tcp_listen_work);
 	} else {
 		saved_clcsk_data_ready = READ_ONCE(smc->clcsk_data_ready);
 		if (!saved_clcsk_data_ready)
@@ -4824,24 +4863,10 @@ static int __init smc_init(void)
 	if (rc)
 		goto out_nl;
 
-	rc = -ENOMEM;
-
-	smc_tcp_ls_wq = alloc_workqueue("smc_tcp_ls_wq", 0, 0);
-	if (!smc_tcp_ls_wq)
-		goto out_pnet;
-
-	smc_hs_wq = alloc_workqueue("smc_hs_wq", 0, 0);
-	if (!smc_hs_wq)
-		goto out_alloc_tcp_ls_wq;
-
-	smc_close_wq = alloc_workqueue("smc_close_wq", 0, 0);
-	if (!smc_close_wq)
-		goto out_alloc_hs_wq;
-
 	rc = smc_core_init();
 	if (rc) {
 		pr_err("%s: smc_core_init fails with %d\n", __func__, rc);
-		goto out_alloc_wqs;
+		goto out_pnet;
 	}
 
 	rc = smc_llc_init();
@@ -4928,12 +4953,6 @@ out_proto:
 	proto_unregister(&smc_proto);
 out_core:
 	smc_core_exit();
-out_alloc_wqs:
-	destroy_workqueue(smc_close_wq);
-out_alloc_hs_wq:
-	destroy_workqueue(smc_hs_wq);
-out_alloc_tcp_ls_wq:
-	destroy_workqueue(smc_tcp_ls_wq);
 out_pnet:
 	smc_pnet_exit();
 out_nl:
@@ -4961,9 +4980,6 @@ static void __exit smc_exit(void)
 	smc_loopback_exit();
 	smc_ib_unregister_client();
 	smc_ism_exit();
-	destroy_workqueue(smc_close_wq);
-	destroy_workqueue(smc_tcp_ls_wq);
-	destroy_workqueue(smc_hs_wq);
 	proto_unregister(&smc_proto6);
 	proto_unregister(&smc_proto);
 	proto_unregister(&smc_inet_prot);

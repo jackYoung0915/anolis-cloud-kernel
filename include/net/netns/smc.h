@@ -35,10 +35,10 @@ struct netns_smc {
 	CK_KABI_USE(2, 3, 4, long sysctl_mem[3])
 	CK_KABI_USE(5, atomic_long_t memory_allocated)
 	CK_KABI_USE(6, struct smc_dump_ctx *dump_ctx)
+	CK_KABI_USE(7, struct workqueue_struct *smc_tcp_ls_wq)
+	CK_KABI_USE(8, struct workqueue_struct *smc_hs_wq)
+	CK_KABI_USE(9, struct workqueue_struct *smc_close_wq)
 
-	CK_KABI_RESERVE(7)
-	CK_KABI_RESERVE(8)
-	CK_KABI_RESERVE(9)
 	CK_KABI_RESERVE(10)
 	CK_KABI_RESERVE(11)
 	CK_KABI_RESERVE(12)
