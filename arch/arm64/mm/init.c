@@ -88,15 +88,6 @@ phys_addr_t __ro_after_init arm64_dma_phys_limit;
 phys_addr_t __ro_after_init arm64_dma_phys_limit = PHYS_MASK + 1;
 #endif
 
-bool early_reserve_crashmem = true;
-
-static int __init defer_reserve_crashmem(char *p)
-{
-	early_reserve_crashmem = false;
-	return 0;
-}
-early_param("defer_reserve_crashmem", defer_reserve_crashmem);
-
 #ifdef CONFIG_KEXEC_CORE
 
 /* Current arm64 boot protocol requires 2MB alignment */
@@ -514,8 +505,7 @@ void __init arm64_memblock_init(void)
 
 	reserve_elfcorehdr();
 
-	if ((!IS_ENABLED(CONFIG_ZONE_DMA) && !IS_ENABLED(CONFIG_ZONE_DMA32)) ||
-	     early_reserve_crashmem)
+	if (!IS_ENABLED(CONFIG_ZONE_DMA) && !IS_ENABLED(CONFIG_ZONE_DMA32))
 		reserve_crashkernel();
 
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
@@ -566,8 +556,7 @@ void __init bootmem_init(void)
 	 * request_standard_resources() depends on crashkernel's memory being
 	 * reserved, so do it here.
 	 */
-	if ((IS_ENABLED(CONFIG_ZONE_DMA) || IS_ENABLED(CONFIG_ZONE_DMA32)) &&
-	    !early_reserve_crashmem)
+	if (IS_ENABLED(CONFIG_ZONE_DMA) || IS_ENABLED(CONFIG_ZONE_DMA32))
 		reserve_crashkernel();
 
 	memblock_dump_all();
