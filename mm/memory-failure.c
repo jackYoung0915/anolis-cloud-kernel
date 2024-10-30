@@ -2099,7 +2099,8 @@ try_again:
 			ret = -EIO;
 		}
 	} else {
-		if (PageHuge(p) || PageLRU(p) || __PageMovable(p)) {
+		if (PageHuge(p) || PageLRU(p) ||
+		    (!PageSlab(p) && __PageMovable(p))) {
 			ret = 1;
 		} else {
 			/*
