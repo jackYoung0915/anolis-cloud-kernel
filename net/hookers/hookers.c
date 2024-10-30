@@ -260,7 +260,7 @@ void hooker_uninstall(struct hooker *h)
 }
 EXPORT_SYMBOL_GPL(hooker_uninstall);
 
-#ifdef CONFIG_X86
+#if defined(CONFIG_X86)
 static inline unsigned int hookers_clear_cr0(void)
 {
 	struct static_key *orig_key;
@@ -280,8 +280,7 @@ static inline void hookers_restore_cr0(unsigned int val)
 {
 	write_cr0(val);
 }
-#else
-
+#elif defined(CONFIG_ARM64)
 static void remove_memprotect(unsigned long addr)
 {
 	pgd_t *pgd, pgdd;
@@ -360,6 +359,16 @@ static void set_memprotect(unsigned long addr)
 		set_pte(pte, __pte(pte_val(pted) | PTE_RDONLY));
 		flush_tlb_kernel_range(addr_aligned, addr_aligned + PAGE_SIZE);
 	}
+}
+#else
+static void remove_memprotect(unsigned long addr)
+{
+	// No operation needed for other archs besides arm64 and x86，like sw_64, loongarch, etc.
+}
+
+static void set_memprotect(unsigned long addr)
+{
+	// No operation needed for other archs besides arm64 and x86，like sw_64, loongarch, etc.
 }
 #endif
 
