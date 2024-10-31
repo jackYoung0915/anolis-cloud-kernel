@@ -3,6 +3,8 @@
 # Makefile for linux kernel module support
 #
 
+KASAN_SANITIZE_kallsyms.o := n
+
 # These are called from save_stack_trace() on slub debug path,
 # and produce insane amounts of uninteresting coverage.
 KCOV_INSTRUMENT_module.o := n
