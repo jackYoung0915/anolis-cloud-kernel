@@ -669,12 +669,16 @@ extern bool is_underclass(struct sched_entity *se);
 extern bool is_underclass_task(struct task_struct *p);
 #ifdef CONFIG_SCHED_SMT
 extern bool rq_on_expel(struct rq *rq);
+extern void task_tick_gi(struct rq *rq);
+#else
+static inline void task_tick_gi(struct rq *rq) { }
 #endif
 #else
 static inline int clear_identity(struct task_group *tg) { return 0; }
 static inline void notify_smt_expeller(struct rq *rq, struct task_struct *p) {}
 static inline unsigned int id_nr_invalid(struct rq *rq) { return 0; }
 static inline void update_id_idle_avg(struct rq *rq, u64 delta) {}
+static inline void task_tick_gi(struct rq *rq) { }
 #endif
 
 /* CFS-related fields in a runqueue */
@@ -1186,6 +1190,7 @@ struct rq {
 	unsigned long		next_expel_update;
 	u64			expel_start;
 	u64			expel_sum;
+	u64			last_push_expellee;
 	seqcount_t		expel_seq;
 #endif
 #endif
@@ -2674,6 +2679,11 @@ extern void post_init_entity_util_avg(struct task_struct *p);
 #ifdef CONFIG_NO_HZ_FULL
 extern bool sched_can_stop_tick(struct rq *rq);
 extern int __init sched_tick_offload_init(void);
+#if defined(CONFIG_GROUP_IDENTITY) && defined(CONFIG_SCHED_SMT)
+extern bool id_can_stop_tick(struct rq *rq);
+#else
+static inline bool id_can_stop_tick(struct rq *rq) { return true; }
+#endif
 
 /*
  * Tick may be needed by tasks in the runqueue depending on their policy and

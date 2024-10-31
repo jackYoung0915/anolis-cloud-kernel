@@ -737,6 +737,7 @@ static inline void __update_rq_on_expel(struct rq *rq)
 		/* This function is called in atomic context, so no race with other writers */
 		write_seqcount_begin(&rq->expel_seq);
 		rq->on_expel = ret;
+		sched_update_tick_dependency(rq);
 		if (ret)
 			rq->expel_start = __rq_clock_broken(rq);
 		else
@@ -6644,6 +6645,114 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 static int
 wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se);
+#if defined(CONFIG_GROUP_IDENTITY) && defined(CONFIG_SCHED_SMT)
+static DEFINE_PER_CPU(struct callback_head, push_expellee_head);
+DEFINE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
+DEFINE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
+
+static void __push_expellee(struct rq *rq)
+{
+	struct sched_domain *sd;
+	int cpu = cpu_of(rq);
+	struct task_struct *p, *tmp;
+	struct list_head tasks;
+	struct cpumask *traverse_mask = this_cpu_cpumask_var_ptr(push_expellee_traverse_mask);
+	struct cpumask *traversed_mask = this_cpu_cpumask_var_ptr(push_expellee_traversed_mask);
+
+	if (!sched_feat(ID_PUSH_EXPELLEE) || !rq_on_expel(rq))
+		return;
+
+	preempt_disable();
+	rcu_read_lock();
+	INIT_LIST_HEAD(&tasks);
+	list_for_each_entry_safe(p, tmp, &rq->cfs_tasks, se.group_node) {
+		if (is_expellee_task(p)) {
+			get_task_struct(p);
+			deactivate_task(rq, p, DEQUEUE_NOCLOCK);
+			list_add(&p->se.group_node, &tasks);
+		}
+	}
+	raw_spin_rq_unlock_irq(rq);
+
+	list_for_each_entry_safe(p, tmp, &tasks, se.group_node) {
+		int backup_cpu = -1, dst_cpu = -1;
+		int min_nr_running = INT_MAX;
+		struct rq *dst_rq;
+		bool idle;
+
+		cpumask_clear(traversed_mask);
+		for_each_domain(cpu, sd) {
+			int i;
+
+			cpumask_andnot(traverse_mask, sched_domain_span(sd), traversed_mask);
+			cpumask_and(traverse_mask, traverse_mask, task_allowed_cpu(p));
+			for_each_cpu_wrap(i, traverse_mask, cpu) {
+				struct rq *tmp_rq = cpu_rq(i);
+
+				if (id_idle_cpu(p, i, true, &idle)) {
+					dst_cpu = i;
+					goto migrate;
+				} else if (!rq_on_expel(tmp_rq)) {
+					if (tmp_rq->nr_running < min_nr_running) {
+						backup_cpu = i;
+						min_nr_running = tmp_rq->nr_running;
+					}
+				}
+			}
+			cpumask_or(traversed_mask, traversed_mask, sched_domain_span(sd));
+		}
+
+		if (dst_cpu == -1) {
+			if (backup_cpu == -1)
+				dst_cpu = cpu;
+			else
+				dst_cpu = backup_cpu;
+		}
+migrate:
+		dst_rq = cpu_rq(dst_cpu);
+		local_irq_disable();
+		double_rq_lock(rq, dst_rq);
+		update_rq_clock(rq);
+		set_task_cpu(p, dst_cpu);
+		list_del_init(&p->se.group_node);
+		update_rq_clock(dst_rq);
+		activate_task(dst_rq, p, ENQUEUE_NOCLOCK);
+		check_preempt_curr(dst_rq, p, 0);
+		double_rq_unlock(rq, dst_rq);
+		local_irq_enable();
+		put_task_struct(p);
+	}
+	raw_spin_rq_lock_irq(rq);
+	rcu_read_unlock();
+	preempt_enable();
+	rq->last_push_expellee = rq_clock(rq);
+}
+
+static inline void push_expellee(struct rq *rq)
+{
+	if (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
+	    rq->nr_expel_immune < rq->cfs.h_nr_running)
+		queue_balance_callback(rq, &per_cpu(push_expellee_head, rq->cpu),
+				       __push_expellee);
+}
+
+void task_tick_gi(struct rq *rq)
+{
+	if (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
+	    rq->nr_expel_immune < rq->cfs.h_nr_running &&
+	    (rq_clock(rq) - max(rq->expel_start, rq->last_push_expellee) > sysctl_sched_latency))
+		resched_curr(rq);
+}
+
+#ifdef CONFIG_NO_HZ_FULL
+bool id_can_stop_tick(struct rq *rq)
+{
+	return sched_feat(ID_PUSH_EXPELLEE) && !expellee_only(rq);
+}
+#endif
+#else
+static inline void push_expellee(struct rq *rq) { }
+#endif
 
 /*
  * Pick the next process, keeping these things in mind, in this order:
@@ -9656,6 +9765,7 @@ again:
 		goto idle;
 
 	update_rq_on_expel(rq);
+	push_expellee(rq);
 
 	if (id_regard_as_idle(rq)) {
 		if (id_load_balance() && !__rq_on_expel(rq) && expel_pulled)
@@ -13651,7 +13761,6 @@ static inline void task_tick_core(struct rq *rq, struct task_struct *curr) {}
 static inline void sched_core_init_cfs_rq(struct task_group *tg, struct cfs_rq *cfs_rq) {}
 #endif
 
-
 /*
  * scheduler tick hitting a task of our scheduling class.
  *
@@ -13677,6 +13786,7 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
 	update_overutilized_status(task_rq(curr));
 
 	task_tick_core(rq, curr);
+	task_tick_gi(rq);
 }
 
 /*
