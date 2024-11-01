@@ -12,7 +12,8 @@
 #include <linux/swiotlb.h>
 #include <linux/cc_platform.h>
 #include <linux/mem_encrypt.h>
-#include <asm/csv.h>
+
+#include <asm/processor-hygon.h>
 
 /* Override for DMA direct allocation check - ARCH_HAS_FORCE_DMA_UNENCRYPTED */
 bool force_dma_unencrypted(struct device *dev)
@@ -40,30 +41,6 @@ bool force_dma_unencrypted(struct device *dev)
 	return false;
 }
 
-static void print_hygon_cc_feature_info(void)
-{
-	/* Secure Memory Encryption */
-	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
-		/*
-		 * HYGON SME is mutually exclusive with any of the
-		 * HYGON CSV features below.
-		 */
-		pr_info(" HYGON SME");
-		return;
-	}
-
-	/* Secure Encrypted Virtualization */
-	if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
-		pr_info(" HYGON CSV");
-
-	/* Encrypted Register State */
-	if (cc_platform_has(CC_ATTR_GUEST_STATE_ENCRYPT))
-		pr_info(" HYGON CSV2");
-
-	if (csv3_active())
-		pr_info(" HYGON CSV3");
-}
-
 static void print_mem_encrypt_feature_info(void)
 {
 	pr_info("Memory Encryption Features active:");
@@ -73,7 +50,7 @@ static void print_mem_encrypt_feature_info(void)
 		return;
 	}
 
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+	if (is_x86_vendor_hygon()) {
 		print_hygon_cc_feature_info();
 		return;
 	}

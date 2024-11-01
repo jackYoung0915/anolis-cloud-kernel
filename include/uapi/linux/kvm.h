@@ -1595,10 +1595,6 @@ struct kvm_s390_ucas_mapping {
 #define KVM_GET_DEVICE_ATTR	  _IOW(KVMIO,  0xe2, struct kvm_device_attr)
 #define KVM_HAS_DEVICE_ATTR	  _IOW(KVMIO,  0xe3, struct kvm_device_attr)
 
-/* ioctls for control vm during system reset */
-#define KVM_CONTROL_PRE_SYSTEM_RESET	 _IO(KVMIO, 0xe8)
-#define KVM_CONTROL_POST_SYSTEM_RESET	 _IO(KVMIO, 0xe9)
-
 /*
  * ioctls for vcpu fds
  */
@@ -1946,9 +1942,6 @@ enum sev_cmd_id {
 	/* Guest Migration Extension */
 	KVM_SEV_SEND_CANCEL,
 
-	/* Hygon CSV batch command */
-	KVM_CSV_COMMAND_BATCH = 0x18,
-
 	KVM_SEV_NR_MAX,
 };
 
@@ -2027,14 +2020,6 @@ struct kvm_sev_send_update_data {
 	__u32 trans_len;
 };
 
-struct kvm_sev_send_update_vmsa {
-	__u32 vcpu_id;
-	__u64 hdr_uaddr;
-	__u32 hdr_len;
-	__u64 trans_uaddr;
-	__u32 trans_len;
-};
-
 struct kvm_sev_receive_start {
 	__u32 handle;
 	__u32 policy;
@@ -2051,30 +2036,6 @@ struct kvm_sev_receive_update_data {
 	__u32 guest_len;
 	__u64 trans_uaddr;
 	__u32 trans_len;
-};
-
-struct kvm_sev_receive_update_vmsa {
-	__u32 vcpu_id;
-	__u64 hdr_uaddr;
-	__u32 hdr_len;
-	__u64 trans_uaddr;
-	__u32 trans_len;
-};
-
-struct kvm_csv_batch_list_node {
-	__u64 cmd_data_addr;
-	__u64 addr;
-	__u64 next_cmd_addr;
-};
-
-struct kvm_csv_command_batch {
-	__u32 command_id;
-	__u64 csv_batch_list_uaddr;
-};
-
-struct kvm_csv_init {
-	__u64 userid_addr;
-	__u32 len;
 };
 
 #define KVM_DEV_ASSIGN_ENABLE_IOMMU	(1 << 0)
@@ -2318,6 +2279,49 @@ struct kvm_s390_zpci_op {
 
 /* flags for kvm_s390_zpci_op->u.reg_aen.flags */
 #define KVM_S390_ZPCIOP_REGAEN_HOST    (1 << 0)
+
+enum csv_cmd_id {
+	/* HYGON CSV batch command */
+	KVM_CSV_COMMAND_BATCH = 0x18,
+
+	KVM_CSV_NR_MAX,
+};
+
+struct kvm_csv_batch_list_node {
+	__u64 cmd_data_addr;
+	__u64 addr;
+	__u64 next_cmd_addr;
+};
+
+struct kvm_csv_command_batch {
+	__u32 command_id;
+	__u64 csv_batch_list_uaddr;
+};
+
+struct kvm_csv_send_update_vmsa {
+	__u32 vcpu_id;
+	__u64 hdr_uaddr;
+	__u32 hdr_len;
+	__u64 trans_uaddr;
+	__u32 trans_len;
+};
+
+struct kvm_csv_receive_update_vmsa {
+	__u32 vcpu_id;
+	__u64 hdr_uaddr;
+	__u32 hdr_len;
+	__u64 trans_uaddr;
+	__u32 trans_len;
+};
+
+struct kvm_csv_init {
+	__u64 userid_addr;
+	__u32 len;
+};
+
+/* ioctls for control vm during system reset, currently only for CSV */
+#define KVM_CONTROL_PRE_SYSTEM_RESET	 _IO(KVMIO, 0xe8)
+#define KVM_CONTROL_POST_SYSTEM_RESET	 _IO(KVMIO, 0xe9)
 
 /* CSV3 command */
 enum csv3_cmd_id {
