@@ -312,7 +312,12 @@ static void __init riscv_spinlock_init(void)
 		return;
 	}
 
-	if (riscv_isa_extension_available(NULL, ZICCRSE))
+	if (IS_ENABLED(CONFIG_RISCV_ISA_ZABHA) &&
+	    IS_ENABLED(CONFIG_RISCV_ISA_ZACAS) &&
+	    riscv_isa_extension_available(NULL, ZABHA) &&
+	    riscv_isa_extension_available(NULL, ZACAS)) {
+		using_ext = "using Zabha";
+	} else if (riscv_isa_extension_available(NULL, ZICCRSE))
 		using_ext = "using Ziccrse";
 #if defined(CONFIG_RISCV_COMBO_SPINLOCKS)
 	else {
