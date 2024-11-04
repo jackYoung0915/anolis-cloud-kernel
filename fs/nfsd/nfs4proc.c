@@ -1499,6 +1499,13 @@ nfsd4_copy(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	__be32 status;
 	struct nfsd4_copy *async_copy = NULL;
 
+	/*
+	 * Currently, async COPY is not reliable. Force all COPY
+	 * requests to be synchronous to avoid client application
+	 * hangs waiting for COPY completion.
+	 */
+	copy->cp_synchronous = true;
+
 	if (!copy->cp_intra) { /* Inter server SSC */
 		if (!inter_copy_offload_enable || copy->cp_synchronous) {
 			status = nfserr_notsupp;
