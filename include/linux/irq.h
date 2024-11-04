@@ -628,8 +628,10 @@ extern int irq_set_vcpu_affinity(unsigned int irq, void *vcpu_info);
 #if defined(CONFIG_SMP) && defined(CONFIG_GENERIC_IRQ_MIGRATION)
 extern void irq_migrate_all_off_this_cpu(void);
 extern int irq_affinity_online_cpu(unsigned int cpu);
+extern int irq_affinity_offline_cpu(unsigned int cpu);
 #else
 # define irq_affinity_online_cpu	NULL
+# define irq_affinity_offline_cpu	NULL
 #endif
 
 #if defined(CONFIG_SMP) && defined(CONFIG_GENERIC_PENDING_IRQ)
@@ -648,6 +650,7 @@ static inline void irq_force_complete_move(struct irq_desc *desc) { }
 #endif
 
 extern int no_irq_affinity;
+extern unsigned int managed_irqs_per_node;
 
 #ifdef CONFIG_HARDIRQS_SW_RESEND
 int irq_set_parent(int irq, int parent_irq);

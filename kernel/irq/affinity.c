@@ -9,6 +9,31 @@
 #include <linux/cpu.h>
 #include <linux/sort.h>
 
+unsigned int __read_mostly managed_irqs_per_node;
+
+static struct cpumask managed_irqs_free_cpumsk[MAX_NUMNODES] __cacheline_aligned_in_smp = {
+	[0 ... MAX_NUMNODES-1] = {CPU_BITS_ALL}
+};
+
+static int __init irq_managed_setup(char *str)
+{
+	int ret;
+
+	ret = kstrtouint(str, 10, &managed_irqs_per_node);
+	if (ret < 0) {
+		pr_warn("managed_irqs_per_node= cannot parse, ignored\n");
+		return 0;
+	}
+
+	if (managed_irqs_per_node * num_possible_nodes() > num_possible_cpus()) {
+		managed_irqs_per_node = num_possible_cpus() / num_possible_nodes();
+		pr_warn("managed_irqs_per_node= cannot be larger than %u\n",
+			managed_irqs_per_node);
+	}
+	return 1;
+}
+__setup("managed_irqs_per_node=", irq_managed_setup);
+
 static void irq_spread_init_one(struct cpumask *irqmsk, struct cpumask *nmsk,
 				unsigned int cpus_per_vec)
 {
@@ -244,6 +269,39 @@ static void alloc_nodes_vectors(unsigned int numvecs,
 	}
 }
 
+static void __irq_prepare_affinity_mask(struct cpumask *premask,
+					cpumask_var_t *node_to_cpumask)
+{
+	nodemask_t nodemsk = NODE_MASK_NONE;
+	unsigned int ncpus, n;
+
+	get_nodes_in_cpumask(node_to_cpumask, cpu_present_mask, &nodemsk);
+
+	for_each_node_mask(n, nodemsk) {
+		/*
+		 * Try to allocate manage_irqs_per_node CPU bits on each numa
+		 * node. If an insufficient number can be allocated, the free
+		 * CPU bits will be reset to CPU_BITS_ALL for the next
+		 * allocation. This design is considered for lockless
+		 * and load balancing.
+		 */
+		cpumask_and(&managed_irqs_free_cpumsk[n],
+				&managed_irqs_free_cpumsk[n], cpu_present_mask);
+		cpumask_and(&managed_irqs_free_cpumsk[n],
+				&managed_irqs_free_cpumsk[n], node_to_cpumask[n]);
+
+		ncpus = cpumask_weight(&managed_irqs_free_cpumsk[n]);
+		if (ncpus < managed_irqs_per_node) {
+			/* Reset node n to current node cpumask */
+			cpumask_copy(&managed_irqs_free_cpumsk[n], node_to_cpumask[n]);
+			continue;
+		}
+
+		irq_spread_init_one(premask,
+				&managed_irqs_free_cpumsk[n], managed_irqs_per_node);
+	}
+}
+
 static int __irq_build_affinity_masks(unsigned int startvec,
 				      unsigned int numvecs,
 				      unsigned int firstvec,
@@ -359,9 +417,14 @@ static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 	get_online_cpus();
 	build_node_to_cpumask(node_to_cpumask);
 
+	/* Limit the count of managed interrupts on every node */
+	if (masks[startvec].is_managed && managed_irqs_per_node)
+		__irq_prepare_affinity_mask(npresmsk, node_to_cpumask);
+
 	/* Spread on present CPUs starting from affd->pre_vectors */
 	ret = __irq_build_affinity_masks(curvec, numvecs, firstvec,
-					 node_to_cpumask, cpu_present_mask,
+					 node_to_cpumask,
+					 cpumask_empty(npresmsk) ? cpu_present_mask : npresmsk,
 					 nmsk, masks);
 	if (ret < 0)
 		goto fail_build_affinity;
@@ -455,6 +518,10 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 	for (curvec = 0; curvec < affd->pre_vectors; curvec++)
 		cpumask_copy(&masks[curvec].mask, irq_default_affinity);
 
+	/* Mark the managed interrupts */
+	for (i = affd->pre_vectors; i < nvecs - affd->post_vectors; i++)
+		masks[i].is_managed = 1;
+
 	/*
 	 * Spread on present CPUs starting from affd->pre_vectors. If we
 	 * have multiple sets, build each sets affinity mask separately.
@@ -480,10 +547,6 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 		curvec = affd->pre_vectors + usedvecs;
 	for (; curvec < nvecs; curvec++)
 		cpumask_copy(&masks[curvec].mask, irq_default_affinity);
-
-	/* Mark the managed interrupts */
-	for (i = affd->pre_vectors; i < nvecs - affd->post_vectors; i++)
-		masks[i].is_managed = 1;
 
 	return masks;
 }
