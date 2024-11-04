@@ -2183,7 +2183,7 @@ int smc_conn_create(struct smc_sock *smc, struct smc_init_info *ini)
 	rc = __smc_conn_create(smc, ini, /* disallow create lgr */ false);
 	if (!rc) {
 		/* not rely on new lgr, unlock lgr pending lock in advance. */
-		smc_lgr_pending_unlock(ini, ini->mutex);
+		smc_lgr_pending_unlock(ini);
 		return 0;
 	} else if (rc != SMC_CLC_DECL_ERR_REQ_LGR) {
 		/* that's unexcepted error */

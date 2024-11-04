@@ -62,10 +62,6 @@
 static DEFINE_MUTEX(smc_server_lgr_pending);	/* serialize link group
 						 * creation on server
 						 */
-static DEFINE_MUTEX(smc_client_lgr_pending);	/* serialize link group
-						 * creation on client
-						 */
-
 static struct workqueue_struct	*smc_tcp_ls_wq;	/* wq for tcp listen work */
 struct workqueue_struct	*smc_hs_wq;	/* wq for handshake work */
 struct workqueue_struct	*smc_close_wq;	/* wq for close work */
@@ -1464,10 +1460,13 @@ static int smc_connect_rdma(struct smc_sock *smc,
 	if (reason_code)
 		return reason_code;
 
-	smc_lgr_pending_lock(ini, &smc_client_lgr_pending);
+	/* smc_find_rdma_device promise that */
+	smc_lgr_pending_lock(ini, (ini->smcr_version & SMC_V2) ?
+			     &ini->smcrv2.ib_dev_v2->smc_client_lgr_pending :
+			     &ini->ib_dev->smc_client_lgr_pending);
 	reason_code = smc_conn_create(smc, ini);
 	if (reason_code) {
-		smc_lgr_pending_unlock(ini, &smc_client_lgr_pending);
+		smc_lgr_pending_unlock(ini);
 		return reason_code;
 	}
 
@@ -1564,7 +1563,7 @@ static int smc_connect_rdma(struct smc_sock *smc,
 		if (reason_code)
 			goto connect_abort;
 	}
-	smc_lgr_pending_unlock(ini, &smc_client_lgr_pending);
+	smc_lgr_pending_unlock(ini);
 
 	smc_copy_sock_settings_to_clc(smc);
 	smc->connect_nonblock = 0;
@@ -1574,7 +1573,7 @@ static int smc_connect_rdma(struct smc_sock *smc,
 	return 0;
 connect_abort:
 	smc_conn_abort(smc, ini->first_contact_local);
-	smc_lgr_pending_unlock(ini, &smc_client_lgr_pending);
+	smc_lgr_pending_unlock(ini);
 	smc->connect_nonblock = 0;
 
 	return reason_code;
@@ -1636,7 +1635,7 @@ static int smc_connect_ism(struct smc_sock *smc,
 	smc_lgr_pending_lock(ini, &smc_server_lgr_pending);
 	rc = smc_conn_create(smc, ini);
 	if (rc) {
-		smc_lgr_pending_unlock(ini, &smc_server_lgr_pending);
+		smc_lgr_pending_unlock(ini);
 		return rc;
 	}
 
@@ -1669,7 +1668,7 @@ static int smc_connect_ism(struct smc_sock *smc,
 				  aclc->hdr.version, eid, ini);
 	if (rc)
 		goto connect_abort;
-	smc_lgr_pending_unlock(ini, &smc_server_lgr_pending);
+	smc_lgr_pending_unlock(ini);
 
 	smc_copy_sock_settings_to_clc(smc);
 	smc->connect_nonblock = 0;
@@ -1679,7 +1678,7 @@ static int smc_connect_ism(struct smc_sock *smc,
 	return 0;
 connect_abort:
 	smc_conn_abort(smc, ini->first_contact_local);
-	smc_lgr_pending_unlock(ini, &smc_server_lgr_pending);
+	smc_lgr_pending_unlock(ini);
 	smc->connect_nonblock = 0;
 
 	return rc;
@@ -2404,6 +2403,9 @@ static int smc_listen_rdma_init(struct smc_sock *new_smc,
 {
 	int rc;
 
+	smc_lgr_pending_lock(ini, (ini->smcr_version & SMC_V2) ?
+			     &ini->smcrv2.ib_dev_v2->smc_server_lgr_pending :
+			     &ini->ib_dev->smc_server_lgr_pending);
 	/* allocate connection / link group */
 	rc = smc_conn_create(new_smc, ini);
 	if (rc)
@@ -2424,6 +2426,7 @@ static int smc_listen_ism_init(struct smc_sock *new_smc,
 {
 	int rc;
 
+	smc_lgr_pending_lock(ini, &smc_server_lgr_pending);
 	rc = smc_conn_create(new_smc, ini);
 	if (rc)
 		return rc;
@@ -2838,7 +2841,6 @@ static void smc_listen_work(struct work_struct *work)
 	if (rc)
 		goto out_decl;
 
-	smc_lgr_pending_lock(ini, &smc_server_lgr_pending);
 	smc_close_init(new_smc);
 	smc_rx_init(new_smc);
 	smc_tx_init(new_smc);
@@ -2857,7 +2859,7 @@ static void smc_listen_work(struct work_struct *work)
 
 	/* SMC-D does not need this lock any more */
 	if (ini->is_smcd)
-		smc_lgr_pending_unlock(ini, &smc_server_lgr_pending);
+		smc_lgr_pending_unlock(ini);
 
 	/* receive SMC Confirm CLC message */
 	memset(buf, 0, sizeof(*buf));
@@ -2888,7 +2890,7 @@ static void smc_listen_work(struct work_struct *work)
 					    ini->first_contact_local, ini);
 		if (rc)
 			goto out_unlock;
-		smc_lgr_pending_unlock(ini, &smc_server_lgr_pending);
+		smc_lgr_pending_unlock(ini);
 	}
 	if (ini->smcrv2.ib_dev_v2)
 		smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
@@ -2913,7 +2915,7 @@ out_unlock:
 		smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
 	if (ini->ib_dev)
 		smc_ib_put_pending_device(ini->ib_dev);
-	smc_lgr_pending_unlock(ini, &smc_server_lgr_pending);
+	smc_lgr_pending_unlock(ini);
 out_decl:
 	smc_listen_decline(new_smc, rc, ini ? ini->first_contact_local : 0,
 			   proposal_version);
