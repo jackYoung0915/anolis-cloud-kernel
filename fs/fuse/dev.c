@@ -2699,7 +2699,7 @@ void fuse_resend_pqueue(struct fuse_conn *fc)
 	spin_unlock(&fc->lock);
 
 	list_for_each_entry_safe(req, next, &to_queue, list) {
-		__set_bit(FR_PENDING, &req->flags);
+		set_bit(FR_PENDING, &req->flags);
 	}
 
 	spin_lock(&fiq->lock);
