@@ -7,38 +7,12 @@
 #include <string.h>
 
 #include <linux/objtool_types.h>
-#include <arch/elf.h>
+#include <asm/orc_types.h>
 
 #include <objtool/check.h>
 #include <objtool/orc.h>
 #include <objtool/warn.h>
 #include <objtool/endianness.h>
-
-bool __weak orc_ignore_section(struct section *sec)
-{
-	return false;
-}
-
-static int write_orc_entry(struct elf *elf, struct section *orc_sec,
-			   struct section *ip_sec, unsigned int idx,
-			   struct section *insn_sec, unsigned long insn_off,
-			   struct orc_entry *o)
-{
-	struct orc_entry *orc;
-
-	/* populate ORC data */
-	orc = (struct orc_entry *)orc_sec->data->d_buf + idx;
-	memcpy(orc, o, sizeof(*orc));
-	orc->sp_offset = bswap_if_needed(elf, orc->sp_offset);
-	orc->fp_offset = bswap_if_needed(elf, orc->fp_offset);
-
-	/* populate reloc for ip */
-	if (!elf_init_reloc_text_sym(elf, ip_sec, idx * sizeof(int), idx,
-				     insn_sec, insn_off))
-		return -1;
-
-	return 0;
-}
 
 struct orc_list_entry {
 	struct list_head list;
@@ -79,10 +53,7 @@ int orc_create(struct objtool_file *file)
 	struct orc_list_entry *entry;
 	struct list_head orc_list;
 
-	struct orc_entry null = {
-		.fp_reg	= ORC_REG_UNDEFINED,
-		.type	= UNWIND_HINT_TYPE_CALL,
-	};
+	struct orc_entry null = { .type = ORC_TYPE_UNDEFINED };
 
 	/* Build a deduplicated list of ORC entries: */
 	INIT_LIST_HEAD(&orc_list);
@@ -91,15 +62,12 @@ int orc_create(struct objtool_file *file)
 		struct instruction *insn;
 		bool empty = true;
 
-		if (!sec->text || orc_ignore_section(sec))
+		if (!sec->text)
 			continue;
 
 		sec_for_each_insn(file, sec, insn) {
 			struct alt_group *alt_group = insn->alt_group;
 			int i;
-
-			if (!insn_can_reloc(insn))
-				continue;
 
 			if (!alt_group) {
 				if (init_orc_entry(&orc, insn->cfi, insn))
@@ -144,7 +112,7 @@ int orc_create(struct objtool_file *file)
 		}
 
 		/* Add a section terminator */
-		if (!empty && sec->sym) {
+		if (!empty) {
 			orc_list_add(&orc_list, &null, sec, sec->sh.sh_size);
 			nr++;
 		}

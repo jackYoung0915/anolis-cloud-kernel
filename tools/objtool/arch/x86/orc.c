@@ -1,21 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
- * Copyright (C) 2017 Josh Poimboeuf <jpoimboe@redhat.com>
- */
-
-#include <stdlib.h>
-#include <string.h>
-
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/objtool_types.h>
+#include <asm/orc_types.h>
 
 #include <objtool/check.h>
-#include <objtool/insn.h>
 #include <objtool/orc.h>
 #include <objtool/warn.h>
 #include <objtool/endianness.h>
 
-int init_orc_entry(struct orc_entry *orc, struct cfi_state *cfi,
-		   struct instruction *insn)
+int init_orc_entry(struct orc_entry *orc, struct cfi_state *cfi, struct instruction *insn)
 {
 	struct cfi_reg *bp = &cfi->regs[CFI_BP];
 
@@ -105,6 +97,27 @@ int init_orc_entry(struct orc_entry *orc, struct cfi_state *cfi,
 	return 0;
 }
 
+int write_orc_entry(struct elf *elf, struct section *orc_sec,
+		    struct section *ip_sec, unsigned int idx,
+		    struct section *insn_sec, unsigned long insn_off,
+		    struct orc_entry *o)
+{
+	struct orc_entry *orc;
+
+	/* populate ORC data */
+	orc = (struct orc_entry *)orc_sec->data->d_buf + idx;
+	memcpy(orc, o, sizeof(*orc));
+	orc->sp_offset = bswap_if_needed(elf, orc->sp_offset);
+	orc->bp_offset = bswap_if_needed(elf, orc->bp_offset);
+
+	/* populate reloc for ip */
+	if (!elf_init_reloc_text_sym(elf, ip_sec, idx * sizeof(int), idx,
+				     insn_sec, insn_off))
+		return -1;
+
+	return 0;
+}
+
 static const char *reg_name(unsigned int reg)
 {
 	switch (reg) {
@@ -131,7 +144,7 @@ static const char *reg_name(unsigned int reg)
 	}
 }
 
-const char *orc_type_name(unsigned int type)
+static const char *orc_type_name(unsigned int type)
 {
 	switch (type) {
 	case ORC_TYPE_UNDEFINED:
@@ -149,7 +162,7 @@ const char *orc_type_name(unsigned int type)
 	}
 }
 
-void orc_print_reg(unsigned int reg, int offset)
+static void print_reg(unsigned int reg, int offset)
 {
 	if (reg == ORC_REG_BP_INDIRECT)
 		printf("(bp%+d)", offset);
@@ -159,4 +172,17 @@ void orc_print_reg(unsigned int reg, int offset)
 		printf("(und)");
 	else
 		printf("%s%+d", reg_name(reg), offset);
+}
+
+void orc_print_dump(struct elf *dummy_elf, struct orc_entry *orc, int i)
+{
+	printf("type:%s", orc_type_name(orc[i].type));
+
+	printf(" sp:");
+	print_reg(orc[i].sp_reg, bswap_if_needed(dummy_elf, orc[i].sp_offset));
+
+	printf(" bp:");
+	print_reg(orc[i].bp_reg, bswap_if_needed(dummy_elf, orc[i].bp_offset));
+
+	printf(" signal:%d\n", orc[i].signal);
 }

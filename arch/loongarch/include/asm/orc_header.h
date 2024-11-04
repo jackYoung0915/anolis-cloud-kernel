@@ -1,5 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) Meta Platforms, Inc. and affiliates. */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef _ORC_HEADER_H
 #define _ORC_HEADER_H

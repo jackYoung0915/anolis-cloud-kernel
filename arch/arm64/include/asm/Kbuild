@@ -8,4 +8,3 @@ generic-y += user.h
 
 generated-y += cpucaps.h
 generated-y += sysreg-defs.h
-generated-y += orc_hash.h
