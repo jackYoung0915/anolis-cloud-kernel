@@ -8394,8 +8394,12 @@ static struct io_sq_data *io_get_sq_data(struct io_uring_params *p,
 
 	if ((p->flags & IORING_SETUP_SQ_AFF) &&
 	    (p->flags & IORING_SETUP_SQPOLL_PERCPU)) {
+		int cpu = p->sq_thread_cpu;
+
+		if (cpu >= nr_cpu_ids || !cpu_online(cpu))
+			return ERR_PTR(-EINVAL);
 		mutex_lock(&percpu_sqd_lock);
-		sqd = *per_cpu_ptr(percpu_sqd, p->sq_thread_cpu);
+		sqd = *per_cpu_ptr(percpu_sqd, cpu);
 		if (!sqd) {
 			sqd = io_alloc_sq_data();
 			if (IS_ERR(sqd)) {
