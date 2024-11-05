@@ -59,43 +59,8 @@ EXPORT_SYMBOL(memstart_addr);
  * unless restricted on specific platforms (e.g. 30-bit on Raspberry Pi 4).
  * In such case, ZONE_DMA32 covers the rest of the 32-bit addressable memory,
  * otherwise it is empty.
- *
- * Memory reservation for crash kernel either done early or deferred
- * depending on DMA memory zones configs (ZONE_DMA) --
- *
- * In absence of ZONE_DMA configs arm64_dma_phys_limit initialized
- * here instead of max_zone_phys().  This lets early reservation of
- * crash kernel memory which has a dependency on arm64_dma_phys_limit.
- * Reserving memory early for crash kernel allows linear creation of block
- * mappings (greater than page-granularity) for all the memory bank rangs.
- * In this scheme a comparatively quicker boot is observed.
- *
- * If ZONE_DMA configs are defined, crash kernel memory reservation
- * is delayed until DMA zone memory range size initilazation performed in
- * zone_sizes_init().  The defer is necessary to steer clear of DMA zone
- * memory range to avoid overlap allocation.  So crash kernel memory boundaries
- * are not known when mapping all bank memory ranges, which otherwise means
- * not possible to exclude crash kernel range from creating block mappings
- * so page-granularity mappings are created for the entire memory range.
- * Hence a slightly slower boot is observed.
- *
- * Note: Page-granularity mapppings are necessary for crash kernel memory
- * range for shrinking its size via /sys/kernel/kexec_crash_size interface.
  */
-#if IS_ENABLED(CONFIG_ZONE_DMA) || IS_ENABLED(CONFIG_ZONE_DMA32)
 phys_addr_t __ro_after_init arm64_dma_phys_limit;
-#else
-phys_addr_t __ro_after_init arm64_dma_phys_limit = PHYS_MASK + 1;
-#endif
-
-bool early_reserve_crashmem = true;
-
-static int __init defer_reserve_crashmem(char *p)
-{
-	early_reserve_crashmem = false;
-	return 0;
-}
-early_param("defer_reserve_crashmem", defer_reserve_crashmem);
 
 #ifdef CONFIG_KEXEC_CORE
 
@@ -104,6 +69,8 @@ early_param("defer_reserve_crashmem", defer_reserve_crashmem);
 
 #define CRASH_ADDR_LOW_MAX        arm64_dma_phys_limit
 #define CRASH_ADDR_HIGH_MAX       (PHYS_MASK + 1)
+
+#define DEFAULT_CRASH_KERNEL_LOW_SIZE	(128UL << 20)
 
 static int __init reserve_crashkernel_low(unsigned long long low_size)
 {
@@ -141,6 +108,7 @@ static void __init reserve_crashkernel(void)
 	unsigned long long crash_max = CRASH_ADDR_LOW_MAX;
 	char *cmdline = boot_command_line;
 	int ret;
+	bool fixed_base = false;
 
 	if (!IS_ENABLED(CONFIG_KEXEC_CORE))
 		return;
@@ -160,7 +128,9 @@ static void __init reserve_crashkernel(void)
 		 */
 		ret = parse_crashkernel_low(cmdline, 0, &crash_low_size, &crash_base);
 
-		if (ret && (ret != -ENOENT))
+		if (ret == -ENOENT)
+			crash_low_size = DEFAULT_CRASH_KERNEL_LOW_SIZE;
+		else if (ret)
 			return;
 
 		crash_max = CRASH_ADDR_HIGH_MAX;
@@ -172,19 +142,33 @@ static void __init reserve_crashkernel(void)
 	crash_size = PAGE_ALIGN(crash_size);
 
 	/* User specifies base address explicitly. */
-	if (crash_base)
+	if (crash_base) {
+		fixed_base = true;
 		crash_max = crash_base + crash_size;
+	}
 
+retry:
 	crash_base = memblock_phys_alloc_range(crash_size, CRASH_ALIGN,
 							crash_base, crash_max);
 
 	if (!crash_base) {
+		/*
+		 * If the first attempt was for low memory, fall back to
+		 * high memory, the minimum required low memory will be
+		 * reserved later.
+		 */
+		if (!fixed_base && (crash_max == CRASH_ADDR_LOW_MAX)) {
+			crash_max = CRASH_ADDR_HIGH_MAX;
+			crash_low_size = DEFAULT_CRASH_KERNEL_LOW_SIZE;
+			goto retry;
+		}
+
 		pr_warn("cannot allocate crashkernel (size:0x%llx)\n",
 			crash_size);
 		return;
 	}
 
-	if ((crash_base >= CRASH_ADDR_LOW_MAX) &&
+	if ((crash_base > CRASH_ADDR_LOW_MAX - crash_low_size) &&
 	     crash_low_size && reserve_crashkernel_low(crash_low_size)) {
 		memblock_free(crash_base, crash_size);
 		return;
@@ -309,6 +293,8 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = dma32_phys_limit;
 #endif
+	if (!arm64_dma_phys_limit)
+		arm64_dma_phys_limit = PHYS_MASK + 1;
 	max_zone_pfns[ZONE_NORMAL] = max;
 
 	free_area_init(max_zone_pfns);
@@ -514,10 +500,6 @@ void __init arm64_memblock_init(void)
 
 	reserve_elfcorehdr();
 
-	if ((!IS_ENABLED(CONFIG_ZONE_DMA) && !IS_ENABLED(CONFIG_ZONE_DMA32)) ||
-	     early_reserve_crashmem)
-		reserve_crashkernel();
-
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
 }
 
@@ -566,9 +548,7 @@ void __init bootmem_init(void)
 	 * request_standard_resources() depends on crashkernel's memory being
 	 * reserved, so do it here.
 	 */
-	if ((IS_ENABLED(CONFIG_ZONE_DMA) || IS_ENABLED(CONFIG_ZONE_DMA32)) &&
-	    !early_reserve_crashmem)
-		reserve_crashkernel();
+	reserve_crashkernel();
 
 	memblock_dump_all();
 }
