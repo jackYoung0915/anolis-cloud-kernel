@@ -473,9 +473,9 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 void erofs_unmap_metabuf(struct erofs_buf *buf);
 void erofs_put_metabuf(struct erofs_buf *buf);
 void *erofs_bread(struct erofs_buf *buf, struct inode *inode,
-		  erofs_blk_t blkaddr, enum erofs_kmap_type type);
+		  erofs_off_t offset, enum erofs_kmap_type type);
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
-			 erofs_blk_t blkaddr, enum erofs_kmap_type type);
+			 erofs_off_t offset, enum erofs_kmap_type type);
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *dev);
 int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map);
 void erofs_onlinepage_init(struct page *page);

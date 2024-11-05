@@ -29,7 +29,7 @@ static void *erofs_read_inode(struct erofs_buf *buf,
 	erofs_dbg("%s, reading inode nid %llu at %u of blkaddr %u",
 		  __func__, vi->nid, *ofs, blkaddr);
 
-	kaddr = erofs_read_metabuf(buf, sb, blkaddr, EROFS_KMAP);
+	kaddr = erofs_read_metabuf(buf, sb, erofs_pos(sb, blkaddr), EROFS_KMAP);
 	if (IS_ERR(kaddr)) {
 		erofs_err(sb, "failed to get inode (nid: %llu) page, err %ld",
 			  vi->nid, PTR_ERR(kaddr));
@@ -70,7 +70,8 @@ static void *erofs_read_inode(struct erofs_buf *buf,
 				goto err_out;
 			}
 			memcpy(copied, dic, gotten);
-			kaddr = erofs_read_metabuf(buf, sb, blkaddr + 1,
+			kaddr = erofs_read_metabuf(buf, sb,
+						   erofs_pos(sb, blkaddr + 1),
 						   EROFS_KMAP);
 			if (IS_ERR(kaddr)) {
 				erofs_err(sb, "failed to get inode payload block (nid: %llu), err %ld",

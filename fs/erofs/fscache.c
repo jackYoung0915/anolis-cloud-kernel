@@ -121,6 +121,7 @@ static int erofs_fscache_readpage_inline(struct page *page,
 {
 	struct super_block *sb = page->mapping->host->i_sb;
 	struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
+	struct inode *inode = EROFS_SB(sb)->s_fscache->inode;
 	erofs_blk_t blknr;
 	size_t offset, len;
 	void *src, *dst;
@@ -130,7 +131,9 @@ static int erofs_fscache_readpage_inline(struct page *page,
 	blknr = erofs_blknr(sb, map->m_pa);
 	len = map->m_llen;
 
-	src = erofs_read_metabuf(&buf, sb, blknr, EROFS_KMAP_ATOMIC);
+	src = erofs_read_metabuf(&buf, sb,
+			(erofs_off_t)blknr << inode->i_blkbits,
+			EROFS_KMAP_ATOMIC);
 	if (IS_ERR(src))
 		return PTR_ERR(src);
 

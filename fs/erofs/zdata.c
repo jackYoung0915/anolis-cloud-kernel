@@ -735,7 +735,8 @@ static int z_erofs_read_fragment(struct inode *inode, erofs_off_t pos,
 		cnt = min_t(unsigned int, len - i,
 			    sb->s_blocksize - erofs_blkoff(sb, pos));
 		src = erofs_bread(&buf, packed_inode,
-				  erofs_blknr(sb, pos), EROFS_KMAP);
+				  erofs_pos(sb, erofs_blknr(sb, pos)),
+				  EROFS_KMAP);
 		if (IS_ERR(src)) {
 			erofs_put_metabuf(&buf);
 			return PTR_ERR(src);
@@ -794,11 +795,12 @@ repeat:
 		goto out;
 
 	if (z_erofs_is_inline_pcluster(fe->pcl)) {
+		struct super_block *sb = inode->i_sb;
 		void *mp;
 
-		mp = erofs_read_metabuf(&fe->map.buf, inode->i_sb,
-					erofs_blknr(inode->i_sb, map->m_pa),
-					EROFS_NO_KMAP);
+		mp = erofs_read_metabuf(&fe->map.buf, sb,
+				erofs_pos(sb, erofs_blknr(sb, map->m_pa)),
+				EROFS_NO_KMAP);
 		if (IS_ERR(mp)) {
 			err = PTR_ERR(mp);
 			erofs_err(inode->i_sb,

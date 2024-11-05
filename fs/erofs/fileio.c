@@ -113,15 +113,10 @@ static int erofs_fileio_scan_page(struct erofs_fileio *io, struct page *page)
 		len = min_t(loff_t, map->m_llen - ofs, end - cur);
 		if (map->m_flags & EROFS_MAP_META) {
 			struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
-                        erofs_blk_t blkaddr;
-                        erofs_off_t offset;
-
 			void *src;
 
-                        blkaddr = erofs_blknr(inode->i_sb, map->m_pa + ofs);
-                        offset = erofs_blkoff(inode->i_sb, map->m_pa + ofs);
-			src = erofs_read_metabuf(&buf, inode->i_sb, blkaddr,
-                                                 EROFS_KMAP) + offset;
+			src = erofs_read_metabuf(&buf, inode->i_sb,
+						 map->m_pa + ofs, EROFS_KMAP);
 			if (IS_ERR(src)) {
 				err = PTR_ERR(src);
 				break;
