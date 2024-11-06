@@ -482,11 +482,11 @@ static int __smcr_tx_rdma_writes_rwwi(struct smc_connection *conn, int dst_off,
 	smc_curs_copy(&prod_pend, &conn->local_tx_ctrl.prod, conn);
 	smc_curs_add(conn->peer_rmbe_size, &prod_pend, dst_len);
 	if (update_rx_curs_confirmed)
-		smc_dump_cdc_msg_rwwi(conn, imm_msg.imm_data,
-				      &prod_pend, &cfed, false);
+		smc_dump_cdc_msg_rwwi(conn, imm_msg.imm_data, &prod_pend,
+				      &conn->local_tx_ctrl.cons, false);
 	else
-		smc_dump_cdc_msg_rwwi(conn, imm_msg.imm_data,
-				      &prod_pend, &cons_old, false);
+		smc_dump_cdc_msg_rwwi(conn, imm_msg.imm_data, &prod_pend,
+				      &conn->rx_curs_confirmed, false);
 	rc = smc_tx_rdma_write(conn, dst_off, num_sges, wr);
 	if (!rc) {
 		/* do not update rx_curs_confirmed if all flags equal to 0,
