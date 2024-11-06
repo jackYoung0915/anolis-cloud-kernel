@@ -95,12 +95,15 @@ struct smc_dump_ctx {
 	spinlock_t dump_ndev_lock; /* protects dump_ndev */
 };
 
-/* 65503 */
+/* 65495 */
 #define SMC_DUMP_MAX_DATA_LEN \
 	(IPV4_MAX_PMTU - sizeof(struct iphdr) - \
 	 sizeof(struct udphdr) - sizeof(struct smc_dumphdr))
 
 #define SMC_DUMP_V1	1
+#define SMC_DUMP_V2	2
+/* can not be larger than 0xf */
+#define SMC_DUMP_VER	SMC_DUMP_V2
 
 enum {
 	SMC_DUMP_T_RAW_DATA = 1,
@@ -110,15 +113,20 @@ enum {
 };
 
 struct smc_dumphdr {
-	__u8	magic;
+	__be32	magic;
 #if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8	mode:4,
+		hdr_ver:4;
 	__u8	type:4,
-		version:4;
+		smc_ver:4;
 #elif defined(__BIG_ENDIAN_BITFIELD)
-	__u8	version:4,
+	__u8	hdr_ver:4,
+		mode:4;
+	__u8	smc_ver:4,
 		type:4;
 #endif
-	__u8	reserved[2];
+	__be16	len;
+	__u8	reserved[4];
 } __packed;
 
 #define SMC_STAT_PAYLOAD_SUB(_smc_stats, _tech, key, _len, _rc) \
