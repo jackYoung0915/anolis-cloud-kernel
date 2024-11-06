@@ -608,23 +608,33 @@ static int smc_dump_fill_skb_header(struct smc_sock *smc,
 				    struct net_device *dev,
 				    int data_len, int type, bool is_rx)
 {
+	struct smc_link_group *lgr;
 	struct smc_dumphdr *smch;
 	struct udphdr *udph;
 	struct sock *clcsk;
 	struct ethhdr *eh;
 	struct iphdr *iph;
 
+	/* too large to fit */
+	if (data_len > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
+
 	clcsk = smc_sock_is_inet_sock(&smc->sk) ?
 				&smc->sk : smc->clcsock->sk;
 	if (!clcsk)
 		return -EINVAL;
 
+	lgr = smc->conn.lgr;
+	if (!lgr)
+		return -EINVAL;
 	smch = skb_push(skb, sizeof(struct smc_dumphdr));
-	smch->version = SMC_DUMP_V1;
+	smch->magic = htonl(0xCFD3E7A5);
+	smch->hdr_ver = SMC_DUMP_VER;
+	smch->smc_ver = lgr->smc_version;
+	smch->mode = lgr->is_smcd ? 2 : 1; /* SMC-R: 1, SMC-D: 2*/
 	smch->type = type;
-	smch->reserved[0] = 0;
-	smch->reserved[1] = 0;
-	smch->magic = 0xcf;
+	smch->len = htons(sizeof(struct smc_dumphdr) + data_len);
+	memset(smch->reserved, 0, sizeof(smch->reserved));
 
 	udph = skb_push(skb, sizeof(struct udphdr));
 	udph->source = is_rx ? clcsk->sk_dport : htons(clcsk->sk_num);
@@ -668,6 +678,10 @@ static int __smc_dump_forward_data(struct smc_sock *smc,
 	int header_size, data_size;
 	struct sk_buff *skb;
 	int rc, i;
+
+	/* too large to fit */
+	if (len > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
 
 	/* pretend to be a UDP packet */
 	header_size = sizeof(struct smc_dumphdr) + sizeof(struct udphdr) +
