@@ -244,13 +244,11 @@ static void nvmet_execute_admin_connect(struct nvmet_req *req)
 	d->subsysnqn[NVMF_NQN_FIELD_LEN - 1] = '\0';
 	d->hostnqn[NVMF_NQN_FIELD_LEN - 1] = '\0';
 	status = nvmet_alloc_ctrl(d->subsysnqn, d->hostnqn, req,
-				  le32_to_cpu(c->kato), &ctrl);
+				  le32_to_cpu(c->kato), &ctrl, &d->hostid);
 	if (status)
 		goto out;
 
 	ctrl->pi_support = ctrl->port->pi_enable && ctrl->subsys->pi_support;
-
-	uuid_copy(&ctrl->hostid, &d->hostid);
 
 	ret = nvmet_setup_auth(ctrl);
 	if (ret < 0) {
