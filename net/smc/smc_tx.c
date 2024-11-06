@@ -385,10 +385,10 @@ static int smc_tx_rdma_write(struct smc_connection *conn, int peer_rmbe_offset,
 static int __smcr_tx_rdma_writes_rwwi(struct smc_connection *conn, int dst_off,
 				      int dst_len, int num_sges, struct ib_rdma_wr *wr)
 {
+	union smc_host_cursor cons_old, prod_pend;
 	struct smc_cdc_producer_flags *pflags;
 	bool update_rx_curs_confirmed = true;
 	struct smc_link *link = conn->lnk;
-	union smc_host_cursor cons_old;
 	union smc_wr_rwwi_tx_id wr_id;
 	union smc_wr_imm_msg imm_msg;
 	union smc_host_cursor cfed;
@@ -479,6 +479,14 @@ static int __smcr_tx_rdma_writes_rwwi(struct smc_connection *conn, int dst_off,
 	wr->wr.wr_id = wr_id.data;
 	wr->wr.ex.imm_data = cpu_to_be32(imm_msg.imm_data);
 
+	smc_curs_copy(&prod_pend, &conn->local_tx_ctrl.prod, conn);
+	smc_curs_add(conn->peer_rmbe_size, &prod_pend, dst_len);
+	if (update_rx_curs_confirmed)
+		smc_dump_cdc_msg_rwwi(conn, imm_msg.imm_data,
+				      &prod_pend, &cfed, false);
+	else
+		smc_dump_cdc_msg_rwwi(conn, imm_msg.imm_data,
+				      &prod_pend, &cons_old, false);
 	rc = smc_tx_rdma_write(conn, dst_off, num_sges, wr);
 	if (!rc) {
 		/* do not update rx_curs_confirmed if all flags equal to 0,
@@ -741,7 +749,6 @@ static int smcr_tx_rdma_writes_rwwi(struct smc_connection *conn)
 	smc_curs_copy(&conn->local_tx_ctrl.prod, &prod, conn);
 							/* dst: peer RMBE */
 	smc_curs_copy(&conn->tx_curs_sent, &sent, conn);/* src: local sndbuf */
-	smc_dump_cdc_msg_rwwi(conn, __be32_to_cpu(wr.wr.ex.imm_data), false);
 
 	return 0;
 }

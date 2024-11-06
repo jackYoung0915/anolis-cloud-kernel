@@ -317,7 +317,8 @@ int smc_dump_raw_data(struct smc_connection *conn, int offset,
 		      int length, bool is_rx);
 int smc_dump_cdc_msg(struct smc_connection *conn, void *buf,
 		     int length, bool is_rx);
-int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
-			  u32 imm_data, bool is_rx);
+int smc_dump_cdc_msg_rwwi(struct smc_connection *conn, u32 imm_data,
+			  union smc_host_cursor *prod,
+			  union smc_host_cursor *cons, bool is_rx);
 
 #endif /* NET_SMC_SMC_STATS_H_ */
