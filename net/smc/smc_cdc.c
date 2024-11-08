@@ -613,7 +613,9 @@ static void smc_cdc_handle_rwwi_data_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.prod_flags, 0,
 	       sizeof(struct smc_cdc_producer_flags));
 
-	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data, true);
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -638,7 +640,9 @@ static void smc_cdc_handle_rwwi_data_with_flags_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.conn_state_flags, 0,
 	       sizeof(struct smc_cdc_conn_state_flags));
 
-	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data, true);
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -660,7 +664,9 @@ static void smc_cdc_handle_rwwi_data_cr_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.prod_flags, 0,
 	       sizeof(struct smc_cdc_producer_flags));
 
-	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data, true);
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -688,7 +694,9 @@ static void smc_cdc_handle_rwwi_data_with_flags_cr_msg(struct smc_sock *smc,
 	memset(&conn->local_rx_ctrl.conn_state_flags, 0,
 	       sizeof(struct smc_cdc_conn_state_flags));
 
-	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data, true);
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, diff_cons);
 }
 
@@ -699,8 +707,11 @@ static void smc_cdc_handle_rwwi_ctrl_msg(struct smc_sock *smc,
 
 	conn->local_rx_ctrl.prod_flags = imm_msg->ctrl.pflags;
 	conn->local_rx_ctrl.conn_state_flags = imm_msg->ctrl.csflags;
+
+	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data,
+			      &conn->local_rx_ctrl.prod,
+			      &conn->local_rx_ctrl.cons, true);
 	/* this imm_data contains no diff_cons info, clean it */
-	smc_dump_cdc_msg_rwwi(conn, imm_msg->imm_data, true);
 	__smc_cdc_msg_recv_action(smc, diff_prod, 0);
 }
 

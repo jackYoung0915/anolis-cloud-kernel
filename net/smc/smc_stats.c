@@ -608,23 +608,33 @@ static int smc_dump_fill_skb_header(struct smc_sock *smc,
 				    struct net_device *dev,
 				    int data_len, int type, bool is_rx)
 {
+	struct smc_link_group *lgr;
 	struct smc_dumphdr *smch;
 	struct udphdr *udph;
 	struct sock *clcsk;
 	struct ethhdr *eh;
 	struct iphdr *iph;
 
+	/* too large to fit */
+	if (data_len > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
+
 	clcsk = smc_sock_is_inet_sock(&smc->sk) ?
 				&smc->sk : smc->clcsock->sk;
 	if (!clcsk)
 		return -EINVAL;
 
+	lgr = smc->conn.lgr;
+	if (!lgr)
+		return -EINVAL;
 	smch = skb_push(skb, sizeof(struct smc_dumphdr));
-	smch->version = SMC_DUMP_V1;
+	smch->magic = htonl(0xCFD3E7A5);
+	smch->hdr_ver = SMC_DUMP_VER;
+	smch->smc_ver = lgr->smc_version;
+	smch->mode = lgr->is_smcd ? 2 : 1; /* SMC-R: 1, SMC-D: 2*/
 	smch->type = type;
-	smch->reserved[0] = 0;
-	smch->reserved[1] = 0;
-	smch->magic = 0xcf;
+	smch->len = htons(sizeof(struct smc_dumphdr) + data_len);
+	memset(smch->reserved, 0, sizeof(smch->reserved));
 
 	udph = skb_push(skb, sizeof(struct udphdr));
 	udph->source = is_rx ? clcsk->sk_dport : htons(clcsk->sk_num);
@@ -668,6 +678,10 @@ static int __smc_dump_forward_data(struct smc_sock *smc,
 	int header_size, data_size;
 	struct sk_buff *skb;
 	int rc, i;
+
+	/* too large to fit */
+	if (len > SMC_DUMP_MAX_DATA_LEN)
+		return -ENOBUFS;
 
 	/* pretend to be a UDP packet */
 	header_size = sizeof(struct smc_dumphdr) + sizeof(struct udphdr) +
@@ -797,8 +811,9 @@ out:
 	return rc;
 }
 
-int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
-			  u32 imm_data, bool is_rx)
+int smc_dump_cdc_msg_rwwi(struct smc_connection *conn, u32 imm_data,
+			  union smc_host_cursor *prod,
+			  union smc_host_cursor *cons, bool is_rx)
 {
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
 	struct net *net = sock_net(&smc->sk);
@@ -808,6 +823,7 @@ int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
 	union smc_host_cursor save;
 	struct smc_cdc_msg cdc;
 	int f, rc;
+	u32 token;
 
 	rcu_read_lock();
 	dump_ndev = rcu_dereference(net->smc.dump_ctx->dump_ndev);
@@ -825,10 +841,13 @@ int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
 	local = is_rx ? &conn->local_rx_ctrl : &conn->local_tx_ctrl;
 	cdc.common.type = local->common.type;
 	cdc.len = local->len;
-	cdc.seqno = htons(local->seqno);
-	cdc.token = htonl(local->token);
-	smc_host_cursor_to_cdc(&cdc.prod, &local->prod, &save, conn);
-	smc_host_cursor_to_cdc(&cdc.cons, &local->cons, &save, conn);
+	/* in rwwi mode, seqno is not generated and imm_msg
+	 * does not pass seqno as well.
+	 */
+	token = imm_msg.hdr.token;
+	cdc.token = htonl(token);
+	smc_host_cursor_to_cdc(&cdc.prod, prod, &save, conn);
+	smc_host_cursor_to_cdc(&cdc.cons, cons, &save, conn);
 	cdc.prod_flags = local->prod_flags;
 	cdc.conn_state_flags = local->conn_state_flags;
 	/* local_rx_ctrl doesn't have following information,
@@ -836,9 +855,6 @@ int smc_dump_cdc_msg_rwwi(struct smc_connection *conn,
 	 */
 	cdc.common.type = SMC_CDC_MSG_TYPE;
 	cdc.len = SMC_WR_TX_SIZE;
-	/* we can't get peer cdc->seqno in Rx, so we may find that this
-	 * field is not present in the Rx cdc messages dumped.
-	 */
 
 	switch (imm_msg.hdr.opcode) {
 	case SMC_WR_OP_DATA:
