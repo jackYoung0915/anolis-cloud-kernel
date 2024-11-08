@@ -677,6 +677,9 @@ static int __init hugepage_init(void)
 	if (err)
 		goto err_split_shrinker;
 
+	INIT_DELAYED_WORK(&thp_reclaim_proactive_dwork,
+			  thp_reclaim_proactive_func);
+
 	/*
 	 * By default disable transparent hugepages on smaller systems,
 	 * where the extra memory used could hurt more than TLB overhead
@@ -691,8 +694,6 @@ static int __init hugepage_init(void)
 	if (err)
 		goto err_khugepaged;
 
-	INIT_DELAYED_WORK(&thp_reclaim_proactive_dwork,
-			  thp_reclaim_proactive_func);
 	if (thp_reclaim_proactive)
 		schedule_delayed_work(&thp_reclaim_proactive_dwork,
 			msecs_to_jiffies(thp_reclaim_proactive_sleep_ms));
