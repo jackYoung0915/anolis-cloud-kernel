@@ -85,3 +85,43 @@ smcr_max_conns_per_lgr - INTEGER
 	acceptable value ranges from 16 to 255. Only for SMC-R v2.1 and later.
 
 	Default: 32
+
+autosplit_size - INTEGER
+	Setting SMC autosplit size. Autosplit is used to split sending data into
+	several segments when application sending data and the data size is larger
+	than autosplit size. Autosplit helps performing pipeline sending and pipeline
+	receiving for better latency performance when sending/receiving large size
+	data.
+	Autosplit_size ranges from 32KiB to 512MiB.
+
+	Default: 128KiB
+
+global_mem - vector of 3 INTEGERs: min, pressure, max
+	min: below this number of bytes the whole SMC-R and SMC-D stack is not
+	bothered about its memory appetite.
+
+	pressure: when amount of memory allocated by the whole SMC-R and SMC-D
+	exceeds this number of bytes, this doesn't do anything in this version.
+	SMC-R will recycle memory in pressure mode, which is exited when memory
+	consumption falls under "min".
+
+	max: number of bytes allowed for the whole SMC-R and SMC-D, otherwise
+	fallback to TCP. Also it takes effect when per net namespace limit reached.
+
+	Defaults are calculated at boot time from amount of available
+	memory.
+
+mem - vector of 3 INTEGERs: min, pressure, max
+	min: below this number of bytes current net namespace SMC-R and SMC-D
+	stack is not bothered about its memory appetite.
+
+	pressure: when amount of memory allocated by current net namespace of
+	SMC-R and SMC-D exceeds this number of bytes, this doesn't do anything
+	in this version. SMC-R will recycle memory in pressure mode, which is
+	exited when memory consumption falls under "min".
+
+	max: number of bytes allowed for current net namespace SMC-R and SMC-D,
+	otherwise fallback to TCP.
+
+	Defaults are calculated at boot time from amount of available
+	memory.

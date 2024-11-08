@@ -22,10 +22,26 @@
 static int two = 2;
 static int min_sndbuf = SMC_BUF_MIN_SIZE;
 static int min_rcvbuf = SMC_BUF_MIN_SIZE;
+static int max_sndbuf = INT_MAX / 2;
+static int max_rcvbuf = INT_MAX / 2;
+static const int net_smc_wmem_init = (256 * 1024); /* ANCK: 256K, upstream: 64K */
+static const int net_smc_rmem_init = (256 * 1024);
 static int links_per_lgr_min = SMC_LINKS_ADD_LNK_MIN;
 static int links_per_lgr_max = SMC_LINKS_ADD_LNK_MAX;
 static int conns_per_lgr_min = SMC_CONN_PER_LGR_MIN;
 static int conns_per_lgr_max = SMC_CONN_PER_LGR_MAX;
+static unsigned int autosplit_size_min = SZ_32K;
+static unsigned int autosplit_size_max = SZ_512M; /* max size of snd/recv buffer */
+
+static int proc_global_mem(struct ctl_table *ctl,
+			   int write, void *buffer,
+			   size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table tbl = { .maxlen = sizeof(sysctl_global_mem) };
+
+	tbl.data = &sysctl_global_mem;
+	return proc_doulongvec_minmax(&tbl, write, buffer, lenp, ppos);
+}
 
 static struct ctl_table smc_table[] = {
 	{
@@ -58,6 +74,7 @@ static struct ctl_table smc_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_sndbuf,
+		.extra2		= &max_sndbuf,
 	},
 	{
 		.procname	= "rmem",
@@ -66,6 +83,7 @@ static struct ctl_table smc_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_rcvbuf,
+		.extra2		= &max_rcvbuf,
 	},
 	{
 		.procname	= "tcp2smc",
@@ -99,6 +117,37 @@ static struct ctl_table smc_table[] = {
 		.extra1		= &conns_per_lgr_min,
 		.extra2		= &conns_per_lgr_max,
 	},
+	{
+		.procname	= "autosplit_size",
+		.data		= &init_net.smc.sysctl_autosplit_size,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= &autosplit_size_min,
+		.extra2		= &autosplit_size_max,
+	},
+	{
+		.procname   = "limit_smc_hs",
+		.data       = &init_net.smc.limit_smc_hs,
+		.maxlen     = sizeof(int),
+		.mode       = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1     = SYSCTL_ZERO,
+		.extra2     = SYSCTL_ONE,
+	},
+	{
+		.procname	= "mem",
+		.data		= &init_net.smc.sysctl_mem,
+		.maxlen		= sizeof(init_net.smc.sysctl_mem),
+		.mode		= 0644,
+		.proc_handler	= proc_doulongvec_minmax,
+	},
+	{
+		.procname	= "global_mem",
+		.maxlen		= sizeof(sysctl_global_mem),
+		.mode		= 0644,
+		.proc_handler	= proc_global_mem,
+	},
 	{  }
 };
 
@@ -114,8 +163,17 @@ int __net_init smc_sysctl_net_init(struct net *net)
 		if (!table)
 			goto err_alloc;
 
-		for (i = 0; i < ARRAY_SIZE(smc_table) - 1; i++)
-			table[i].data += (void *)net - (void *)&init_net;
+		for (i = 0; i < ARRAY_SIZE(smc_table) - 1; i++) {
+			if (table[i].data) {
+				/* Calcute current net data. */
+				table[i].data += (void *)net - (void *)&init_net;
+			} else {
+				/* Enties without data are global and read-only,
+				 * handle in their own proc handle.
+				 */
+				table[i].mode &= ~0222;
+			}
+		}
 	}
 
 	net->smc.smc_hdr = register_net_sysctl(net, "net/smc", table);
@@ -126,13 +184,15 @@ int __net_init smc_sysctl_net_init(struct net *net)
 	net->smc.sysctl_smcr_buf_type = SMCR_MIXED_BUFS;
 	net->smc.sysctl_vendor_exp_options = ~0U;
 	net->smc.sysctl_smcr_testlink_time = SMC_LLC_TESTLINK_DEFAULT_TIME;
-	net->smc.sysctl_wmem = 262144; /* 256 KiB */
-	net->smc.sysctl_rmem = 262144; /* 256 KiB */
+	WRITE_ONCE(net->smc.sysctl_wmem, net_smc_wmem_init);
+	WRITE_ONCE(net->smc.sysctl_rmem, net_smc_rmem_init);
 	net->smc.sysctl_tcp2smc = 0;
 	/* enable handshake limitation by default */
 	net->smc.limit_smc_hs = 1;
 	net->smc.sysctl_max_links_per_lgr = SMC_LINKS_PER_LGR_MAX_PREFER;
 	net->smc.sysctl_max_conns_per_lgr = SMC_CONN_PER_LGR_PREFER;
+	net->smc.sysctl_autosplit_size = SZ_128K;
+	smc_mem_init(net);
 	return 0;
 
 err_reg:

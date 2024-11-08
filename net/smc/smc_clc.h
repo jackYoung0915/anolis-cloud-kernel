@@ -70,6 +70,7 @@
 #define SMC_CLC_DECL_ERR_RDYLNK	0x09990002  /*	 ib ready link failed	      */
 #define SMC_CLC_DECL_ERR_REGBUF	0x09990003  /*	 reg rdma bufs failed	      */
 #define SMC_CLC_DECL_CREDITSERR	0x09990004  /*   announce credits failed      */
+#define SMC_CLC_DECL_IW_GID_QP	0x099f0000  /*   iw_gid_qp check failed       */
 
 #define SMC_FIRST_CONTACT_MASK	0b10	/* first contact bit within typev2 */
 
@@ -159,9 +160,11 @@ struct smc_clc_vendor_opt_ali {
 	u8 valid : 1,
 	   credits_en : 1,
 	   rwwi_en    : 1,
-	   reserved0  : 5;
+	   iw_gid_qp  : 1,
+	   reserved0  : 4;
 #elif defined(__LITTLE_ENDIAN_BITFIELD)
-	u8 reserved0  : 5,
+	u8 reserved0  : 4,
+	   iw_gid_qp  : 1,
 	   rwwi_en    : 1,
 	   credits_en : 1,
 	   valid : 1;
@@ -225,8 +228,8 @@ struct smcr_clc_msg_accept_confirm {	/* SMCR accept/confirm */
 } __packed;
 
 struct smcd_clc_msg_accept_confirm_common {	/* SMCD accept/confirm */
-	u64 gid;		/* Sender GID */
-	u64 token;		/* DMB token */
+	__be64 gid;		/* Sender GID */
+	__be64 token;		/* DMB token */
 	u8 dmbe_idx;		/* DMBE index */
 #if defined(__BIG_ENDIAN_BITFIELD)
 	u8 dmbe_size : 4,	/* buf size (compressed) */

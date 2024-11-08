@@ -203,11 +203,17 @@ struct erdma_cmdq_set_retrans_num_req {
 	u32 retrans_num;
 };
 
-#define ERDMA_CMDQ_SET_EXT_ATTR_DACK_COUNT_MASK BIT(0)
-struct erdma_cmdq_set_ext_attr_req {
-	u64 hdr;
+#define ERDMA_EXT_ATTR_DACK_COUNT_MASK BIT(0)
+#define ERDMA_EXT_ATTR_LEGACY_MODE_MASK BIT(2)
+struct erdma_ext_attr {
 	u32 attr_mask;
 	u8 dack_count;
+	u8 enable;
+};
+
+struct erdma_cmdq_set_ext_attr_req {
+	u64 hdr;
+	struct erdma_ext_attr attr;
 };
 
 /* create_cq cfg0 */
@@ -275,7 +281,7 @@ struct erdma_cmdq_dereg_mr_req {
 #define ERDMA_CMD_MODIFY_QP_QPN_MASK GENMASK(19, 0)
 
 #define ERDMA_CMD_MODIFY_QP_IPV6_MASK BIT(31)
-#define ERDMA_CMD_MODIFY_QP_IW_OOB_MASK BIT(30)
+#define ERDMA_CMD_MODIFY_QP_WWI_PERF_MASK BIT(30)
 #define ERDMA_CMD_MODIFY_QP_RQPN_MASK GENMASK(19, 0)
 
 struct erdma_cmdq_modify_qp_req {
@@ -324,8 +330,8 @@ struct erdma_cmdq_create_qp_req {
 	u64 rq_buf_addr;
 	u32 sq_mtt_cfg;
 	u32 rq_mtt_cfg;
-	u64 sq_db_info_dma_addr;
-	u64 rq_db_info_dma_addr;
+	u64 sq_dbrec_dma;
+	u64 rq_dbrec_dma;
 
 	u64 sq_mtt_entry[3];
 	u64 rq_mtt_entry[3];
@@ -613,7 +619,7 @@ struct erdma_cmdq_query_stats_resp {
 struct erdma_cmdq_query_qpc_resp {
 	struct erdma_cmdq_query_resp_hdr hdr;
 
-	struct{
+	struct {
 		u8 status; /* 0 - disabled, 1 - enabled. */
 		u8 qbuf_page_offset;
 		u8 qbuf_page_size;
@@ -643,8 +649,8 @@ struct erdma_cmdq_query_qpc_resp {
 	u16 fw_sq_ci;
 
 	u16 fw_rq_ci;
-	u8  sq_in_flush;
-	u8  rq_in_flush;
+	u8 sq_in_flush;
+	u8 rq_in_flush;
 	u16 sq_flushed_pi;
 	u16 rq_flushed_pi;
 

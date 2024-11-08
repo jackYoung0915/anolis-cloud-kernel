@@ -80,6 +80,8 @@ struct smc_stats_tech {
 	u64			tx_bytes;
 	u64			rx_cnt;
 	u64			tx_cnt;
+	u64			rx_rmbuse;
+	u64			tx_rmbuse;
 };
 
 struct smc_stats {
@@ -87,6 +89,45 @@ struct smc_stats {
 	u64			clnt_hshake_err_cnt;
 	u64			srv_hshake_err_cnt;
 };
+
+struct smc_dump_ctx {
+	struct net_device __rcu *dump_ndev;
+	spinlock_t dump_ndev_lock; /* protects dump_ndev */
+};
+
+/* 65495 */
+#define SMC_DUMP_MAX_DATA_LEN \
+	(IPV4_MAX_PMTU - sizeof(struct iphdr) - \
+	 sizeof(struct udphdr) - sizeof(struct smc_dumphdr))
+
+#define SMC_DUMP_V1	1
+#define SMC_DUMP_V2	2
+/* can not be larger than 0xf */
+#define SMC_DUMP_VER	SMC_DUMP_V2
+
+enum {
+	SMC_DUMP_T_RAW_DATA = 1,
+	SMC_DUMP_T_CDC_MSG,
+	SMC_DUMP_T_LLC_MSG,
+	/* can not be larger than 0xf */
+};
+
+struct smc_dumphdr {
+	__be32	magic;
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8	mode:4,
+		hdr_ver:4;
+	__u8	type:4,
+		smc_ver:4;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	__u8	hdr_ver:4,
+		mode:4;
+	__u8	smc_ver:4,
+		type:4;
+#endif
+	__be16	len;
+	__u8	reserved[4];
+} __packed;
 
 #define SMC_STAT_PAYLOAD_SUB(_smc_stats, _tech, key, _len, _rc) \
 do { \
@@ -136,38 +177,46 @@ do { \
 } \
 while (0)
 
-#define SMC_STAT_RMB_SIZE_SUB(_smc_stats, _tech, k, _len) \
+#define SMC_STAT_RMB_SIZE_SUB(_smc_stats, _tech, k, _is_add, _len) \
 do { \
+	typeof(_smc_stats) stats = (_smc_stats); \
+	typeof(_is_add) is_a = (_is_add); \
 	typeof(_len) _l = (_len); \
 	typeof(_tech) t = (_tech); \
 	int _pos; \
 	int m = SMC_BUF_MAX - 1; \
 	if (_l <= 0) \
 		break; \
-	_pos = fls((_l - 1) >> 13); \
-	_pos = (_pos <= m) ? _pos : m; \
-	this_cpu_inc((*(_smc_stats)).smc[t].k ## _rmbsize.buf[_pos]); \
+	if (is_a) { \
+		_pos = fls((_l - 1) >> 13); \
+		_pos = (_pos <= m) ? _pos : m; \
+		this_cpu_inc((*stats).smc[t].k ## _rmbsize.buf[_pos]); \
+		this_cpu_add((*stats).smc[t].k ## _rmbuse, _l); \
+	} else { \
+		this_cpu_sub((*stats).smc[t].k ## _rmbuse, _l); \
+	} \
 } \
 while (0)
 
 #define SMC_STAT_RMB_SUB(_smc_stats, type, t, key) \
 	this_cpu_inc((*(_smc_stats)).smc[t].rmb ## _ ## key.type ## _cnt)
 
-#define SMC_STAT_RMB_SIZE(_smc, _is_smcd, _is_rx, _len) \
+#define SMC_STAT_RMB_SIZE(_smc, _is_smcd, _is_rx, _is_add, _len) \
 do { \
 	struct net *_net = sock_net(&(_smc)->sk); \
 	struct smc_stats __percpu *_smc_stats = _net->smc.smc_stats; \
+	typeof(_is_add) is_add = (_is_add); \
 	typeof(_is_smcd) is_d = (_is_smcd); \
 	typeof(_is_rx) is_r = (_is_rx); \
 	typeof(_len) l = (_len); \
 	if ((is_d) && (is_r)) \
-		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_D, rx, l); \
+		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_D, rx, is_add, l); \
 	if ((is_d) && !(is_r)) \
-		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_D, tx, l); \
+		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_D, tx, is_add, l); \
 	if (!(is_d) && (is_r)) \
-		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_R, rx, l); \
+		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_R, rx, is_add, l); \
 	if (!(is_d) && !(is_r)) \
-		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_R, tx, l); \
+		SMC_STAT_RMB_SIZE_SUB(_smc_stats, SMC_TYPE_R, tx, is_add, l); \
 } \
 while (0)
 
@@ -267,5 +316,17 @@ int smc_nl_get_stats(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_nl_get_fback_stats(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_stats_init(struct net *net);
 void smc_stats_exit(struct net *net);
+int smc_nl_get_dump_ndev(struct sk_buff *skb, struct netlink_callback *cb);
+int smc_nl_set_dump_ndev(struct sk_buff *skb, struct genl_info *info);
+int smc_nl_reset_dump_ndev(struct sk_buff *skb, struct genl_info *info);
+int smc_dump_init(struct net *net);
+void smc_dump_exit(struct net *net);
+int smc_dump_raw_data(struct smc_connection *conn, int offset,
+		      int length, bool is_rx);
+int smc_dump_cdc_msg(struct smc_connection *conn, void *buf,
+		     int length, bool is_rx);
+int smc_dump_cdc_msg_rwwi(struct smc_connection *conn, u32 imm_data,
+			  union smc_host_cursor *prod,
+			  union smc_host_cursor *cons, bool is_rx);
 
 #endif /* NET_SMC_SMC_STATS_H_ */

@@ -444,6 +444,8 @@ static void smc_check_reset_syn_req(struct tcp_sock *oldtp,
 		ireq = inet_rsk(req);
 		if (oldtp->syn_smc && !ireq->smc_ok)
 			newtp->syn_smc = 0;
+		if (!newtp->syn_smc && newtp->is_smc)
+			newtp->inet_conn.icsk_inet.sk.sk_user_data = NULL;
 	}
 #endif
 }

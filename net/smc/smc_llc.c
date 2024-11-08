@@ -2247,6 +2247,9 @@ static void smc_llc_announce_credits_work(struct work_struct *work)
 	int rc, retry = 0, agains = 0;
 
 again:
+	if (link->clearing)
+		return;
+
 	do {
 		rc = smc_llc_announce_credits(link, SMC_LLC_RESP, false);
 	} while ((rc == -EBUSY) && smc_link_sendable(link) &&

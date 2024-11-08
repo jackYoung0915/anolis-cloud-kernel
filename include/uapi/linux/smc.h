@@ -41,6 +41,7 @@ enum {				/* SMC PNET Table commands */
 #define SMC_MAX_HOSTNAME_LEN		32 /* Max length of the hostname */
 #define SMC_MAX_UEID			4  /* Max number of user EIDs */
 #define SMC_MAX_EID_LEN			32 /* Max length of an EID */
+#define SMC_MAX_DUMP_DEV_LEN		16 /* Max length of dummy device name */
 
 /* SMC_GENL_FAMILY commands */
 enum {
@@ -62,6 +63,11 @@ enum {
 	SMC_NETLINK_DUMP_HS_LIMITATION,
 	SMC_NETLINK_ENABLE_HS_LIMITATION,
 	SMC_NETLINK_DISABLE_HS_LIMITATION,
+
+	/* skip a range to avoid conflicts with upstream */
+	SMC_NETLINK_GET_DUMP_DEV = 251,
+	SMC_NETLINK_SET_DUMP_DEV,
+	SMC_NETLINK_RESET_DUMP_DEV,
 };
 
 /* SMC_GENL_FAMILY top level attributes */
@@ -125,6 +131,8 @@ enum {
 	SMC_NLA_LGR_R_NET_COOKIE,	/* u64 */
 	SMC_NLA_LGR_R_PAD,		/* flag */
 	SMC_NLA_LGR_R_BUF_TYPE,		/* u8 */
+	SMC_NLA_LGR_R_SNDBUF_ALLOC,	/* u64 */
+	SMC_NLA_LGR_R_RMB_ALLOC,	/* u64 */
 	__SMC_NLA_LGR_R_MAX,
 	SMC_NLA_LGR_R_MAX = __SMC_NLA_LGR_R_MAX - 1
 };
@@ -158,6 +166,8 @@ enum {
 	SMC_NLA_LGR_D_CHID,		/* u16 */
 	SMC_NLA_LGR_D_PAD,		/* flag */
 	SMC_NLA_LGR_D_V2_COMMON,	/* nest */
+	SMC_NLA_LGR_D_SNDBUF_ALLOC = 12,	/* u64 */
+	SMC_NLA_LGR_D_DMB_ALLOC,	/* u64 */
 	__SMC_NLA_LGR_D_MAX,
 	SMC_NLA_LGR_D_MAX = __SMC_NLA_LGR_D_MAX - 1
 };
@@ -245,6 +255,8 @@ enum {
 	SMC_NLA_STATS_T_TX_BYTES,	/* u64 */
 	SMC_NLA_STATS_T_RX_CNT,		/* u64 */
 	SMC_NLA_STATS_T_TX_CNT,		/* u64 */
+	SMC_NLA_STATS_T_RX_RMB_USAGE,	/* u64 */
+	SMC_NLA_STATS_T_TX_RMB_USAGE,	/* u64 */
 	__SMC_NLA_STATS_T_MAX,
 	SMC_NLA_STATS_T_MAX = __SMC_NLA_STATS_T_MAX - 1
 };
@@ -299,5 +311,13 @@ enum {
 
 /* SMC socket options */
 #define SMC_LIMIT_HS 1	/* constraint on smc handshake */
+
+/* SMC_NETLINK_DUMP_DEV attributes */
+enum {
+	SMC_NLA_DUMP_DEV_UNSPEC,
+	SMC_NLA_DUMP_DEV_NAME,	/* string */
+	__SMC_NLA_DUMP_DEV_MAX,
+	SMC_NLA_DUMP_DEV_MAX = __SMC_NLA_DUMP_DEV_MAX - 1
+};
 
 #endif /* _UAPI_LINUX_SMC_H */

@@ -231,6 +231,11 @@ static __always_inline void smc_inet_sock_init_accompany_socket(struct sock *sk)
 	smc->clcsock = &smc->accompany_socket;
 }
 
+static __always_inline struct smc_sock *smc_get_sock_from_clcsk(const struct sock *sk)
+{
+	return tcp_sk(sk)->is_smc ? smc_sk(sk) : smc_clcsock_user_data(sk);
+}
+
 #if IS_ENABLED(CONFIG_IPV6)
 #define smc_call_inet_sock_ops(sk, inet, inet6, ...) ({		\
 	(sk)->sk_family == PF_INET ? inet(__VA_ARGS__) :	\

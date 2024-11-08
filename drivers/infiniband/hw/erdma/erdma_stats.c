@@ -5,7 +5,7 @@
 /* Copyright (c) 2020-2022, Alibaba Group. */
 
 #include "erdma.h"
-
+#include "erdma_verbs.h"
 
 static const char *const erdma_stats_names[] = {
 	[ERDMA_STATS_IW_LISTEN_CREATE] = "listen_create_cnt",
@@ -74,7 +74,6 @@ static const char *const erdma_stats_names[] = {
 	[ERDMA_STATS_RX_PPS_METER_DROP_CNT] = "hw_rx_pps_limit_drop_cnt",
 };
 
-
 struct rdma_hw_stats *erdma_alloc_hw_stats(struct ib_device *ibdev,
 					   port_t port_num)
 {
@@ -86,6 +85,11 @@ int erdma_get_hw_stats(struct ib_device *ibdev, struct rdma_hw_stats *stats,
 		       port_t port_num, int index)
 {
 	struct erdma_dev *dev = to_edev(ibdev);
+	int ret;
+
+	ret = erdma_query_hw_stats(dev);
+	if (ret)
+		return ret;
 
 	atomic64_set(&dev->stats.value[ERDMA_STATS_CMDQ_SUBMITTED],
 		     dev->cmdq.sq.total_cmds);
