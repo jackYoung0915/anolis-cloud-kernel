@@ -44,6 +44,7 @@
 #define IDR0_S2P			(1 << 0)
 
 #define ARM_SMMU_IDR1			0x4
+#define IDR1_ECMDQ			(1 << 31)
 #define IDR1_TABLES_PRESET		(1 << 30)
 #define IDR1_QUEUES_PRESET		(1 << 29)
 #define IDR1_REL			(1 << 28)
@@ -75,6 +76,10 @@
 #define IDR5_OAS_52_BIT			6
 #define IDR5_VAX			GENMASK(11, 10)
 #define IDR5_VAX_52_BIT			1
+
+#define ARM_SMMU_IIDR			0x18
+#define IIDR_VARIANT			GENMASK(19, 16)
+#define IIDR_REVISON			GENMASK(15, 12)
 
 #define ARM_SMMU_CR0			0x20
 #define CR0_ATSCHK			(1 << 4)
@@ -114,6 +119,7 @@
 #define ARM_SMMU_IRQ_CTRLACK		0x54
 
 #define ARM_SMMU_GERROR			0x60
+#define GERROR_CMDQP_ERR		(1 << 9)
 #define GERROR_SFM_ERR			(1 << 8)
 #define GERROR_MSI_GERROR_ABT_ERR	(1 << 7)
 #define GERROR_MSI_PRIQ_ABT_ERR		(1 << 6)
@@ -158,6 +164,28 @@
 #define ARM_SMMU_PRIQ_IRQ_CFG0		0xd0
 #define ARM_SMMU_PRIQ_IRQ_CFG1		0xd8
 #define ARM_SMMU_PRIQ_IRQ_CFG2		0xdc
+
+#define ARM_SMMU_USER_CFG1		0xe04
+#define ARM_SMMU_IDR6			0x190
+#define IDR6_LOG2NUMP			GENMASK(27, 24)
+#define IDR6_LOG2NUMQ			GENMASK(19, 16)
+#define IDR6_BA_DOORBELLS		GENMASK(9, 0)
+
+#define ARM_SMMU_ECMDQ_BASE		0x00
+#define ARM_SMMU_ECMDQ_PROD		0x08
+#define ARM_SMMU_ECMDQ_CONS		0x0c
+#define ECMDQ_MAX_SZ_SHIFT		8
+#define ECMDQ_PROD_EN			(1 << 31)
+#define ECMDQ_CONS_ENACK		(1 << 31)
+#define ECMDQ_CONS_ERR			(1 << 23)
+#define ECMDQ_PROD_ERRACK		(1 << 23)
+
+#define ARM_SMMU_ECMDQ_CP_BASE		0x4000
+#define ECMDQ_CP_ADDR			GENMASK_ULL(51, 12)
+#define ECMDQ_CP_CMDQGS			GENMASK_ULL(2, 1)
+#define ECMDQ_CP_PRESET			(1UL << 0)
+#define ECMDQ_CP_RRESET_SIZE		0x10000
+
 
 #define ARM_SMMU_REG_SZ			0xe00
 
@@ -498,6 +526,8 @@ struct arm_smmu_ll_queue {
 struct arm_smmu_queue {
 	struct arm_smmu_ll_queue	llq;
 	int				irq; /* Wired interrupt */
+	u32				ecmdq_prod;
+	rwlock_t			ecmdq_lock;
 
 	__le64				*base;
 	dma_addr_t			base_dma;
@@ -521,6 +551,12 @@ struct arm_smmu_cmdq {
 	atomic_long_t			*valid_map;
 	atomic_t			owner_prod;
 	atomic_t			lock;
+	int				shared;
+};
+
+struct arm_smmu_ecmdq {
+	struct arm_smmu_cmdq		cmdq;
+	void __iomem			*base;
 };
 
 struct arm_smmu_cmdq_batch {
@@ -618,12 +654,21 @@ struct arm_smmu_device {
 #define ARM_SMMU_FEAT_HD		(1 << 20)
 #define ARM_SMMU_FEAT_BBML1		(1 << 21)
 #define ARM_SMMU_FEAT_BBML2		(1 << 22)
+#define ARM_SMMU_FEAT_ECMDQ		(1 << 23)
 	u32				features;
 
 #define ARM_SMMU_OPT_SKIP_PREFETCH	(1 << 0)
 #define ARM_SMMU_OPT_PAGE0_REGS_ONLY	(1 << 1)
 #define ARM_SMMU_OPT_MSIPOLL		(1 << 2)
+#define ARM_SMMU_OPT_SYNC_MAP		(1 << 3)
+#define ARM_SMMU_OPT_SYNC_BATCH		(1 << 4)
 	u32				options;
+
+	union {
+		u32			nr_ecmdq;
+		u32			ecmdq_enabled;
+	};
+	struct arm_smmu_ecmdq *__percpu	*ecmdq;
 
 	struct arm_smmu_cmdq		cmdq;
 	struct arm_smmu_evtq		evtq;
@@ -653,6 +698,15 @@ struct arm_smmu_device {
 #ifdef CONFIG_ARM_SMMU_V3_POLLING_EVT
 	struct task_struct *evt_polling;
 #endif
+
+	struct rb_root			streams;
+	struct mutex			streams_mutex;
+};
+
+struct arm_smmu_stream {
+	u32				id;
+	struct arm_smmu_master		*master;
+	struct rb_node			node;
 };
 
 /* SMMU private data for each master */
@@ -661,8 +715,8 @@ struct arm_smmu_master {
 	struct device			*dev;
 	struct arm_smmu_domain		*domain;
 	struct list_head		domain_head;
-	u32				*sids;
-	unsigned int			num_sids;
+	struct arm_smmu_stream		*streams;
+	unsigned int			num_streams;
 	bool				ats_enabled;
 	bool				sva_enabled;
 	struct list_head		bonds;
