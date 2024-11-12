@@ -611,7 +611,7 @@ static int mpam_mdev_remove(struct mdev_device *mdev)
 	return 0;
 }
 
-static int mpam_mdev_open(struct mdev_device *mdev)
+static int mpam_mdev_open_device(struct mdev_device *mdev)
 {
 	if (!try_module_get(THIS_MODULE))
 		return -ENODEV;
@@ -619,7 +619,7 @@ static int mpam_mdev_open(struct mdev_device *mdev)
 	return 0;
 }
 
-static void mpam_mdev_close(struct mdev_device *mdev)
+static void mpam_mdev_close_device(struct mdev_device *mdev)
 {
 	module_put(THIS_MODULE);
 }
@@ -742,8 +742,8 @@ static const struct mdev_parent_ops mpam_mdev_ops = {
 	.supported_type_groups = mpam_mdev_type_groups,
 	.create = mpam_mdev_create,
 	.remove = mpam_mdev_remove,
-	.open = mpam_mdev_open,
-	.release = mpam_mdev_close,
+	.open_device = mpam_mdev_open_device,
+	.close_device = mpam_mdev_close_device,
 	.read = mpam_mdev_read,
 	.write = mpam_mdev_write,
 	.ioctl = mpam_mdev_ioctl,

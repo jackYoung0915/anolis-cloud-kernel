@@ -17,7 +17,7 @@
 #include <linux/perf_event.h>
 #include <uapi/linux/idxd.h>
 #include "registers.h"
-#include "../../vfio/pci/vfio_pci_private.h"
+#include <linux/vfio_pci_core.h>
 
 #define IDXD_DRIVER_VERSION	"1.00"
 
@@ -371,7 +371,7 @@ struct idxd_device {
 	struct workqueue_struct *wq;
 	struct work_struct work;
 	struct irq_domain *ims_domain;
-	struct vfio_pci_device vfio_pdev;
+	struct vfio_pci_core_device vfio_pdev;
 	struct idxd_pmu *idxd_pmu;
 	struct kref mdev_kref;
 	struct mutex kref_lock;

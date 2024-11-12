@@ -5,7 +5,7 @@
 #define _IDXD_MDEV_H_
 
 #include <linux/vfio.h>
-#include "../../pci/vfio_pci_private.h"
+#include <linux/vfio_pci_core.h>
 
 /* two 64-bit BARs implemented */
 #define VIDXD_MAX_BARS 2
@@ -94,7 +94,7 @@ struct vdcm_idxd {
 	bool paused;
 
 	int refcount;
-	struct vfio_pci_device vfio_pdev;
+	struct vfio_pci_core_device vfio_pdev;
 };
 
 #define vdev_to_vidxd(vdev) container_of(vdev, struct vdcm_idxd, vdev)

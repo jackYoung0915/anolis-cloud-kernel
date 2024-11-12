@@ -32,6 +32,8 @@
 #include <linux/vfio.h>
 #include <linux/wait.h>
 #include <linux/sched/signal.h>
+#include <linux/interval_tree.h>
+#include <linux/iova_bitmap.h>
 
 #define DRIVER_VERSION	"0.3"
 #define DRIVER_AUTHOR	"Alex Williamson <alex.williamson@redhat.com>"
@@ -828,6 +830,98 @@ void vfio_uninit_group_dev(struct vfio_device *device)
 }
 EXPORT_SYMBOL_GPL(vfio_uninit_group_dev);
 
+/* Release helper called by vfio_put_device() */
+void vfio_device_release(struct kref *kref)
+{
+	struct vfio_device *device =
+			container_of(kref, struct vfio_device, kref);
+
+	vfio_uninit_group_dev(device);
+
+	/*
+	 * kvfree() cannot be done here due to a life cycle mess in
+	 * vfio-ccw. Before the ccw part is fixed all drivers are
+	 * required to support @release and call vfio_free_device()
+	 * from there.
+	 */
+	device->ops->release(device);
+}
+EXPORT_SYMBOL_GPL(vfio_device_release);
+
+/*
+ * Allocate and initialize vfio_device so it can be registered to vfio
+ * core.
+ *
+ * Drivers should use the wrapper vfio_alloc_device() for allocation.
+ * @size is the size of the structure to be allocated, including any
+ * private data used by the driver.
+ *
+ * Driver may provide an @init callback to cover device private data.
+ *
+ * Use vfio_put_device() to release the structure after success return.
+ */
+struct vfio_device *_vfio_alloc_device(size_t size, struct device *dev,
+				       const struct vfio_device_ops *ops)
+{
+	struct vfio_device *device;
+	int ret;
+
+	if (WARN_ON(size < sizeof(struct vfio_device)))
+		return ERR_PTR(-EINVAL);
+
+	device = kvzalloc(size, GFP_KERNEL);
+	if (!device)
+		return ERR_PTR(-ENOMEM);
+
+	ret = vfio_init_device(device, dev, ops);
+	if (ret)
+		goto out_free;
+	return device;
+
+out_free:
+	kvfree(device);
+	return ERR_PTR(ret);
+}
+EXPORT_SYMBOL_GPL(_vfio_alloc_device);
+
+/*
+ * Initialize a vfio_device so it can be registered to vfio core.
+ *
+ * Only vfio-ccw driver should call this interface.
+ */
+int vfio_init_device(struct vfio_device *device, struct device *dev,
+		     const struct vfio_device_ops *ops)
+{
+	int ret;
+
+	vfio_init_group_dev(device, dev, ops);
+
+	if (ops->init) {
+		ret = ops->init(device);
+		if (ret)
+			goto out_uninit;
+	}
+
+	kref_init(&device->kref);
+	return 0;
+
+out_uninit:
+	vfio_uninit_group_dev(device);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vfio_init_device);
+
+/*
+ * The helper called by driver @release callback to free the device
+ * structure. Drivers which don't have private data to clean can
+ * simply use this helper as its @release.
+ */
+void vfio_free_device(struct vfio_device *device)
+{
+	kvfree(device);
+}
+EXPORT_SYMBOL_GPL(vfio_free_device);
+
 int vfio_register_group_dev(struct vfio_device *device)
 {
 	struct vfio_device *existing_device;
@@ -1465,19 +1559,13 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 	}
 	mutex_unlock(&device->dev_set->lock);
 
-	if (device->ops->open) {
-		ret = device->ops->open(device);
-		if (ret)
-			goto err_close_device;
-	}
-
 	/*
 	 * We can't use anon_inode_getfd() because we need to modify
 	 * the f_mode flags directly to allow more than just ioctls
 	 */
 	fdno = ret = get_unused_fd_flags(O_CLOEXEC);
 	if (ret < 0)
-		goto err_release;
+		goto err_close_device;
 
 	filep = anon_inode_getfile("[vfio-device]", &vfio_device_fops,
 				   device, O_RDWR);
@@ -1504,9 +1592,6 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 
 err_fd:
 	put_unused_fd(fdno);
-err_release:
-	if (device->ops->release)
-		device->ops->release(device);
 err_close_device:
 	mutex_lock(&device->dev_set->lock);
 	if (device->open_count == 1 && device->ops->close_device)
@@ -1654,9 +1739,6 @@ static int vfio_device_fops_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_device *device = filep->private_data;
 
-	if (device->ops->release)
-		device->ops->release(device);
-
 	mutex_lock(&device->dev_set->lock);
 	if (!--device->open_count && device->ops->close_device)
 		device->ops->close_device(device);
@@ -1671,15 +1753,577 @@ static int vfio_device_fops_release(struct inode *inode, struct file *filep)
 	return 0;
 }
 
+/*
+ * vfio_mig_get_next_state - Compute the next step in the FSM
+ * @cur_fsm - The current state the device is in
+ * @new_fsm - The target state to reach
+ * @next_fsm - Pointer to the next step to get to new_fsm
+ *
+ * Return 0 upon success, otherwise -errno
+ * Upon success the next step in the state progression between cur_fsm and
+ * new_fsm will be set in next_fsm.
+ *
+ * This breaks down requests for combination transitions into smaller steps and
+ * returns the next step to get to new_fsm. The function may need to be called
+ * multiple times before reaching new_fsm.
+ *
+ */
+int vfio_mig_get_next_state(struct vfio_device *device,
+			    enum vfio_device_mig_state cur_fsm,
+			    enum vfio_device_mig_state new_fsm,
+			    enum vfio_device_mig_state *next_fsm)
+{
+	enum { VFIO_DEVICE_NUM_STATES = VFIO_DEVICE_STATE_PRE_COPY_P2P + 1 };
+	/*
+	 * The coding in this table requires the driver to implement the
+	 * following FSM arcs:
+	 *         RESUMING -> STOP
+	 *         STOP -> RESUMING
+	 *         STOP -> STOP_COPY
+	 *         STOP_COPY -> STOP
+	 *
+	 * If P2P is supported then the driver must also implement these FSM
+	 * arcs:
+	 *         RUNNING -> RUNNING_P2P
+	 *         RUNNING_P2P -> RUNNING
+	 *         RUNNING_P2P -> STOP
+	 *         STOP -> RUNNING_P2P
+	 *
+	 * If precopy is supported then the driver must support these additional
+	 * FSM arcs:
+	 *         RUNNING -> PRE_COPY
+	 *         PRE_COPY -> RUNNING
+	 *         PRE_COPY -> STOP_COPY
+	 * However, if precopy and P2P are supported together then the driver
+	 * must support these additional arcs beyond the P2P arcs above:
+	 *         PRE_COPY -> RUNNING
+	 *         PRE_COPY -> PRE_COPY_P2P
+	 *         PRE_COPY_P2P -> PRE_COPY
+	 *         PRE_COPY_P2P -> RUNNING_P2P
+	 *         PRE_COPY_P2P -> STOP_COPY
+	 *         RUNNING -> PRE_COPY
+	 *         RUNNING_P2P -> PRE_COPY_P2P
+	 *
+	 * Without P2P and precopy the driver must implement:
+	 *         RUNNING -> STOP
+	 *         STOP -> RUNNING
+	 *
+	 * The coding will step through multiple states for some combination
+	 * transitions; if all optional features are supported, this means the
+	 * following ones:
+	 *         PRE_COPY -> PRE_COPY_P2P -> STOP_COPY
+	 *         PRE_COPY -> RUNNING -> RUNNING_P2P
+	 *         PRE_COPY -> RUNNING -> RUNNING_P2P -> STOP
+	 *         PRE_COPY -> RUNNING -> RUNNING_P2P -> STOP -> RESUMING
+	 *         PRE_COPY_P2P -> RUNNING_P2P -> RUNNING
+	 *         PRE_COPY_P2P -> RUNNING_P2P -> STOP
+	 *         PRE_COPY_P2P -> RUNNING_P2P -> STOP -> RESUMING
+	 *         RESUMING -> STOP -> RUNNING_P2P
+	 *         RESUMING -> STOP -> RUNNING_P2P -> PRE_COPY_P2P
+	 *         RESUMING -> STOP -> RUNNING_P2P -> RUNNING
+	 *         RESUMING -> STOP -> RUNNING_P2P -> RUNNING -> PRE_COPY
+	 *         RESUMING -> STOP -> STOP_COPY
+	 *         RUNNING -> RUNNING_P2P -> PRE_COPY_P2P
+	 *         RUNNING -> RUNNING_P2P -> STOP
+	 *         RUNNING -> RUNNING_P2P -> STOP -> RESUMING
+	 *         RUNNING -> RUNNING_P2P -> STOP -> STOP_COPY
+	 *         RUNNING_P2P -> RUNNING -> PRE_COPY
+	 *         RUNNING_P2P -> STOP -> RESUMING
+	 *         RUNNING_P2P -> STOP -> STOP_COPY
+	 *         STOP -> RUNNING_P2P -> PRE_COPY_P2P
+	 *         STOP -> RUNNING_P2P -> RUNNING
+	 *         STOP -> RUNNING_P2P -> RUNNING -> PRE_COPY
+	 *         STOP_COPY -> STOP -> RESUMING
+	 *         STOP_COPY -> STOP -> RUNNING_P2P
+	 *         STOP_COPY -> STOP -> RUNNING_P2P -> RUNNING
+	 *
+	 *  The following transitions are blocked:
+	 *         STOP_COPY -> PRE_COPY
+	 *         STOP_COPY -> PRE_COPY_P2P
+	 */
+	static const u8 vfio_from_fsm_table[VFIO_DEVICE_NUM_STATES][VFIO_DEVICE_NUM_STATES] = {
+		[VFIO_DEVICE_STATE_STOP] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP_COPY,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RESUMING,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_RUNNING] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_PRE_COPY,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_PRE_COPY] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_PRE_COPY,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_PRE_COPY_P2P] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_PRE_COPY,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP_COPY,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_STOP_COPY] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP_COPY,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_RESUMING] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RESUMING,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_RUNNING_P2P] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_ERROR] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+	};
+
+	static const unsigned int state_flags_table[VFIO_DEVICE_NUM_STATES] = {
+		[VFIO_DEVICE_STATE_STOP] = VFIO_MIGRATION_STOP_COPY,
+		[VFIO_DEVICE_STATE_RUNNING] = VFIO_MIGRATION_STOP_COPY,
+		[VFIO_DEVICE_STATE_PRE_COPY] =
+			VFIO_MIGRATION_STOP_COPY | VFIO_MIGRATION_PRE_COPY,
+		[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_MIGRATION_STOP_COPY |
+						   VFIO_MIGRATION_P2P |
+						   VFIO_MIGRATION_PRE_COPY,
+		[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_MIGRATION_STOP_COPY,
+		[VFIO_DEVICE_STATE_RESUMING] = VFIO_MIGRATION_STOP_COPY,
+		[VFIO_DEVICE_STATE_RUNNING_P2P] =
+			VFIO_MIGRATION_STOP_COPY | VFIO_MIGRATION_P2P,
+		[VFIO_DEVICE_STATE_ERROR] = ~0U,
+	};
+
+	if (WARN_ON(cur_fsm >= ARRAY_SIZE(vfio_from_fsm_table) ||
+		    (state_flags_table[cur_fsm] & device->migration_flags) !=
+			state_flags_table[cur_fsm]))
+		return -EINVAL;
+
+	if (new_fsm >= ARRAY_SIZE(vfio_from_fsm_table) ||
+	   (state_flags_table[new_fsm] & device->migration_flags) !=
+			state_flags_table[new_fsm])
+		return -EINVAL;
+
+	/*
+	 * Arcs touching optional and unsupported states are skipped over. The
+	 * driver will instead see an arc from the original state to the next
+	 * logical state, as per the above comment.
+	 */
+	*next_fsm = vfio_from_fsm_table[cur_fsm][new_fsm];
+	while ((state_flags_table[*next_fsm] & device->migration_flags) !=
+			state_flags_table[*next_fsm])
+		*next_fsm = vfio_from_fsm_table[*next_fsm][new_fsm];
+
+	return (*next_fsm != VFIO_DEVICE_STATE_ERROR) ? 0 : -EINVAL;
+}
+EXPORT_SYMBOL_GPL(vfio_mig_get_next_state);
+
+/*
+ * Convert the drivers's struct file into a FD number and return it to userspace
+ */
+static int vfio_ioct_mig_return_fd(struct file *filp, void __user *arg,
+				   struct vfio_device_feature_mig_state *mig)
+{
+	int ret;
+	int fd;
+
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0) {
+		ret = fd;
+		goto out_fput;
+	}
+
+	mig->data_fd = fd;
+	if (copy_to_user(arg, mig, sizeof(*mig))) {
+		ret = -EFAULT;
+		goto out_put_unused;
+	}
+	fd_install(fd, filp);
+	return 0;
+
+out_put_unused:
+	put_unused_fd(fd);
+out_fput:
+	fput(filp);
+	return ret;
+}
+
+static int
+vfio_ioctl_device_feature_mig_device_state(struct vfio_device *device,
+					   u32 flags, void __user *arg,
+					   size_t argsz)
+{
+	size_t minsz =
+		offsetofend(struct vfio_device_feature_mig_state, data_fd);
+	struct vfio_device_feature_mig_state mig;
+	struct file *filp = NULL;
+	int ret;
+
+	if (!device->mig_ops)
+		return -ENOTTY;
+
+	ret = vfio_check_feature(flags, argsz,
+				 VFIO_DEVICE_FEATURE_SET |
+				 VFIO_DEVICE_FEATURE_GET,
+				 sizeof(mig));
+	if (ret != 1)
+		return ret;
+
+	if (copy_from_user(&mig, arg, minsz))
+		return -EFAULT;
+
+	if (flags & VFIO_DEVICE_FEATURE_GET) {
+		enum vfio_device_mig_state curr_state;
+
+		ret = device->mig_ops->migration_get_state(device,
+							   &curr_state);
+		if (ret)
+			return ret;
+		mig.device_state = curr_state;
+		goto out_copy;
+	}
+
+	/* Handle the VFIO_DEVICE_FEATURE_SET */
+	filp = device->mig_ops->migration_set_state(device, mig.device_state);
+	if (IS_ERR(filp) || !filp)
+		goto out_copy;
+
+	return vfio_ioct_mig_return_fd(filp, arg, &mig);
+out_copy:
+	mig.data_fd = -1;
+	if (copy_to_user(arg, &mig, sizeof(mig)))
+		return -EFAULT;
+	if (IS_ERR(filp))
+		return PTR_ERR(filp);
+	return 0;
+}
+
+static int
+vfio_ioctl_device_feature_migration_data_size(struct vfio_device *device,
+					      u32 flags, void __user *arg,
+					      size_t argsz)
+{
+	struct vfio_device_feature_mig_data_size data_size = {};
+	unsigned long stop_copy_length;
+	int ret;
+
+	if (!device->mig_ops)
+		return -ENOTTY;
+
+	ret = vfio_check_feature(flags, argsz, VFIO_DEVICE_FEATURE_GET,
+				 sizeof(data_size));
+	if (ret != 1)
+		return ret;
+
+	ret = device->mig_ops->migration_get_data_size(device, &stop_copy_length);
+	if (ret)
+		return ret;
+
+	data_size.stop_copy_length = stop_copy_length;
+	if (copy_to_user(arg, &data_size, sizeof(data_size)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int vfio_ioctl_device_feature_migration(struct vfio_device *device,
+					       u32 flags, void __user *arg,
+					       size_t argsz)
+{
+	struct vfio_device_feature_migration mig = {
+		.flags = device->migration_flags,
+	};
+	int ret;
+
+	if (!device->mig_ops)
+		return -ENOTTY;
+
+	ret = vfio_check_feature(flags, argsz, VFIO_DEVICE_FEATURE_GET,
+				 sizeof(mig));
+	if (ret != 1)
+		return ret;
+	if (copy_to_user(arg, &mig, sizeof(mig)))
+		return -EFAULT;
+	return 0;
+}
+
+/* Ranges should fit into a single kernel page */
+#define LOG_MAX_RANGES \
+	(PAGE_SIZE / sizeof(struct vfio_device_feature_dma_logging_range))
+
+static int
+vfio_ioctl_device_feature_logging_start(struct vfio_device *device,
+					u32 flags, void __user *arg,
+					size_t argsz)
+{
+	size_t minsz =
+		offsetofend(struct vfio_device_feature_dma_logging_control,
+			    ranges);
+	struct vfio_device_feature_dma_logging_range __user *ranges;
+	struct vfio_device_feature_dma_logging_control control;
+	struct vfio_device_feature_dma_logging_range range;
+	struct rb_root_cached root = RB_ROOT_CACHED;
+	struct interval_tree_node *nodes;
+	u64 iova_end;
+	u32 nnodes;
+	int i, ret;
+
+	if (!device->log_ops)
+		return -ENOTTY;
+
+	ret = vfio_check_feature(flags, argsz,
+				 VFIO_DEVICE_FEATURE_SET,
+				 sizeof(control));
+	if (ret != 1)
+		return ret;
+
+	if (copy_from_user(&control, arg, minsz))
+		return -EFAULT;
+
+	nnodes = control.num_ranges;
+	if (!nnodes)
+		return -EINVAL;
+
+	if (nnodes > LOG_MAX_RANGES)
+		return -E2BIG;
+
+	ranges = u64_to_user_ptr(control.ranges);
+	nodes = kmalloc_array(nnodes, sizeof(struct interval_tree_node),
+			      GFP_KERNEL);
+	if (!nodes)
+		return -ENOMEM;
+
+	for (i = 0; i < nnodes; i++) {
+		if (copy_from_user(&range, &ranges[i], sizeof(range))) {
+			ret = -EFAULT;
+			goto end;
+		}
+		if (!IS_ALIGNED(range.iova, control.page_size) ||
+		    !IS_ALIGNED(range.length, control.page_size)) {
+			ret = -EINVAL;
+			goto end;
+		}
+
+		if (check_add_overflow(range.iova, range.length, &iova_end) ||
+		    iova_end > ULONG_MAX) {
+			ret = -EOVERFLOW;
+			goto end;
+		}
+
+		nodes[i].start = range.iova;
+		nodes[i].last = range.iova + range.length - 1;
+		if (interval_tree_iter_first(&root, nodes[i].start,
+					     nodes[i].last)) {
+			/* Range overlapping */
+			ret = -EINVAL;
+			goto end;
+		}
+		interval_tree_insert(nodes + i, &root);
+	}
+
+	ret = device->log_ops->log_start(device, &root, nnodes,
+					 &control.page_size);
+	if (ret)
+		goto end;
+
+	if (copy_to_user(arg, &control, sizeof(control))) {
+		ret = -EFAULT;
+		device->log_ops->log_stop(device);
+	}
+
+end:
+	kfree(nodes);
+	return ret;
+}
+
+static int
+vfio_ioctl_device_feature_logging_stop(struct vfio_device *device,
+				       u32 flags, void __user *arg,
+				       size_t argsz)
+{
+	int ret;
+
+	if (!device->log_ops)
+		return -ENOTTY;
+
+	ret = vfio_check_feature(flags, argsz,
+				 VFIO_DEVICE_FEATURE_SET, 0);
+	if (ret != 1)
+		return ret;
+
+	return device->log_ops->log_stop(device);
+}
+
+static int vfio_device_log_read_and_clear(struct iova_bitmap *iter,
+					  unsigned long iova, size_t length,
+					  void *opaque)
+{
+	struct vfio_device *device = opaque;
+
+	return device->log_ops->log_read_and_clear(device, iova, length, iter);
+}
+
+static int
+vfio_ioctl_device_feature_logging_report(struct vfio_device *device,
+					 u32 flags, void __user *arg,
+					 size_t argsz)
+{
+	size_t minsz =
+		offsetofend(struct vfio_device_feature_dma_logging_report,
+			    bitmap);
+	struct vfio_device_feature_dma_logging_report report;
+	struct iova_bitmap *iter;
+	u64 iova_end;
+	int ret;
+
+	if (!device->log_ops)
+		return -ENOTTY;
+
+	ret = vfio_check_feature(flags, argsz,
+				 VFIO_DEVICE_FEATURE_GET,
+				 sizeof(report));
+	if (ret != 1)
+		return ret;
+
+	if (copy_from_user(&report, arg, minsz))
+		return -EFAULT;
+
+	if (report.page_size < SZ_4K || !is_power_of_2(report.page_size))
+		return -EINVAL;
+
+	if (check_add_overflow(report.iova, report.length, &iova_end) ||
+	    iova_end > ULONG_MAX)
+		return -EOVERFLOW;
+
+	iter = iova_bitmap_alloc(report.iova, report.length,
+				 report.page_size,
+				 u64_to_user_ptr(report.bitmap));
+	if (IS_ERR(iter))
+		return PTR_ERR(iter);
+
+	ret = iova_bitmap_for_each(iter, device,
+				   vfio_device_log_read_and_clear);
+
+	iova_bitmap_free(iter);
+	return ret;
+}
+
+static int vfio_ioctl_device_feature(struct vfio_device *device,
+				     struct vfio_device_feature __user *arg)
+{
+	size_t minsz = offsetofend(struct vfio_device_feature, flags);
+	struct vfio_device_feature feature;
+
+	if (copy_from_user(&feature, arg, minsz))
+		return -EFAULT;
+
+	if (feature.argsz < minsz)
+		return -EINVAL;
+
+	/* Check unknown flags */
+	if (feature.flags &
+	    ~(VFIO_DEVICE_FEATURE_MASK | VFIO_DEVICE_FEATURE_SET |
+	      VFIO_DEVICE_FEATURE_GET | VFIO_DEVICE_FEATURE_PROBE))
+		return -EINVAL;
+
+	/* GET & SET are mutually exclusive except with PROBE */
+	if (!(feature.flags & VFIO_DEVICE_FEATURE_PROBE) &&
+	    (feature.flags & VFIO_DEVICE_FEATURE_SET) &&
+	    (feature.flags & VFIO_DEVICE_FEATURE_GET))
+		return -EINVAL;
+
+	switch (feature.flags & VFIO_DEVICE_FEATURE_MASK) {
+	case VFIO_DEVICE_FEATURE_MIGRATION:
+		return vfio_ioctl_device_feature_migration(
+			device, feature.flags, arg->data,
+			feature.argsz - minsz);
+	case VFIO_DEVICE_FEATURE_MIG_DEVICE_STATE:
+		return vfio_ioctl_device_feature_mig_device_state(
+			device, feature.flags, arg->data,
+			feature.argsz - minsz);
+	case VFIO_DEVICE_FEATURE_DMA_LOGGING_START:
+		return vfio_ioctl_device_feature_logging_start(
+			device, feature.flags, arg->data,
+			feature.argsz - minsz);
+	case VFIO_DEVICE_FEATURE_DMA_LOGGING_STOP:
+		return vfio_ioctl_device_feature_logging_stop(
+			device, feature.flags, arg->data,
+			feature.argsz - minsz);
+	case VFIO_DEVICE_FEATURE_DMA_LOGGING_REPORT:
+		return vfio_ioctl_device_feature_logging_report(
+			device, feature.flags, arg->data,
+			feature.argsz - minsz);
+	case VFIO_DEVICE_FEATURE_MIG_DATA_SIZE:
+		return vfio_ioctl_device_feature_migration_data_size(
+			device, feature.flags, arg->data,
+			feature.argsz - minsz);
+	default:
+		if (unlikely(!device->ops->device_feature))
+			return -EINVAL;
+		return device->ops->device_feature(device, feature.flags,
+						   arg->data,
+						   feature.argsz - minsz);
+	}
+}
+
 static long vfio_device_fops_unl_ioctl(struct file *filep,
 				       unsigned int cmd, unsigned long arg)
 {
 	struct vfio_device *device = filep->private_data;
 
-	if (unlikely(!device->ops->ioctl))
-		return -EINVAL;
-
-	return device->ops->ioctl(device, cmd, arg);
+	switch (cmd) {
+	case VFIO_DEVICE_FEATURE:
+		return vfio_ioctl_device_feature(device, (void __user *)arg);
+	default:
+		if (unlikely(!device->ops->ioctl))
+			return -EINVAL;
+		return device->ops->ioctl(device, cmd, arg);
+	}
 }
 
 static ssize_t vfio_device_fops_read(struct file *filep, char __user *buf,
