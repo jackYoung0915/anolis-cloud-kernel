@@ -1237,6 +1237,9 @@ bool sched_can_stop_tick(struct rq *rq)
 	if (rq->nr_running > 1)
 		return false;
 
+	if (!id_can_stop_tick(rq))
+		return false;
+
 	return true;
 }
 #endif /* CONFIG_NO_HZ_FULL */
@@ -8460,6 +8463,10 @@ static struct kmem_cache *task_group_cache __read_mostly;
 
 DECLARE_PER_CPU(cpumask_var_t, load_balance_mask);
 DECLARE_PER_CPU(cpumask_var_t, select_idle_mask);
+#if defined(CONFIG_GROUP_IDENTITY) && defined(CONFIG_SCHED_SMT)
+DECLARE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
+DECLARE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
+#endif
 
 void __init sched_init(void)
 {
@@ -8517,6 +8524,12 @@ void __init sched_init(void)
 			cpumask_size(), GFP_KERNEL, cpu_to_node(i));
 		per_cpu(select_idle_mask, i) = (cpumask_var_t)kzalloc_node(
 			cpumask_size(), GFP_KERNEL, cpu_to_node(i));
+#if defined(CONFIG_GROUP_IDENTITY) && defined(CONFIG_SCHED_SMT)
+		per_cpu(push_expellee_traverse_mask, i) = (cpumask_var_t)kzalloc_node(
+			 cpumask_size(), GFP_KERNEL, cpu_to_node(i));
+		per_cpu(push_expellee_traversed_mask, i) = (cpumask_var_t)kzalloc_node(
+			 cpumask_size(), GFP_KERNEL, cpu_to_node(i));
+#endif
 	}
 #endif /* CONFIG_CPUMASK_OFFSTACK */
 
