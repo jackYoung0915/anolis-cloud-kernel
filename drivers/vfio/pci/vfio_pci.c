@@ -94,6 +94,21 @@ static bool vfio_pci_dev_in_denylist(struct pci_dev *pdev)
 	return false;
 }
 
+static bool vfio_nvidia_pci_dev_in_denylist(struct pci_dev *pdev)
+{
+	switch (pdev->vendor) {
+	case PCI_VENDOR_ID_NVIDIA:
+		switch (pdev->device) {
+		case PCI_DEVICE_ID_NVIDIA_H100_NVSWITCH:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	return false;
+}
+
 static bool vfio_pci_is_denylisted(struct pci_dev *pdev)
 {
 	if (!vfio_pci_dev_in_denylist(pdev))
@@ -807,8 +822,10 @@ static void vfio_pci_disable(struct vfio_pci_device *vdev)
 	 */
 	if (vdev->reset_works && pci_cfg_access_trylock(pdev)) {
 		if (device_trylock(&pdev->dev)) {
-			if (!__pci_reset_function_locked(pdev))
-				vdev->needs_reset = false;
+			if (!vfio_nvidia_pci_dev_in_denylist(pdev)) {
+				if (!__pci_reset_function_locked(pdev))
+					vdev->needs_reset = false;
+			}
 			device_unlock(&pdev->dev);
 		}
 		pci_cfg_access_unlock(pdev);
@@ -818,7 +835,8 @@ static void vfio_pci_disable(struct vfio_pci_device *vdev)
 out:
 	pci_disable_device(pdev);
 
-	vfio_pci_try_bus_reset(vdev);
+	if (!vfio_nvidia_pci_dev_in_denylist(pdev))
+		vfio_pci_try_bus_reset(vdev);
 
 	if (!disable_idle_d3)
 		vfio_pci_set_power_state(vdev, PCI_D3hot);
