@@ -562,3 +562,17 @@ void cgroup_base_stat_cputime_show(struct seq_file *seq)
 	seq_printf(seq, "sibidle_task_usec %llu\n", sibidle_task_time);
 #endif
 }
+
+void __cgroup_get_usage(struct cgroup *cgrp, int cpu,
+					struct cpuacct_usage_result *res)
+{
+	struct cgroup_rstat_cpu *rstatc;
+
+	cgroup_rstat_flush_hold(cgrp);
+
+	rstatc = cgroup_rstat_cpu(cgrp, cpu);
+	res->user = rstatc->bstat.cputime.utime;
+	res->system = rstatc->bstat.cputime.stime;
+
+	cgroup_rstat_flush_release();
+}
