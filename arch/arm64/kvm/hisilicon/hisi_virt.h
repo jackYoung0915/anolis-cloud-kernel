@@ -61,17 +61,18 @@ enum hisi_cpu_type {
 
 #define DVMBM_MAX_DIES			32
 
-void probe_hisi_cpu_type(void);
+extern void probe_hisi_cpu_type(void);
+extern bool hisi_dvmbm_supported(void);
+extern void kvm_get_pg_cfg(void);
+
+extern int kvm_hisi_dvmbm_vcpu_init(struct kvm_vcpu *vcpu);
+extern void kvm_hisi_dvmbm_vcpu_destroy(struct kvm_vcpu *vcpu);
+extern void kvm_hisi_dvmbm_load(struct kvm_vcpu *vcpu);
+extern void kvm_hisi_dvmbm_put(struct kvm_vcpu *vcpu);
+extern int kvm_hisi_init_dvmbm(struct kvm *kvm);
+extern void kvm_hisi_destroy_dvmbm(struct kvm *kvm);
+extern void kvm_hisi_reload_lsudvmbm(struct kvm *kvm);
+
+
 bool hisi_ncsnp_supported(void);
-bool hisi_dvmbm_supported(void);
-void kvm_get_pg_cfg(void);
-
-int kvm_hisi_dvmbm_vcpu_init(struct kvm_vcpu *vcpu);
-void kvm_hisi_dvmbm_vcpu_destroy(struct kvm_vcpu *vcpu);
-void kvm_hisi_dvmbm_load(struct kvm_vcpu *vcpu);
-void kvm_hisi_dvmbm_put(struct kvm_vcpu *vcpu);
-int kvm_hisi_init_dvmbm(struct kvm *kvm);
-void kvm_hisi_destroy_dvmbm(struct kvm *kvm);
-void kvm_hisi_reload_lsudvmbm(struct kvm *kvm);
-
 #endif /* __HISI_VIRT_H__ */

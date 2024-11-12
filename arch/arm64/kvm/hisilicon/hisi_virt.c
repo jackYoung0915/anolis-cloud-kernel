@@ -96,6 +96,7 @@ void probe_hisi_cpu_type(void)
 
 	kvm_info("detected: Hisi CPU type '%s'\n", hisi_cpu_type_str[cpu_type]);
 }
+EXPORT_SYMBOL_GPL(probe_hisi_cpu_type);
 
 /*
  * We have the fantastic HHA ncsnp capability on Kunpeng 920,
@@ -126,6 +127,7 @@ bool hisi_ncsnp_supported(void)
 
 	return supported;
 }
+EXPORT_SYMBOL_GPL(hisi_ncsnp_supported);
 
 static int __init early_dvmbm_enable(char *buf)
 {
@@ -173,6 +175,7 @@ bool hisi_dvmbm_supported(void)
 	on_each_cpu(hardware_enable_dvmbm, NULL, 1);
 	return true;
 }
+EXPORT_SYMBOL_GPL(hisi_dvmbm_supported);
 
 int kvm_hisi_dvmbm_vcpu_init(struct kvm_vcpu *vcpu)
 {
@@ -186,6 +189,7 @@ int kvm_hisi_dvmbm_vcpu_init(struct kvm_vcpu *vcpu)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_dvmbm_vcpu_init);
 
 void kvm_hisi_dvmbm_vcpu_destroy(struct kvm_vcpu *vcpu)
 {
@@ -195,6 +199,7 @@ void kvm_hisi_dvmbm_vcpu_destroy(struct kvm_vcpu *vcpu)
 	kfree(vcpu->arch.cpus_ptr);
 	kfree(vcpu->arch.pre_cpus_ptr);
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_dvmbm_vcpu_destroy);
 
 static void __kvm_write_lsudvmbm(struct kvm *kvm)
 {
@@ -444,6 +449,7 @@ out_unlock:
 	__kvm_write_lsudvmbm(kvm);
 	spin_unlock(&kvm->arch.dvm_lock);
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_dvmbm_load);
 
 void kvm_hisi_dvmbm_put(struct kvm_vcpu *vcpu)
 {
@@ -458,6 +464,7 @@ void kvm_hisi_dvmbm_put(struct kvm_vcpu *vcpu)
 	 * by the configured SYS_LSUDVMBM_EL2.
 	 */
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_dvmbm_put);
 
 void kvm_get_pg_cfg(void)
 {
@@ -493,6 +500,7 @@ void kvm_get_pg_cfg(void)
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(kvm_get_pg_cfg);
 
 int kvm_hisi_init_dvmbm(struct kvm *kvm)
 {
@@ -506,6 +514,7 @@ int kvm_hisi_init_dvmbm(struct kvm *kvm)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_init_dvmbm);
 
 void kvm_hisi_destroy_dvmbm(struct kvm *kvm)
 {
@@ -514,6 +523,7 @@ void kvm_hisi_destroy_dvmbm(struct kvm *kvm)
 
 	kfree(kvm->arch.dvm_cpumask);
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_destroy_dvmbm);
 
 void kvm_hisi_reload_lsudvmbm(struct kvm *kvm)
 {
@@ -524,3 +534,4 @@ void kvm_hisi_reload_lsudvmbm(struct kvm *kvm)
 	kvm_write_lsudvmbm(kvm);
 	preempt_enable();
 }
+EXPORT_SYMBOL_GPL(kvm_hisi_reload_lsudvmbm);
