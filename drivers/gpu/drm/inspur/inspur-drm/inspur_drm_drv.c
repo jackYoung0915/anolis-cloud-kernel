@@ -37,10 +37,10 @@ static struct drm_driver inspur_driver = {
 
 	.fops = &inspur_fops,
 	.name = "inspur",
-	.date = "20230912",
+	.date = "20241010",
 	.desc = "inspur drm driver",
 	.major = 3,
-	.minor = 0,
+	.minor = 2,
 	.dumb_create = inspur_dumb_create,
 	.dumb_map_offset = drm_gem_vram_driver_dumb_mmap_offset,
 };
@@ -276,15 +276,11 @@ static int inspur_hw_init(struct inspur_drm_private *priv)
 void inspur_unload(struct drm_device *dev)
 {
 	struct inspur_drm_private *priv = dev->dev_private;
-	struct pci_dev *pdev = to_pci_dev(dev->dev);
-
 	drm_atomic_helper_shutdown(dev);
 
-	free_irq(pdev->irq, dev);
 
 	inspur_kms_fini(priv);
 	inspur_hw_unmap(priv);
-	pci_disable_msi(to_pci_dev(dev->dev));
 	dev->dev_private = NULL;
 
 }
@@ -343,6 +339,7 @@ static int inspur_pci_probe(struct pci_dev *pdev,
 		return PTR_ERR(dev);
 	}
 
+	dev->pdev = pdev;
 	pci_set_drvdata(pdev, dev);
 	ret = pci_enable_device(pdev);
 	if (ret) {
@@ -370,8 +367,9 @@ static void inspur_pci_remove(struct pci_dev *pdev)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
 
-	drm_put_dev(dev);
-	pci_disable_device(pdev);
+	drm_dev_unregister(dev);
+	inspur_unload(dev);
+
 }
 
 static void inspur_pci_shutdown(struct pci_dev *pdev)
@@ -395,6 +393,9 @@ static struct pci_driver inspur_pci_driver = {
 
 static int __init inspur_init(void)
 {
+	if (vgacon_text_force())
+		return -ENODEV;
+
 	return pci_register_driver(&inspur_pci_driver);
 }
 
@@ -410,4 +411,4 @@ MODULE_DEVICE_TABLE(pci, inspur_pci_table);
 MODULE_AUTHOR("");
 MODULE_DESCRIPTION("DRM Driver for InspurBMC");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("3.0");
+MODULE_VERSION("3.1");

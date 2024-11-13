@@ -60,6 +60,11 @@ struct inspur_drm_private {
 
 #define to_inspur_framebuffer(x) container_of(x, struct inspur_framebuffer, fb)
 
+static inline struct inspur_drm_private *to_inspur_drm_private(struct drm_device
+							       *dev)
+{
+	return dev->dev_private;
+}
 
 void inspur_set_power_mode(struct inspur_drm_private *priv,
 			   unsigned int power_mode);
