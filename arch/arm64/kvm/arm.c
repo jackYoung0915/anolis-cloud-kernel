@@ -47,6 +47,10 @@
 __asm__(".arch_extension	virt");
 #endif
 
+#ifdef CONFIG_KVM_HISI_VIRT
+#include "hisilicon/hisi_virt.h"
+#endif
+
 DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 #if !defined(CONFIG_KVM_ARM_HOST_VHE_ONLY)
 static DEFINE_PER_CPU(unsigned long, kvm_arm_hyp_stack_page);
@@ -1872,6 +1876,10 @@ int kvm_arch_init(void *opaque)
 		kvm_info("HYP mode not available\n");
 		return -ENODEV;
 	}
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	probe_hisi_cpu_type();
+#endif
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 

@@ -49,6 +49,7 @@ config KVM
 if KVM
 
 source "virt/kvm/Kconfig"
+source "arch/arm64/kvm/hisilicon/Kconfig"
 
 config KVM_ARM_HOST_VHE_ONLY
 	bool
