@@ -2039,6 +2039,13 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
+	{
+		.procname	= "sched_push_expellee_interval_ns",
+		.data		= &sysctl_sched_push_expellee_interval,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
 #endif
 #endif
 #ifdef CONFIG_SCHED_CORE
