@@ -27,7 +27,11 @@ kvm-y := $(KVM)/kvm_main.o $(KVM)/coalesced_mmio.o $(KVM)/eventfd.o \
 
 kvm-$(CONFIG_KVM_ARM_PMU)  += pmu-emul.o
 kvm-$(CONFIG_VIRT_PLAT_DEV)  += vgic/shadow_dev.o
-obj-$(CONFIG_KVM_HISI_VIRT) += hisilicon/
+
+ifdef CONFIG_KVM_HISI_VIRT
+obj-y+= hisilicon/
+kvm-y += hisilicon/hisi_virt.o
+endif
 
 ifndef CONFIG_KVM_ARM_HOST_VHE_ONLY
 obj-$(CONFIG_KVM) += hyp/

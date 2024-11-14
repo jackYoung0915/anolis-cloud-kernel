@@ -8,6 +8,7 @@
 #include <linux/init.h>
 #include <linux/kvm_host.h>
 #include "hisi_virt.h"
+#include <asm/mpam.h>
 
 static enum hisi_cpu_type cpu_type = UNKNOWN_HI_TYPE;
 
@@ -127,11 +128,15 @@ bool hisi_ncsnp_supported(void)
 	return supported;
 }
 
+#ifdef MODULE
+module_param_named(early_dvmbm_enable, dvmbm_enabled, bool, 0444);
+#else
 static int __init early_dvmbm_enable(char *buf)
 {
 	return strtobool(buf, &dvmbm_enabled);
 }
 early_param("kvm-arm.dvmbm_enabled", early_dvmbm_enable);
+#endif
 
 static void hardware_enable_dvmbm(void *data)
 {
