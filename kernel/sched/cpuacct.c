@@ -29,14 +29,6 @@ struct cpuacct_usage {
 	struct prev_cputime prev_cputime4; /* irq and softirq */
 } ____cacheline_aligned;
 
-#ifdef CONFIG_SCHED_SLI
-/* Maintain various statistics */
-struct cpuacct_alistats {
-	u64		nr_migrations;
-	u64		steal_high;
-} ____cacheline_aligned;
-#endif
-
 
 enum cpuacct_stat_sibidle_index {
 	CPUACCT_STAT_FORCEIDLE,
@@ -53,18 +45,7 @@ struct cpuacct {
 	struct cgroup_subsys_state	css;
 	/* cpuusage holds pointer to a u64-type object on every CPU */
 	struct cpuacct_usage __percpu	*cpuusage;
-#ifdef CONFIG_SCHED_SLI
-	struct cpuacct_alistats __percpu *alistats;
-	struct list_head sli_list;
-	bool sli_enabled;
-	u64 next_load_update;
-#endif
 	struct kernel_cpustat __percpu	*cpustat;
-
-	unsigned long avenrun[3];
-#ifdef CONFIG_SCHED_SLI
-	unsigned long avenrun_r[3];
-#endif
 
 #ifdef CONFIG_SCHED_CORE
 	struct sib_idle_cpustat __percpu *sib_idle;
@@ -98,82 +79,100 @@ static inline struct cpuacct *parent_ca(struct cpuacct *ca)
 	return css_ca(ca->css.parent);
 }
 
+static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
+{
+	return css ? container_of(css, struct task_group, css) : NULL;
+}
+
+static inline struct task_group *task_tg(struct task_struct *tsk)
+{
+	return css_tg(task_css(tsk, cpu_cgrp_id));
+}
+
 static DEFINE_PER_CPU(struct cpuacct_usage, root_cpuacct_cpuusage);
-#ifdef CONFIG_SCHED_SLI
-static DEFINE_PER_CPU(struct cpuacct_alistats, root_alistats);
-#endif
 
 static struct cpuacct root_cpuacct = {
 	.cpustat	= &kernel_cpustat,
 	.cpuusage	= &root_cpuacct_cpuusage,
-#ifdef CONFIG_SCHED_SLI
-	.alistats	= &root_alistats,
-#endif
 };
 
 #ifdef CONFIG_SCHED_SLI
 
-void task_ca_increase_nr_migrations(struct task_struct *tsk)
+void task_cpu_increase_nr_migrations(struct task_struct *tsk)
 {
-	struct cpuacct *ca;
+	struct task_group *tg;
 
 	rcu_read_lock();
-	ca = task_ca(tsk);
-	if (ca)
-		this_cpu_ptr(ca->alistats)->nr_migrations++;
+	tg = task_tg(tsk);
+	if (tg)
+		this_cpu_ptr(tg->alistats)->nr_migrations++;
 	rcu_read_unlock();
 }
 
 #endif
 
 #ifdef CONFIG_SCHED_SLI
-static DEFINE_SPINLOCK(sli_ca_lock);
-LIST_HEAD(sli_ca_list);
+static DEFINE_SPINLOCK(sli_tg_lock);
+LIST_HEAD(sli_tg_list);
 
-static void ca_enable_sli(struct cpuacct *ca, bool val)
+void tg_enable_sli(struct task_group *tg, bool val)
 {
-	spin_lock(&sli_ca_lock);
-	if (val && !READ_ONCE(ca->sli_enabled))
-		list_add_tail_rcu(&ca->sli_list, &sli_ca_list);
-	else if (!val && READ_ONCE(ca->sli_enabled))
-		list_del_rcu(&ca->sli_list);
-	WRITE_ONCE(ca->sli_enabled, val);
-	spin_unlock(&sli_ca_lock);
+	spin_lock(&sli_tg_lock);
+	if (val && !READ_ONCE(tg->sli_enabled))
+		list_add_tail_rcu(&tg->sli_list, &sli_tg_list);
+	else if (!val && READ_ONCE(tg->sli_enabled))
+		list_del_rcu(&tg->sli_list);
+	WRITE_ONCE(tg->sli_enabled, val);
+	spin_unlock(&sli_tg_lock);
 }
 
 void create_rich_container_reaper(struct task_struct *tsk)
 {
-	struct cpuacct *ca;
-	struct cpuacct *parent_ca;
-	struct cgroup_subsys_state *css;
+	struct task_group *tg, *parent_tg;
 
 	if (thread_group_leader(tsk)) {
 		rcu_read_lock();
-		css = task_css(tsk, cpuacct_cgrp_id);
-		ca = css_ca(css);
-		if (!ca || !in_rich_container(tsk, RC_LOADAVG)) {
+		tg = task_tg(tsk);
+		if (!tg || !in_rich_container(tsk, RC_LOADAVG)) {
 			rcu_read_unlock();
 			return;
 		}
 
-		ca_enable_sli(ca, true);
-		parent_ca = css_ca(css->parent);
-		if (parent_ca && parent_ca != &root_cpuacct)
-			ca_enable_sli(parent_ca, true);
+		tg_enable_sli(tg, true);
+		parent_tg = tg->parent;
+		if (parent_tg && parent_tg != &root_task_group)
+			tg_enable_sli(parent_tg, true);
 		rcu_read_unlock();
 	}
 }
 
-static int enable_sli_write(struct cgroup_subsys_state *css,
+int enable_sli_write(struct cgroup_subsys_state *css,
 		struct cftype *cft, u64 val)
 {
-	ca_enable_sli(css_ca(css), !!val);
+	struct task_group *tg;
+
+	tg = cgroup_tg(css->cgroup);
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		return -EOPNOTSUPP;
+	}
+
+	tg_enable_sli(tg, !!val);
+
 	return 0;
 }
 
-static u64 enable_sli_read(struct cgroup_subsys_state *css, struct cftype *cft)
+u64 enable_sli_read(struct cgroup_subsys_state *css, struct cftype *cft)
 {
-	return READ_ONCE(css_ca(css)->sli_enabled);
+	struct task_group *tg;
+
+	tg = cgroup_tg(css->cgroup);
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		return -EOPNOTSUPP;
+	}
+
+	return READ_ONCE(tg->sli_enabled);
 }
 #endif
 
@@ -199,15 +198,6 @@ cpuacct_css_alloc(struct cgroup_subsys_state *parent_css)
 	if (!ca->cpustat)
 		goto out_free_cpuusage;
 
-#ifdef CONFIG_SCHED_SLI
-	INIT_LIST_HEAD(&ca->sli_list);
-
-	ca->alistats = alloc_percpu(struct cpuacct_alistats);
-	if (!ca->alistats)
-		goto out_free_cpustat;
-
-#endif
-
 	for_each_possible_cpu(i) {
 		prev_cputime_init(&per_cpu_ptr(ca->cpuusage, i)->prev_cputime1);
 		prev_cputime_init(&per_cpu_ptr(ca->cpuusage, i)->prev_cputime2);
@@ -215,17 +205,8 @@ cpuacct_css_alloc(struct cgroup_subsys_state *parent_css)
 		prev_cputime_init(&per_cpu_ptr(ca->cpuusage, i)->prev_cputime4);
 	}
 
-	ca->avenrun[0] = ca->avenrun[1] = ca->avenrun[2] = 0;
-#ifdef CONFIG_SCHED_SLI
-	ca->avenrun_r[0] = ca->avenrun_r[1] = ca->avenrun_r[2] = 0;
-#endif
 	return &ca->css;
 
-#ifdef CONFIG_SCHED_SLI
-	free_percpu(ca->alistats);
-out_free_cpustat:
-	free_percpu(ca->cpustat);
-#endif
 out_free_cpuusage:
 	free_percpu(ca->cpuusage);
 out_free_ca:
@@ -234,13 +215,6 @@ out:
 	return ERR_PTR(-ENOMEM);
 }
 
-#ifdef CONFIG_SCHED_SLI
-static void cpuacct_css_offline(struct cgroup_subsys_state *css)
-{
-	ca_enable_sli(css_ca(css), false);
-}
-#endif
-
 /* Destroy an existing CPU accounting group */
 static void cpuacct_css_free(struct cgroup_subsys_state *css)
 {
@@ -248,9 +222,6 @@ static void cpuacct_css_free(struct cgroup_subsys_state *css)
 
 	free_percpu(ca->cpustat);
 	free_percpu(ca->cpuusage);
-#ifdef CONFIG_SCHED_SLI
-	free_percpu(ca->alistats);
-#endif
 	kfree(ca);
 }
 
@@ -453,21 +424,15 @@ static int cpuacct_stats_show(struct seq_file *sf, void *v)
 }
 
 #ifdef CONFIG_SCHED_SLI
-#ifndef arch_idle_time
-#define arch_idle_time(cpu) 0
-#endif
-
-static unsigned long ca_running(struct cpuacct *ca, int cpu);
-
-static void __get_cgroup_avenrun(struct cpuacct *ca, unsigned long *loads,
+void __get_cgroup_avenrun(struct task_group *tg, unsigned long *loads,
 		unsigned long offset, int shift, bool running)
 {
 	unsigned long *avenrun;
 
 	if (running)
-		avenrun = ca->avenrun_r;
+		avenrun = tg->avenrun_r;
 	else
-		avenrun = ca->avenrun;
+		avenrun = tg->avenrun;
 
 	loads[0] = (avenrun[0] + offset) << shift;
 	loads[1] = (avenrun[1] + offset) << shift;
@@ -510,21 +475,14 @@ static inline bool tg_rt_throttled(struct task_group *tg, int cpu)
 }
 #endif
 
-static unsigned long ca_running(struct cpuacct *ca, int cpu)
+unsigned long tg_running(struct task_group *tg, int cpu)
 {
 	unsigned long nr_running = 0;
-	struct cgroup *cgrp = ca->css.cgroup;
-	struct task_group *tg;
-
 	/* Make sure it is only called for non-root cpuacct */
-	if (ca == &root_cpuacct)
+	if (tg == &root_task_group)
 		return 0;
 
 	rcu_read_lock();
-	tg = cgroup_tg(cgrp);
-	if (unlikely(!tg))
-		goto out;
-
 	if (!tg_cfs_throttled(tg, cpu))
 		nr_running += tg->cfs_rq[cpu]->h_nr_running;
 #ifdef CONFIG_RT_GROUP_SCHED
@@ -533,32 +491,25 @@ static unsigned long ca_running(struct cpuacct *ca, int cpu)
 #endif
 	/* SCHED_DEADLINE doesn't support cgroup yet */
 
-out:
 	rcu_read_unlock();
 	return nr_running;
 }
 
-static unsigned long ca_uninterruptible(struct cpuacct *ca, int cpu)
+unsigned long tg_uninterruptible(struct task_group *tg, int cpu)
 {
 	unsigned long nr = 0;
-	struct cgroup *cgrp = ca->css.cgroup;
-	struct task_group *tg;
 
 	/* Make sure it is only called for non-root cpuacct */
-	if (ca == &root_cpuacct)
+	if (tg == &root_task_group)
 		return nr;
 
 	rcu_read_lock();
-	tg = cgroup_tg(cgrp);
-	if (unlikely(!tg))
-		goto out_rcu_unlock;
 
 	nr = tg->cfs_rq[cpu]->nr_uninterruptible;
 #ifdef CONFIG_RT_GROUP_SCHED
 	nr += tg->rt_rq[cpu]->nr_uninterruptible;
 #endif
 
-out_rcu_unlock:
 	rcu_read_unlock();
 	return nr;
 }
@@ -634,7 +585,6 @@ static inline void update_steal_high(struct task_struct *tsk, u64 cputime)
 {
 	int cpu = tsk->cpu;
 	struct rq *rq = cpu_rq(cpu);
-	struct cpuacct *ca = task_ca(tsk);
 	struct task_group *tg = cgroup_tg(task_ca(tsk)->css.cgroup);
 
 	if (!schedstat_enabled())
@@ -645,7 +595,7 @@ static inline void update_steal_high(struct task_struct *tsk, u64 cputime)
 		return;
 
 	if (is_underclass_task(tsk) && rq->nr_high_running)
-		per_cpu_ptr(ca->alistats, cpu)->steal_high += cputime;
+		per_cpu_ptr(tg->alistats, cpu)->steal_high += cputime;
 }
 #else
 static inline void idle_start_update_expel_sum(struct sched_entity *se) {}
@@ -756,38 +706,38 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 	rcu_read_unlock();
 }
 
-static void cpuacct_calc_load(struct cpuacct *acct)
+static void task_group_calc_load(struct task_group *tg)
 {
 	long active = 0, active_r = 0, nr_r;
 	int cpu;
 
-	if (acct != &root_cpuacct) {
+	if (tg != &root_task_group) {
 		for_each_possible_cpu(cpu) {
-			nr_r = ca_running(acct, cpu);
+			nr_r = tg_running(tg, cpu);
 			active   += nr_r;
 			active_r += nr_r;
-			active += ca_uninterruptible(acct, cpu);
+			active += tg_uninterruptible(tg, cpu);
 		}
 		active = active > 0 ? active * FIXED_1 : 0;
-		acct->avenrun[0] = calc_load(acct->avenrun[0], EXP_1, active);
-		acct->avenrun[1] = calc_load(acct->avenrun[1], EXP_5, active);
-		acct->avenrun[2] = calc_load(acct->avenrun[2], EXP_15, active);
+		tg->avenrun[0] = calc_load(tg->avenrun[0], EXP_1, active);
+		tg->avenrun[1] = calc_load(tg->avenrun[1], EXP_5, active);
+		tg->avenrun[2] = calc_load(tg->avenrun[2], EXP_15, active);
 
 		active_r = active_r > 0 ? active_r * FIXED_1 : 0;
-		acct->avenrun_r[0] = calc_load(acct->avenrun_r[0],
+		tg->avenrun_r[0] = calc_load(tg->avenrun_r[0],
 				EXP_1, active_r);
-		acct->avenrun_r[1] = calc_load(acct->avenrun_r[1],
+		tg->avenrun_r[1] = calc_load(tg->avenrun_r[1],
 				EXP_5, active_r);
-		acct->avenrun_r[2] = calc_load(acct->avenrun_r[2],
+		tg->avenrun_r[2] = calc_load(tg->avenrun_r[2],
 				EXP_15, active_r);
 	} else {
-		acct->avenrun[0] = avenrun[0];
-		acct->avenrun[1] = avenrun[1];
-		acct->avenrun[2] = avenrun[2];
+		tg->avenrun[0] = avenrun[0];
+		tg->avenrun[1] = avenrun[1];
+		tg->avenrun[2] = avenrun[2];
 
-		acct->avenrun_r[0] = avenrun_r[0];
-		acct->avenrun_r[1] = avenrun_r[1];
-		acct->avenrun_r[2] = avenrun_r[2];
+		tg->avenrun_r[0] = avenrun_r[0];
+		tg->avenrun_r[1] = avenrun_r[1];
+		tg->avenrun_r[2] = avenrun_r[2];
 	}
 }
 
@@ -797,31 +747,30 @@ static void cpuacct_calc_load(struct cpuacct *acct)
  */
 void calc_cgroup_load(void)
 {
-	struct cpuacct *ca;
+	struct task_group *tg;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(ca, &sli_ca_list, sli_list)
-		cpuacct_calc_load(ca);
+	list_for_each_entry_rcu(tg, &sli_tg_list, sli_list)
+		task_group_calc_load(tg);
 	rcu_read_unlock();
 }
 
-static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
-		struct task_group *tg, struct cpuacct_usage_result *res)
+void __cpuacct_get_usage(struct cgroup_subsys_state *css, int cpu,
+					struct cpuacct_usage_result *res)
 {
+	struct cpuacct *ca;
 	struct kernel_cpustat *kcpustat;
 	struct cpuacct_usage *cpuusage;
 	struct task_cputime cputime;
 	u64 tick_user, tick_nice, tick_sys, tick_irq, tick_softirq;
 	u64 left, right, left2, right2;
-	struct sched_entity *se;
+
+	ca = cgroup_ca(css->cgroup);
+	if (!ca)
+		return;
 
 	kcpustat = per_cpu_ptr(ca->cpustat, cpu);
-	if (unlikely(!tg)) {
-		memset(res, 0, sizeof(*res));
-		return;
-	}
 
-	se = tg->se[cpu];
 	cpuusage = per_cpu_ptr(ca->cpuusage, cpu);
 	tick_user = kcpustat->cpustat[CPUTIME_USER];
 	tick_nice = kcpustat->cpustat[CPUTIME_NICE];
@@ -859,62 +808,31 @@ static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
 	res->irq = left;
 	res->softirq = right;
 
-	if (se && schedstat_enabled()) {
-		unsigned int seq;
-		unsigned long flags;
-		u64 idle_start, ineff, ineff_start, elapse, complement;
-		u64 clock, iowait_start;
-
-		do {
-			seq = read_seqcount_begin(&se->idle_seqcount);
-			res->idle = schedstat_val(se->cg_idle_sum);
-			idle_start = schedstat_val(se->cg_idle_start);
-			clock = cpu_clock(cpu);
-			if (idle_start && clock > idle_start)
-				res->idle += clock - idle_start;
-		} while (read_seqcount_retry(&se->idle_seqcount, seq));
-
-		ineff = schedstat_val(se->cg_ineffective_sum);
-		ineff_start = schedstat_val(se->cg_ineffective_start);
-		if (ineff_start)
-			__schedstat_add(ineff, clock - ineff_start);
-
-		spin_lock_irqsave(&se->iowait_lock, flags);
-		res->iowait = schedstat_val(se->cg_iowait_sum);
-		iowait_start = schedstat_val(se->cg_iowait_start);
-		if (iowait_start)
-			__schedstat_add(res->iowait, clock - iowait_start);
-		spin_unlock_irqrestore(&se->iowait_lock, flags);
-
-		res->steal = 0;
-
-		elapse = clock - schedstat_val(se->cg_init_time);
-		complement = res->idle + se->sum_exec_runtime + ineff;
-		if (elapse > complement)
-			res->steal = elapse - complement;
-
-		res->idle -= res->iowait;
-	} else {
-		res->idle = res->iowait = res->steal = 0;
-	}
-
 	res->guest = kcpustat->cpustat[CPUTIME_GUEST];
 	res->guest_nice = kcpustat->cpustat[CPUTIME_GUEST_NICE];
 }
 
 static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 {
-	struct cpuacct *ca = css_ca(seq_css(sf));
-	struct cgroup *cgrp = seq_css(sf)->cgroup;
+	struct cgroup_subsys_state *css = seq_css(sf);
+	struct cpuacct *ca = css_ca(css);
+	struct cgroup *cgrp = css->cgroup;
+	struct task_group *tg;
 	u64 user, nice, system, idle, iowait, irq, softirq, steal, guest;
 	u64 nr_migrations = 0;
-	struct cpuacct_alistats *alistats;
+	struct cpu_alistats *alistats;
 	unsigned long load, avnrun[3], avnrun_r[3];
 	unsigned long nr_run = 0, nr_uninter = 0;
 	int cpu;
 
 	user = nice = system = idle = iowait =
 		irq = softirq = steal = guest = 0;
+
+	tg = cgroup_tg(cgrp);
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		return -EOPNOTSUPP;
+	}
 
 	if (ca != &root_cpuacct) {
 		struct cpuacct_usage_result res;
@@ -924,8 +842,7 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 				continue;
 
 			rcu_read_lock();
-			__cpuacct_get_usage_result(ca, cpu,
-					cgroup_tg(cgrp), &res);
+			__cgroup_get_usage_result(css, cpu, &res);
 			rcu_read_unlock();
 
 			user += res.user;
@@ -939,14 +856,14 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 			iowait += res.iowait;
 			idle += res.idle;
 
-			alistats = per_cpu_ptr(ca->alistats, cpu);
+			alistats = per_cpu_ptr(tg->alistats, cpu);
 			nr_migrations += alistats->nr_migrations;
-			nr_run += ca_running(ca, cpu);
-			nr_uninter += ca_uninterruptible(ca, cpu);
+			nr_run += tg_running(tg, cpu);
+			nr_uninter += tg_uninterruptible(tg, cpu);
 		}
 
-		__get_cgroup_avenrun(ca, avnrun, FIXED_1/200, 0, false);
-		__get_cgroup_avenrun(ca, avnrun_r, FIXED_1/200, 0, true);
+		__get_cgroup_avenrun(tg, avnrun, FIXED_1/200, 0, false);
+		__get_cgroup_avenrun(tg, avnrun_r, FIXED_1/200, 0, true);
 	} else {
 		struct kernel_cpustat *kcpustat;
 
@@ -962,7 +879,7 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 			idle += get_idle_time(kcpustat, cpu);
 			iowait += get_iowait_time(kcpustat, cpu);
 			steal += kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
-			alistats = per_cpu_ptr(ca->alistats, cpu);
+			alistats = per_cpu_ptr(tg->alistats, cpu);
 			nr_migrations += alistats->nr_migrations;
 		}
 
@@ -1009,7 +926,6 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 static int cpuacct_sched_cfs_show(struct seq_file *sf, void *v)
 {
 	struct cgroup *cgrp = seq_css(sf)->cgroup;
-	struct cpuacct *ca;
 	struct task_group *tg = cgroup_tg(cgrp);
 	struct sched_entity *se;
 	int cpu;
@@ -1027,8 +943,6 @@ static int cpuacct_sched_cfs_show(struct seq_file *sf, void *v)
 		goto rcu_unlock_show;
 	}
 
-	ca = cgroup_ca(cgrp);
-
 	for_each_online_cpu(cpu) {
 		se = tg->se[cpu];
 		if (!se)
@@ -1043,7 +957,7 @@ static int cpuacct_sched_cfs_show(struct seq_file *sf, void *v)
 		wait_max =
 			max(wait_max, schedstat_val(se->statistics.wait_max));
 		expel_sum += get_cpu_expel_sum(se, cpu);
-		steal_high += per_cpu_ptr(ca->alistats, cpu)->steal_high;
+		steal_high += per_cpu_ptr(tg->alistats, cpu)->steal_high;
 		wait_sum_self += schedstat_val(se->statistics.wait_self);
 	}
 rcu_unlock_show:
@@ -1195,9 +1109,6 @@ static void cpuacct_cgroup_attach(struct cgroup_taskset *tset)
 struct cgroup_subsys cpuacct_cgrp_subsys = {
 	.css_alloc	= cpuacct_css_alloc,
 	.css_free	= cpuacct_css_free,
-#ifdef CONFIG_SCHED_SLI
-	.css_offline	= cpuacct_css_offline,
-#endif
 	.attach		= cpuacct_cgroup_attach,
 	.legacy_cftypes	= files,
 	.early_init	= true,
@@ -1225,13 +1136,13 @@ static int async_load_calc_open(struct inode *inode, struct file *file)
 static void async_calc_cgroup_load(void)
 {
 	int cnt;
-	struct cpuacct *ca;
+	struct task_group *tg;
 
 again:
 	cnt = 1;
 	rcu_read_lock();
-	list_for_each_entry_rcu(ca, &sli_ca_list, sli_list) {
-		unsigned long next_update = ca->next_load_update;
+	list_for_each_entry_rcu(tg, &sli_tg_list, sli_list) {
+		unsigned long next_update = tg->next_load_update;
 
 		/*
 		 * Need per ca check since after break the list
@@ -1241,8 +1152,8 @@ again:
 		if (time_before(jiffies, next_update + 10))
 			continue;
 
-		cpuacct_calc_load(ca);
-		ca->next_load_update = jiffies + LOAD_FREQ;
+		task_group_calc_load(tg);
+		tg->next_load_update = jiffies + LOAD_FREQ;
 
 		/* Take a break for every 100 ca */
 		if (cnt++ >= 100) {
@@ -1387,16 +1298,6 @@ int sysctl_rich_container_cpuinfo_source;
 /* when cpu.shares */
 unsigned int sysctl_rich_container_cpuinfo_sharesbase = 1024;
 
-static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
-{
-	return css ? container_of(css, struct task_group, css) : NULL;
-}
-
-static inline struct task_group *task_tg(struct task_struct *tsk)
-{
-	return css_tg(task_css(tsk, cpu_cgrp_id));
-}
-
 void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 {
 	struct task_group *tg;
@@ -1457,11 +1358,11 @@ cpuset_source:
 }
 #endif /*CONFIG_RICH_CONTAINER_CG_SWITCH */
 
-bool child_cpuacct(struct task_struct *tsk)
+bool child_task_group(struct task_struct *tsk)
 {
-	struct cpuacct *ca = task_ca(tsk);
+	struct task_group *tg = task_tg(tsk);
 
-	if (ca && ca != &root_cpuacct)
+	if (tg && tg != &root_task_group)
 		return true;
 
 	return false;
@@ -1546,41 +1447,35 @@ void rich_container_get_usage(enum rich_container_source from,
 		struct cpuacct_usage_result *res)
 {
 	struct cgroup_subsys_state *css;
-	struct cpuacct *ca_src;
-	struct task_group *tg;
 
 	rcu_read_lock();
 	/* To avoid iterating css for every cpu */
 	if (likely(from == RICH_CONTAINER_REAPER)) {
-		ca_src = task_ca(reaper);
+		css = task_css(reaper, cpu_cgrp_id);
 		goto ok;
 	} else if (from == RICH_CONTAINER_CURRENT) {
-		ca_src = task_ca(current);
+		css = task_css(current, cpu_cgrp_id);
 		goto ok;
 	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
-		css = task_css(current, cpuacct_cgrp_id)->parent;
+		css = task_css(current, cpu_cgrp_id)->parent;
 		if (!css)
-			ca_src = task_ca(current);
-		else
-			ca_src = css_ca(css);
+			css = task_css(current, cpu_cgrp_id);
+
 		goto ok;
 	}
 
-	css = task_css(current, cpuacct_cgrp_id);
+	css = task_css(current, cpu_cgrp_id);
 	while (css) {
 		if (test_bit(CGRP_RICH_CONTAINER_SOURCE, &css->cgroup->flags))
 			break;
 		css = css->parent;
 	}
 
-	if (css)
-		ca_src = css_ca(css);
-	else
-		ca_src = task_ca(reaper);
+	if (!css)
+		css = task_css(reaper, cpu_cgrp_id);
 
 ok:
-	tg = cgroup_tg(ca_src->css.cgroup);
-	__cpuacct_get_usage_result(ca_src, cpu, tg, res);
+	__cgroup_get_usage_result(css, cpu, res);
 	rcu_read_unlock();
 }
 
@@ -1588,23 +1483,20 @@ unsigned long rich_container_get_running(enum rich_container_source from,
 		struct task_struct *reaper, int cpu)
 {
 	struct cgroup_subsys_state *css;
-	struct cpuacct *ca_src;
+	struct task_group *tg;
 	unsigned long nr;
-
 	rcu_read_lock();
 	/* To avoid iterating css for every cpu */
 	if (likely(from == RICH_CONTAINER_REAPER)) {
-		ca_src = task_ca(reaper);
+		tg = task_tg(reaper);
 		goto ok;
 	} else if (from == RICH_CONTAINER_CURRENT) {
-		ca_src = task_ca(current);
+		tg = task_tg(current);
 		goto ok;
 	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
-		css = task_css(current, cpuacct_cgrp_id)->parent;
-		if (!css)
-			ca_src = task_ca(current);
-		else
-			ca_src = css_ca(css);
+		tg = task_tg(current);
+		if (tg->parent)
+			tg = tg->parent;
 		goto ok;
 	}
 
@@ -1616,12 +1508,18 @@ unsigned long rich_container_get_running(enum rich_container_source from,
 	}
 
 	if (css)
-		ca_src = css_ca(css);
+		tg = cgroup_tg(css->cgroup);
 	else
-		ca_src = task_ca(reaper);
+		tg = task_tg(reaper);
+
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		tg = task_tg(reaper);
+	}
+
 
 ok:
-	nr = ca_running(ca_src, cpu);
+	nr = tg_running(tg, cpu);
 	rcu_read_unlock();
 
 	return nr;
@@ -1632,22 +1530,20 @@ void rich_container_get_avenrun(enum rich_container_source from,
 		unsigned long offset, int shift, bool running)
 {
 	struct cgroup_subsys_state *css;
-	struct cpuacct *ca_src;
+	struct task_group *tg;
 
 	rcu_read_lock();
 	/* To avoid iterating css for every cpu */
 	if (likely(from == RICH_CONTAINER_REAPER)) {
-		ca_src = task_ca(reaper);
+		tg = task_tg(reaper);
 		goto ok;
 	} else if (from == RICH_CONTAINER_CURRENT) {
-		ca_src = task_ca(current);
+		tg = task_tg(current);
 		goto ok;
 	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
-		css = task_css(current, cpuacct_cgrp_id)->parent;
-		if (!css)
-			ca_src = task_ca(current);
-		else
-			ca_src = css_ca(css);
+		tg = task_tg(current);
+		if (tg->parent)
+			tg = tg->parent;
 		goto ok;
 	}
 
@@ -1659,12 +1555,17 @@ void rich_container_get_avenrun(enum rich_container_source from,
 	}
 
 	if (css)
-		ca_src = css_ca(css);
+		tg = cgroup_tg(css->cgroup);
 	else
-		ca_src = task_ca(reaper);
+		tg = task_tg(reaper);
+
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		tg = task_tg(reaper);
+	}
 
 ok:
-	__get_cgroup_avenrun(ca_src, loads, offset, shift, running);
+	__get_cgroup_avenrun(tg, loads, offset, shift, running);
 	rcu_read_unlock();
 }
 
