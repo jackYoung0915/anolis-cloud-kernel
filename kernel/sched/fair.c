@@ -8762,6 +8762,8 @@ static noinline int select_idle_cpu(struct task_struct *p, struct sched_domain *
 	if (!this_sd)
 		return -1;
 
+	cpumask_and(cpus, sched_domain_span(sd), task_allowed_cpu(p));
+
 	if (sched_feat(SIS_PROP)) {
 		u64 avg_cost, avg_idle, span_avg;
 
@@ -8780,11 +8782,8 @@ static noinline int select_idle_cpu(struct task_struct *p, struct sched_domain *
 			else
 				nr = 4;
 		}
+		time = cpu_clock(this);
 	}
-
-	time = cpu_clock(this);
-
-	cpumask_and(cpus, sched_domain_span(sd), task_allowed_cpu(p));
 
 	is_expellee = is_expellee_task(p);
 	for_each_cpu_wrap(cpu, cpus, target) {
@@ -8810,8 +8809,10 @@ static noinline int select_idle_cpu(struct task_struct *p, struct sched_domain *
 		}
 	}
 
-	time = cpu_clock(this) - time;
-	update_avg(&this_sd->avg_scan_cost, time);
+	if (sched_feat(SIS_PROP)) {
+		time = cpu_clock(this) - time;
+		update_avg(&this_sd->avg_scan_cost, time);
+	}
 
 	if (!group_identity_disabled())
 		return (unsigned int)cpu < nr_cpumask_bits ? cpu : id_backup;
