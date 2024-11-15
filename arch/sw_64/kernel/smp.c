@@ -25,13 +25,6 @@ struct smp_rcb_struct *smp_rcb;
 
 extern struct cpuinfo_sw64 cpu_data[NR_CPUS];
 
-static nodemask_t nodes_found_map = NODE_MASK_NONE;
- /* maps to convert between physical node ID and logical node ID */
-static int pnode_to_lnode_map[MAX_NUMNODES]
-			= { [0 ... MAX_NUMNODES - 1] = NUMA_NO_NODE };
-static int lnode_to_pnode_map[MAX_NUMNODES]
-			= { [0 ... MAX_NUMNODES - 1] = NUMA_NO_NODE };
-
 #define smp_debug 0
 #define DBGS(fmt, arg...) \
 	do { if (smp_debug) pr_info("SMP: " fmt, ## arg); } while (0)
@@ -291,44 +284,19 @@ static int __init sw64_of_core_version(const struct device_node *dn,
 	if (!dn || !version)
 		return -EINVAL;
 
-	if (of_device_is_compatible(dn, "sw64,xuelang")) {
+	if (of_device_is_compatible(dn, "sw64,xuelang") ||
+		of_device_is_compatible(dn, "sunway,xuelang")) {
 		*version = CORE_VERSION_C3B;
 		return 0;
 	}
 
-	if (of_device_is_compatible(dn, "sw64,junzhang")) {
+	if (of_device_is_compatible(dn, "sw64,junzhang") ||
+		of_device_is_compatible(dn, "sunway,junzhang")) {
 		*version = CORE_VERSION_C4;
 		return 0;
 	}
 
 	return -EINVAL;
-}
-
-static void __fdt_map_pnode_to_lnode(int pnode, int lnode)
-{
-	if (pnode_to_lnode_map[pnode] == NUMA_NO_NODE || lnode < pnode_to_lnode_map[pnode])
-		pnode_to_lnode_map[pnode] = lnode;
-	if (lnode_to_pnode_map[lnode] == NUMA_NO_NODE || pnode < lnode_to_pnode_map[lnode])
-		lnode_to_pnode_map[lnode] = pnode;
-}
-
-static int fdt_map_pnode_to_lnode(int pnode)
-{
-	int lnode;
-
-	if (pnode < 0 || pnode >= MAX_NUMNODES || numa_off)
-		return NUMA_NO_NODE;
-	lnode = pnode_to_lnode_map[pnode];
-
-	if (lnode == NUMA_NO_NODE) {
-		if (nodes_weight(nodes_found_map) >= MAX_NUMNODES)
-			return NUMA_NO_NODE;
-		lnode = first_unset_node(nodes_found_map);
-		__fdt_map_pnode_to_lnode(pnode, lnode);
-		node_set(lnode, nodes_found_map);
-	}
-
-	return lnode;
 }
 
 static int __init fdt_setup_smp(void)
@@ -338,7 +306,7 @@ static int __init fdt_setup_smp(void)
 	u32 rcid, logical_core_id = 0;
 	u32 online_capable = 0;
 	bool available;
-	int ret, i, version, lnode, pnode;
+	int ret, i, version;
 
 	/* Clean the map from logical core ID to physical core ID */
 	for (i = 0; i < ARRAY_SIZE(__cpu_to_rcid); ++i)
@@ -353,10 +321,8 @@ static int __init fdt_setup_smp(void)
 
 		available = of_device_is_available(dn);
 
-		if (!available && !online_capable) {
-			pr_info("OF: Core is not available\n");
+		if (!available && !online_capable)
 			continue;
-		}
 
 		ret = of_property_read_u32(dn, "reg", &rcid);
 		if (ret) {
@@ -367,7 +333,7 @@ static int __init fdt_setup_smp(void)
 		if (logical_core_id >= nr_cpu_ids) {
 			pr_warn_once("OF: Core [0x%x] exceeds max core num [%u]\n",
 					rcid, nr_cpu_ids);
-			return 0;
+			break;
 		}
 
 		if (is_rcid_duplicate(rcid)) {
@@ -382,6 +348,9 @@ static int __init fdt_setup_smp(void)
 		}
 
 		ret = of_property_read_u64(dn, "sw64,boot_flag_address",
+					&boot_flag_address);
+		if (ret)
+			ret = of_property_read_u64(dn, "sunway,boot_flag_address",
 					&boot_flag_address);
 		if (ret) {
 			pr_err("OF: No boot_flag_address found\n");
@@ -401,10 +370,7 @@ static int __init fdt_setup_smp(void)
 		smp_rcb_init(__va(boot_flag_address));
 
 		/* Set core affinity */
-	        pnode = of_node_to_nid(dn);
-		lnode = fdt_map_pnode_to_lnode(pnode);
-
-		early_map_cpu_to_node(logical_core_id, lnode);
+		early_map_cpu_to_node(logical_core_id, of_node_to_nid(dn));
 
 		logical_core_id++;
 	}
@@ -449,7 +415,7 @@ void __init setup_smp(void)
 	init_cpu_present(cpu_none_mask);
 
 	/* Legacy core detect */
-	sw64_chip_init->early_init.setup_core_map(&core_start);
+	sw64_chip_init->early_init.setup_core_map();
 
 	/* For unified kernel, NR_CPUS is the maximum possible value */
 	for (i = 0; i < NR_CPUS; i++) {

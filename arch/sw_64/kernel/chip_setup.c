@@ -3,7 +3,7 @@
 #include <linux/pci.h>
 #include <linux/syscore_ops.h>
 
-#include <asm/hw_init.h>
+#include <asm/cpu.h>
 #include <asm/sw64_init.h>
 
 #define OFFSET_CORE_ONLINE		0x780UL
@@ -38,7 +38,7 @@ static unsigned long __init get_node_mem(int nodeid)
 	return __get_node_mem(nodeid);
 }
 
-static void __init setup_core_map(struct cpumask *cpumask)
+static void __init setup_core_map(void)
 {
 	int i, j, cpu_num, cpuid, max_cores_per_cpu;
 	unsigned long coreonline;
@@ -196,7 +196,7 @@ static inline void intpu_save(void)
 {
 	void __iomem *intpu_base = misc_platform_get_intpu_base(0);
 
-	switch (cpu_desc.model) {
+	switch (current_cpu_data.model) {
 	case CPU_SW831:
 		saved_long_time = readq(intpu_base + OFFSET_LONG_TIME);
 	default:
@@ -210,7 +210,7 @@ static inline void intpu_restore(void)
 	void __iomem *spbu_base = misc_platform_get_spbu_base(0);
 	void __iomem *gpio_base = misc_platform_get_gpio_base(0);
 
-	switch (cpu_desc.model) {
+	switch (current_cpu_data.model) {
 	case CPU_SW831:
 		writeq(saved_long_time, intpu_base + OFFSET_LONG_TIME);
 		writeq(0x1, spbu_base + OFFSET_LONG_TIME_START_EN);

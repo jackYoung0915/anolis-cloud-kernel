@@ -19,7 +19,6 @@ bool sunway_legacy_pci;
  */
 
 struct pci_controller *hose_head, **hose_tail = &hose_head;
-static void __init pcibios_reserve_legacy_regions(struct pci_bus *bus);
 
 static int __init
 pcibios_init(void)
@@ -138,13 +137,7 @@ void __init common_init_pci(void)
 
 	pcibios_claim_console_setup();
 
-	if (is_in_host()) {
-		list_for_each_entry(bus, &pci_root_buses, node)
-			pcibios_reserve_legacy_regions(bus);
-	}
-
 	pr_info("SW arch assign unassigned resources.\n");
-
 	pci_assign_unassigned_resources();
 
 	for (hose = hose_head; hose; hose = hose->next) {
@@ -175,35 +168,6 @@ alloc_resource(void)
 	res = memblock_alloc(sizeof(*res), SMP_CACHE_BYTES);
 
 	return res;
-}
-
-static void __init pcibios_reserve_legacy_regions(struct pci_bus *bus)
-{
-	struct pci_controller *hose = pci_bus_to_pci_controller(bus);
-	resource_size_t offset;
-	struct resource *res;
-
-	pr_debug("Reserving legacy ranges for domain %04x\n", pci_domain_nr(bus));
-
-	/* Check for IO */
-	if (!(hose->io_space->flags & IORESOURCE_IO))
-		goto no_io;
-	offset = (unsigned long)hose->io_space->start;
-	res = kzalloc(sizeof(struct resource), GFP_KERNEL);
-	BUG_ON(res == NULL);
-	res->name = "Legacy IO";
-	res->flags = IORESOURCE_IO;
-	res->start = offset;
-	res->end = (offset + 0xfff) & 0xfffffffffffffffful;
-	pr_debug("Candidate legacy IO: %pR\n", res);
-	if (request_resource(hose->io_space, res)) {
-		pr_debug("PCI %04x:%02x Cannot reserve Legacy IO %pR\n",
-				pci_domain_nr(bus), bus->number, res);
-		kfree(res);
-	}
-
-no_io:
-	return;
 }
 
 static bool rc_linkup[MAX_NUMNODES][MAX_NR_RCS_PER_NODE];
@@ -263,6 +227,20 @@ static bool __init is_any_rc_linkup_one_node(unsigned long node)
 	return false;
 }
 
+static bool __init is_sunway_legacy_pci(void)
+{
+	if (IS_ENABLED(CONFIG_SUBARCH_C3B))
+		return true;
+
+	if (sunway_machine_is_compatible("sunway,chip4"))
+		return true;
+
+	if (is_in_host() && sunway_machine_is_compatible("sunway,junzhang"))
+		return true;
+
+	return false;
+}
+
 void __init sw64_init_arch(void)
 {
 	if (IS_ENABLED(CONFIG_PCI)) {
@@ -274,8 +252,7 @@ void __init sw64_init_arch(void)
 		if (!acpi_disabled)
 			return;
 
-		if (!sunway_machine_is_compatible("sunway,chip3") &&
-			!sunway_machine_is_compatible("sunway,junzhang"))
+		if (!is_sunway_legacy_pci())
 			return;
 
 		sunway_legacy_pci = true;
