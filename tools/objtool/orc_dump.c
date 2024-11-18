@@ -4,8 +4,8 @@
  */
 
 #include <unistd.h>
+#include <asm/orc_types.h>
 #include <objtool/objtool.h>
-#include <objtool/check.h>
 #include <objtool/orc.h>
 #include <objtool/warn.h>
 #include <objtool/endianness.h>
@@ -150,17 +150,7 @@ int orc_dump(const char *_objname)
 			printf("%llx:", (unsigned long long)(orc_ip_addr + (i * sizeof(int)) + orc_ip[i]));
 		}
 
-		printf("type:%s", orc_type_name(orc[i].type));
-
-		printf(" sp:");
-
-		orc_print_reg(orc[i].sp_reg, bswap_if_needed(&dummy_elf, orc[i].sp_offset));
-
-		printf(" fp:");
-
-		orc_print_reg(orc[i].fp_reg, bswap_if_needed(&dummy_elf, orc[i].fp_offset));
-
-		printf(" signal:%d\n", orc[i].signal);
+		orc_print_dump(&dummy_elf, orc, i);
 	}
 
 	elf_end(elf);

@@ -6,6 +6,8 @@
 #ifndef _INSN_H
 #define _INSN_H
 
+/* This is an arm64 specific version for check.h */
+#ifdef __aarch64__
 #include <objtool/objtool.h>
 #include <objtool/arch.h>
 
@@ -61,6 +63,23 @@ struct instruction {
 	struct cfi_state *cfi;
 };
 
+struct alt_group {
+	/*
+	 * Pointer from a replacement group to the original group.  NULL if it
+	 * *is* the original group.
+	 */
+	struct alt_group *orig_group;
+
+	/* First and last instructions in the group */
+	struct instruction *first_insn, *last_insn, *nop;
+
+	/*
+	 * Byte-offset-addressed len-sized array of pointers to CFI structs.
+	 * This is shared with the other alt_groups in the same alternative.
+	 */
+	struct cfi_state **cfi;
+};
+
 static inline struct symbol *insn_func(struct instruction *insn)
 {
 	struct symbol *sym = insn->sym;
@@ -110,8 +129,8 @@ bool insn_cfi_match(struct instruction *insn, struct cfi_state *cfi2,
 bool is_first_func_insn(struct objtool_file *file,
 			struct instruction *insn, struct symbol *sym);
 
-int decode_instructions(struct objtool_file *file);
 int read_unwind_hints(struct objtool_file *file);
+int decode_instructions(struct objtool_file *file);
 
 #define sec_for_each_insn(file, _sec, insn)				\
 	for (insn = find_insn(file, _sec, 0);				\
@@ -147,4 +166,5 @@ int read_unwind_hints(struct objtool_file *file);
 	     insn = next_insn_same_sec(file, insn))
 
 extern unsigned long nr_insns;
+#endif /* __aarch64__ */
 #endif /* _INSN_H */
