@@ -471,6 +471,7 @@ static inline void smc_sock_init_common(struct sock *sk)
 
 	smc_sk_set_state(sk, SMC_INIT);
 	INIT_DELAYED_WORK(&smc->conn.tx_work, smc_tx_work);
+	smc_close_init(smc);
 	spin_lock_init(&smc->conn.send_lock);
 	mutex_init(&smc->clcsock_release_lock);
 }
@@ -1512,7 +1513,6 @@ static int smc_connect_rdma(struct smc_sock *smc,
 		goto connect_abort;
 	}
 
-	smc_close_init(smc);
 	smc_rx_init(smc);
 
 	if (ini->first_contact_local) {
@@ -1654,7 +1654,6 @@ static int smc_connect_ism(struct smc_sock *smc,
 		if (rc)
 			goto connect_abort;
 	}
-	smc_close_init(smc);
 	smc_rx_init(smc);
 	smc_tx_init(smc);
 
@@ -2846,7 +2845,6 @@ static void smc_listen_work(struct work_struct *work)
 		goto out_decl;
 
 	smc_lgr_pending_lock(ini, &smc_server_lgr_pending);
-	smc_close_init(new_smc);
 	smc_rx_init(new_smc);
 	smc_tx_init(new_smc);
 
