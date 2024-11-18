@@ -690,7 +690,7 @@ static void __exit zhaoxin_sgpio_exit(void)
 	remove_sgpio_zhaoxin();
 }
 
-late_initcall(zhaoxin_sgpio_init);
+module_init(zhaoxin_sgpio_init);
 module_exit(zhaoxin_sgpio_exit);
 
 MODULE_DESCRIPTION("Zhaoxin SGPIO driver");
