@@ -2175,7 +2175,7 @@ struct rdt_domain *mpam_find_domain(struct resctrl_resource *r, int id,
 }
 
 enum mpam_enable_type __read_mostly kunpeng_mpam_enabled;
-static int __init mpam_setup(char *str)
+static int __init kunpeng_mpam_setup(char *str)
 {
 	if (!strcmp(str, "=acpi"))
 		kunpeng_mpam_enabled = MPAM_ENABLE_ACPI;
@@ -2184,7 +2184,7 @@ static int __init mpam_setup(char *str)
 
 	return 1;
 }
-__setup("mpam", mpam_setup);
+__setup("kpmpam", kunpeng_mpam_setup);
 
 int mpam_resctrl_init(void)
 {
