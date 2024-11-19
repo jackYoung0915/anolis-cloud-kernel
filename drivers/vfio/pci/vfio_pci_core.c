@@ -2145,6 +2145,25 @@ void vfio_pci_core_uninit_device(struct vfio_pci_core_device *vdev)
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_uninit_device);
 
+
+static ssize_t vstatus_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct vfio_device *vdev;
+	unsigned int open_count = 0;
+
+	vdev = vfio_device_get_from_dev(dev);
+	if (!vdev)
+		return -ENODEV;
+
+	open_count = vdev->open_count;
+
+	vfio_device_put(vdev);
+
+	return sprintf(buf, "%u\n", open_count);
+}
+
+static DEVICE_ATTR_RO(vstatus);
+
 int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
@@ -2224,8 +2243,15 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	ret = vfio_register_group_dev(&vdev->vdev);
 	if (ret)
 		goto out_power;
+
+	ret = device_create_file(&pdev->dev, &dev_attr_vstatus);
+	if (ret)
+		goto out_register_group_dev;
+
 	return 0;
 
+out_register_group_dev:
+	vfio_unregister_group_dev(&vdev->vdev);
 out_power:
 	if (!disable_idle_d3)
 		vfio_pci_set_power_state(vdev, PCI_D0);
@@ -2252,6 +2278,8 @@ void vfio_pci_core_unregister_device(struct vfio_pci_core_device *vdev)
 
 	if (!disable_idle_d3)
 		vfio_pci_set_power_state(vdev, PCI_D0);
+
+	device_remove_file(&pdev->dev, &dev_attr_vstatus);
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_unregister_device);
 
