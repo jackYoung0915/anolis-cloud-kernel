@@ -2,12 +2,6 @@
 #ifndef _ASM_SW64_IRQ_H
 #define _ASM_SW64_IRQ_H
 
-/*
- *	arch/sw/include/asm/irq.h
- *
- *	(C) 2012 OSKernel JN
- */
-
 #include <linux/linkage.h>
 
 #define NR_VECTORS_PERCPU	256
@@ -37,6 +31,15 @@ struct acpi_madt_sw_lpc_intc;
 
 extern int __init sw64_add_gsi_domain_map(u32 gsi_base, u32 gsi_count,
 		struct fwnode_handle *handle);
+
+#ifdef CONFIG_SW64_PCI_INTX
+extern void handle_intx(unsigned int offset);
+#else
+static inline void handle_intx(unsigned int offset)
+{
+	pr_crit("Enter PCI INTx, but no handle configured!\n");
+}
+#endif
 
 #ifdef CONFIG_SW64_PINTC
 extern int __init pintc_acpi_init(struct irq_domain *parent,

@@ -227,6 +227,8 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_IRQCHIP:
 	case KVM_CAP_IOEVENTFD:
 	case KVM_CAP_SYNC_MMU:
+	case KVM_CAP_READONLY_MEM:
+	case KVM_CAP_SET_GUEST_DEBUG:
 		r = 1;
 		break;
 	case KVM_CAP_NR_VCPUS:
@@ -604,8 +606,7 @@ vm_fault_t kvm_arch_vcpu_fault(struct kvm_vcpu *vcpu, struct vm_fault *vmf)
 void kvm_arch_flush_remote_tlbs_memslot(struct kvm *kvm,
 					struct kvm_memory_slot *memslot)
 {
-	/* Let implementation handle TLB/GVA invalidation */
-	kvm_arch_flush_shadow_memslot(kvm, memslot);
+	kvm_flush_remote_tlbs(kvm);
 }
 
 int kvm_dev_ioctl_check_extension(long ext)
