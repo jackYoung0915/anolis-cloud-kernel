@@ -259,4 +259,8 @@ struct prctl_mm_map {
 # define PR_SCHED_CORE_SCOPE_THREAD_GROUP	1
 # define PR_SCHED_CORE_SCOPE_PROCESS_GROUP	2
 
+/* Per task group identity control */
+#define PR_GET_IDENTITY			1000
+#define PR_SET_IDENTITY			1001
+
 #endif /* _LINUX_PRCTL_H */

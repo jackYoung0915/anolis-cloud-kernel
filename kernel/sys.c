@@ -2546,6 +2546,18 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		error = sched_core_share_pid(arg2, arg3, arg4, arg5);
 		break;
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
+	case PR_GET_IDENTITY:
+		if (arg4 || arg5)
+			return -EINVAL;
+		error = sched_identity_get_pid(arg2, arg3);
+		break;
+	case PR_SET_IDENTITY:
+		if (arg4 || arg5)
+			return -EINVAL;
+		error = sched_identity_set_pid(arg2, arg3);
+		break;
+#endif
 	default:
 		error = -EINVAL;
 		break;

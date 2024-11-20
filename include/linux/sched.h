@@ -237,6 +237,8 @@ extern long io_schedule_timeout(long timeout);
 extern void io_schedule(void);
 #ifdef CONFIG_GROUP_IDENTITY
 extern void handle_smt_expeller(void);
+extern int sched_identity_get_pid(pid_t pid, unsigned long uaddr);
+extern int sched_identity_set_pid(pid_t pid, int id_flags);
 #else
 static inline void handle_smt_expeller(void) {}
 #endif
