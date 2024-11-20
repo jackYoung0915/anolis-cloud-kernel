@@ -5751,6 +5751,8 @@ void __noreturn do_task_dead(void)
 	/* Tell freezer to ignore us: */
 	current->flags |= PF_NOFREEZE;
 
+	clear_task_identity(current);
+
 	__schedule(false);
 	BUG();
 
@@ -9907,7 +9909,7 @@ static int cpu_identity_write_s64(struct cgroup_subsys_state *css,
 {
 	struct task_group *tg = css_tg(css);
 
-	return update_identity(tg, val);
+	return update_identity(tg, NULL, val);
 }
 
 static s64 cpu_identity_read_s64(struct cgroup_subsys_state *css,
