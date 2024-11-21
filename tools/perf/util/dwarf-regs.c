@@ -29,6 +29,7 @@
 #include "../arch/sparc/include/dwarf-regs-table.h"
 #include "../arch/xtensa/include/dwarf-regs-table.h"
 #include "../arch/loongarch/include/dwarf-regs-table.h"
+#include "../arch/sw_64/include/dwarf-regs-table.h"
 
 #define __get_dwarf_regstr(tbl, n) (((n) < ARRAY_SIZE(tbl)) ? (tbl)[(n)] : NULL)
 
@@ -60,6 +61,8 @@ const char *get_dwarf_regstr(unsigned int n, unsigned int machine)
 		return __get_dwarf_regstr(xtensa_regstr_tbl, n);
 	case EM_LOONGARCH:
 		return __get_dwarf_regstr(loongarch_regstr_tbl, n);
+	case EM_SW_64:
+		return __get_dwarf_regstr(sw_64_regstr_tbl, n);
 	default:
 		pr_err("ELF MACHINE %x is not supported.\n", machine);
 	}
