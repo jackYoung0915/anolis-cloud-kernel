@@ -8,7 +8,7 @@ CFLAGS += -O2 -Wall -g -I./ -I../../../../usr/include/  -Wl,-rpath=./ \
 	  $(CLANG_FLAGS)
 LDLIBS += -lpthread
 
-TEST_GEN_FILES := cs_prctl_test
-TEST_PROGS := cs_prctl_test
+TEST_GEN_FILES := cs_prctl_test task_identity_test
+TEST_PROGS := cs_prctl_test task_identity_test.sh
 
 include ../lib.mk
