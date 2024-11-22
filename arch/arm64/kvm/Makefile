@@ -48,4 +48,7 @@ $(obj)/switch.o: $(obj)/hyp.lds $(obj)/switch.tmp.o FORCE
 
 kvm-y += switch.o
 endif
-obj-$(CONFIG_KVM_HISI_VIRT) += hisilicon/
+
+ifdef CONFIG_KVM_HISI_VIRT
+kvm-y += hisilicon/hisi_virt.o
+endif
