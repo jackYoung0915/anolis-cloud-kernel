@@ -118,6 +118,10 @@ MODULE_PARM_DESC(auto_movable_ratio,
 		"Set the maximum ratio of MOVABLE:KERNEL memory in the system "
 		"in percent for \"auto-movable\" online policy. Default: 301");
 
+bool skip_set_contiguous __read_mostly;
+module_param(skip_set_contiguous, bool, 0644);
+MODULE_PARM_DESC(skip_set_contiguous, "Do not set zone contiguous when online/offline pages");
+
 /*
  * memory_hotplug.auto_movable_numa_aware: consider numa node stats
  */
