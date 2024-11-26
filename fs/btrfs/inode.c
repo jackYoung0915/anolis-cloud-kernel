@@ -7863,7 +7863,7 @@ static struct btrfs_dio_private *btrfs_create_dio_private(struct bio *dio_bio,
 	return dip;
 }
 
-static blk_qc_t btrfs_submit_direct(const struct iomap_iter *iter,
+static void btrfs_submit_direct(const struct iomap_iter *iter,
 		struct bio *dio_bio, loff_t file_offset)
 {
 	struct inode *inode = iter->inode;
@@ -7892,7 +7892,7 @@ static blk_qc_t btrfs_submit_direct(const struct iomap_iter *iter,
 		}
 		dio_bio->bi_status = BLK_STS_RESOURCE;
 		bio_endio(dio_bio);
-		return BLK_QC_T_NONE;
+		return;
 	}
 
 	if (!write && csum) {
@@ -7968,12 +7968,11 @@ static blk_qc_t btrfs_submit_direct(const struct iomap_iter *iter,
 		start_sector += clone_len >> 9;
 		file_offset += clone_len;
 	} while (submit_len > 0);
-	return BLK_QC_T_NONE;
+	return;
 
 out_err:
 	dip->dio_bio->bi_status = status;
 	btrfs_dio_private_put(dip);
-	return BLK_QC_T_NONE;
 }
 
 static ssize_t check_direct_IO(struct btrfs_fs_info *fs_info,

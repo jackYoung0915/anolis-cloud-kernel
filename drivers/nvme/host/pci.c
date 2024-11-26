@@ -1386,7 +1386,7 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req, bool reserved)
 	nvme_init_request(abort_req, &cmd);
 
 	abort_req->end_io_data = NULL;
-	blk_execute_rq_nowait(abort_req->q, NULL, abort_req, 0, abort_endio);
+	blk_execute_rq_nowait(NULL, abort_req, 0, abort_endio);
 
 	/*
 	 * The aborted req will be completed on receiving the abort req.
@@ -2403,7 +2403,7 @@ static int nvme_delete_queue(struct nvme_queue *nvmeq, u8 opcode)
 	req->end_io_data = nvmeq;
 
 	init_completion(&nvmeq->delete_done);
-	blk_execute_rq_nowait(q, NULL, req, false,
+	blk_execute_rq_nowait(NULL, req, false,
 			opcode == nvme_admin_delete_cq ?
 				nvme_del_cq_end : nvme_del_queue_end);
 	return 0;
@@ -2751,7 +2751,7 @@ static void nvme_activate_ns(struct nvme_dev *ndev)
 
 	ret = __nvme_submit_sync_cmd(ndev->ctrl.admin_q, &c, NULL,
 			&ndev->activation_info, sizeof(struct nvme_activation_info),
-			0, NVME_QID_ANY, 0, 0, false);
+			0, NVME_QID_ANY, 0, 0);
 
 	ndev->activation_result = ret;
 	ndev->activation_count++;
