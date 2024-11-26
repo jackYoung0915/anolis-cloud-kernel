@@ -832,7 +832,8 @@ map_end:
 				map_size = 0;
 			}
 		}
-
+		if (apply_zhaoxin_dmar_acpi_a_behavior())
+			iova_reserve_domain_addr(domain, start, end);
 	}
 
 	iommu_flush_iotlb_all(domain);
@@ -851,6 +852,16 @@ static bool iommu_is_attach_deferred(struct iommu_domain *domain,
 
 	return false;
 }
+
+int __acpi_rmrr_device_create_direct_mappings(struct iommu_group *group, struct device *dev)
+{
+	int ret;
+
+	ret = iommu_create_device_direct_mappings(group, dev);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(__acpi_rmrr_device_create_direct_mappings);
 
 /**
  * iommu_group_add_device - add a device to an iommu group

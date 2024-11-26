@@ -4221,6 +4221,24 @@ out:
 	return ret;
 }
 
+int dmar_rmrr_add_acpi_dev(u8 device_number, struct acpi_device *adev)
+{
+	int ret;
+	struct dmar_rmrr_unit *rmrru;
+	struct acpi_dmar_reserved_memory *rmrr;
+
+	list_for_each_entry(rmrru, &dmar_rmrr_units, list) {
+		rmrr = container_of(rmrru->hdr, struct acpi_dmar_reserved_memory, header);
+		ret = dmar_rmrr_acpi_insert_dev_scope(device_number, adev, (void *)(rmrr + 1),
+					((void *)rmrr) + rmrr->header.length,
+					rmrru->devices, rmrru->devices_cnt);
+		if (ret)
+			break;
+	}
+
+	return 0;
+}
+
 int dmar_iommu_notify_scope_dev(struct dmar_pci_notify_info *info)
 {
 	int ret;
@@ -4486,6 +4504,44 @@ static int __init platform_optin_force_iommu(void)
 	return 1;
 }
 
+static inline int acpi_rmrr_device_create_direct_mappings(struct iommu_group *group,
+				struct device *dev)
+{
+	int ret;
+
+	pr_info("rmrr andd dev:%s enter to %s\n", dev_name(dev), __func__);
+	ret = __acpi_rmrr_device_create_direct_mappings(group, dev);
+
+	return ret;
+}
+
+static inline int acpi_rmrr_andd_probe(struct device *dev)
+{
+	struct intel_iommu *iommu = NULL;
+	struct pci_dev *pci_device = NULL;
+	u8 bus, devfn;
+	int ret = 0;
+
+	dev->bus->iommu_ops = &intel_iommu_ops;
+	ret = iommu_probe_device(dev);
+
+	iommu = device_to_iommu(dev, &bus, &devfn);
+	if (!iommu) {
+		pr_info("cannot get acpi device corresponding iommu\n");
+		return -EINVAL;
+	}
+
+	pci_device = pci_get_domain_bus_and_slot(iommu->segment, bus, devfn);
+	if (!pci_device) {
+		pr_info("cannot get acpi devie corresponding pci_device\n");
+		return -EINVAL;
+	}
+	ret = acpi_rmrr_device_create_direct_mappings(iommu_group_get(&pci_device->dev),
+			dev);
+
+	return ret;
+}
+
 static int __init probe_acpi_namespace_devices(void)
 {
 	struct dmar_drhd_unit *drhd;
@@ -4508,6 +4564,10 @@ static int __init probe_acpi_namespace_devices(void)
 			mutex_lock(&adev->physical_node_lock);
 			list_for_each_entry(pn,
 					    &adev->physical_node_list, node) {
+
+				if (apply_zhaoxin_dmar_acpi_a_behavior())
+					ret = acpi_rmrr_andd_probe(dev);
+
 				group = iommu_group_get(pn->dev);
 				if (group) {
 					iommu_group_put(group);
@@ -4516,6 +4576,7 @@ static int __init probe_acpi_namespace_devices(void)
 
 				pn->dev->bus->iommu_ops = &intel_iommu_ops;
 				ret = iommu_probe_device(pn->dev);
+
 				if (ret)
 					break;
 			}
