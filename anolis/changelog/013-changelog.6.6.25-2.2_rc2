@@ -1,0 +1,12 @@
+* Wed Nov 27 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [6.6.25-2.2_rc2%%DIST%%]
+- anolis: KVM: SVM: CSV: Explicitly enable LBR Virtualization after succeed to RECEIVE_ENCRYPT_CONTEXT (hanliyang)
+- anolis: KVM: SVM: CSV: Explicitly enable LBR Virtualization after succeed to LAUNCH_ENCRYPT_VMCB (hanliyang)
+- anolis: KVM: SVM: CSV: Explicitly enable LBR Virtualization after succeed to RECEIVE_UPDATE_VMSA (hanliyang)
+- anolis: support 1024 processes simutaneously in the hct-mdev mode. (Yabin Li)
+- anolis: Change the maximum number of supported ccps from 16 to 48. (Yabin Li)
+- anolis: bugifx: fix build issue when the module mdev is disabled. (Yabin Li)
+- anolis: HCT supporting memory encryption host (Yabin Li)
+- anolis: Add mediated ccp driver support for hygon crypto technology. (Yabin Li)
+- anolis:ccp: ccp-crypto support sm2 on Hygon generation 4th CPU (yangdepei)
+- anolis: KVM: arm64: Make MPAM mask in ID_AA64DFR0_EL1 writable (Shawn Wang)
+
