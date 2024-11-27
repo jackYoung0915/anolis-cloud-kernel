@@ -2254,6 +2254,7 @@ static void smc_listen_out(struct smc_sock *new_smc)
 					 SMC_NEGOTIATION_NO_SMC :
 					 SMC_NEGOTIATION_SMC);
 
+	release_sock(newsmcsk);	/* lock in smc_listen_work() */
 	if (smc_sk_state(&lsmc->sk) == SMC_LISTEN) {
 		lock_sock_nested(&lsmc->sk, SINGLE_DEPTH_NESTING);
 		smc_accept_enqueue(&lsmc->sk, newsmcsk);
@@ -2272,10 +2273,8 @@ static void smc_listen_out_connected(struct smc_sock *new_smc)
 {
 	struct sock *newsmcsk = &new_smc->sk;
 
-	lock_sock(newsmcsk);
 	if (smc_sk_state(newsmcsk) == SMC_INIT)
 		smc_sk_set_state(newsmcsk, SMC_ACTIVE);
-	release_sock(newsmcsk);
 
 	smc_listen_out(new_smc);
 }
@@ -2288,12 +2287,10 @@ static void smc_listen_out_err(struct smc_sock *new_smc)
 
 	this_cpu_inc(net->smc.smc_stats->srv_hshake_err_cnt);
 
-	lock_sock(newsmcsk);
 	if (smc_sk_state(newsmcsk) != SMC_CLOSED &&
 	    smc_sk_state(newsmcsk) != SMC_PROCESSABORT)
 		sock_put(&new_smc->sk); /* passive closing */
 	smc_sk_set_state(newsmcsk, SMC_CLOSED);
-	release_sock(newsmcsk);
 
 	smc_listen_out(new_smc);
 }
@@ -2788,6 +2785,7 @@ static void smc_listen_work(struct work_struct *work)
 	u8 accept_version;
 	int rc = 0;
 
+	lock_sock(&new_smc->sk); /* release in smc_listen_out() */
 	if (smc_sk_state(&new_smc->listen_smc->sk) != SMC_LISTEN)
 		return smc_listen_out_err(new_smc);
 
