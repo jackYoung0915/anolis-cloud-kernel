@@ -21,40 +21,32 @@ void erofs_put_metabuf(struct erofs_buf *buf)
 	if (!buf->page)
 		return;
 	erofs_unmap_metabuf(buf);
-	put_page(buf->page);
+	folio_put(page_folio(buf->page));
 	buf->page = NULL;
 }
 
-/*
- * Derive the block size from inode->i_blkbits to make compatible with
- * anonymous inode in fscache mode.
- */
-void *erofs_bread(struct erofs_buf *buf, erofs_blk_t blkaddr,
+void *erofs_bread(struct erofs_buf *buf, erofs_off_t offset,
 		  enum erofs_kmap_type type)
 {
-	struct inode *inode = buf->inode;
-	erofs_off_t offset = (erofs_off_t)blkaddr << inode->i_blkbits;
 	pgoff_t index = offset >> PAGE_SHIFT;
-	struct page *page = buf->page;
-	struct folio *folio;
-	unsigned int nofs_flag;
+	struct folio *folio = NULL;
 
-	if (!page || page->index != index) {
+	if (buf->page) {
+		folio = page_folio(buf->page);
+		if (folio_file_page(folio, index) != buf->page)
+			erofs_unmap_metabuf(buf);
+	}
+	if (!folio || !folio_contains(folio, index)) {
 		erofs_put_metabuf(buf);
-
-		nofs_flag = memalloc_nofs_save();
-		folio = read_cache_folio(inode->i_mapping, index, NULL, NULL);
-		memalloc_nofs_restore(nofs_flag);
+		folio = read_mapping_folio(buf->mapping, index, NULL);
 		if (IS_ERR(folio))
 			return folio;
-
-		/* should already be PageUptodate, no need to lock page */
-		page = folio_file_page(folio, index);
-		buf->page = page;
 	}
+	buf->page = folio_file_page(folio, index);
+
 	if (buf->kmap_type == EROFS_NO_KMAP) {
 		if (type == EROFS_KMAP)
-			buf->base = kmap_local_page(page);
+			buf->base = kmap_local_page(buf->page);
 		buf->kmap_type = type;
 	} else if (buf->kmap_type != type) {
 		DBG_BUGON(1);
@@ -67,17 +59,21 @@ void *erofs_bread(struct erofs_buf *buf, erofs_blk_t blkaddr,
 
 void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb)
 {
-	if (erofs_is_fscache_mode(sb))
-		buf->inode = EROFS_SB(sb)->s_fscache->inode;
+	struct erofs_sb_info *sbi = EROFS_SB(sb);
+
+	if (erofs_is_fileio_mode(sbi))
+		buf->mapping = file_inode(sbi->fdev)->i_mapping;
+	else if (erofs_is_fscache_mode(sb))
+		buf->mapping = sbi->s_fscache->inode->i_mapping;
 	else
-		buf->inode = sb->s_bdev->bd_inode;
+		buf->mapping = sb->s_bdev->bd_inode->i_mapping;
 }
 
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
-			 erofs_blk_t blkaddr, enum erofs_kmap_type type)
+			 erofs_off_t offset, enum erofs_kmap_type type)
 {
 	erofs_init_metabuf(buf, sb);
-	return erofs_bread(buf, blkaddr, type);
+	return erofs_bread(buf, offset, type);
 }
 
 static int erofs_map_blocks_flatmode(struct inode *inode,
@@ -136,7 +132,7 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 	if (map->m_la >= inode->i_size) {
 		/* leave out-of-bound access unmapped */
 		map->m_flags = 0;
-		map->m_plen = 0;
+		map->m_plen = map->m_llen;
 		goto out;
 	}
 
@@ -154,7 +150,7 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 	pos = ALIGN(erofs_iloc(inode) + vi->inode_isize +
 		    vi->xattr_isize, unit) + unit * chunknr;
 
-	kaddr = erofs_read_metabuf(&buf, sb, erofs_blknr(sb, pos), EROFS_KMAP);
+	kaddr = erofs_read_metabuf(&buf, sb, erofs_pos(sb, erofs_blknr(sb, pos)), EROFS_KMAP);
 	if (IS_ERR(kaddr)) {
 		err = PTR_ERR(kaddr);
 		goto out;
@@ -197,16 +193,39 @@ out:
 	return err;
 }
 
+static void erofs_fill_from_devinfo(struct super_block *sb,
+				    struct erofs_map_dev *map,
+				    struct erofs_device_info *dif)
+{
+	struct bdev_handle *bdev_handle;
+
+	map->m_bdev = dif->bdev_handle ? dif->bdev_handle->bdev : NULL;
+	map->m_fp = NULL;
+	if (dif->file) {
+		if (S_ISBLK(file_inode(dif->file)->i_mode)) {
+			bdev_handle = bdev_open_by_path(dif->path, BLK_OPEN_READ,
+							sb->s_type, NULL);
+			map->m_bdev = bdev_handle->bdev;
+		} else
+			map->m_fp = dif->file;
+	}
+	map->m_daxdev = dif->dax_dev;
+	map->m_dax_part_off = dif->dax_part_off;
+	map->m_fscache = dif->fscache;
+}
+
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 {
 	struct erofs_dev_context *devs = EROFS_SB(sb)->devs;
 	struct erofs_device_info *dif;
+	erofs_off_t startoff, length;
 	int id;
 
 	map->m_bdev = sb->s_bdev;
 	map->m_daxdev = EROFS_SB(sb)->dax_dev;
 	map->m_dax_part_off = EROFS_SB(sb)->dax_part_off;
 	map->m_fscache = EROFS_SB(sb)->s_fscache;
+	map->m_fp = EROFS_SB(sb)->fdev;
 
 	if (map->m_deviceid) {
 		down_read(&devs->rwsem);
@@ -220,35 +239,62 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 			up_read(&devs->rwsem);
 			return 0;
 		}
-		map->m_bdev = dif->bdev_handle ? dif->bdev_handle->bdev : NULL;
-		map->m_daxdev = dif->dax_dev;
-		map->m_dax_part_off = dif->dax_part_off;
-		map->m_fscache = dif->fscache;
+		erofs_fill_from_devinfo(sb, map, dif);
 		up_read(&devs->rwsem);
 	} else if (devs->extra_devices && !devs->flatdev) {
 		down_read(&devs->rwsem);
 		idr_for_each_entry(&devs->tree, dif, id) {
-			erofs_off_t startoff, length;
-
 			if (!dif->mapped_blkaddr)
 				continue;
+
 			startoff = erofs_pos(sb, dif->mapped_blkaddr);
 			length = erofs_pos(sb, dif->blocks);
-
 			if (map->m_pa >= startoff &&
 			    map->m_pa < startoff + length) {
 				map->m_pa -= startoff;
-				map->m_bdev = dif->bdev_handle ?
-					      dif->bdev_handle->bdev : NULL;
-				map->m_daxdev = dif->dax_dev;
-				map->m_dax_part_off = dif->dax_part_off;
-				map->m_fscache = dif->fscache;
+				erofs_fill_from_devinfo(sb, map, dif);
 				break;
 			}
 		}
 		up_read(&devs->rwsem);
 	}
 	return 0;
+}
+
+/*
+ * bit 30: I/O error occurred on this folio
+ * bit 0 - 29: remaining parts to complete this folio
+ */
+#define EROFS_ONLINEFOLIO_EIO			(1 << 30)
+
+void erofs_onlinefolio_init(struct folio *folio)
+{
+	union {
+		atomic_t o;
+		void *v;
+	} u = { .o = ATOMIC_INIT(1) };
+
+	folio->private = u.v;	/* valid only if file-backed folio is locked */
+}
+
+void erofs_onlinefolio_split(struct folio *folio)
+{
+	atomic_inc((atomic_t *)&folio->private);
+}
+
+void erofs_onlinefolio_end(struct folio *folio, int err)
+{
+	int orig, v;
+
+	do {
+		orig = atomic_read((atomic_t *)&folio->private);
+		v = (orig - 1) | (err ? EROFS_ONLINEFOLIO_EIO : 0);
+	} while (atomic_cmpxchg((atomic_t *)&folio->private, orig, v) != orig);
+
+	if (v & ~EROFS_ONLINEFOLIO_EIO)
+		return;
+	folio->private = 0;
+	folio_end_read(folio, !(v & EROFS_ONLINEFOLIO_EIO));
 }
 
 static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
@@ -297,7 +343,7 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 
 		iomap->type = IOMAP_INLINE;
 		ptr = erofs_read_metabuf(&buf, sb,
-				erofs_blknr(sb, mdev.m_pa), EROFS_KMAP);
+				erofs_pos(sb, erofs_blknr(sb, mdev.m_pa)), EROFS_KMAP);
 		if (IS_ERR(ptr))
 			return PTR_ERR(ptr);
 		iomap->inline_data = ptr + erofs_blkoff(sb, mdev.m_pa);
@@ -401,7 +447,7 @@ static ssize_t erofs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 }
 
 /* for uncompressed (aligned) files and raw access for other files */
-const struct address_space_operations erofs_raw_access_aops = {
+const struct address_space_operations erofs_aops = {
 	.read_folio = erofs_read_folio,
 	.readahead = erofs_readahead,
 	.bmap = erofs_bmap,
