@@ -1347,11 +1347,11 @@ static int __init arm_lpae_do_selftests(void)
 		SZ_64K | SZ_512M,
 	};
 
-	static const unsigned int ias[] __initconst = {
+	static const unsigned int address_size[] __initconst = {
 		32, 36, 40, 42, 44, 48,
 	};
 
-	int i, j, pass = 0, fail = 0;
+	int i, j, k, pass = 0, fail = 0;
 	struct device *dev = kmalloc(sizeof(struct device), GFP_KERNEL | __GFP_NOFAIL);
 	struct io_pgtable_cfg cfg = {
 		.tlb = &dummy_tlb_ops,
@@ -1364,15 +1364,19 @@ static int __init arm_lpae_do_selftests(void)
 	set_dev_node(dev, NUMA_NO_NODE);
 
 	for (i = 0; i < ARRAY_SIZE(pgsize); ++i) {
-		for (j = 0; j < ARRAY_SIZE(ias); ++j) {
-			cfg.pgsize_bitmap = pgsize[i];
-			cfg.ias = ias[j];
-			pr_info("selftest: pgsize_bitmap 0x%08lx, IAS %u\n",
-				pgsize[i], ias[j]);
-			if (arm_lpae_run_tests(&cfg))
-				fail++;
-			else
-				pass++;
+		for (j = 0; j < ARRAY_SIZE(address_size); ++j) {
+			/* Don't use ias > oas as it is not valid for stage-2. */
+			for (k = 0; k <= j; ++k) {
+				cfg.pgsize_bitmap = pgsize[i];
+				cfg.ias = address_size[k];
+				cfg.oas = address_size[j];
+				pr_info("selftest: pgsize_bitmap 0x%08lx, IAS %u OAS %u\n",
+					pgsize[i], cfg.ias, cfg.oas);
+				if (arm_lpae_run_tests(&cfg))
+					fail++;
+				else
+					pass++;
+			}
 		}
 	}
 
