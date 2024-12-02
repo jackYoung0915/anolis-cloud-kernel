@@ -14,5 +14,6 @@ obj-$(CONFIG_VIRT_FUSE) += virtfuse.o
 fuse-y := dev.o dir.o file.o inode.o control.o xattr.o acl.o readdir.o
 fuse-y += passthrough.o io_stats.o
 fuse-$(CONFIG_FUSE_DAX) += dax.o
+fuse-$(CONFIG_SYSCTL) += sysctl.o
 
 virtiofs-y := virtio_fs.o

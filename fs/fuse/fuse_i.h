@@ -36,9 +36,6 @@
 /** Default max number of pages that can be used in a single read request */
 #define FUSE_DEFAULT_MAX_PAGES_PER_REQ 32
 
-/** Maximum of max_pages received in init_out */
-#define FUSE_MAX_MAX_PAGES 1024
-
 /** Maximum number of outstanding background requests */
 #define FUSE_DEFAULT_MAX_BACKGROUND 12
 
@@ -61,6 +58,9 @@ enum fuse_bgqueue_type {
 	FUSE_BG_WRITE,
 	FUSE_BG_TYPES
 };
+
+/** Maximum of max_pages received in init_out */
+extern unsigned int fuse_max_pages_limit;
 
 /** List of active connections */
 extern struct list_head fuse_conn_list;
@@ -1507,5 +1507,13 @@ static inline bool is_virtfuse_device(struct file *file)
 #else
 static inline bool is_virtfuse_device(struct file *file) { return false; }
 #endif
+
+#ifdef CONFIG_SYSCTL
+extern int fuse_sysctl_register(void);
+extern void fuse_sysctl_unregister(void);
+#else
+#define fuse_sysctl_register()		(0)
+#define fuse_sysctl_unregister()	do { } while (0)
+#endif /* CONFIG_SYSCTL */
 
 #endif /* _FS_FUSE_I_H */
