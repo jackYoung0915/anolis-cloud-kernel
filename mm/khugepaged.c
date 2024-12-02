@@ -2378,6 +2378,9 @@ xa_unlocked:
 				clear_highpage(new_page + (index % HPAGE_PMD_NR));
 				index++;
 			}
+			mod_lruvec_page_state(page, NR_FILE_PAGES, -1);
+			if (is_shmem)
+				mod_lruvec_page_state(page, NR_SHMEM, -1);
 			copy_highpage(new_page + (page->index % HPAGE_PMD_NR),
 					page);
 			list_del(&page->lru);
@@ -2405,6 +2408,10 @@ xa_unlocked:
 		 */
 		retract_page_tables(mapping, start);
 		*hpage = NULL;
+
+		mod_lruvec_page_state(new_page, NR_FILE_PAGES, nr - nr_none);
+		if (is_shmem)
+			mod_lruvec_page_state(new_page, NR_SHMEM, nr - nr_none);
 
 		khugepaged_pages_collapsed++;
 	} else {
