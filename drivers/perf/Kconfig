@@ -138,6 +138,12 @@ config ALIBABA_UNCORE_DRW_PMU
 	  Sub-system.
 
 source "drivers/perf/hisilicon/Kconfig"
-source "drivers/perf/thead/Kconfig"
+
+config DWC_PCIE_PMU
+	tristate "Synopsys DesignWare PCIe PMU"
+	depends on PCI
+	help
+	  Enable perf support for Synopsys DesignWare PCIe PMU Performance
+	  monitoring event on platform including the Alibaba Yitian 710.
 
 endmenu
