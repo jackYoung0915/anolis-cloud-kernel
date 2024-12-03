@@ -1631,7 +1631,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	 * always be held.
 	 */
 	if (!IS_ERR_VALUE(addr) && (flags & MAP_SHARED_PT) &&
-	   pgtable_share_enable()) {
+	    pgtable_share_enable()) {
 		struct vm_area_struct *vma = find_vma(mm, addr);
 
 		BUG_ON(!vma || addr < vma->vm_start);
@@ -2354,8 +2354,12 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 	/*
 	 * PMD alignment for pgtable shared memory. The identified
 	 * shared memory will be support later.
+	 * only shmem (!file) and tmpfs
+	 * (file->f_op->mmap_supported_flags & MAP_SHARED_PT) are
+	 * supported.
 	 */
-	if (flags & MAP_SHARED_PT)
+	if ((!file || (file->f_op->mmap_supported_flags & MAP_SHARED_PT)) &&
+	    (flags & MAP_SHARED_PT))
 		get_area = pgtable_share_get_unmapped_area;
 #endif
 
