@@ -1721,6 +1721,9 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
 	unsigned int pgactivate = 0;
 	bool do_demote_pass;
 	struct swap_iocb *plug = NULL;
+	struct lruvec *target_lruvec;
+
+	target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
 
 	memset(stat, 0, sizeof(*stat));
 	cond_resched();
@@ -1829,7 +1832,7 @@ retry:
 			/* Case 1 above */
 			if (current_is_kswapd() &&
 			    folio_test_reclaim(folio) &&
-			    test_bit(PGDAT_WRITEBACK, &pgdat->flags)) {
+			    test_bit(LRUVEC_WRITEBACK, &pgdat->flags)) {
 				stat->nr_immediate += nr_pages;
 				goto activate_locked;
 
@@ -1991,7 +1994,7 @@ retry:
 			if (folio_is_file_lru(folio) &&
 			    (!current_is_kswapd() ||
 			     !folio_test_reclaim(folio) ||
-			     !test_bit(PGDAT_DIRTY, &pgdat->flags))) {
+			     !test_bit(LRUVEC_DIRTY, &pgdat->flags))) {
 				/*
 				 * Immediately reclaim when written back.
 				 * Similar in principle to folio_deactivate()
@@ -6543,6 +6546,15 @@ static void shrink_node_memcgs(pg_data_t *pgdat, struct scan_control *sc)
 				   sc->nr_scanned - scanned,
 				   sc->nr_reclaimed - reclaimed);
 
+		/*
+		 * Memcg background reclaim would break iter once water
+		 * mark is satisfied.
+		 */
+		if (cgroup_reclaim(sc) && current_is_kswapd() &&
+				is_wmark_ok(target_memcg, false)) {
+			mem_cgroup_iter_break(target_memcg, memcg);
+			break;
+		}
 	} while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
 }
 
@@ -6600,11 +6612,11 @@ again:
 		 * in the nr_immediate check below.
 		 */
 		if (sc->nr.writeback && sc->nr.writeback == sc->nr.taken)
-			set_bit(PGDAT_WRITEBACK, &pgdat->flags);
+			set_bit(LRUVEC_WRITEBACK, &target_lruvec->flags);
 
 		/* Allow kswapd to start writing pages during reclaim.*/
 		if (sc->nr.unqueued_dirty == sc->nr.file_taken)
-			set_bit(PGDAT_DIRTY, &pgdat->flags);
+			set_bit(LRUVEC_DIRTY, &target_lruvec->flags);
 
 		/*
 		 * If kswapd scans pages marked for immediate
@@ -6628,7 +6640,7 @@ again:
 		if (cgroup_reclaim(sc) && writeback_throttling_sane(sc))
 			set_bit(LRUVEC_CGROUP_CONGESTED, &target_lruvec->flags);
 
-		if (current_is_kswapd())
+		if (current_is_kswapd() && !cgroup_reclaim(sc))
 			set_bit(LRUVEC_NODE_CONGESTED, &target_lruvec->flags);
 	}
 
@@ -6867,6 +6879,10 @@ retry:
 		__count_zid_vm_events(ALLOCSTALL, sc->reclaim_idx, 1);
 
 	do {
+		if (current_is_kswapd() && cgroup_reclaim(sc) &&
+		    is_wmark_ok(sc->target_mem_cgroup, false))
+			break;
+
 		if (!sc->proactive)
 			vmpressure_prio(sc->gfp_mask, sc->target_mem_cgroup,
 					sc->priority);
@@ -6902,6 +6918,10 @@ retry:
 			lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup,
 						   zone->zone_pgdat);
 			clear_bit(LRUVEC_CGROUP_CONGESTED, &lruvec->flags);
+			if (current_is_kswapd()) {
+				clear_bit(LRUVEC_DIRTY, &lruvec->flags);
+				clear_bit(LRUVEC_WRITEBACK, &lruvec->flags);
+			}
 		}
 	}
 
@@ -6930,8 +6950,12 @@ retry:
 		goto retry;
 	}
 
-	/* Untapped cgroup reserves?  Don't OOM, retry. */
-	if (sc->memcg_low_skipped) {
+	/*
+	 * Untapped cgroup reserves?  Don't OOM, retry.
+	 *
+	 * Memcg kswapd should not break low protection.
+	 */
+	if (sc->memcg_low_skipped && !current_is_kswapd()) {
 		sc->priority = initial_priority;
 		sc->force_deactivate = 0;
 		sc->memcg_low_reclaim = 1;
@@ -7292,8 +7316,8 @@ static void clear_pgdat_congested(pg_data_t *pgdat)
 
 	clear_bit(LRUVEC_NODE_CONGESTED, &lruvec->flags);
 	clear_bit(LRUVEC_CGROUP_CONGESTED, &lruvec->flags);
-	clear_bit(PGDAT_DIRTY, &pgdat->flags);
-	clear_bit(PGDAT_WRITEBACK, &pgdat->flags);
+	clear_bit(LRUVEC_DIRTY, &lruvec->flags);
+	clear_bit(LRUVEC_WRITEBACK, &lruvec->flags);
 }
 
 /*

@@ -43,6 +43,16 @@ enum memcg_stat_item {
 	MEMCG_NR_STAT,
 };
 
+enum memcg_exstat_item {
+	MEMCG_WMARK_RECLAIM,
+	MEMCG_NR_EXSTAT,
+};
+
+/* Only care about 64bit using "long" */
+struct mem_cgroup_exstat_cpu {
+	unsigned long item[MEMCG_NR_EXSTAT];
+};
+
 enum memcg_memory_event {
 	MEMCG_LOW,
 	MEMCG_HIGH,
@@ -311,6 +321,13 @@ struct mem_cgroup {
 	/* Legacy tcp memory accounting */
 	bool			tcpmem_active;
 	int			tcpmem_pressure;
+
+	/* memory.exstat */
+	struct mem_cgroup_exstat_cpu __percpu *exstat_cpu;
+
+	unsigned int		wmark_ratio;
+	struct work_struct	wmark_work;
+	unsigned int		wmark_scale_factor;
 
 #ifdef CONFIG_MEMCG_KMEM
 	int kmemcg_id;
@@ -1211,6 +1228,14 @@ static inline struct mem_cgroup *rich_container_get_memcg(void)
 }
 #endif
 
+static inline bool is_wmark_ok(struct mem_cgroup *memcg, bool high)
+{
+	if (high)
+		return page_counter_read(&memcg->memory) < memcg->memory.wmark_high;
+
+	return page_counter_read(&memcg->memory) < memcg->memory.wmark_low;
+}
+
 #else /* CONFIG_MEMCG */
 
 #define MEM_CGROUP_ID_SHIFT	0
@@ -1658,6 +1683,11 @@ unsigned long mem_cgroup_soft_limit_reclaim(pg_data_t *pgdat, int order,
 					    unsigned long *total_scanned)
 {
 	return 0;
+}
+
+static inline bool is_wmark_ok(struct mem_cgroup *memcg, bool low)
+{
+	return false;
 }
 #endif /* CONFIG_MEMCG */
 

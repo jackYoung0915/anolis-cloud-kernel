@@ -97,6 +97,8 @@ static bool cgroup_memory_nobpf __ro_after_init;
 static DECLARE_WAIT_QUEUE_HEAD(memcg_cgwb_frn_waitq);
 #endif
 
+static struct workqueue_struct *memcg_wmark_wq;
+
 /* Whether legacy memory+swap accounting is active */
 static bool do_memsw_account(void)
 {
@@ -2555,6 +2557,53 @@ static int memcg_hotplug_cpu_dead(unsigned int cpu)
 	return 0;
 }
 
+static void reclaim_wmark(struct mem_cgroup *memcg)
+{
+	long nr_pages;
+	unsigned long pflags;
+	struct mem_cgroup *iter;
+	u64 start, duration;
+
+	if (is_wmark_ok(memcg, false))
+		return;
+
+	nr_pages = page_counter_read(&memcg->memory) -
+		   memcg->memory.wmark_low;
+	if (nr_pages <= 0)
+		return;
+
+	nr_pages = max_t(unsigned long, SWAP_CLUSTER_MAX, nr_pages);
+
+	/*
+	 * Typically, we would like to record the actual cpu% of reclaim_wmark
+	 * work, excluding any sleep/resched time.  However, currently we just
+	 * simply record the whole duration of reclaim_wmark work for the
+	 * overhead-accuracy trade-off.
+	 */
+	start = ktime_get_ns();
+	psi_memstall_enter(&pflags);
+	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, true);
+	psi_memstall_leave(&pflags);
+	duration = ktime_get_ns() - start;
+
+	css_get(&memcg->css);
+	for (iter = memcg; iter; iter = parent_mem_cgroup(iter))
+		this_cpu_add(iter->exstat_cpu->item[MEMCG_WMARK_RECLAIM],
+			     duration);
+	css_put(&memcg->css);
+}
+
+static void wmark_work_func(struct work_struct *work)
+{
+	struct mem_cgroup *memcg;
+
+	memcg = container_of(work, struct mem_cgroup, wmark_work);
+
+	current->flags |= PF_MEMALLOC | PF_KSWAPD;
+	reclaim_wmark(memcg);
+	current->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
+}
+
 static unsigned long reclaim_high(struct mem_cgroup *memcg,
 				  unsigned int nr_pages,
 				  gfp_t gfp_mask)
@@ -2960,6 +3009,11 @@ done_restock:
 	 */
 	do {
 		bool mem_high, swap_high;
+
+		if (!is_wmark_ok(memcg, true)) {
+			queue_work(memcg_wmark_wq, &memcg->wmark_work);
+			break;
+		}
 
 		mem_high = page_counter_read(&memcg->memory) >
 			READ_ONCE(memcg->memory.high);
@@ -3642,6 +3696,34 @@ static inline int mem_cgroup_move_swap_account(swp_entry_t entry,
 }
 #endif
 
+static void setup_memcg_wmark(struct mem_cgroup *memcg)
+{
+	unsigned long high_wmark;
+	unsigned long low_wmark;
+	unsigned long max = memcg->memory.high > memcg->memory.max ?
+			    memcg->memory.max : memcg->memory.high;
+	unsigned int wmark_ratio = memcg->wmark_ratio;
+	unsigned int wmark_scale_factor = memcg->wmark_scale_factor;
+	unsigned long gap;
+
+	if (wmark_ratio) {
+		high_wmark = (max * wmark_ratio) / 100;
+
+		/*
+		 * Set the memcg watermark distance according to the
+		 * scale factor in proportion to max limit.
+		 */
+		gap = mult_frac(max, wmark_scale_factor, 10000);
+		low_wmark = high_wmark - gap;
+
+		page_counter_set_wmark_low(&memcg->memory, low_wmark);
+		page_counter_set_wmark_high(&memcg->memory, high_wmark);
+	} else {
+		page_counter_set_wmark_low(&memcg->memory, PAGE_COUNTER_MAX);
+		page_counter_set_wmark_high(&memcg->memory, PAGE_COUNTER_MAX);
+	}
+}
+
 static DEFINE_MUTEX(memcg_max_mutex);
 
 static int mem_cgroup_resize_max(struct mem_cgroup *memcg,
@@ -3692,8 +3774,15 @@ static int mem_cgroup_resize_max(struct mem_cgroup *memcg,
 		}
 	} while (true);
 
-	if (!ret && enlarge)
-		memcg_oom_recover(memcg);
+	if (!ret) {
+		setup_memcg_wmark(memcg);
+
+		if (!is_wmark_ok(memcg, true))
+			queue_work(memcg_wmark_wq, &memcg->wmark_work);
+
+		if (enlarge)
+			memcg_oom_recover(memcg);
+	}
 
 	return ret;
 }
@@ -3886,6 +3975,8 @@ enum {
 	RES_MAX_USAGE,
 	RES_FAILCNT,
 	RES_SOFT_LIMIT,
+	WMARK_HIGH_LIMIT,
+	WMARK_LOW_LIMIT,
 };
 
 static u64 mem_cgroup_read_u64(struct cgroup_subsys_state *css,
@@ -3926,6 +4017,10 @@ static u64 mem_cgroup_read_u64(struct cgroup_subsys_state *css,
 		return counter->failcnt;
 	case RES_SOFT_LIMIT:
 		return (u64)READ_ONCE(memcg->soft_limit) * PAGE_SIZE;
+	case WMARK_HIGH_LIMIT:
+		return (u64)counter->wmark_high * PAGE_SIZE;
+	case WMARK_LOW_LIMIT:
+		return (u64)counter->wmark_low * PAGE_SIZE;
 	default:
 		BUG();
 	}
@@ -4369,6 +4464,28 @@ static void memcg1_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
 #endif
 }
 
+static u64 memcg_exstat_gather(struct mem_cgroup *memcg,
+			       enum memcg_exstat_item idx)
+{
+	u64 sum = 0;
+	int cpu;
+
+	for_each_online_cpu(cpu)
+		sum += per_cpu_ptr(memcg->exstat_cpu, cpu)->item[idx];
+
+	return sum;
+}
+
+static int memcg_exstat_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+
+	seq_printf(m, "wmark_reclaim_work_ms %llu\n",
+		   memcg_exstat_gather(memcg, MEMCG_WMARK_RECLAIM) >> 20);
+
+	return 0;
+}
+
 static u64 mem_cgroup_swappiness_read(struct cgroup_subsys_state *css,
 				      struct cftype *cft)
 {
@@ -4432,6 +4549,79 @@ static int mem_cgroup_async_fork_write(struct cgroup_subsys_state *css,
 	return 0;
 }
 #endif
+
+static int memory_wmark_ratio_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	unsigned int wmark_ratio = READ_ONCE(memcg->wmark_ratio);
+
+	seq_printf(m, "%d\n", wmark_ratio);
+
+	return 0;
+}
+
+static ssize_t memory_wmark_ratio_write(struct kernfs_open_file *of,
+				char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int ret, wmark_ratio;
+
+	buf = strstrip(buf);
+	if (!buf)
+		return -EINVAL;
+
+	ret = kstrtouint(buf, 0, &wmark_ratio);
+	if (ret)
+		return ret;
+
+	if (wmark_ratio > 100)
+		return -EINVAL;
+
+	xchg(&memcg->wmark_ratio, wmark_ratio);
+
+	setup_memcg_wmark(memcg);
+
+	if (!is_wmark_ok(memcg, true))
+		queue_work(memcg_wmark_wq, &memcg->wmark_work);
+
+	return nbytes;
+}
+
+static int memory_wmark_scale_factor_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	unsigned int wmark_scale_factor;
+
+	wmark_scale_factor = READ_ONCE(memcg->wmark_scale_factor);
+
+	seq_printf(m, "%d\n", wmark_scale_factor);
+
+	return 0;
+}
+
+static ssize_t memory_wmark_scale_factor_write(struct kernfs_open_file *of,
+				char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int ret, wmark_scale_factor;
+
+	buf = strstrip(buf);
+	if (!buf)
+		return -EINVAL;
+
+	ret = kstrtouint(buf, 0, &wmark_scale_factor);
+	if (ret)
+		return ret;
+
+	if (wmark_scale_factor > 1000 || wmark_scale_factor < 1)
+		return -EINVAL;
+
+	xchg(&memcg->wmark_scale_factor, wmark_scale_factor);
+
+	setup_memcg_wmark(memcg);
+
+	return nbytes;
+}
 
 static void __mem_cgroup_threshold(struct mem_cgroup *memcg, bool swap)
 {
@@ -5345,6 +5535,34 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.seq_show = memory_stat_show,
 	},
 	{
+		.name = "exstat",
+		.seq_show = memcg_exstat_show,
+	},
+	{
+		.name = "wmark_ratio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_wmark_ratio_show,
+		.write = memory_wmark_ratio_write,
+	},
+	{
+		.name = "wmark_high",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEMFILE_PRIVATE(_MEM, WMARK_HIGH_LIMIT),
+		.read_u64 = mem_cgroup_read_u64,
+	},
+	{
+		.name = "wmark_low",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEMFILE_PRIVATE(_MEM, WMARK_LOW_LIMIT),
+		.read_u64 = mem_cgroup_read_u64,
+	},
+	{
+		.name = "wmark_scale_factor",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_wmark_scale_factor_show,
+		.write = memory_wmark_scale_factor_write,
+	},
+	{
 		.name = "force_empty",
 		.write = mem_cgroup_force_empty_write,
 	},
@@ -5617,6 +5835,7 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 		free_mem_cgroup_per_node_info(memcg, node);
 	kfree(memcg->vmstats);
 	free_percpu(memcg->vmstats_percpu);
+	free_percpu(memcg->exstat_cpu);
 	kfree(memcg);
 }
 
@@ -5653,6 +5872,10 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	if (!memcg->vmstats_percpu)
 		goto fail;
 
+	memcg->exstat_cpu = alloc_percpu(struct mem_cgroup_exstat_cpu);
+	if (!memcg->exstat_cpu)
+		goto fail;
+
 	for_each_node(node)
 		if (alloc_mem_cgroup_per_node_info(memcg, node))
 			goto fail;
@@ -5661,6 +5884,7 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 		goto fail;
 
 	INIT_WORK(&memcg->high_work, high_work_func);
+	INIT_WORK(&memcg->wmark_work, wmark_work_func);
 	INIT_LIST_HEAD(&memcg->oom_notify);
 	mutex_init(&memcg->thresholds_lock);
 	spin_lock_init(&memcg->move_lock);
@@ -5712,7 +5936,11 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	if (parent) {
 		WRITE_ONCE(memcg->swappiness, mem_cgroup_swappiness(parent));
 		WRITE_ONCE(memcg->oom_kill_disable, READ_ONCE(parent->oom_kill_disable));
+		WRITE_ONCE(memcg->wmark_ratio, READ_ONCE(parent->wmark_ratio));
 		memcg->reap_background = parent->reap_background;
+		/* Default gap is 0.5% max limit */
+		memcg->wmark_scale_factor = parent->wmark_scale_factor ?
+					    : 50;
 #ifdef CONFIG_ASYNC_FORK
 		memcg->async_fork = parent->async_fork;
 #endif
@@ -5728,9 +5956,13 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 		page_counter_init(&memcg->kmem, NULL);
 		page_counter_init(&memcg->tcpmem, NULL);
 
+		/* initializing memcg wmark */
+		setup_memcg_wmark(memcg);
+
 		root_mem_cgroup = memcg;
 		return &memcg->css;
 	}
+	setup_memcg_wmark(memcg);
 
 	if (cgroup_subsys_on_dfl(memory_cgrp_subsys) && !cgroup_memory_nosocket)
 		static_branch_inc(&memcg_sockets_enabled_key);
@@ -5811,6 +6043,9 @@ static void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
 	page_counter_set_min(&memcg->memory, 0);
 	page_counter_set_low(&memcg->memory, 0);
 
+	page_counter_set_wmark_low(&memcg->memory, PAGE_COUNTER_MAX);
+	page_counter_set_wmark_high(&memcg->memory, PAGE_COUNTER_MAX);
+
 	memcg_offline_kmem(memcg);
 	reparent_shrinker_deferred(memcg);
 	wb_memcg_offline(memcg);
@@ -5851,6 +6086,7 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
 
 	vmpressure_cleanup(&memcg->vmpressure);
 	cancel_work_sync(&memcg->high_work);
+	cancel_work_sync(&memcg->wmark_work);
 	mem_cgroup_remove_from_trees(memcg);
 	free_shrinker_info(memcg);
 	mem_cgroup_free(memcg);
@@ -5879,6 +6115,8 @@ static void mem_cgroup_css_reset(struct cgroup_subsys_state *css)
 	page_counter_set_max(&memcg->tcpmem, PAGE_COUNTER_MAX);
 	page_counter_set_min(&memcg->memory, 0);
 	page_counter_set_low(&memcg->memory, 0);
+	page_counter_set_wmark_low(&memcg->memory, PAGE_COUNTER_MAX);
+	page_counter_set_wmark_high(&memcg->memory, PAGE_COUNTER_MAX);
 	page_counter_set_high(&memcg->memory, PAGE_COUNTER_MAX);
 	WRITE_ONCE(memcg->soft_limit, PAGE_COUNTER_MAX);
 	page_counter_set_high(&memcg->swap, PAGE_COUNTER_MAX);
@@ -6870,8 +7108,39 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 			break;
 	}
 
+	setup_memcg_wmark(memcg);
+
+	if (!is_wmark_ok(memcg, true))
+		queue_work(memcg_wmark_wq, &memcg->wmark_work);
+
 	memcg_wb_domain_size_changed(memcg);
 	return nbytes;
+}
+
+static int memory_wmark_low_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	unsigned long wmark_low = READ_ONCE(memcg->memory.wmark_low);
+
+	if (wmark_low == PAGE_COUNTER_MAX)
+		seq_puts(m, "max\n");
+	else
+		seq_printf(m, "%llu\n", (u64)wmark_low * PAGE_SIZE);
+
+	return 0;
+}
+
+static int memory_wmark_high_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	unsigned long wmark_high = READ_ONCE(memcg->memory.wmark_high);
+
+	if (wmark_high == PAGE_COUNTER_MAX)
+		seq_puts(m, "max\n");
+	else
+		seq_printf(m, "%llu\n", (u64)wmark_high * PAGE_SIZE);
+
+	return 0;
 }
 
 static int memory_max_show(struct seq_file *m, void *v)
@@ -6922,6 +7191,11 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
 		if (!mem_cgroup_out_of_memory(memcg, GFP_KERNEL, 0))
 			break;
 	}
+
+	setup_memcg_wmark(memcg);
+
+	if (!is_wmark_ok(memcg, true))
+		queue_work(memcg_wmark_wq, &memcg->wmark_work);
 
 	memcg_wb_domain_size_changed(memcg);
 	return nbytes;
@@ -7094,6 +7368,28 @@ static struct cftype memory_files[] = {
 		.name = "use_priority_oom",
 		.write_u64 = mem_cgroup_priority_oom_write,
 		.read_u64 = mem_cgroup_priority_oom_read,
+	},
+	{
+		.name = "wmark_ratio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_wmark_ratio_show,
+		.write = memory_wmark_ratio_write,
+	},
+	{
+		.name = "wmark_high",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_wmark_high_show,
+	},
+	{
+		.name = "wmark_low",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_wmark_low_show,
+	},
+	{
+		.name = "wmark_scale_factor",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_wmark_scale_factor_show,
+		.write = memory_wmark_scale_factor_write,
 	},
 	{
 		.name = "events",
@@ -7742,6 +8038,13 @@ static int __init mem_cgroup_init(void)
 	 * exceed S32_MAX / PAGE_SIZE.
 	 */
 	BUILD_BUG_ON(MEMCG_CHARGE_BATCH > S32_MAX / PAGE_SIZE);
+
+	memcg_wmark_wq = alloc_workqueue("memcg_wmark", WQ_MEM_RECLAIM |
+				WQ_UNBOUND | WQ_FREEZABLE,
+				WQ_UNBOUND_MAX_ACTIVE);
+
+	if (!memcg_wmark_wq)
+		return -ENOMEM;
 
 	cpuhp_setup_state_nocalls(CPUHP_MM_MEMCQ_DEAD, "mm/memctrl:dead", NULL,
 				  memcg_hotplug_cpu_dead);
