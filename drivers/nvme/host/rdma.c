@@ -1190,11 +1190,7 @@ destroy_io:
 		nvme_rdma_destroy_io_queues(ctrl, new);
 	}
 destroy_admin:
-	blk_mq_quiesce_queue(ctrl->ctrl.admin_q);
-	blk_sync_queue(ctrl->ctrl.admin_q);
-	nvme_rdma_stop_queue(&ctrl->queues[0]);
-	nvme_cancel_admin_tagset(&ctrl->ctrl);
-	nvme_rdma_destroy_admin_queue(ctrl, new);
+	nvme_rdma_teardown_admin_queue(ctrl, new);
 	return ret;
 }
 
