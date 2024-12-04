@@ -48,6 +48,8 @@ KASAN_SANITIZE_traps.o := n
 KASAN_SANITIZE_smp.o := n
 KASAN_SANITIZE_vdso.o := n
 
+KASAN_SANITIZE_module-sections.o := n
+
 obj-$(CONFIG_MODULES)		+= module.o module-sections.o
 obj-$(CONFIG_STACKTRACE)	+= stacktrace.o
 
