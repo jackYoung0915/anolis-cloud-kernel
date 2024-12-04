@@ -1412,6 +1412,8 @@ again:
 
 	if (addr != end) {
 		cond_resched();
+		force_flush = false;
+		force_break = false;
 		goto again;
 	}
 
