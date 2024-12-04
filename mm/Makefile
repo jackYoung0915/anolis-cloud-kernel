@@ -140,4 +140,5 @@ obj-$(CONFIG_GENERIC_IOREMAP) += ioremap.o
 obj-$(CONFIG_SHRINKER_DEBUG) += shrinker_debug.o
 obj-$(CONFIG_ASYNC_FORK) += async_fork.o
 obj-$(CONFIG_PAGECACHE_LIMIT) += pagecache_limit.o
+obj-$(CONFIG_PT_RECLAIM) += pt_reclaim.o
 obj-y += unevictable.o
