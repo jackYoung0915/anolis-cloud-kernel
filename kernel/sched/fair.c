@@ -1629,11 +1629,6 @@ int update_bvt_warp_ns(struct task_group *tg, s64 val)
 
 	mutex_lock(&identity_mutex);
 
-	if (group_identity_disabled()) {
-		ret = -EINVAL;
-		goto unlock;
-	}
-
 	/*
 	 * We can't change the bvt type of the root cgroup.
 	 */
@@ -1659,6 +1654,13 @@ int update_bvt_warp_ns(struct task_group *tg, s64 val)
 		break;
 	default:
 		ret = -ERANGE;
+		goto unlock;
+	}
+
+	if (group_identity_disabled()) {
+		/* For compatibility, allow setting bvt and identity when disabled. */
+		tg->bvt_warp_ns = val;
+		tg->id_flags = flags;
 		goto unlock;
 	}
 
@@ -1690,11 +1692,6 @@ int update_identity(struct task_group *tg, struct task_struct *p, s64 val)
 
 	mutex_lock(&identity_mutex);
 
-	if (group_identity_disabled()) {
-		ret = -EINVAL;
-		goto unlock;
-	}
-
 	if (val & ~IDENTITY_FLAGS_MASK) {
 		ret = -ERANGE;
 		goto unlock;
@@ -1702,6 +1699,12 @@ int update_identity(struct task_group *tg, struct task_struct *p, s64 val)
 
 	if (val & ID_HIGHCLASS && val & ID_UNDERCLASS) {
 		ret = -EINVAL;
+		goto unlock;
+	}
+
+	if (group_identity_disabled()) {
+		/* For compatibility, allow setting identity when disabled. */
+		tg->id_flags = val;
 		goto unlock;
 	}
 
