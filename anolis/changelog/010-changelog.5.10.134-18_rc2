@@ -1,0 +1,13 @@
+* Thu Dec 05 2024 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-18_rc2%%DIST%%]
+- bpf: Add schedule point in htab_init_buckets() (Eric Dumazet)
+- bpf: Fix error path in htab_map_alloc() (Eric Dumazet)
+- net: Remove WARN_ON_ONCE(sk->sk_forward_alloc) from sk_stream_kill_queues(). (Kuniyuki Iwashima)
+- mm: pgtable_share: Handle MAP_SHARED_PT properly along with MAP_FIXED | MAP_HUGETLB (Zelin Deng)
+- anolis: mm: modify default CONFIG_DEBUG_KMEMLEAK_MEM_POOL_SIZE (Weilin Tong)
+- net: more strict VIRTIO_NET_HDR_GSO_UDP_L4 validation (Willem de Bruijn)
+- cpufreq: intel_pstate: Update Balance-performance EPP for Granite Rapids (Srinivas Pandruvada)
+- cpufreq: intel_pstate: Support Granite Rapids and Sierra Forest OOB mode (Srinivas Pandruvada)
+- cpufreq: intel_pstate: Support Emerald Rapids OOB mode (Srinivas Pandruvada)
+- anolis: vfio-pci: expose the vfio_device->open_count to user. (Qinyun Tan)
+- x86/fpu: Prevent FPU state corruption (Thomas Gleixner)
+
