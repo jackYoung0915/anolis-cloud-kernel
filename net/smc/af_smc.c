@@ -471,6 +471,7 @@ static inline void smc_sock_init_common(struct sock *sk)
 
 	smc_sk_set_state(sk, SMC_INIT);
 	INIT_DELAYED_WORK(&smc->conn.tx_work, smc_tx_work);
+	smc_close_init(smc);
 	spin_lock_init(&smc->conn.send_lock);
 	mutex_init(&smc->clcsock_release_lock);
 }
@@ -1512,7 +1513,6 @@ static int smc_connect_rdma(struct smc_sock *smc,
 		goto connect_abort;
 	}
 
-	smc_close_init(smc);
 	smc_rx_init(smc);
 
 	if (ini->first_contact_local) {
@@ -1654,7 +1654,6 @@ static int smc_connect_ism(struct smc_sock *smc,
 		if (rc)
 			goto connect_abort;
 	}
-	smc_close_init(smc);
 	smc_rx_init(smc);
 	smc_tx_init(smc);
 
@@ -2255,6 +2254,7 @@ static void smc_listen_out(struct smc_sock *new_smc)
 					 SMC_NEGOTIATION_NO_SMC :
 					 SMC_NEGOTIATION_SMC);
 
+	release_sock(newsmcsk);	/* lock in smc_listen_work() */
 	if (smc_sk_state(&lsmc->sk) == SMC_LISTEN) {
 		lock_sock_nested(&lsmc->sk, SINGLE_DEPTH_NESTING);
 		smc_accept_enqueue(&lsmc->sk, newsmcsk);
@@ -2273,10 +2273,8 @@ static void smc_listen_out_connected(struct smc_sock *new_smc)
 {
 	struct sock *newsmcsk = &new_smc->sk;
 
-	lock_sock(newsmcsk);
 	if (smc_sk_state(newsmcsk) == SMC_INIT)
 		smc_sk_set_state(newsmcsk, SMC_ACTIVE);
-	release_sock(newsmcsk);
 
 	smc_listen_out(new_smc);
 }
@@ -2289,12 +2287,10 @@ static void smc_listen_out_err(struct smc_sock *new_smc)
 
 	this_cpu_inc(net->smc.smc_stats->srv_hshake_err_cnt);
 
-	lock_sock(newsmcsk);
 	if (smc_sk_state(newsmcsk) != SMC_CLOSED &&
 	    smc_sk_state(newsmcsk) != SMC_PROCESSABORT)
 		sock_put(&new_smc->sk); /* passive closing */
 	smc_sk_set_state(newsmcsk, SMC_CLOSED);
-	release_sock(newsmcsk);
 
 	smc_listen_out(new_smc);
 }
@@ -2789,6 +2785,7 @@ static void smc_listen_work(struct work_struct *work)
 	u8 accept_version;
 	int rc = 0;
 
+	lock_sock(&new_smc->sk); /* release in smc_listen_out() */
 	if (smc_sk_state(&new_smc->listen_smc->sk) != SMC_LISTEN)
 		return smc_listen_out_err(new_smc);
 
@@ -2846,7 +2843,6 @@ static void smc_listen_work(struct work_struct *work)
 		goto out_decl;
 
 	smc_lgr_pending_lock(ini, &smc_server_lgr_pending);
-	smc_close_init(new_smc);
 	smc_rx_init(new_smc);
 	smc_tx_init(new_smc);
 

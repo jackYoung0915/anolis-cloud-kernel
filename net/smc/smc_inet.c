@@ -290,9 +290,6 @@ static int smc_inet_clcsock_sendmsg(struct socket *sock, struct msghdr *msg, siz
 
 	smc = smc_sk(sock->sk);
 
-	if (current_work() == &smc->smc_listen_work)
-		return tcp_sendmsg(sk, msg, len);
-
 	/* smc_inet_clcsock_sendmsg only works for smc handshaking
 	 * fallback sendmsg should process by smc_inet_sendmsg.
 	 * see more details in smc_inet_sendmsg().
@@ -346,8 +343,7 @@ static int smc_inet_clcsock_recvmsg(struct socket *sock, struct msghdr *msg, siz
 	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
 
 	/* Locked, see more details in smc_inet_clcsock_sendmsg() */
-	if (current_work() != &smc->smc_listen_work)
-		release_sock(sock->sk);
+	release_sock(sock->sk);
 again:
 	/* recv nonblock */
 	err = tcp_recvmsg(sk, msg, len, /* non block */1, flags & ~MSG_DONTWAIT, &addr_len);
@@ -363,12 +359,10 @@ again:
 	}
 	goto again;
 out:
-	if (current_work() != &smc->smc_listen_work) {
-		lock_sock(sock->sk);
-		/* since we release sock before, there might be state changed */
-		if (err >= 0 && smc_sk_state(&smc->sk) != SMC_INIT)
-			err = -EPIPE;
-	}
+	lock_sock(sock->sk);
+	/* since we release sock before, there might be state changed */
+	if (err >= 0 && smc_sk_state(&smc->sk) != SMC_INIT)
+		err = -EPIPE;
 	if (err >= 0)
 		msg->msg_namelen = addr_len;
 	return err;
