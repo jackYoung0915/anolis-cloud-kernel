@@ -314,6 +314,7 @@ struct io_submit_state {
 	unsigned int		free_reqs;
 
 	bool			plug_started;
+	unsigned short		submit_nr;
 
 	/*
 	 * Batch completion logic
@@ -2628,6 +2629,7 @@ static int io_do_iopoll(struct io_ring_ctx *ctx, unsigned int *nr_events,
 {
 	struct io_kiocb *req, *tmp;
 	unsigned int poll_flags = BLK_POLL_NOSLEEP;
+	DEFINE_IO_COMP_BATCH(iob);
 	LIST_HEAD(done);
 
 	/*
@@ -2656,19 +2658,23 @@ static int io_do_iopoll(struct io_ring_ctx *ctx, unsigned int *nr_events,
 		if (req->opcode == IORING_OP_URING_CMD) {
 			struct io_uring_cmd *ioucmd = &req->uring_cmd;
 
-			ret = req->file->f_op->uring_cmd_iopoll(ioucmd);
+			ret = req->file->f_op->uring_cmd_iopoll(ioucmd, &iob,
+								poll_flags);
 		} else
-			ret = kiocb->ki_filp->f_op->iopoll(kiocb, poll_flags);
+			ret = kiocb->ki_filp->f_op->iopoll(kiocb, &iob, poll_flags);
 		if (unlikely(ret < 0))
 			return ret;
 		else if (ret)
 			poll_flags |= BLK_POLL_ONESHOT;
 
 		/* iopoll may have completed current req */
-		if (READ_ONCE(req->iopoll_completed))
+		if (!rq_list_empty(iob.req_list) ||
+		    READ_ONCE(req->iopoll_completed))
 			list_move_tail(&req->inflight_entry, &done);
 	}
 
+	if (!rq_list_empty(iob.req_list))
+		iob.complete(&iob);
 	if (!list_empty(&done))
 		io_iopoll_complete(ctx, nr_events, &done);
 
@@ -7412,7 +7418,7 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	 */
 	if (!state->plug_started && state->ios_left > 1 &&
 	    io_op_defs[req->opcode].plug) {
-		blk_start_plug(&state->plug);
+		blk_start_plug_nr_ios(&state->plug, state->submit_nr);
 		state->plug_started = true;
 	}
 
@@ -7532,6 +7538,7 @@ static void io_submit_state_start(struct io_submit_state *state,
 {
 	state->plug_started = false;
 	state->ios_left = max_ios;
+	state->submit_nr = max_ios;
 	/* set only head, no need to init link_last in advance */
 	state->link.head = NULL;
 }

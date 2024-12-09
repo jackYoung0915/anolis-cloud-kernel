@@ -152,7 +152,10 @@ struct request {
 	struct bio *bio;
 	struct bio *biotail;
 
-	struct list_head queuelist;
+	union {
+		struct list_head queuelist;
+		struct request *rq_next;
+	};
 
 	/*
 	 * The hash is used inside the scheduler, and killed once the
@@ -996,8 +999,9 @@ blk_status_t errno_to_blk_status(int errno);
 #define BLK_POLL_ONESHOT		(1 << 0)
 /* do not sleep to wait for the expected completion time */
 #define BLK_POLL_NOSLEEP		(1 << 1)
-int bio_poll(struct bio *bio, unsigned int flags);
-int iocb_bio_iopoll(struct kiocb *kiocb, unsigned int flags);
+int bio_poll(struct bio *bio, struct io_comp_batch *iob, unsigned int flags);
+int iocb_bio_iopoll(struct kiocb *kiocb, struct io_comp_batch *iob,
+			unsigned int flags);
 
 static inline struct request_queue *bdev_get_queue(struct block_device *bdev)
 {
@@ -1285,10 +1289,17 @@ extern void blk_set_queue_dying(struct request_queue *);
  */
 struct blk_plug {
 	struct list_head mq_list; /* blk-mq requests */
-	struct list_head cb_list; /* md requires an unplug callback */
+
+	/* if ios_left is > 1, we can batch tag/rq allocations */
+	struct request *cached_rq;
+	unsigned short nr_ios;
+
 	unsigned short rq_count;
+
 	bool multiple_queues;
 	bool nowait;
+
+	struct list_head cb_list; /* md requires an unplug callback */
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1306,6 +1317,7 @@ struct blk_plug_cb {
 extern struct blk_plug_cb *blk_check_plugged(blk_plug_cb_fn unplug,
 					     void *data, int size);
 extern void blk_start_plug(struct blk_plug *);
+extern void blk_start_plug_nr_ios(struct blk_plug *, unsigned short);
 extern void blk_finish_plug(struct blk_plug *);
 extern void blk_flush_plug_list(struct blk_plug *, bool);
 
@@ -1339,6 +1351,11 @@ long nr_blockdev_pages(void);
 #else /* CONFIG_BLOCK */
 struct blk_plug {
 };
+
+static inline void blk_start_plug_nr_ios(struct blk_plug *plug,
+					 unsigned short nr_ios)
+{
+}
 
 static inline void blk_start_plug(struct blk_plug *plug)
 {
@@ -2117,5 +2134,42 @@ int fsync_bdev(struct block_device *bdev);
 
 struct super_block *freeze_bdev(struct block_device *bdev);
 int thaw_bdev(struct block_device *bdev, struct super_block *sb);
+
+#define rq_list_add(listptr, rq)	do {		\
+	(rq)->rq_next = *(listptr);			\
+	*(listptr) = rq;				\
+} while (0)
+
+#define rq_list_pop(listptr)				\
+({							\
+	struct request *__req = NULL;			\
+	if ((listptr) && *(listptr))	{		\
+		__req = *(listptr);			\
+		*(listptr) = __req->rq_next;		\
+	}						\
+	__req;						\
+})
+
+#define rq_list_peek(listptr)				\
+({							\
+	struct request *__req = NULL;			\
+	if ((listptr) && *(listptr))			\
+		__req = *(listptr);			\
+	__req;						\
+})
+
+#define rq_list_for_each(listptr, pos)			\
+	for (pos = rq_list_peek((listptr)); pos; pos = rq_list_next(pos)) \
+
+#define rq_list_next(rq)	(rq)->rq_next
+#define rq_list_empty(list)	((list) == (struct request *) NULL)
+
+struct io_comp_batch {
+	struct request *req_list;
+	bool need_ts;
+	void (*complete)(struct io_comp_batch *);
+};
+
+#define DEFINE_IO_COMP_BATCH(name)	struct io_comp_batch name = { }
 
 #endif /* _LINUX_BLKDEV_H */

@@ -1147,7 +1147,7 @@ EXPORT_SYMBOL(submit_bio);
  * Note: the caller must either be the context that submitted @bio, or
  * be in a RCU critical section to prevent freeing of @bio.
  */
-int bio_poll(struct bio *bio, unsigned int flags)
+int bio_poll(struct bio *bio, struct io_comp_batch *iob, unsigned int flags)
 {
 	struct request_queue *q = bio->bi_disk->queue;
 	blk_qc_t cookie = READ_ONCE(bio->bi_cookie);
@@ -1165,7 +1165,7 @@ int bio_poll(struct bio *bio, unsigned int flags)
 	if (WARN_ON_ONCE(!queue_is_mq(q)))
 		ret = 0;	/* not yet implemented, should not happen */
 	else
-		ret = blk_mq_poll(q, cookie, flags);
+		ret = blk_mq_poll(q, cookie, iob, flags);
 	blk_queue_exit(q);
 	return ret;
 }
@@ -1175,7 +1175,8 @@ EXPORT_SYMBOL_GPL(bio_poll);
  * Helper to implement file_operations.iopoll.  Requires the bio to be stored
  * in iocb->private, and cleared before freeing the bio.
  */
-int iocb_bio_iopoll(struct kiocb *kiocb, unsigned int flags)
+int iocb_bio_iopoll(struct kiocb *kiocb, struct io_comp_batch *iob,
+		    unsigned int flags)
 {
 	struct bio *bio;
 	int ret = 0;
@@ -1203,7 +1204,7 @@ int iocb_bio_iopoll(struct kiocb *kiocb, unsigned int flags)
 	rcu_read_lock();
 	bio = READ_ONCE(kiocb->private);
 	if (bio && bio->bi_disk)
-		ret = bio_poll(bio, flags);
+		ret = bio_poll(bio, iob, flags);
 	rcu_read_unlock();
 
 	return ret;
@@ -1747,6 +1748,31 @@ int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork,
 }
 EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
 
+void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
+{
+	struct task_struct *tsk = current;
+
+	/*
+	 * If this is a nested plug, don't actually assign it.
+	 */
+	if (tsk->plug)
+		return;
+
+	INIT_LIST_HEAD(&plug->mq_list);
+	plug->cached_rq = NULL;
+	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
+	plug->rq_count = 0;
+	plug->multiple_queues = false;
+	plug->nowait = false;
+	INIT_LIST_HEAD(&plug->cb_list);
+
+	/*
+	 * Store ordering should not be needed here, since a potential
+	 * preempt will imply a full memory barrier
+	 */
+	tsk->plug = plug;
+}
+
 /**
  * blk_start_plug - initialize blk_plug and track it inside the task_struct
  * @plug:	The &struct blk_plug that needs to be initialized
@@ -1772,25 +1798,7 @@ EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
  */
 void blk_start_plug(struct blk_plug *plug)
 {
-	struct task_struct *tsk = current;
-
-	/*
-	 * If this is a nested plug, don't actually assign it.
-	 */
-	if (tsk->plug)
-		return;
-
-	INIT_LIST_HEAD(&plug->mq_list);
-	INIT_LIST_HEAD(&plug->cb_list);
-	plug->rq_count = 0;
-	plug->multiple_queues = false;
-	plug->nowait = false;
-
-	/*
-	 * Store ordering should not be needed here, since a potential
-	 * preempt will imply a full memory barrier
-	 */
-	tsk->plug = plug;
+	blk_start_plug_nr_ios(plug, 1);
 }
 EXPORT_SYMBOL(blk_start_plug);
 
@@ -1842,6 +1850,8 @@ void blk_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 
 	if (!list_empty(&plug->mq_list))
 		blk_mq_flush_plug_list(plug, from_schedule);
+	if (unlikely(!from_schedule && plug->cached_rq))
+		blk_mq_free_plug_rqs(plug);
 }
 
 /**
