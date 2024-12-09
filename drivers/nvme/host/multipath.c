@@ -310,7 +310,7 @@ static void nvme_ns_head_submit_bio(struct bio *bio)
 	srcu_idx = srcu_read_lock(&head->srcu);
 	ns = nvme_find_path(head);
 	if (likely(ns)) {
-		bio->bi_disk = ns->disk;
+		nvme_bio_set_disk(bio, ns->disk);
 		bio->bi_opf |= REQ_NVME_MPATH;
 		trace_block_bio_remap(bio->bi_disk->queue, bio,
 				      disk_devt(ns->head->disk),
@@ -415,7 +415,7 @@ static void nvme_requeue_work(struct work_struct *work)
 		 * Reset disk to the mpath node and resubmit to select a new
 		 * path.
 		 */
-		bio->bi_disk = head->disk;
+		nvme_bio_set_disk(bio, head->disk);
 		submit_bio_noacct(bio);
 	}
 }

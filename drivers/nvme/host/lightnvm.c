@@ -819,7 +819,7 @@ static int nvme_nvm_submit_user_cmd(struct request_queue *q,
 			vcmd->ph_rw.metadata = cpu_to_le64(metadata_dma);
 		}
 
-		bio->bi_disk = disk;
+		nvme_bio_set_disk(bio, disk);
 	}
 
 	blk_execute_rq(NULL, rq, 0);
