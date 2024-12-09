@@ -2183,7 +2183,7 @@ int smc_conn_create(struct smc_sock *smc, struct smc_init_info *ini)
 	rc = __smc_conn_create(smc, ini, /* disallow create lgr */ false);
 	if (!rc) {
 		/* not rely on new lgr, unlock lgr pending lock in advance. */
-		smc_lgr_pending_unlock(ini, ini->mutex);
+		smc_lgr_pending_unlock(ini);
 		return 0;
 	} else if (rc != SMC_CLC_DECL_ERR_REQ_LGR) {
 		/* that's unexcepted error */
@@ -2873,7 +2873,8 @@ int smc_rtoken_delete(struct smc_link *lnk, __be32 nw_rkey)
 					/* make peer_conn_abort */
 					conn->local_rx_ctrl.conn_state_flags.peer_conn_abort = 1;
 					sock_hold(&smc->sk); /* sock_put in close_work */
-					if (!queue_work(smc_close_wq, &smc->conn.close_work))
+					if (!queue_work(sock_net(&smc->sk)->smc.smc_close_wq,
+							&smc->conn.close_work))
 						sock_put(&smc->sk);
 				}
 				spin_unlock_bh(&smc->conn.send_lock);

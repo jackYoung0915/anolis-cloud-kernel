@@ -685,12 +685,15 @@ static inline void smc_lgr_pending_lock(struct smc_init_info *ini, struct mutex 
 	ini->mutex = lock;
 }
 
-static inline void smc_lgr_pending_unlock(struct smc_init_info *ini, struct mutex *lock)
+static inline void smc_lgr_pending_unlock(struct smc_init_info *ini)
 {
+	struct mutex *lock;	/* temporary */
+
 	/* already unlock it */
 	if (!ini->mutex)
 		return;
 
+	lock = ini->mutex;
 	ini->mutex = NULL;
 	mutex_unlock(lock);
 }
