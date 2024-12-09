@@ -980,4 +980,13 @@ struct nvme_ctrl *nvme_ctrl_from_file(struct file *file);
 struct nvme_ns *nvme_find_get_ns(struct nvme_ctrl *ctrl, unsigned nsid);
 void nvme_put_ns(struct nvme_ns *ns);
 
+#define nvme_bio_set_disk(bio, disk)                    \
+do {                                                    \
+	if ((bio)->bi_disk != disk)                     \
+		bio_clear_flag(bio, BIO_BPS_THROTTLED); \
+	(bio)->bi_disk = disk;                          \
+	(bio)->bi_partno = 0;                           \
+	bio_associate_blkg(bio);                        \
+} while (0)
+
 #endif /* _NVME_H */

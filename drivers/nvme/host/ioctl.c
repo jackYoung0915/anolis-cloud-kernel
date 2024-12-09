@@ -107,7 +107,8 @@ static struct request *nvme_alloc_user_request(struct request_queue *q,
 		if (ret)
 			goto out;
 		bio = req->bio;
-		bio->bi_disk = disk;
+		if (disk)
+			nvme_bio_set_disk(bio, disk);
 		if (disk && meta_buffer && meta_len) {
 			meta = nvme_add_user_metadata(bio, meta_buffer, meta_len,
 					meta_seed, write);
