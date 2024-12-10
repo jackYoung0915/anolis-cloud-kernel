@@ -72,6 +72,9 @@
 #include "swap.h"
 
 #include <linux/uaccess.h>
+#ifdef CONFIG_PAGECACHE_LIMIT
+#include <linux/pagecache_limit.h>
+#endif
 
 #include <trace/events/vmscan.h>
 
@@ -4483,6 +4486,10 @@ static int memcg_exstat_show(struct seq_file *m, void *v)
 	seq_printf(m, "wmark_reclaim_work_ms %llu\n",
 		   memcg_exstat_gather(memcg, MEMCG_WMARK_RECLAIM) >> 20);
 
+#ifdef CONFIG_PAGECACHE_LIMIT
+	seq_printf(m, "pagecache_limit_reclaimed_kb %llu\n",
+		   memcg_exstat_gather(memcg, MEMCG_PGCACHE_RECLAIM) * PAGE_SIZE >> 10);
+#endif
 	return 0;
 }
 
@@ -5500,6 +5507,84 @@ static int mem_cgroup_slab_show(struct seq_file *m, void *p)
 
 static int memory_stat_show(struct seq_file *m, void *v);
 
+#ifdef CONFIG_PAGECACHE_LIMIT
+static u64 mem_cgroup_allow_pgcache_limit_read(struct cgroup_subsys_state *css,
+					     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return READ_ONCE(memcg->allow_pgcache_limit);
+}
+
+static int mem_cgroup_allow_pgcache_limit_write(struct cgroup_subsys_state *css,
+					      struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 1)
+		return -EINVAL;
+
+	memcg->allow_pgcache_limit = val;
+
+	return 0;
+}
+
+static u64 mem_cgroup_pgcache_limit_size_read(struct cgroup_subsys_state *css,
+					       struct cftype *cft)
+{
+	unsigned long size;
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	size = READ_ONCE(memcg->pgcache_limit_size);
+
+	return size;
+}
+
+static ssize_t mem_cgroup_pgcache_limit_size_write(struct kernfs_open_file *of,
+						   char *buf, size_t nbytes,
+						   loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	struct page_counter *counter = &memcg->memory;
+	unsigned long size, max = counter->max * PAGE_SIZE;
+
+	buf = strstrip(buf);
+	size = (unsigned long)memparse(buf, NULL);
+	if (size > max)
+		memcg->pgcache_limit_size = max;
+	else
+		memcg->pgcache_limit_size = size;
+
+	return nbytes;
+}
+
+static u64 mem_cgroup_allow_pgcache_sync_read(struct cgroup_subsys_state *css,
+					      struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return READ_ONCE(memcg->pgcache_limit_sync);
+}
+
+static int mem_cgroup_allow_pgcache_sync_write(struct cgroup_subsys_state *css,
+					       struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 1)
+		return -EINVAL;
+	if (memcg->pgcache_limit_sync == val)
+		return 0;
+
+	if (val)
+		memcg->pgcache_limit_sync = PGCACHE_RECLAIM_DIRECT;
+	else
+		memcg->pgcache_limit_sync = PGCACHE_RECLAIM_ASYNC;
+
+	return 0;
+}
+#endif /* CONFIG_PAGECACHE_LIMIT */
+
 static struct cftype mem_cgroup_legacy_files[] = {
 	{
 		.name = "usage_in_bytes",
@@ -5683,6 +5768,23 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.read_u64 = memcg_reap_background_read,
 		.write_u64 = memcg_reap_background_write,
 	},
+#ifdef CONFIG_PAGECACHE_LIMIT
+	{
+		.name = "pagecache_limit.enable",
+		.read_u64 = mem_cgroup_allow_pgcache_limit_read,
+		.write_u64 = mem_cgroup_allow_pgcache_limit_write,
+	},
+	{
+		.name = "pagecache_limit.size",
+		.read_u64 = mem_cgroup_pgcache_limit_size_read,
+		.write = mem_cgroup_pgcache_limit_size_write,
+	},
+	{
+		.name = "pagecache_limit.sync",
+		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
+		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
+	},
+#endif
 	{ },	/* terminate */
 };
 
@@ -5885,6 +5987,9 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 
 	INIT_WORK(&memcg->high_work, high_work_func);
 	INIT_WORK(&memcg->wmark_work, wmark_work_func);
+#ifdef CONFIG_PAGECACHE_LIMIT
+	INIT_WORK(&memcg->pgcache_limit_work, memcg_pgcache_limit_work_func);
+#endif
 	INIT_LIST_HEAD(&memcg->oom_notify);
 	mutex_init(&memcg->thresholds_lock);
 	spin_lock_init(&memcg->move_lock);
@@ -5944,7 +6049,10 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_ASYNC_FORK
 		memcg->async_fork = parent->async_fork;
 #endif
-
+#ifdef CONFIG_PAGECACHE_LIMIT
+		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
+		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
+#endif
 		page_counter_init(&memcg->memory, &parent->memory);
 		page_counter_init(&memcg->swap, &parent->swap);
 		page_counter_init(&memcg->kmem, &parent->kmem);
@@ -6087,6 +6195,9 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
 	vmpressure_cleanup(&memcg->vmpressure);
 	cancel_work_sync(&memcg->high_work);
 	cancel_work_sync(&memcg->wmark_work);
+#ifdef CONFIG_PAGECACHE_LIMIT
+	cancel_work_sync(&memcg->pgcache_limit_work);
+#endif
 	mem_cgroup_remove_from_trees(memcg);
 	free_shrinker_info(memcg);
 	mem_cgroup_free(memcg);
@@ -7463,6 +7574,23 @@ static struct cftype memory_files[] = {
 		.read_u64 = memcg_reap_background_read,
 		.write_u64 = memcg_reap_background_write,
 	},
+#ifdef CONFIG_PAGECACHE_LIMIT
+	{
+		.name = "pagecache_limit.enable",
+		.read_u64 = mem_cgroup_allow_pgcache_limit_read,
+		.write_u64 = mem_cgroup_allow_pgcache_limit_write,
+	},
+	{
+		.name = "pagecache_limit.size",
+		.read_u64 = mem_cgroup_pgcache_limit_size_read,
+		.write = mem_cgroup_pgcache_limit_size_write,
+	},
+	{
+		.name = "pagecache_limit.sync",
+		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
+		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
+	},
+#endif
 	{ }	/* terminate */
 };
 
@@ -8073,6 +8201,15 @@ static int __init mem_cgroup_init(void)
 
 	if (!memcg_wmark_wq)
 		return -ENOMEM;
+#ifdef CONFIG_PAGECACHE_LIMIT
+	memcg_pgcache_limit_wq = alloc_workqueue("memcg_pgcache_limit",
+						 WQ_FREEZABLE |
+							 WQ_UNBOUND | WQ_MEM_RECLAIM,
+						 WQ_UNBOUND_MAX_ACTIVE);
+
+	if (!memcg_pgcache_limit_wq)
+		return -ENOMEM;
+#endif
 
 	cpuhp_setup_state_nocalls(CPUHP_MM_MEMCQ_DEAD, "mm/memctrl:dead", NULL,
 				  memcg_hotplug_cpu_dead);
