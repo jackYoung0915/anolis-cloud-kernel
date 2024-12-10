@@ -136,7 +136,7 @@ asm volatile(ALTERNATIVE(						\
 #define THEAD_flush_PA_A0	".long 0x02b5000b"
 
 #define ALT_CMO_OP(_op, _start, _size, _cachesize)			\
-asm volatile(ALTERNATIVE_2(						\
+(asm volatile(ALTERNATIVE_2(						\
 	__nops(6),							\
 	"mv a0, %1\n\t"							\
 	"j 2f\n\t"							\
@@ -158,19 +158,19 @@ asm volatile(ALTERNATIVE_2(						\
 	: : "r"(_cachesize),						\
 	    "r"((unsigned long)(_start) & ~((_cachesize) - 1UL)),	\
 	    "r"((unsigned long)(_start) + (_size))			\
-	: "a0")
+	: "a0"))
 
 #define ALT_CMO_OP_VPA(_op, _vaddr, _paddr, _size, _cachesize)		\
-asm volatile(ALTERNATIVE_2(						\
+(asm volatile(ALTERNATIVE_2(						\
 	__nops(6),							\
 	"mv a0, %1\n\t"							\
 	"j 2f\n\t"							\
 	"3:\n\t"							\
-	"cbo." __stringify(_op) " (a0)\n\t"				\
+	CBO_##_op(a0)							\
 	"add a0, a0, %0\n\t"						\
 	"2:\n\t"							\
 	"bltu a0, %2, 3b\n\t"						\
-	"nop", 0, CPUFEATURE_ZICBOM, CONFIG_RISCV_ISA_ZICBOM,		\
+	"nop", 0, RISCV_ISA_EXT_ZICBOM, CONFIG_RISCV_ISA_ZICBOM,		\
 	"mv a0, %3\n\t"							\
 	"j 2f\n\t"							\
 	"3:\n\t"							\
@@ -185,19 +185,19 @@ asm volatile(ALTERNATIVE_2(						\
 	    "r"((unsigned long)(_vaddr) + (_size)),			\
 	    "r"((unsigned long)(_paddr) & ~((_cachesize) - 1UL)),	\
 	    "r"((unsigned long)(_paddr) + (_size))			\
-	: "a0")
+	: "a0"))
 
 #define THEAD_C9XX_RV_IRQ_PMU			17
 #define THEAD_C9XX_CSR_SCOUNTEROF		0x5c5
 
 #define ALT_SBI_PMU_OVERFLOW(__ovl)					\
-asm volatile(ALTERNATIVE(						\
+(asm volatile(ALTERNATIVE(						\
 	"csrr %0, " __stringify(CSR_SSCOUNTOVF),			\
 	"csrr %0, " __stringify(THEAD_C9XX_CSR_SCOUNTEROF),		\
 		THEAD_VENDOR_ID, ERRATA_THEAD_PMU,			\
 		CONFIG_ERRATA_THEAD_PMU)				\
 	: "=r" (__ovl) :						\
-	: "memory")
+	: "memory"))
 
 #endif /* __ASSEMBLY__ */
 
