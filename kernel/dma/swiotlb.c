@@ -852,22 +852,17 @@ late_initcall(swiotlb_create_debugfs);
 
 #ifdef CONFIG_DMA_RESTRICTED_POOL
 
-static int swiotlb_find_slots(struct device *dev, phys_addr_t orig_addr,
-		size_t size)
-{
-	return find_slots(dev, orig_addr, size);
-}
-
 struct page *swiotlb_alloc(struct device *dev, size_t size)
 {
 	phys_addr_t tlb_addr;
 	int index;
+	struct io_tlb_mem *mem = io_tlb_default_mem;
 
 	index = swiotlb_find_slots(dev, 0, size);
 	if (index == -1)
 		return NULL;
 
-	tlb_addr = slot_addr(io_tlb_start, index);
+	tlb_addr = slot_addr(mem->start, index);
 
 	return pfn_to_page(PFN_DOWN(tlb_addr));
 }
@@ -878,17 +873,21 @@ static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr,
 	unsigned long flags;
 	unsigned int offset = swiotlb_align_offset(dev, tlb_addr);
 	int i, count, nslots = nr_slots(alloc_size + offset);
-	int index = (tlb_addr - offset - io_tlb_start) >> IO_TLB_SHIFT;
+	struct io_tlb_mem *mem = io_tlb_default_mem;
 
+
+	int index = (tlb_addr - offset - mem->start) >> IO_TLB_SHIFT;
+	int aindex = index / mem->area_nslabs;
+	struct io_tlb_area *area = &mem->areas[aindex];
 	/*
 	 * Return the buffer to the free list by setting the corresponding
 	 * entries to indicate the number of contiguous entries available.
 	 * While returning the entries to the free list, we merge the entries
 	 * with slots below and above the pool being returned.
 	 */
-	spin_lock_irqsave(&io_tlb_lock, flags);
+	spin_lock_irqsave(&area->lock, flags);
 	if (index + nslots < ALIGN(index + 1, IO_TLB_SEGSIZE))
-		count = io_tlb_list[index + nslots];
+		count = mem->slots[index + nslots].list;
 	else
 		count = 0;
 
@@ -897,8 +896,8 @@ static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr,
 	 * superceeding slots
 	 */
 	for (i = index + nslots - 1; i >= index; i--) {
-		io_tlb_list[i] = ++count;
-		io_tlb_orig_addr[i] = INVALID_PHYS_ADDR;
+		mem->slots[i].list = ++count;
+		mem->slots[i].orig_addr = INVALID_PHYS_ADDR;
 	}
 
 	/*
@@ -906,11 +905,11 @@ static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr,
 	 * available (non zero)
 	 */
 	for (i = index - 1;
-		 io_tlb_offset(i) != IO_TLB_SEGSIZE - 1 && io_tlb_list[i];
+		 io_tlb_offset(i) != IO_TLB_SEGSIZE - 1 && mem->slots[i].list;
 		 i--)
-		io_tlb_list[i] = ++count;
-	io_tlb_used -= nslots;
-	spin_unlock_irqrestore(&io_tlb_lock, flags);
+		mem->slots[i].list = ++count;
+	area->used -= nslots;
+	spin_unlock_irqrestore(&area->lock, flags);
 }
 
 bool swiotlb_free(struct device *dev, struct page *page, size_t size)
@@ -930,11 +929,12 @@ void __init swiotlb_cvm_update_mem_attributes(void)
 {
 	void *vaddr;
 	unsigned long bytes;
+	struct io_tlb_mem *mem = io_tlb_default_mem;
 
-	if (!is_cvm_world() || !io_tlb_start)
+	if (!is_cvm_world() || !mem->start)
 		return;
-	vaddr = phys_to_virt(io_tlb_start);
-	bytes = PAGE_ALIGN(io_tlb_nslabs << IO_TLB_SHIFT);
+	vaddr = phys_to_virt(mem->start);
+	bytes = PAGE_ALIGN(mem->nslabs << IO_TLB_SHIFT);
 	set_cvm_memory_decrypted((unsigned long)vaddr, bytes >> PAGE_SHIFT);
 	memset(vaddr, 0, bytes);
 }

@@ -79,7 +79,6 @@ static int tec_exit_wfx(struct kvm_vcpu *vcpu)
 	if (esr & ESR_ELx_WFx_ISS_WFE) {
 		kvm_vcpu_on_spin(vcpu, vcpu_mode_priv(vcpu));
 	} else {
-		vcpu->arch.pvsched.pv_unhalted = false;
 		if (esr & ESR_ELx_WFx_ISS_WFxT)
 			vcpu->arch.flags |= KVM_ARM64_WFIT;
 		kvm_vcpu_block(vcpu);
