@@ -1550,8 +1550,7 @@ int tpmi_sst_dev_add(struct auxiliary_device *auxdev)
 			goto unlock_free;
 		}
 
-		ret = sst_main(auxdev, &pd_info[i]);
-		if (ret) {
+		if (sst_main(auxdev, &pd_info[i])) {
 			/*
 			 * This entry is not valid, hardware can partially
 			 * populate dies. In this case MMIO will have 0xFFs.
@@ -1611,8 +1610,8 @@ void tpmi_sst_dev_remove(struct auxiliary_device *auxdev)
 	tpmi_sst->partition_mask_current &= ~BIT(plat_info->partition);
 	/* Free the package instance when the all partitions are removed */
 	if (!tpmi_sst->partition_mask_current) {
-		kfree(tpmi_sst);
 		isst_common.sst_inst[tpmi_sst->package_id] = NULL;
+		kfree(tpmi_sst);
 	}
 	mutex_unlock(&isst_tpmi_dev_lock);
 }
