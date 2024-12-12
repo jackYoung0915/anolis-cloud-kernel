@@ -45,6 +45,9 @@ enum memcg_stat_item {
 
 enum memcg_exstat_item {
 	MEMCG_WMARK_RECLAIM,
+#ifdef CONFIG_PAGECACHE_LIMIT
+	MEMCG_PGCACHE_RECLAIM,
+#endif
 	MEMCG_NR_EXSTAT,
 };
 
@@ -358,6 +361,13 @@ struct mem_cgroup {
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	struct deferred_split deferred_split_queue;
+#endif
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+	bool allow_pgcache_limit;
+	unsigned long pgcache_limit_size;
+	bool pgcache_limit_sync;
+	struct work_struct pgcache_limit_work;
 #endif
 
 #ifdef CONFIG_LRU_GEN
