@@ -45,6 +45,7 @@
 #define KVM_REQ_VCPU_RESET	KVM_ARCH_REQ(2)
 #define KVM_REQ_RECORD_STEAL	KVM_ARCH_REQ(3)
 #define KVM_REQ_RELOAD_GICv4	KVM_ARCH_REQ(4)
+#define KVM_REQ_RELOAD_DVMBM	KVM_ARCH_REQ(6)
 
 #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 				     KVM_DIRTY_LOG_INITIALLY_SET)
@@ -119,6 +120,12 @@ struct kvm_arch {
 	unsigned int pmuver;
 
 	u8 pfr0_csv2;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	spinlock_t dvm_lock;
+	cpumask_t *dvm_cpumask;	/* Union of all vcpu's cpus_ptr */
+	u64 lsudvmbm_el2;
+#endif
 };
 
 struct kvm_vcpu_fault_info {
@@ -388,6 +395,11 @@ struct kvm_vcpu_arch {
 	u64 mpam1_el1;
 
 	struct id_registers idregs;
+#ifdef CONFIG_KVM_HISI_VIRT
+	/* Copy of current->cpus_ptr */
+	cpumask_t *cpus_ptr;
+	cpumask_t *pre_cpus_ptr;
+#endif
 };
 
 /* Pointer to the vcpu's SVE FFR for sve_{save,load}_state() */
@@ -660,5 +672,16 @@ bool kvm_arm_vcpu_is_finalized(struct kvm_vcpu *vcpu);
 
 #define kvm_arm_vcpu_sve_finalized(vcpu) \
 	((vcpu)->arch.flags & KVM_ARM64_VCPU_SVE_FINALIZED)
+
+#ifdef CONFIG_ARM64_TWED
+#define use_twed() (has_twed() && twed_enable)
+extern bool twed_enable;
+extern unsigned int twedel;
+#else
+#define use_twed() (false)
+#endif
+
+extern bool kvm_ncsnp_support;
+extern bool kvm_dvmbm_support;
 
 #endif /* __ARM64_KVM_HOST_H__ */
