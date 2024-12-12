@@ -383,7 +383,31 @@ static int phys_suspended(struct sas_ha_struct *ha)
 	return rc;
 }
 
-void sas_resume_ha(struct sas_ha_struct *ha)
+static void sas_resume_insert_broadcast_ha(struct sas_ha_struct *ha)
+{
+	int i;
+
+	for (i = 0; i < ha->num_phys; i++) {
+		struct asd_sas_port *port = ha->sas_port[i];
+		struct domain_device *dev = port->port_dev;
+
+		if (dev && dev_is_expander(dev->dev_type)) {
+			struct asd_sas_phy *first_phy;
+
+			spin_lock(&port->phy_list_lock);
+			first_phy = list_first_entry_or_null(
+				&port->phy_list, struct asd_sas_phy,
+				port_phy_el);
+			spin_unlock(&port->phy_list_lock);
+
+			if (first_phy)
+				sas_notify_port_event_gfp(first_phy,
+					PORTE_BROADCAST_RCVD, GFP_KERNEL);
+		}
+	}
+}
+
+static void _sas_resume_ha(struct sas_ha_struct *ha, bool drain)
 {
 	const unsigned long tmo = msecs_to_jiffies(25000);
 	int i;
@@ -412,7 +436,18 @@ void sas_resume_ha(struct sas_ha_struct *ha)
 	 * flush out disks that did not return
 	 */
 	scsi_unblock_requests(ha->core.shost);
-	sas_drain_work(ha);
+	if (drain)
+		sas_drain_work(ha);
+
+	/* send event PORTE_BROADCAST_RCVD to identify some new inserted
+	 * disks for expander
+	 */
+	sas_resume_insert_broadcast_ha(ha);
+}
+
+void sas_resume_ha(struct sas_ha_struct *ha)
+{
+	_sas_resume_ha(ha, true);
 }
 EXPORT_SYMBOL(sas_resume_ha);
 
