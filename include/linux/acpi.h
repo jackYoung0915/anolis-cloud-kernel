@@ -1386,6 +1386,7 @@ int acpi_pptt_get_cpus_from_container(u32 acpi_cpu_id, cpumask_t *cpus);
 int acpi_pptt_get_cpumask_from_cache_id(u32 cache_id, cpumask_t *cpus);
 int acpi_pptt_get_cpumask_from_cache_id_and_level(u32 cache_id, u32 cache_level,
 						  cpumask_t *cpus);
+struct acpi_pptt_processor *find_acpi_processor_node_from_cache_id(u32 cache_id);
 #else
 static inline int acpi_pptt_cpu_is_thread(unsigned int cpu)
 {
@@ -1444,6 +1445,10 @@ static inline int acpi_pptt_get_cpumask_from_cache_id_and_level(u32 cache_id,
 								cpumask_t *cpus)
 {
 	return -EINVAL;
+}
+static inline struct acpi_pptt_processor *find_acpi_processor_node_from_cache_id(u32 cache_id)
+{
+	return NULL;
 }
 #endif
 

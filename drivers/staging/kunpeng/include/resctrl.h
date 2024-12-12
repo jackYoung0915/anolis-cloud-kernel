@@ -1,12 +1,11 @@
 #ifndef _ASM_ARM64_RESCTRL_H
 #define _ASM_ARM64_RESCTRL_H
 
-#include <resctrlfs.h>
+#include "resctrlfs.h"
 #include <asm/mpam_sched.h>
-
 #include "mpam.h"
 
-#if defined(CONFIG_ARM64_MPAM)
+#if defined(CONFIG_KUNPENG_RESCTRL) && defined(CONFIG_KUNPENG_MPAM)
 
 #define resctrl_group rdtgroup
 #define resctrl_alloc_capable rdt_alloc_capable
@@ -163,6 +162,7 @@ struct rdtgroup {
 	atomic_t        waitcount;
 	enum rdt_group_type type;
 	struct mongroup     mon;
+	int                 resync;
 };
 
 enum resctrl_ctrl_type {
@@ -295,6 +295,7 @@ do {   \
 struct resctrl_staged_config {
 	hw_closid_t     hw_closid;
 	u32             new_ctrl[SCHEMA_NUM_CTRL_TYPE];
+	bool            ctrl_updated[SCHEMA_NUM_CTRL_TYPE];
 	bool            have_new_ctrl;
 	enum resctrl_conf_type  conf_type;
 	enum resctrl_ctrl_type  ctrl_type;
@@ -412,16 +413,13 @@ void resctrl_resource_reset(void);
 
 int resctrl_group_init_alloc(struct rdtgroup *rdtgrp);
 
-static inline int __resctrl_group_show_options(struct seq_file *seq)
-{
-	return 0;
-}
+int __resctrl_group_show_options(struct seq_file *seq);
 
 int resctrl_update_groups_config(struct rdtgroup *rdtgrp);
 
 #define RESCTRL_MAX_CLOSID 32
 
-int __init resctrl_group_init(void);
+int resctrl_group_init(void);
 
 void post_resctrl_mount(void);
 
@@ -544,6 +542,24 @@ DEFINE_INLINE_CTRL_FEATURE_ENABLE_FUNC(mbPrio);
 DEFINE_INLINE_CTRL_FEATURE_ENABLE_FUNC(caPbm);
 DEFINE_INLINE_CTRL_FEATURE_ENABLE_FUNC(caMax);
 DEFINE_INLINE_CTRL_FEATURE_ENABLE_FUNC(caPrio);
+
+/**
+ * rdtgroup_remove - the helper to remove resource group safely
+ * @rdtgrp: resource group to remove
+ *
+ * On resource group creation via a mkdir, an extra kernfs_node reference is
+ * taken to ensure that the rdtgroup structure remains accessible for the
+ * rdtgroup_kn_unlock() calls where it is removed.
+ *
+ * Drop the extra reference here, then free the rdtgroup structure.
+ *
+ * Return: void
+ */
+static inline void rdtgroup_remove(struct rdtgroup *rdtgrp)
+{
+	kernfs_put(rdtgrp->kn);
+	kfree(rdtgrp);
+}
 
 #endif
 #endif /* _ASM_ARM64_RESCTRL_H */

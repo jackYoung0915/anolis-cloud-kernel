@@ -41,6 +41,7 @@
 #include <asm/cpu_ops.h>
 #include <asm/kasan.h>
 #include <asm/numa.h>
+#include <asm/cvm_guest.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/smp_plat.h>
@@ -276,6 +277,7 @@ u64 cpu_logical_map(int cpu)
 {
 	return __cpu_logical_map[cpu];
 }
+EXPORT_SYMBOL(cpu_logical_map);
 
 void __init __no_sanitize_address setup_arch(char **cmdline_p)
 {
@@ -304,6 +306,9 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	 */
 	jump_label_init();
 	parse_early_param();
+
+	/* Init TSI after jump_labels are active */
+	cvm_tsi_init();
 
 	/*
 	 * Unmask asynchronous aborts and fiq after bringing up possible

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+
+config KUNPENG_RESCTRL
+	bool "Support Memory Partitioning and Monitoring"
+	default n
+	depends on KUNPENG_MPAM
+	select KERNFS
+	help
+	  Memory Partitioning and Monitoring. More exactly Memory system
+	  performance resource Partitioning and Monitoring

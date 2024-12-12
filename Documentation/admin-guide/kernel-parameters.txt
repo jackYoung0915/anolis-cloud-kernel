@@ -2378,6 +2378,9 @@
 			[KVM,ARM] Allow use of GICv4 for direct injection of
 			LPIs.
 
+	kvm-arm.dvmbm_enabled=
+			[KVM,ARM] Allow use of HiSilicon DVMBM capability.
+
 	kvm_cma_resv_ratio=n [PPC]
 			Reserves given percentage from system memory area for
 			contiguous memory allocation for KVM hash pagetable
@@ -4949,6 +4952,10 @@
 	sbni=		[NET] Granch SBNI12 leased line adapter
 
 	sched_debug	[KNL] Enables verbose scheduler debug messages.
+
+	sched_cluster=  Enable or disable cluster scheduling.
+			0 -- disable.
+			1 -- enable.
 
 	schedstats=	[KNL,X86] Enable or disable scheduled statistics.
 			Allowed values are enable and disable. This feature

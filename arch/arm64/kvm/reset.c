@@ -30,6 +30,9 @@
 #include <asm/kvm_mmu.h>
 #include <asm/virt.h>
 
+#ifdef CONFIG_CVM_HOST
+#include <asm/kvm_tmi.h>
+#endif
 /* Maximum phys_shift supported for any VM on this host */
 static u32 kvm_ipa_limit;
 
@@ -183,6 +186,12 @@ int kvm_arm_vcpu_finalize(struct kvm_vcpu *vcpu, int feature)
 			return -EPERM;
 
 		return kvm_vcpu_finalize_sve(vcpu);
+#ifdef CONFIG_CVM_HOST
+	case KVM_ARM_VCPU_TEC:
+		if (!kvm_is_cvm(vcpu->kvm))
+			return -EINVAL;
+		return kvm_finalize_vcpu_tec(vcpu);
+#endif
 	}
 
 	return -EINVAL;
@@ -199,6 +208,9 @@ bool kvm_arm_vcpu_is_finalized(struct kvm_vcpu *vcpu)
 void kvm_arm_vcpu_destroy(struct kvm_vcpu *vcpu)
 {
 	kfree(vcpu->arch.sve_state);
+#ifdef CONFIG_CVM_HOST
+	kvm_destroy_tec(vcpu);
+#endif
 }
 
 static void kvm_vcpu_reset_sve(struct kvm_vcpu *vcpu)
@@ -431,7 +443,11 @@ int kvm_arm_setup_stage2(struct kvm *kvm, unsigned long type)
 	u32 parange, phys_shift;
 	u8 lvls;
 
+#ifdef CONFIG_CVM_HOST
+	if ((type & ~KVM_VM_TYPE_ARM_IPA_SIZE_MASK) && (!kvm_is_cvm(kvm)))
+#else
 	if (type & ~KVM_VM_TYPE_ARM_IPA_SIZE_MASK)
+#endif
 		return -EINVAL;
 
 	phys_shift = KVM_VM_TYPE_ARM_IPA_SIZE(type);

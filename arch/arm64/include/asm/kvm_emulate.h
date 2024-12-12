@@ -102,6 +102,33 @@ static inline void vcpu_set_wfx_traps(struct kvm_vcpu *vcpu)
 	vcpu->arch.hcr_el2 |= HCR_TWI;
 }
 
+#ifdef CONFIG_ARM64_TWED
+static inline void vcpu_twed_enable(struct kvm_vcpu *vcpu)
+{
+	vcpu->arch.hcr_el2 |= HCR_TWEDEN;
+}
+
+static inline void vcpu_twed_disable(struct kvm_vcpu *vcpu)
+{
+	vcpu->arch.hcr_el2 &= ~HCR_TWEDEN;
+}
+
+static inline void vcpu_set_twed(struct kvm_vcpu *vcpu)
+{
+	u64 delay = (u64)twedel;
+
+	if (delay > HCR_TWEDEL_MAX)
+		delay = HCR_TWEDEL_MAX;
+
+	vcpu->arch.hcr_el2 &= ~HCR_TWEDEL_MASK;
+	vcpu->arch.hcr_el2 |= (delay << HCR_TWEDEL_SHIFT);
+}
+#else
+static inline void vcpu_twed_enable(struct kvm_vcpu *vcpu) {};
+static inline void vcpu_twed_disable(struct kvm_vcpu *vcpu) {};
+static inline void vcpu_set_twed(struct kvm_vcpu *vcpu) {};
+#endif
+
 static inline void vcpu_ptrauth_enable(struct kvm_vcpu *vcpu)
 {
 	vcpu->arch.hcr_el2 |= (HCR_API | HCR_APK);
@@ -510,4 +537,24 @@ static inline bool vcpu_has_feature(struct kvm_vcpu *vcpu, int feature)
 	return test_bit(feature, vcpu->arch.features);
 }
 
+#ifdef CONFIG_CVM_HOST
+static inline bool kvm_is_cvm(struct kvm *kvm)
+{
+	if (static_branch_unlikely(&kvm_cvm_is_available)) {
+		struct cvm *cvm = kvm->arch.cvm;
+
+		return cvm && cvm->is_cvm;
+	}
+	return false;
+}
+
+static inline enum cvm_state kvm_cvm_state(struct kvm *kvm)
+{
+	struct cvm *cvm = kvm->arch.cvm;
+
+	if (!cvm)
+		return 0;
+	return READ_ONCE(cvm->state);
+}
+#endif
 #endif /* __ARM64_KVM_EMULATE_H__ */

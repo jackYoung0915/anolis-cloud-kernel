@@ -849,3 +849,95 @@ static int __init swiotlb_create_debugfs(void)
 late_initcall(swiotlb_create_debugfs);
 
 #endif
+
+#ifdef CONFIG_DMA_RESTRICTED_POOL
+
+struct page *swiotlb_alloc(struct device *dev, size_t size)
+{
+	phys_addr_t tlb_addr;
+	int index;
+	struct io_tlb_mem *mem = io_tlb_default_mem;
+
+	index = swiotlb_find_slots(dev, 0, size);
+	if (index == -1)
+		return NULL;
+
+	tlb_addr = slot_addr(mem->start, index);
+
+	return pfn_to_page(PFN_DOWN(tlb_addr));
+}
+
+static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr,
+		size_t alloc_size)
+{
+	unsigned long flags;
+	unsigned int offset = swiotlb_align_offset(dev, tlb_addr);
+	int i, count, nslots = nr_slots(alloc_size + offset);
+	struct io_tlb_mem *mem = io_tlb_default_mem;
+
+
+	int index = (tlb_addr - offset - mem->start) >> IO_TLB_SHIFT;
+	int aindex = index / mem->area_nslabs;
+	struct io_tlb_area *area = &mem->areas[aindex];
+	/*
+	 * Return the buffer to the free list by setting the corresponding
+	 * entries to indicate the number of contiguous entries available.
+	 * While returning the entries to the free list, we merge the entries
+	 * with slots below and above the pool being returned.
+	 */
+	spin_lock_irqsave(&area->lock, flags);
+	if (index + nslots < ALIGN(index + 1, IO_TLB_SEGSIZE))
+		count = mem->slots[index + nslots].list;
+	else
+		count = 0;
+
+	/*
+	 * Step 1: return the slots to the free list, merging the slots with
+	 * superceeding slots
+	 */
+	for (i = index + nslots - 1; i >= index; i--) {
+		mem->slots[i].list = ++count;
+		mem->slots[i].orig_addr = INVALID_PHYS_ADDR;
+	}
+
+	/*
+	 * Step 2: merge the returned slots with the preceding slots, if
+	 * available (non zero)
+	 */
+	for (i = index - 1;
+		 io_tlb_offset(i) != IO_TLB_SEGSIZE - 1 && mem->slots[i].list;
+		 i--)
+		mem->slots[i].list = ++count;
+	area->used -= nslots;
+	spin_unlock_irqrestore(&area->lock, flags);
+}
+
+bool swiotlb_free(struct device *dev, struct page *page, size_t size)
+{
+	phys_addr_t tlb_addr = page_to_phys(page);
+
+	if (!is_swiotlb_buffer(tlb_addr))
+		return false;
+
+	swiotlb_release_slots(dev, tlb_addr, size);
+
+	return true;
+}
+
+#ifdef CONFIG_CVM_GUEST
+void __init swiotlb_cvm_update_mem_attributes(void)
+{
+	void *vaddr;
+	unsigned long bytes;
+	struct io_tlb_mem *mem = io_tlb_default_mem;
+
+	if (!is_cvm_world() || !mem->start)
+		return;
+	vaddr = phys_to_virt(mem->start);
+	bytes = PAGE_ALIGN(mem->nslabs << IO_TLB_SHIFT);
+	set_cvm_memory_decrypted((unsigned long)vaddr, bytes >> PAGE_SHIFT);
+	memset(vaddr, 0, bytes);
+}
+#endif
+
+#endif /* CONFIG_DMA_RESTRICTED_POOL */

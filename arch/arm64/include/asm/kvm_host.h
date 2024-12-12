@@ -26,6 +26,9 @@
 #include <asm/kvm.h>
 #include <asm/kvm_asm.h>
 #include <asm/thread_info.h>
+#ifdef CONFIG_CVM_HOST
+#include <asm/kvm_tmm.h>
+#endif
 
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
@@ -45,6 +48,7 @@
 #define KVM_REQ_VCPU_RESET	KVM_ARCH_REQ(2)
 #define KVM_REQ_RECORD_STEAL	KVM_ARCH_REQ(3)
 #define KVM_REQ_RELOAD_GICv4	KVM_ARCH_REQ(4)
+#define KVM_REQ_RELOAD_DVMBM	KVM_ARCH_REQ(6)
 
 #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 				     KVM_DIRTY_LOG_INITIALLY_SET)
@@ -119,6 +123,25 @@ struct kvm_arch {
 	unsigned int pmuver;
 
 	u8 pfr0_csv2;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	spinlock_t dvm_lock;
+#endif
+
+#if defined(CONFIG_KVM_HISI_VIRT) || defined(CONFIG_CVM_HOST)
+#ifndef __GENKSYMS__
+	union {
+		cpumask_t *dvm_cpumask; /* Union of all vcpu's cpus_ptr */
+		void *cvm;
+	};
+#else
+	cpumask_t *dvm_cpumask; /* Union of all vcpu's cpus_ptr */
+#endif
+#endif
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	u64 lsudvmbm_el2;
+#endif
 };
 
 struct kvm_vcpu_fault_info {
@@ -388,6 +411,22 @@ struct kvm_vcpu_arch {
 	u64 mpam1_el1;
 
 	struct id_registers idregs;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	/* Copy of current->cpus_ptr */
+	cpumask_t *cpus_ptr;
+#endif
+
+#if defined(CONFIG_KVM_HISI_VIRT) || defined(CONFIG_CVM_HOST)
+#ifndef __GENKSYMS__
+	union {
+		cpumask_t *pre_cpus_ptr;
+		void *tec;
+	};
+#else
+	cpumask_t *pre_cpus_ptr;
+#endif
+#endif
 };
 
 /* Pointer to the vcpu's SVE FFR for sve_{save,load}_state() */
@@ -417,6 +456,7 @@ struct kvm_vcpu_arch {
 #define KVM_ARM64_GUEST_HAS_SVE		(1 << 5) /* SVE exposed to guest */
 #define KVM_ARM64_VCPU_SVE_FINALIZED	(1 << 6) /* SVE config completed */
 #define KVM_ARM64_GUEST_HAS_PTRAUTH	(1 << 7) /* PTRAUTH exposed to guest */
+#define KVM_ARM64_WFIT			(1 << 16) /* WFIT instruction trapped */
 
 #define vcpu_has_sve(vcpu) (system_supports_sve() && \
 			    ((vcpu)->arch.flags & KVM_ARM64_GUEST_HAS_SVE))
@@ -660,5 +700,16 @@ bool kvm_arm_vcpu_is_finalized(struct kvm_vcpu *vcpu);
 
 #define kvm_arm_vcpu_sve_finalized(vcpu) \
 	((vcpu)->arch.flags & KVM_ARM64_VCPU_SVE_FINALIZED)
+
+#ifdef CONFIG_ARM64_TWED
+#define use_twed() (has_twed() && twed_enable)
+extern bool twed_enable;
+extern unsigned int twedel;
+#else
+#define use_twed() (false)
+#endif
+
+extern bool kvm_ncsnp_support;
+extern bool kvm_dvmbm_support;
 
 #endif /* __ARM64_KVM_HOST_H__ */

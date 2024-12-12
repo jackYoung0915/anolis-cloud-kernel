@@ -31,8 +31,12 @@
 #include <linux/types.h>
 #include <linux/cpu.h>
 #include <linux/cacheinfo.h>
+#include "arm_mpam.h"
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/cpu_pm.h>
 
-#include <arm_mpam.h>
 #include "mpam_resource.h"
 #include "mpam_device.h"
 #include "mpam_internal.h"
@@ -435,7 +439,7 @@ static irqreturn_t mpam_handle_error_irq(int irq, void *data)
 		return IRQ_NONE;
 
 	/* No-one expects MPAM errors! */
-	if (device_errcode <= _MPAM_NUM_ERRCODE)
+	if (device_errcode < _MPAM_NUM_ERRCODE)
 		pr_err_ratelimited("unexpected error '%s' [esr:%x]\n",
 					mpam_msc_err_str[device_errcode],
 					device_esr);
@@ -496,7 +500,7 @@ static void mpam_enable_irqs(void)
 		rc = request_irq(irq, mpam_handle_error_irq, request_flags,
 				"MPAM ERR IRQ", dev);
 		if (rc) {
-			pr_err_ratelimited("Failed to register irq %u\n", irq);
+			pr_warn_ratelimited("Not support to register irq %u\n", irq);
 			continue;
 		}
 
@@ -529,17 +533,42 @@ static void mpam_disable_irqs(void)
 	}
 }
 
+static struct notifier_block mpam_notifier_block;
+static int cpu_pm_mpam_notify(struct notifier_block *b,
+		unsigned long cmd, void *v)
+{
+	switch (cmd) {
+	case CPU_PM_ENTER:
+		break;
+	case CPU_PM_EXIT:
+	case CPU_PM_ENTER_FAILED:
+		mpam_restore_context();
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+
+	return NOTIFY_OK;
+}
+
+static int cpu_pm_mpam_register(void)
+{
+	mpam_notifier_block.notifier_call = cpu_pm_mpam_notify;
+	return cpu_pm_register_notifier(&mpam_notifier_block);
+}
+
 /*
  * Enable mpam once all devices have been probed.
  * Scheduled by mpam_discovery_complete() once all devices have been created.
  * Also scheduled when new devices are probed when new CPUs come online.
  */
-static void __init mpam_enable(struct work_struct *work)
+static void mpam_enable(struct work_struct *work)
 {
 	int err;
 	unsigned long flags;
 	struct mpam_device *dev;
 	bool all_devices_probed = true;
+	static atomic_t once;
 
 	/* Have we probed all the devices? */
 	mutex_lock(&mpam_devices_lock);
@@ -554,7 +583,7 @@ static void __init mpam_enable(struct work_struct *work)
 	}
 	mutex_unlock(&mpam_devices_lock);
 
-	if (!all_devices_probed)
+	if (!(all_devices_probed && !atomic_fetch_inc(&once)))
 		return;
 
 	mutex_lock(&mpam_devices_lock);
@@ -599,6 +628,8 @@ static void __init mpam_enable(struct work_struct *work)
 	if (mpam_cpuhp_state <= 0)
 		pr_err("Failed to re-register 'dyn' cpuhp callbacks");
 	mutex_unlock(&mpam_cpuhp_lock);
+
+	cpu_pm_mpam_register();
 }
 
 static void mpam_failed(struct work_struct *work)
@@ -617,7 +648,7 @@ static void mpam_failed(struct work_struct *work)
 	mutex_unlock(&mpam_cpuhp_lock);
 }
 
-static struct mpam_device * __init
+static struct mpam_device *
 mpam_device_alloc(struct mpam_component *comp)
 {
 	struct mpam_device *dev;
@@ -652,7 +683,7 @@ static void mpam_devices_destroy(struct mpam_component *comp)
 	}
 }
 
-static struct mpam_component * __init mpam_component_alloc(int id)
+static struct mpam_component *mpam_component_alloc(int id)
 {
 	struct mpam_component *comp;
 
@@ -690,7 +721,7 @@ struct mpam_component *mpam_component_get(struct mpam_class *class, int id,
 	return comp;
 }
 
-static struct mpam_class * __init mpam_class_alloc(u8 level_idx,
+static struct mpam_class *mpam_class_alloc(u8 level_idx,
 			enum mpam_class_types type)
 {
 	struct mpam_class *class;
@@ -729,7 +760,7 @@ static void mpam_class_destroy(struct mpam_class *class)
 	}
 }
 
-static struct mpam_class * __init mpam_class_get(u8 level_idx,
+static struct mpam_class *mpam_class_get(u8 level_idx,
 						enum mpam_class_types type,
 						bool alloc)
 {
@@ -759,7 +790,7 @@ static struct mpam_class * __init mpam_class_get(u8 level_idx,
  * class/component structures may be allocated.
  * Returns the new device, or an ERR_PTR().
  */
-struct mpam_device * __init
+struct mpam_device *
 __mpam_device_create(u8 level_idx, enum mpam_class_types type,
 			int component_id, const struct cpumask *fw_affinity,
 			phys_addr_t hwpage_address)
@@ -808,7 +839,7 @@ __mpam_device_create(u8 level_idx, enum mpam_class_types type,
 	return dev;
 }
 
-void __init mpam_device_set_error_irq(struct mpam_device *dev, u32 irq,
+void mpam_device_set_error_irq(struct mpam_device *dev, u32 irq,
 					u32 flags)
 {
 	unsigned long irq_save_flags;
@@ -819,7 +850,7 @@ void __init mpam_device_set_error_irq(struct mpam_device *dev, u32 irq,
 	spin_unlock_irqrestore(&dev->lock, irq_save_flags);
 }
 
-void __init mpam_device_set_overflow_irq(struct mpam_device *dev, u32 irq,
+void mpam_device_set_overflow_irq(struct mpam_device *dev, u32 irq,
 					u32 flags)
 {
 	unsigned long irq_save_flags;
@@ -862,7 +893,7 @@ static inline u16 mpam_cpu_max_pmg(void)
 /*
  * prepare for initializing devices.
  */
-int __init mpam_discovery_start(void)
+int mpam_discovery_start(void)
 {
 	if (!mpam_cpus_have_feature())
 		return -EOPNOTSUPP;
@@ -1092,7 +1123,7 @@ static int mpam_cpu_offline(unsigned int cpu)
 	return 0;
 }
 
-int __init mpam_discovery_complete(void)
+int mpam_discovery_complete(void)
 {
 	int ret = 0;
 
@@ -1109,7 +1140,7 @@ int __init mpam_discovery_complete(void)
 	return ret;
 }
 
-void __init mpam_discovery_failed(void)
+void mpam_discovery_failed(void)
 {
 	struct mpam_class *class, *tmp;
 
@@ -1696,3 +1727,175 @@ void mpam_component_get_config(struct mpam_component *comp,
 {
 	mpam_component_get_config_local(comp, args, result);
 }
+
+#define ARM_MPAM_PDEV_NAME "arm-mpam"
+
+static const struct of_device_id arm_mpam_of_device_ids[] = {
+	{.compatible = "arm,mpam"},
+	{  }
+};
+
+static int of_mpam_parse_irq(struct device_node *node,
+			     struct mpam_device *dev)
+{
+	u32 overflow_interrupt, overflow_flags;
+	u32 error_interrupt, error_interrupt_flags;
+
+	of_property_read_u32(node, "overflow-interrupt", &overflow_interrupt);
+	of_property_read_u32(node, "overflow-flags", &overflow_flags);
+	of_property_read_u32(node, "error-interrupt", &error_interrupt);
+	of_property_read_u32(node, "error-interrupt-flags",
+			     &error_interrupt_flags);
+
+	return mpam_register_device_irq(dev,
+			overflow_interrupt, overflow_flags,
+			error_interrupt, error_interrupt_flags);
+}
+
+static int of_mpam_parse_cache(struct platform_device *pdev,
+		struct device_node *node)
+{
+	struct mpam_device *dev;
+	int cache_level, cache_id;
+	u64 reg_value[2];
+
+	if (of_property_read_u32(node, "cache-level", &cache_level)) {
+		dev_err(&pdev->dev, "missing cache level property\n");
+		return -EINVAL;
+	}
+
+	if (of_property_read_u32(node, "cache-id", &cache_id)) {
+		dev_err(&pdev->dev, "missing cache id property\n");
+		return -EINVAL;
+	}
+
+	/* Base address */
+	if (of_property_read_u64_array(node, "reg", reg_value, 2)) {
+		dev_err(&pdev->dev, "missing io resource property\n");
+		return -EINVAL;
+	}
+
+	dev = mpam_device_create_cache(cache_level, cache_id, NULL,
+				       reg_value[0]);
+	if (IS_ERR(dev)) {
+		dev_err(&pdev->dev, "Failed to create cache node\n");
+		return -EINVAL;
+	}
+
+	return of_mpam_parse_irq(node, dev);
+}
+
+static int of_mpam_parse_memory(struct platform_device *pdev,
+		struct device_node *node)
+{
+	struct mpam_device *dev;
+	int numa_id;
+	u64 reg_value[2];
+
+	if (of_property_read_u32(node, "numa-node-id", &numa_id)) {
+		dev_err(&pdev->dev, "missing numa node id property\n");
+		return -EINVAL;
+	}
+
+	/* Base address */
+	if (of_property_read_u64_array(node, "reg", reg_value, 2)) {
+		dev_err(&pdev->dev, "missing io resource property\n");
+		return -EINVAL;
+	}
+
+	dev = mpam_device_create_memory(numa_id, reg_value[0]);
+	if (IS_ERR(dev)) {
+		dev_err(&pdev->dev, "Failed to create memory node\n");
+		return -EINVAL;
+	}
+
+	return of_mpam_parse_irq(node, dev);
+}
+
+static int of_mpam_add_child(struct platform_device *pdev,
+		struct device_node *node)
+{
+	enum mpam_class_types type;
+
+	if (of_property_read_u32(node, "type", &type)) {
+		dev_err(&pdev->dev, "missing type property\n");
+		return -EINVAL;
+	}
+
+	switch (type) {
+	case MPAM_CLASS_CACHE:
+		return of_mpam_parse_cache(pdev, node);
+	case MPAM_CLASS_MEMORY:
+		return of_mpam_parse_memory(pdev, node);
+	default:
+		pr_warn_once("Unknown node type %u.\n", type);
+		return -EINVAL;
+		/* fall through */
+	case MPAM_CLASS_SMMU:
+		/* not yet supported */
+		/* fall through */
+	case MPAM_CLASS_UNKNOWN:
+		break;
+	}
+
+	return 0;
+}
+
+static int arm_mpam_device_probe(struct platform_device *pdev)
+{
+	int ret;
+	struct device *dev = &pdev->dev;
+	struct device_node *node = dev->of_node;
+	struct device_node *child = NULL;
+
+	if (!cpus_have_const_cap(ARM64_MPAM))
+		return 0;
+
+	if (!acpi_disabled || kunpeng_mpam_enabled != MPAM_ENABLE_OF)
+		return 0;
+
+	if (!node || !of_match_node(arm_mpam_of_device_ids, pdev->dev.of_node))
+		return -EINVAL;
+
+	ret = mpam_discovery_start();
+	if (ret)
+		return ret;
+
+	for_each_available_child_of_node(node, child) {
+		ret = of_mpam_add_child(pdev, child);
+		if (ret)
+			break;
+	}
+
+	if (ret) {
+		mpam_discovery_failed();
+	} else {
+		ret = mpam_discovery_complete();
+		if (!ret)
+			pr_info("Successfully init mpam by DT.\n");
+	}
+
+	return ret;
+}
+
+static struct platform_driver arm_mpam_driver = {
+	.driver		= {
+		.name = ARM_MPAM_PDEV_NAME,
+		.of_match_table = arm_mpam_of_device_ids,
+	},
+	.probe		= arm_mpam_device_probe,
+};
+
+static int __init arm_mpam_driver_init(void)
+{
+	if (acpi_disabled)
+		return platform_driver_register(&arm_mpam_driver);
+	else
+		return acpi_mpam_parse_version();
+}
+
+/*
+ * We want to run after cacheinfo_sysfs_init() has caused the cacheinfo
+ * structures to be populated. That runs as a device_initcall.
+ */
+device_initcall_sync(arm_mpam_driver_init);

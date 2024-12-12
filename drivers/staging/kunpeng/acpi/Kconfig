@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
+#
+# ACPI Configuration for ARM64
+#
 
 config ACPI_MPAM
 	bool

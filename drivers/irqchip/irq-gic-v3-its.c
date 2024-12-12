@@ -29,6 +29,10 @@
 #include <linux/percpu.h>
 #include <linux/slab.h>
 #include <linux/syscore_ops.h>
+#ifdef CONFIG_CVM_GUEST
+#include <linux/swiotlb.h>
+#include <asm/cvm_guest.h>
+#endif
 
 #include <linux/irqchip.h>
 #include <linux/irqchip/arm-gic-v3.h>
@@ -140,6 +144,7 @@ static int build_devid_pools(void)
 #define ITS_FLAGS_CMDQ_NEEDS_FLUSHING		(1ULL << 0)
 #define ITS_FLAGS_WORKAROUND_CAVIUM_22375	(1ULL << 1)
 #define ITS_FLAGS_WORKAROUND_CAVIUM_23144	(1ULL << 2)
+#define ITS_FLAGS_WORKAROUND_HISILICON_162100801	(1ULL << 3)
 
 #define RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING	(1 << 0)
 #define RDIST_FLAGS_RD_TABLES_PREALLOCATED	(1 << 1)
@@ -298,6 +303,91 @@ static DEFINE_IDA(its_vpeid_ida);
 extern bool ft2000_iommu_hwfix;
 #endif
 
+#ifdef CONFIG_CVM_GUEST
+static struct device cvm_alloc_device;
+static LIST_HEAD(cvm_its_nodes);
+static raw_spinlock_t cvm_its_lock;
+
+struct its_device_order {
+	struct its_device *dev;
+	struct list_head entry;
+	int itt_order;
+};
+
+static inline struct page *its_alloc_shared_pages_node(int node, gfp_t gfp,
+			unsigned int order)
+{
+	return swiotlb_alloc(&cvm_alloc_device, (1 << order) * PAGE_SIZE);
+}
+
+static inline struct page *its_alloc_shared_pages(gfp_t gfp, unsigned int order)
+{
+	return its_alloc_shared_pages_node(NUMA_NO_NODE, gfp, order);
+}
+
+static void its_free_shared_pages(void *addr, int order)
+{
+	if (order < 0)
+		return;
+
+	swiotlb_free(&cvm_alloc_device, (struct page *)addr, (1 << order) * PAGE_SIZE);
+}
+
+static int add_its_device_order(struct its_device *dev, int itt_order)
+{
+	struct its_device_order *new;
+	unsigned long flags;
+
+	new = kmalloc(sizeof(struct its_device_order), GFP_KERNEL);
+	if (!new)
+		return -ENOMEM;
+	new->dev = dev;
+	new->itt_order = itt_order;
+	raw_spin_lock_irqsave(&cvm_its_lock, flags);
+	list_add_tail(&new->entry, &cvm_its_nodes);
+	raw_spin_unlock_irqrestore(&cvm_its_lock, flags);
+	return 0;
+}
+
+/* get its device order and then free its device order */
+static int get_its_device_order(struct its_device *dev)
+{
+	struct its_device_order *pos, *tmp;
+	unsigned long flags;
+	int itt_order = -1;
+
+	raw_spin_lock_irqsave(&cvm_its_lock, flags);
+	list_for_each_entry_safe(pos, tmp, &cvm_its_nodes, entry) {
+		if (pos->dev == dev) {
+			itt_order = pos->itt_order;
+			list_del(&pos->entry);
+			kfree(pos);
+			goto found;
+		}
+	}
+found:
+	raw_spin_unlock_irqrestore(&cvm_its_lock, flags);
+	return itt_order;
+}
+
+static void *its_alloc_shared_page_address(struct its_device *dev,
+			struct its_node *its, int sz)
+{
+	struct page *page;
+	int itt_order;
+
+	itt_order = get_order(sz);
+	if (add_its_device_order(dev, itt_order))
+		return NULL;
+
+	page = its_alloc_shared_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
+			   itt_order);
+	if (!page)
+		return NULL;
+	return (void *)page_address(page);
+}
+#endif
+
 #ifdef CONFIG_VIRT_PLAT_DEV
 static void free_devid_to_rsv_pools(struct its_device *its_dev)
 {
@@ -428,13 +518,23 @@ static void vpe_to_cpuid_unlock(struct its_vpe *vpe, unsigned long flags)
 	raw_spin_unlock_irqrestore(&vpe->vpe_lock, flags);
 }
 
+static struct irq_chip its_vpe_irq_chip;
+
 static int irq_to_cpuid_lock(struct irq_data *d, unsigned long *flags)
 {
-	struct its_vlpi_map *map = get_vlpi_map(d);
+	struct its_vpe *vpe = NULL;
 	int cpu;
 
-	if (map) {
-		cpu = vpe_to_cpuid_lock(map->vpe, flags);
+	if (d->chip == &its_vpe_irq_chip) {
+		vpe = irq_data_get_irq_chip_data(d);
+	} else {
+		struct its_vlpi_map *map = get_vlpi_map(d);
+		if (map)
+			vpe = map->vpe;
+	}
+
+	if (vpe) {
+		cpu = vpe_to_cpuid_lock(vpe, flags);
 	} else {
 		/* Physical LPIs are already locked via the irq_desc lock */
 		struct its_device *its_dev = irq_data_get_irq_chip_data(d);
@@ -448,10 +548,18 @@ static int irq_to_cpuid_lock(struct irq_data *d, unsigned long *flags)
 
 static void irq_to_cpuid_unlock(struct irq_data *d, unsigned long flags)
 {
-	struct its_vlpi_map *map = get_vlpi_map(d);
+	struct its_vpe *vpe = NULL;
 
-	if (map)
-		vpe_to_cpuid_unlock(map->vpe, flags);
+	if (d->chip == &its_vpe_irq_chip) {
+		vpe = irq_data_get_irq_chip_data(d);
+	} else {
+		struct its_vlpi_map *map = get_vlpi_map(d);
+		if (map)
+			vpe = map->vpe;
+	}
+
+	if (vpe)
+		vpe_to_cpuid_unlock(vpe, flags);
 }
 
 static struct its_collection *valid_col(struct its_collection *col)
@@ -922,6 +1030,7 @@ static struct its_vpe *its_build_vmapp_cmd(struct its_node *its,
 					   struct its_cmd_block *cmd,
 					   struct its_cmd_desc *desc)
 {
+	struct its_vpe *vpe = valid_vpe(its, desc->its_vmapp_cmd.vpe);
 	unsigned long vpt_addr, vconf_addr;
 	u64 target;
 	bool alloc;
@@ -934,6 +1043,11 @@ static struct its_vpe *its_build_vmapp_cmd(struct its_node *its,
 		if (is_v4_1(its)) {
 			alloc = !atomic_dec_return(&desc->its_vmapp_cmd.vpe->vmapp_count);
 			its_encode_alloc(cmd, alloc);
+			/*
+			 * Unmapping a VPE is self-synchronizing on GICv4.1,
+			 * no need to issue a VSYNC.
+			 */
+			vpe = NULL;
 		}
 
 		goto out;
@@ -968,7 +1082,7 @@ static struct its_vpe *its_build_vmapp_cmd(struct its_node *its,
 out:
 	its_fixup_cmd(cmd);
 
-	return valid_vpe(its, desc->its_vmapp_cmd.vpe);
+	return vpe;
 }
 
 static struct its_vpe *its_build_vmapti_cmd(struct its_node *its,
@@ -1443,6 +1557,14 @@ static void its_send_vmapp(struct its_node *its,
 	its_send_single_vcommand(its, its_build_vmapp_cmd, &desc);
 }
 
+static void its_send_vinvall(struct its_node *its, struct its_vpe *vpe)
+{
+	struct its_cmd_desc desc;
+
+	desc.its_vinvall_cmd.vpe = vpe;
+	its_send_single_vcommand(its, its_build_vinvall_cmd, &desc);
+}
+
 static void its_send_vmovp(struct its_vpe *vpe)
 {
 	struct its_cmd_desc desc = {};
@@ -1482,17 +1604,12 @@ static void its_send_vmovp(struct its_vpe *vpe)
 
 		desc.its_vmovp_cmd.col = &its->collections[col_id];
 		its_send_single_vcommand(its, its_build_vmovp_cmd, &desc);
+		if (is_v4_1(its) && (its->flags &
+			    ITS_FLAGS_WORKAROUND_HISILICON_162100801))
+			its_send_vinvall(its, vpe);
 	}
 
 	raw_spin_unlock_irqrestore(&vmovp_lock, flags);
-}
-
-static void its_send_vinvall(struct its_node *its, struct its_vpe *vpe)
-{
-	struct its_cmd_desc desc;
-
-	desc.its_vinvall_cmd.vpe = vpe;
-	its_send_single_vcommand(its, its_build_vinvall_cmd, &desc);
 }
 
 static void its_send_vinv(struct its_device *dev, u32 event_id)
@@ -1588,13 +1705,28 @@ static void wait_for_syncr(void __iomem *rdbase)
 		cpu_relax();
 }
 
+static void __direct_lpi_inv(struct irq_data *d, u64 val)
+{
+	void __iomem *rdbase;
+	unsigned long flags;
+	int cpu;
+
+	/* Target the redistributor this LPI is currently routed to */
+	cpu = irq_to_cpuid_lock(d, &flags);
+	raw_spin_lock(&gic_data_rdist_cpu(cpu)->rd_lock);
+
+	rdbase = per_cpu_ptr(gic_rdists->rdist, cpu)->rd_base;
+	gic_write_lpir(val, rdbase + GICR_INVLPIR);
+	wait_for_syncr(rdbase);
+
+	raw_spin_unlock(&gic_data_rdist_cpu(cpu)->rd_lock);
+	irq_to_cpuid_unlock(d, flags);
+}
+
 static void direct_lpi_inv(struct irq_data *d)
 {
 	struct its_vlpi_map *map = get_vlpi_map(d);
-	void __iomem *rdbase;
-	unsigned long flags;
 	u64 val;
-	int cpu;
 
 	if (map) {
 		struct its_device *its_dev = irq_data_get_irq_chip_data(d);
@@ -1608,15 +1740,7 @@ static void direct_lpi_inv(struct irq_data *d)
 		val = d->hwirq;
 	}
 
-	/* Target the redistributor this LPI is currently routed to */
-	cpu = irq_to_cpuid_lock(d, &flags);
-	raw_spin_lock(&gic_data_rdist_cpu(cpu)->rd_lock);
-	rdbase = per_cpu_ptr(gic_rdists->rdist, cpu)->rd_base;
-	gic_write_lpir(val, rdbase + GICR_INVLPIR);
-
-	wait_for_syncr(rdbase);
-	raw_spin_unlock(&gic_data_rdist_cpu(cpu)->rd_lock);
-	irq_to_cpuid_unlock(d, flags);
+	__direct_lpi_inv(d, val);
 }
 
 static void lpi_update_config(struct irq_data *d, u8 clr, u8 set)
@@ -1781,7 +1905,7 @@ static int its_select_cpu(struct irq_data *d,
 
 		cpu = cpumask_pick_least_loaded(d, tmpmask);
 	} else {
-		cpumask_and(tmpmask, irq_data_get_affinity_mask(d), cpu_online_mask);
+		cpumask_copy(tmpmask, aff_mask);
 
 		/* If we cannot cross sockets, limit the search to that node */
 		if ((its_dev->its->flags & ITS_FLAGS_WORKAROUND_CAVIUM_23144) &&
@@ -2338,7 +2462,13 @@ static struct page *its_allocate_prop_table(gfp_t gfp_flags)
 {
 	struct page *prop_page;
 
-	prop_page = alloc_pages(gfp_flags, get_order(LPI_PROPBASE_SZ));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		prop_page = its_alloc_shared_pages(gfp_flags,
+			get_order(LPI_PROPBASE_SZ));
+	else
+#endif
+		prop_page = alloc_pages(gfp_flags, get_order(LPI_PROPBASE_SZ));
 	if (!prop_page)
 		return NULL;
 
@@ -2349,8 +2479,14 @@ static struct page *its_allocate_prop_table(gfp_t gfp_flags)
 
 static void its_free_prop_table(struct page *prop_page)
 {
-	free_pages((unsigned long)page_address(prop_page),
-		   get_order(LPI_PROPBASE_SZ));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		its_free_shared_pages(page_address(prop_page),
+			get_order(LPI_PROPBASE_SZ));
+	else
+#endif
+		free_pages((unsigned long)page_address(prop_page),
+			get_order(LPI_PROPBASE_SZ));
 }
 
 static bool gic_check_reserved_range(phys_addr_t addr, unsigned long size)
@@ -2472,7 +2608,13 @@ static int its_setup_baser(struct its_node *its, struct its_baser *baser,
 		order = get_order(GITS_BASER_PAGES_MAX * psz);
 	}
 
-	page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO, order);
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		page = its_alloc_shared_pages_node(its->numa_node,
+			GFP_KERNEL | __GFP_ZERO, order);
+	else
+#endif
+		page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO, order);
 	if (!page)
 		return -ENOMEM;
 
@@ -2485,7 +2627,12 @@ static int its_setup_baser(struct its_node *its, struct its_baser *baser,
 		/* 52bit PA is supported only when PageSize=64K */
 		if (psz != SZ_64K) {
 			pr_err("ITS: no 52bit PA support when psz=%d\n", psz);
-			free_pages((unsigned long)base, order);
+#ifdef CONFIG_CVM_GUEST
+			if (is_cvm_world())
+				its_free_shared_pages(base, order);
+			else
+#endif
+				free_pages((unsigned long)base, order);
 			return -ENXIO;
 		}
 
@@ -2539,7 +2686,12 @@ retry_baser:
 		pr_err("ITS@%pa: %s doesn't stick: %llx %llx\n",
 		       &its->phys_base, its_base_type_string[type],
 		       val, tmp);
-		free_pages((unsigned long)base, order);
+#ifdef CONFIG_CVM_GUEST
+		if (is_cvm_world())
+			its_free_shared_pages(base, order);
+		else
+#endif
+			free_pages((unsigned long)base, order);
 		return -ENXIO;
 	}
 
@@ -2678,8 +2830,14 @@ static void its_free_tables(struct its_node *its)
 
 	for (i = 0; i < GITS_BASER_NR_REGS; i++) {
 		if (its->tables[i].base) {
-			free_pages((unsigned long)its->tables[i].base,
-				   its->tables[i].order);
+#ifdef CONFIG_CVM_GUEST
+			if (is_cvm_world())
+				its_free_shared_pages(its->tables[i].base,
+					its->tables[i].order);
+			else
+#endif
+				free_pages((unsigned long)its->tables[i].base,
+					   its->tables[i].order);
 			its->tables[i].base = NULL;
 		}
 	}
@@ -2780,6 +2938,10 @@ static int its_alloc_tables(struct its_node *its)
 
 			indirect = its_parse_indirect_baser(its, baser, &order,
 							    ITS_MAX_VPEID_BITS);
+			break;
+		case GITS_BASER_TYPE_COLLECTION:
+			indirect = its_parse_indirect_baser(its, baser, &order,
+							order_base_2(num_possible_cpus()));
 			break;
 		}
 
@@ -2938,7 +3100,13 @@ static bool allocate_vpe_l2_table(int cpu, u32 id)
 
 	/* Allocate memory for 2nd level table */
 	if (!table[idx]) {
-		page = alloc_pages(GFP_KERNEL | __GFP_ZERO, get_order(psz));
+#ifdef CONFIG_CVM_GUEST
+		if (is_cvm_world())
+			page = its_alloc_shared_pages(GFP_KERNEL | __GFP_ZERO,
+				get_order(psz));
+		else
+#endif
+			page = alloc_pages(GFP_KERNEL | __GFP_ZERO, get_order(psz));
 		if (!page)
 			return false;
 
@@ -3057,7 +3225,13 @@ static int allocate_vpe_l1_table(void)
 
 	pr_debug("np = %d, npg = %lld, psz = %d, epp = %d, esz = %d\n",
 		 np, npg, psz, epp, esz);
-	page = alloc_pages(GFP_ATOMIC | __GFP_ZERO, get_order(np * PAGE_SIZE));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		page = its_alloc_shared_pages(GFP_ATOMIC | __GFP_ZERO,
+			get_order(np * PAGE_SIZE));
+	else
+#endif
+		page = alloc_pages(GFP_ATOMIC | __GFP_ZERO, get_order(np * PAGE_SIZE));
 	if (!page)
 		return -ENOMEM;
 
@@ -3101,8 +3275,14 @@ static struct page *its_allocate_pending_table(gfp_t gfp_flags)
 {
 	struct page *pend_page;
 
-	pend_page = alloc_pages(gfp_flags | __GFP_ZERO,
-				get_order(LPI_PENDBASE_SZ));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		pend_page = its_alloc_shared_pages(gfp_flags | __GFP_ZERO,
+			get_order(LPI_PENDBASE_SZ));
+	else
+#endif
+		pend_page = alloc_pages(gfp_flags | __GFP_ZERO,
+					get_order(LPI_PENDBASE_SZ));
 	if (!pend_page)
 		return NULL;
 
@@ -3114,7 +3294,13 @@ static struct page *its_allocate_pending_table(gfp_t gfp_flags)
 
 static void its_free_pending_table(struct page *pt)
 {
-	free_pages((unsigned long)page_address(pt), get_order(LPI_PENDBASE_SZ));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		its_free_shared_pages(page_address(pt),
+			get_order(LPI_PENDBASE_SZ));
+	else
+#endif
+		free_pages((unsigned long)page_address(pt), get_order(LPI_PENDBASE_SZ));
 }
 
 /*
@@ -3173,17 +3359,11 @@ static int __init allocate_lpi_tables(void)
 	return 0;
 }
 
-static u64 its_clear_vpend_valid(void __iomem *vlpi_base, u64 clr, u64 set)
+static u64 read_vpend_dirty_clear(void __iomem *vlpi_base)
 {
 	u32 count = 1000000;	/* 1s! */
 	bool clean;
 	u64 val;
-
-	val = gicr_read_vpendbaser(vlpi_base + GICR_VPENDBASER);
-	val &= ~GICR_VPENDBASER_Valid;
-	val &= ~clr;
-	val |= set;
-	gicr_write_vpendbaser(val, vlpi_base + GICR_VPENDBASER);
 
 	do {
 		val = gicr_read_vpendbaser(vlpi_base + GICR_VPENDBASER);
@@ -3195,10 +3375,26 @@ static u64 its_clear_vpend_valid(void __iomem *vlpi_base, u64 clr, u64 set)
 		}
 	} while (!clean && count);
 
-	if (unlikely(val & GICR_VPENDBASER_Dirty)) {
+	if (unlikely(!clean))
 		pr_err_ratelimited("ITS virtual pending table not cleaning\n");
+
+	return val;
+}
+
+static u64 its_clear_vpend_valid(void __iomem *vlpi_base, u64 clr, u64 set)
+{
+	u64 val;
+
+	/* Make sure we wait until the RD is done with the initial scan */
+	val = read_vpend_dirty_clear(vlpi_base);
+	val &= ~GICR_VPENDBASER_Valid;
+	val &= ~clr;
+	val |= set;
+	gicr_write_vpendbaser(val, vlpi_base + GICR_VPENDBASER);
+
+	val = read_vpend_dirty_clear(vlpi_base);
+	if (unlikely(val & GICR_VPENDBASER_Dirty))
 		val |= GICR_VPENDBASER_PendingLast;
-	}
 
 	return val;
 }
@@ -3434,8 +3630,15 @@ static bool its_alloc_table_entry(struct its_node *its,
 
 	/* Allocate memory for 2nd level table */
 	if (!table[idx]) {
-		page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
-					get_order(baser->psz));
+#ifdef CONFIG_CVM_GUEST
+		if (is_cvm_world())
+			page = its_alloc_shared_pages_node(its->numa_node,
+						GFP_KERNEL | __GFP_ZERO,
+						get_order(baser->psz));
+		else
+#endif
+			page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
+						get_order(baser->psz));
 		if (!page)
 			return false;
 
@@ -3538,7 +3741,12 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
 	nr_ites = max(2, nvecs);
 	sz = nr_ites * (FIELD_GET(GITS_TYPER_ITT_ENTRY_SIZE, its->typer) + 1);
 	sz = max(sz, ITS_ITT_ALIGN) + ITS_ITT_ALIGN - 1;
-	itt = kzalloc_node(sz, GFP_KERNEL, its->numa_node);
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		itt = its_alloc_shared_page_address(dev, its, sz);
+	else
+#endif
+		itt = kzalloc_node(sz, GFP_KERNEL, its->numa_node);
 	if (alloc_lpis) {
 		lpi_map = its_lpi_alloc(nvecs, &lpi_base, &nr_lpis);
 		if (lpi_map)
@@ -3552,7 +3760,12 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
 
 	if (!dev || !itt ||  !col_map || (!lpi_map && alloc_lpis)) {
 		kfree(dev);
-		kfree(itt);
+#ifdef CONFIG_CVM_GUEST
+		if (is_cvm_world())
+			its_free_shared_pages(itt, get_order(sz));
+		else
+#endif
+			kfree(itt);
 		kfree(lpi_map);
 		kfree(col_map);
 		return NULL;
@@ -3589,7 +3802,12 @@ static void its_free_device(struct its_device *its_dev)
 	list_del(&its_dev->entry);
 	raw_spin_unlock_irqrestore(&its_dev->its->lock, flags);
 	kfree(its_dev->event_map.col_map);
-	kfree(its_dev->itt);
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		its_free_shared_pages(its_dev->itt, get_its_device_order(its_dev));
+	else
+#endif
+		kfree(its_dev->itt);
 
 #ifdef CONFIG_VIRT_PLAT_DEV
 	if (its_dev->is_vdev) {
@@ -3964,8 +4182,9 @@ static int its_vpe_set_affinity(struct irq_data *d,
 				bool force)
 {
 	struct its_vpe *vpe = irq_data_get_irq_chip_data(d);
-	int from, cpu = cpumask_first(mask_val);
+	struct cpumask common, *table_mask;
 	unsigned long flags;
+	int from, cpu;
 
 	/*
 	 * Changing affinity is mega expensive, so let's be as lazy as
@@ -3981,18 +4200,21 @@ static int its_vpe_set_affinity(struct irq_data *d,
 	 * taken on any vLPI handling path that evaluates vpe->col_idx.
 	 */
 	from = vpe_to_cpuid_lock(vpe, &flags);
+	table_mask = gic_data_rdist_cpu(from)->vpe_table_mask;
+
+	/*
+	 * If we are offered another CPU in the same GICv4.1 ITS
+	 * affinity, pick this one. Otherwise, any CPU will do.
+	 */
+	if (table_mask && cpumask_and(&common, mask_val, table_mask))
+		cpu = cpumask_test_cpu(from, &common) ? from : cpumask_first(&common);
+	else
+		cpu = cpumask_first(mask_val);
+
 	if (from == cpu)
 		goto out;
 
 	vpe->col_idx = cpu;
-
-	/*
-	 * GICv4.1 allows us to skip VMOVP if moving to a cpu whose RD
-	 * is sharing its VPE table with the current one.
-	 */
-	if (gic_data_rdist_cpu(cpu)->vpe_table_mask &&
-	    cpumask_test_cpu(from, gic_data_rdist_cpu(cpu)->vpe_table_mask))
-		goto out;
 
 	its_send_vmovp(vpe);
 	its_vpe_db_proxy_move(vpe, from, cpu);
@@ -4125,18 +4347,10 @@ static void its_vpe_send_inv(struct irq_data *d)
 {
 	struct its_vpe *vpe = irq_data_get_irq_chip_data(d);
 
-	if (gic_rdists->has_direct_lpi) {
-		void __iomem *rdbase;
-
-		/* Target the redistributor this VPE is currently known on */
-		raw_spin_lock(&gic_data_rdist_cpu(vpe->col_idx)->rd_lock);
-		rdbase = per_cpu_ptr(gic_rdists->rdist, vpe->col_idx)->rd_base;
-		gic_write_lpir(d->parent_data->hwirq, rdbase + GICR_INVLPIR);
-		wait_for_syncr(rdbase);
-		raw_spin_unlock(&gic_data_rdist_cpu(vpe->col_idx)->rd_lock);
-	} else {
+	if (gic_rdists->has_direct_lpi)
+		__direct_lpi_inv(d, d->parent_data->hwirq);
+	else
 		its_vpe_send_cmd(vpe, its_send_inv);
-	}
 }
 
 static void its_vpe_mask_irq(struct irq_data *d)
@@ -4889,6 +5103,14 @@ static bool __maybe_unused its_enable_quirk_hip07_161600802(void *data)
 	return true;
 }
 
+static bool __maybe_unused its_enable_quirk_hip09_162100801(void *data)
+{
+	struct its_node *its = data;
+
+	its->flags |= ITS_FLAGS_WORKAROUND_HISILICON_162100801;
+	return true;
+}
+
 static const struct gic_quirk its_quirks[] = {
 #ifdef CONFIG_CAVIUM_ERRATUM_22375
 	{
@@ -4933,6 +5155,14 @@ static const struct gic_quirk its_quirks[] = {
 		.iidr	= 0x00000004,
 		.mask	= 0xffffffff,
 		.init	= its_enable_quirk_hip07_161600802,
+	},
+#endif
+#ifdef CONFIG_HISILICON_ERRATUM_162100801
+	{
+		.desc = "ITS: Hip09 erratum 162100801",
+		.iidr = 0x00051736,
+		.mask = 0xffffffff,
+		.init = its_enable_quirk_hip09_162100801,
 	},
 #endif
 	{
@@ -5228,8 +5458,15 @@ static int __init its_probe_one(struct resource *res,
 
 	its->numa_node = numa_node;
 
-	page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
-				get_order(ITS_CMD_QUEUE_SZ));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		page = its_alloc_shared_pages_node(its->numa_node,
+					GFP_KERNEL | __GFP_ZERO,
+					get_order(ITS_CMD_QUEUE_SZ));
+	else
+#endif
+		page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
+					get_order(ITS_CMD_QUEUE_SZ));
 	if (!page) {
 		err = -ENOMEM;
 		goto out_unmap_sgir;
@@ -5295,7 +5532,12 @@ static int __init its_probe_one(struct resource *res,
 out_free_tables:
 	its_free_tables(its);
 out_free_cmd:
-	free_pages((unsigned long)its->cmd_base, get_order(ITS_CMD_QUEUE_SZ));
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world())
+		its_free_shared_pages(its->cmd_base, get_order(ITS_CMD_QUEUE_SZ));
+	else
+#endif
+		free_pages((unsigned long)its->cmd_base, get_order(ITS_CMD_QUEUE_SZ));
 out_unmap_sgir:
 	if (its->sgir_base)
 		iounmap(its->sgir_base);
@@ -5613,6 +5855,12 @@ int __init its_init(struct fwnode_handle *handle, struct rdists *rdists,
 	bool has_v4_1 = false;
 	int err;
 
+#ifdef CONFIG_CVM_GUEST
+	if (is_cvm_world()) {
+		device_initialize(&cvm_alloc_device);
+		raw_spin_lock_init(&cvm_its_lock);
+	}
+#endif
 	gic_rdists = rdists;
 
 	its_parent = parent_domain;

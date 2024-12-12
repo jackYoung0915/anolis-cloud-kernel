@@ -38,6 +38,10 @@
 #include <asm/kvm_emulate.h>
 #include <asm/kvm_coproc.h>
 #include <asm/sections.h>
+#ifdef CONFIG_CVM_HOST
+#include <asm/kvm_tmi.h>
+#include <linux/perf/arm_pmu.h>
+#endif
 
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_pmu.h>
@@ -45,6 +49,10 @@
 
 #ifdef REQUIRES_VIRT
 __asm__(".arch_extension	virt");
+#endif
+
+#ifdef CONFIG_KVM_HISI_VIRT
+#include "hisilicon/hisi_virt.h"
 #endif
 
 DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
@@ -60,8 +68,22 @@ static DEFINE_SPINLOCK(kvm_vmid_lock);
 
 static bool vgic_present;
 
+/* Capability of non-cacheable snooping */
+bool kvm_ncsnp_support;
+
+/* Capability of DVMBM */
+bool kvm_dvmbm_support;
+
 static DEFINE_PER_CPU(unsigned char, kvm_arm_hardware_enabled);
 DEFINE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
+
+#ifdef CONFIG_ARM64_TWED
+bool twed_enable = false;
+module_param(twed_enable, bool, S_IRUGO | S_IWUSR);
+
+unsigned int twedel = 0;
+module_param(twedel, uint, S_IRUGO | S_IWUSR);
+#endif
 
 int kvm_arch_vcpu_should_kick(struct kvm_vcpu *vcpu)
 {
@@ -91,6 +113,12 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
 		r = 0;
 		kvm->arch.return_nisv_io_abort_to_user = true;
 		break;
+#ifdef CONFIG_CVM_HOST
+	case KVM_CAP_ARM_TMM:
+		if (static_branch_unlikely(&kvm_cvm_is_available))
+			r = kvm_cvm_enable_cap(kvm, cap);
+		break;
+#endif
 	default:
 		r = -EINVAL;
 		break;
@@ -126,14 +154,35 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 {
 	int ret;
 
-	ret = kvm_arm_setup_stage2(kvm, type);
+#ifdef CONFIG_KVM_HISI_VIRT
+	ret = kvm_hisi_init_dvmbm(kvm);
 	if (ret)
 		return ret;
+#endif
+
+#ifdef CONFIG_CVM_HOST
+	if (kvm_arm_cvm_type(type)) {
+		ret = kvm_create_cvm_vm(kvm);
+		if (ret)
+			return ret;
+	}
+#endif
+
+	ret = kvm_arm_setup_stage2(kvm, type);
+	if (ret)
+#ifdef CONFIG_CVM_HOST
+		goto out_free_cvm;
+#else
+		return ret;
+#endif
 
 	ret = kvm_init_stage2_mmu(kvm, &kvm->arch.mmu);
 	if (ret)
+#ifdef CONFIG_CVM_HOST
+		goto out_free_cvm;
+#else
 		return ret;
-
+#endif
 	ret = create_hyp_mappings(kvm, kvm + 1, PAGE_HYP);
 	if (ret)
 		goto out_free_stage2_pgd;
@@ -145,9 +194,23 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 
 	set_default_csv2(kvm);
 
+#ifdef CONFIG_CVM_HOST
+	if (kvm_arm_cvm_type(type)) {
+		ret = kvm_init_cvm_vm(kvm);
+		if (ret)
+			goto out_free_stage2_pgd;
+	}
+#endif
+
 	return ret;
 out_free_stage2_pgd:
 	kvm_free_stage2_pgd(&kvm->arch.mmu);
+
+#ifdef CONFIG_CVM_HOST
+out_free_cvm:
+	kfree(kvm->arch.cvm);
+	kvm->arch.cvm = NULL;
+#endif
 	return ret;
 }
 
@@ -165,6 +228,10 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 {
 	int i;
 
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_destroy_dvmbm(kvm);
+#endif
+
 	bitmap_free(kvm->arch.pmu_filter);
 
 	kvm_vgic_destroy(kvm);
@@ -176,6 +243,10 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		}
 	}
 	atomic_set(&kvm->online_vcpus, 0);
+#ifdef CONFIG_CVM_HOST
+	if (kvm_is_cvm(kvm))
+		kvm_destroy_cvm(kvm);
+#endif
 }
 
 int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
@@ -231,11 +302,25 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		r = 1;
 		break;
 	case KVM_CAP_STEAL_TIME:
-		r = kvm_arm_pvtime_supported();
+#ifdef CONFIG_CVM_HOST
+		if (kvm && kvm_is_cvm(kvm))
+			r = 0;
+		else
+#endif
+			r = kvm_arm_pvtime_supported();
 		break;
 #ifdef CONFIG_VIRT_PLAT_DEV
 	case KVM_CAP_ARM_VIRT_MSI_BYPASS:
 		r = sdev_enable;
+		break;
+#endif
+#ifdef CONFIG_CVM_HOST
+	case KVM_CAP_ARM_TMM:
+		if (!is_armv8_4_sel2_present()) {
+			r = -ENXIO;
+			break;
+		}
+		r = static_key_enabled(&kvm_cvm_is_available);
 		break;
 #endif
 	default:
@@ -325,6 +410,11 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	if (err)
 		return err;
 
+#ifdef CONFIG_KVM_HISI_VIRT
+	err = kvm_hisi_dvmbm_vcpu_init(vcpu);
+	if (err)
+		return err;
+#endif
 	return create_hyp_mappings(vcpu, vcpu + 1, PAGE_HYP);
 }
 
@@ -342,11 +432,10 @@ void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu)
 	kvm_pmu_vcpu_destroy(vcpu);
 
 	kvm_arm_vcpu_destroy(vcpu);
-}
 
-int kvm_cpu_has_pending_timer(struct kvm_vcpu *vcpu)
-{
-	return kvm_timer_is_pending(vcpu);
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_dvmbm_vcpu_destroy(vcpu);
+#endif
 }
 
 void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu)
@@ -398,8 +487,23 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 
 	vcpu->cpu = cpu;
 
+#ifdef CONFIG_CVM_HOST
+	if (vcpu_is_tec(vcpu)) {
+		if (single_task_running())
+			vcpu_clear_wfx_traps(vcpu);
+		else
+			vcpu_set_wfx_traps(vcpu);
+	}
+#endif
 	kvm_vgic_load(vcpu);
 	kvm_timer_vcpu_load(vcpu);
+#ifdef CONFIG_CVM_HOST
+	if (vcpu_is_tec(vcpu)) {
+		if (kvm_arm_is_pvtime_enabled(&vcpu->arch))
+			kvm_make_request(KVM_REQ_RECORD_STEAL, vcpu);
+		return;
+	}
+#endif
 	if (has_vhe())
 		kvm_vcpu_load_sysregs_vhe(vcpu);
 	kvm_arch_vcpu_load_fp(vcpu);
@@ -414,10 +518,20 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 
 	if (vcpu_has_ptrauth(vcpu))
 		vcpu_ptrauth_disable(vcpu);
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_dvmbm_load(vcpu);
+#endif
 }
 
 void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 {
+#ifdef CONFIG_CVM_HOST
+	if (vcpu_is_tec(vcpu)) {
+		kvm_cvm_vcpu_put(vcpu);
+		return;
+	}
+#endif
 	kvm_arch_vcpu_put_fp(vcpu);
 	if (has_vhe())
 		kvm_vcpu_put_sysregs_vhe(vcpu);
@@ -426,6 +540,10 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 	kvm_vcpu_pmu_restore_host(vcpu);
 
 	vcpu->cpu = -1;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	kvm_hisi_dvmbm_put(vcpu);
+#endif
 }
 
 static void vcpu_power_off(struct kvm_vcpu *vcpu)
@@ -595,6 +713,9 @@ static int kvm_vcpu_first_run_init(struct kvm_vcpu *vcpu)
 		 * Tell the rest of the code that there are userspace irqchip
 		 * VMs in the wild.
 		 */
+#ifdef CONFIG_CVM_HOST
+	if (!kvm_is_cvm(kvm))
+#endif
 		static_branch_inc(&userspace_irqchip_in_use);
 	}
 
@@ -684,6 +805,12 @@ static void check_vcpu_requests(struct kvm_vcpu *vcpu)
 			vgic_v4_load(vcpu);
 			preempt_enable();
 		}
+
+#ifdef CONFIG_KVM_HISI_VIRT
+		if (kvm_check_request(KVM_REQ_RELOAD_DVMBM, vcpu))
+			kvm_hisi_reload_lsudvmbm(vcpu->kvm);
+#endif
+
 	}
 }
 
@@ -726,6 +853,17 @@ static bool kvm_vcpu_exit_request(struct kvm_vcpu *vcpu, int *ret)
 			xfer_to_guest_mode_work_pending();
 }
 
+#ifdef CONFIG_CVM_HOST
+static inline void update_pmu_phys_irq(struct kvm_vcpu *vcpu, bool *pmu_stopped)
+{
+	struct kvm_pmu *pmu = &vcpu->arch.pmu;
+
+	if (pmu->irq_level) {
+		*pmu_stopped = true;
+		arm_pmu_set_phys_irq(false);
+	}
+}
+#endif
 
 /**
  * kvm_arch_vcpu_ioctl_run - the main VCPU run function to execute guest code
@@ -748,7 +886,6 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	ret = kvm_vcpu_first_run_init(vcpu);
 	if (ret)
 		return ret;
-
 	if (run->exit_reason == KVM_EXIT_MMIO) {
 		ret = kvm_handle_mmio_return(vcpu);
 		if (ret)
@@ -765,6 +902,9 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	ret = 1;
 	run->exit_reason = KVM_EXIT_UNKNOWN;
 	while (ret > 0) {
+#ifdef CONFIG_CVM_HOST
+		bool pmu_stopped = false;
+#endif
 		/*
 		 * Check conditions before entering the guest
 		 */
@@ -784,6 +924,10 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		preempt_disable();
 
 		kvm_pmu_flush_hwstate(vcpu);
+#ifdef CONFIG_CVM_HOST
+		if (vcpu_is_tec(vcpu))
+			update_pmu_phys_irq(vcpu, &pmu_stopped);
+#endif
 
 		local_irq_disable();
 
@@ -811,13 +955,24 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		kvm_arm_setup_debug(vcpu);
 
+		if (use_twed()) {
+			vcpu_twed_enable(vcpu);
+			vcpu_set_twed(vcpu);
+		} else {
+			vcpu_twed_disable(vcpu);
+		}
+
 		/**************************************************************
 		 * Enter the guest
 		 */
 		trace_kvm_entry(*vcpu_pc(vcpu));
 		guest_enter_irqoff();
-
-		ret = kvm_call_hyp_ret(__kvm_vcpu_run, vcpu);
+#ifdef CONFIG_CVM_HOST
+		if (vcpu_is_tec(vcpu))
+			ret = kvm_tec_enter(vcpu);
+		else
+#endif
+			ret = kvm_call_hyp_ret(__kvm_vcpu_run, vcpu);
 
 		vcpu->mode = OUTSIDE_GUEST_MODE;
 		vcpu->stat.exits++;
@@ -872,12 +1027,21 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * guest time.
 		 */
 		guest_exit();
-		trace_kvm_exit(ret, kvm_vcpu_trap_get_class(vcpu), *vcpu_pc(vcpu));
+#ifdef CONFIG_CVM_HOST
+		if (!vcpu_is_tec(vcpu)) {
+#endif
+			trace_kvm_exit(ret, kvm_vcpu_trap_get_class(vcpu), *vcpu_pc(vcpu));
 
-		/* Exit types that need handling before we can be preempted */
-		handle_exit_early(vcpu, ret);
-
+			/* Exit types that need handling before we can be preempted */
+			handle_exit_early(vcpu, ret);
+#ifdef CONFIG_CVM_HOST
+		}
+#endif
 		preempt_enable();
+#ifdef CONFIG_CVM_HOST
+		if (pmu_stopped)
+			arm_pmu_set_phys_irq(true);
+#endif
 
 		/*
 		 * The ARMv8 architecture doesn't give the hypervisor
@@ -897,8 +1061,12 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 			vcpu->arch.target = -1;
 			ret = ARM_EXCEPTION_IL;
 		}
-
-		ret = handle_exit(vcpu, ret);
+#ifdef CONFIG_CVM_HOST
+		if (vcpu_is_tec(vcpu))
+			ret = handle_cvm_exit(vcpu, ret);
+		else
+#endif
+			ret = handle_exit(vcpu, ret);
 	}
 
 	/* Tell userspace about in-kernel device output levels */
@@ -1327,6 +1495,11 @@ long kvm_arch_vm_ioctl(struct file *filp,
 	void __user *argp = (void __user *)arg;
 
 	switch (ioctl) {
+#ifdef CONFIG_CVM_HOST
+	case KVM_LOAD_USER_DATA: {
+		return kvm_load_user_data(kvm, arg);
+	}
+#endif
 	case KVM_CREATE_IRQCHIP: {
 		int ret;
 		if (!vgic_present)
@@ -1858,13 +2031,29 @@ int kvm_arch_init(void *opaque)
 		return -ENODEV;
 	}
 
+#ifdef CONFIG_KVM_HISI_VIRT
+	probe_hisi_cpu_type();
+	kvm_ncsnp_support = hisi_ncsnp_supported();
+	kvm_dvmbm_support = hisi_dvmbm_supported();
+	if (kvm_dvmbm_support)
+		kvm_get_pg_cfg();
+#endif
+	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
+	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
+
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
 	if (!in_hyp_mode && kvm_arch_requires_vhe()) {
 		kvm_pr_unimpl("CPU unsupported in non-VHE mode, not initializing\n");
 		return -ENODEV;
 	}
-
+#ifdef CONFIG_CVM_HOST
+	if (static_branch_unlikely(&kvm_cvm_is_enable) && in_hyp_mode) {
+		err = kvm_init_tmm();
+		if (err)
+			return err;
+	}
+#endif
 	if (cpus_have_final_cap(ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE) ||
 	    cpus_have_final_cap(ARM64_WORKAROUND_1508412))
 		kvm_info("Guests without required CPU erratum workarounds can deadlock system!\n" \
