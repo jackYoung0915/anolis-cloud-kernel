@@ -140,6 +140,9 @@ struct scan_control {
 	/* Always discard instead of demoting to lower tier memory */
 	unsigned int no_demotion:1;
 
+	/* The file pages on the current node are not allowed to reclaim */
+	unsigned int file_is_reserved:1;
+
 	/* Allocation order */
 	s8 order;
 
@@ -190,6 +193,44 @@ struct scan_control {
  * From 0 .. 200.  Higher means more swappy.
  */
 int vm_swappiness = 60;
+/* The min page cache should be reserved in the system */
+unsigned long sysctl_min_cache_kbytes;
+
+/*
+ * Even vm_swappiness is set to 0, swapout can happen in
+ * global reclaim when there is few page cache.  When
+ * strict_swappiness is set, such global swapout can be
+ * completely disabled.
+ */
+static int strict_swappiness;
+
+#ifdef CONFIG_DEBUG_FS
+static int strict_swappiness_get(void *data, u64 *val)
+{
+	*val = strict_swappiness;
+	return 0;
+}
+
+static int strict_swappiness_set(void *data, u64 val)
+{
+	if (val > 1)
+		return -EINVAL;
+
+	strict_swappiness = val;
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(strict_swappiness_fops,
+		strict_swappiness_get, strict_swappiness_set, "%llu\n");
+
+static int __init strict_swappiness_debugfs(void)
+{
+	debugfs_create_file_unsafe("strict_swappiness", 0644, NULL, NULL,
+				   &strict_swappiness_fops);
+	return 0;
+}
+late_initcall(strict_swappiness_debugfs);
+#endif
 
 LIST_HEAD(shrinker_list);
 DECLARE_RWSEM(shrinker_rwsem);
@@ -2991,6 +3032,7 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 	if (!cgroup_reclaim(sc)) {
 		unsigned long total_high_wmark = 0;
 		unsigned long free, anon;
+		unsigned long min_cache_kbytes;
 		int z;
 
 		free = sum_zone_node_page_state(pgdat->node_id, NR_FREE_PAGES);
@@ -3017,6 +3059,15 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 			file + free <= total_high_wmark &&
 			!(sc->may_deactivate & DEACTIVATE_ANON) &&
 			anon >> sc->priority;
+
+		/*
+		 * Reserve a specified amount of page caches in case of thrashing.
+		 * OOM killer is preferred when the system page cache is below the
+		 * given watermark.
+		 */
+		min_cache_kbytes = READ_ONCE(sysctl_min_cache_kbytes);
+		if (min_cache_kbytes)
+			sc->file_is_reserved = file <= pgdat->min_cache_pages;
 	}
 }
 
@@ -3071,7 +3122,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	/*
 	 * If the system is almost out of file pages, force-scan anon.
 	 */
-	if (sc->file_is_tiny) {
+	if (sc->file_is_tiny && !strict_swappiness) {
 		scan_balance = SCAN_ANON;
 		goto out;
 	}
@@ -3219,6 +3270,9 @@ out:
 			/* Look ma, no brain */
 			BUG();
 		}
+
+		if (sc->file_is_reserved && file)
+			scan = 0;
 
 		nr[lru] = scan;
 	}
