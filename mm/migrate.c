@@ -353,11 +353,45 @@ void migration_entry_wait(struct mm_struct *mm, pmd_t *pmd,
 	__migration_entry_wait(mm, ptep, ptl);
 }
 
+static void __migration_entry_huge_wait(struct vm_area_struct *vma, pte_t *ptep,
+				spinlock_t *ptl)
+{
+	pte_t pte;
+	swp_entry_t entry;
+	struct page *page;
+	struct address_space *mapping = vma->vm_file->f_mapping;
+
+	spin_lock(ptl);
+	pte = huge_ptep_get(ptep);
+
+	if (unlikely(!is_hugetlb_entry_migration(pte)))
+		goto out;
+
+	entry = pte_to_swp_entry(pte);
+	page = migration_entry_to_page(entry);
+	page = compound_head(page);
+
+	/*
+	 * Once page cache replacement of page migration started, page_count
+	 * is zero; but we must not call put_and_wait_on_page_locked() without
+	 * a ref. Use get_page_unless_zero(), and just fault again if it fails.
+	 */
+	if (!get_page_unless_zero(page))
+		goto out;
+	spin_unlock(ptl);
+	i_mmap_unlock_read(mapping);
+	put_and_wait_on_page_locked(page);
+	return;
+out:
+	spin_unlock(ptl);
+	i_mmap_unlock_read(mapping);
+}
+
 void migration_entry_wait_huge(struct vm_area_struct *vma,
 		struct mm_struct *mm, pte_t *pte)
 {
 	spinlock_t *ptl = huge_pte_lockptr(hstate_vma(vma), mm, pte);
-	__migration_entry_wait(mm, pte, ptl);
+	__migration_entry_huge_wait(vma, pte, ptl);
 }
 
 #ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
