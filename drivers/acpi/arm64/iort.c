@@ -1241,15 +1241,16 @@ static int __init arm_smmu_v3_count_resources(struct acpi_iort_node *node)
 static bool arm_smmu_v3_is_combined_irq(struct acpi_iort_smmu_v3 *smmu)
 {
 	/*
-	 * Cavium ThunderX2 implementation doesn't not support unique
-	 * irq line. Use single irq line for all the SMMUv3 interrupts.
+	 * Cavium ThunderX2 and JMND Corsica implementation doesn't not support
+	 * unique irq line. Use single irq line for all the SMMUv3 interrupts.
 	 */
-	if (smmu->model != ACPI_IORT_SMMU_V3_CAVIUM_CN99XX)
+	if (smmu->model != ACPI_IORT_SMMU_V3_CAVIUM_CN99XX &&
+			smmu->model != ACPI_IORT_SMMU_V3_JMND_CORSICA)
 		return false;
 
 	/*
-	 * ThunderX2 doesn't support MSIs from the SMMU, so we're checking
-	 * SPI numbers here.
+	 * ThunderX2 and JMND Corsica doesn't support MSIs from the SMMU,
+	 * so we're checking SPI numbers here.
 	 */
 	return smmu->event_gsiv == smmu->pri_gsiv &&
 	       smmu->event_gsiv == smmu->gerr_gsiv &&

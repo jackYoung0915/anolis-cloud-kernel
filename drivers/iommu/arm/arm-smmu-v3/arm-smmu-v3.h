@@ -410,6 +410,15 @@ enum pri_resp {
 	PRI_RESP_SUCC = 2,
 };
 
+/* JMND Corsica smmu custom registers */
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_CLEAR  0x0404
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_EN     0x0408
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_STATUS 0x0410
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_EN_BIT         GENMASK(31, 0)
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_MASK           0x4400
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_GERROR_MASk    0x400
+#define JMND_CORSICA_SMMU_CSR_INTERRUPT_EVENT_MASk     0x4000
+
 struct arm_smmu_cmdq_ent {
 	/* Common fields */
 	u8				opcode;
@@ -623,6 +632,7 @@ struct arm_smmu_device {
 #define ARM_SMMU_OPT_SKIP_PREFETCH	(1 << 0)
 #define ARM_SMMU_OPT_PAGE0_REGS_ONLY	(1 << 1)
 #define ARM_SMMU_OPT_MSIPOLL		(1 << 2)
+#define ARM_SMMU_OPT_CUSTOM_CSR		(1 << 3)
 	u32				options;
 
 	struct arm_smmu_cmdq		cmdq;
@@ -650,6 +660,9 @@ struct arm_smmu_device {
 
 	/* IOMMU core code handle */
 	struct iommu_device		iommu;
+
+	/* for JMND Corsica custom register */
+	void __iomem			*csr;
 #ifdef CONFIG_ARM_SMMU_V3_POLLING_EVT
 	struct task_struct *evt_polling;
 #endif

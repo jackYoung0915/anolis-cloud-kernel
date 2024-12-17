@@ -1575,6 +1575,46 @@ static int arm_smmu_init_event_polling(struct arm_smmu_device *smmu)
 #endif
 
 static void
+arm_smmu_csr_interrupt_status_ack(struct arm_smmu_device *smmu, u32 val,
+		unsigned int reg_off)
+{
+	u32 reg;
+
+	reg = FIELD_PREP(JMND_CORSICA_SMMU_CSR_INTERRUPT_EN_BIT, val);
+	writel_relaxed(reg, smmu->csr + reg_off);
+}
+
+static irqreturn_t arm_smmu_combined_jmnd_irq_handler(int irq, void *dev)
+{
+	struct arm_smmu_device *smmu = dev;
+	u32 status, status_mask;
+
+	status = readl_relaxed(smmu->csr +
+		JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_STATUS);
+	status_mask = status & JMND_CORSICA_SMMU_CSR_INTERRUPT_MASK;
+
+	if (!status_mask)
+		return IRQ_NONE;
+
+	if (status & JMND_CORSICA_SMMU_CSR_INTERRUPT_GERROR_MASk) {
+		arm_smmu_gerror_handler(irq, dev);
+		return IRQ_WAKE_THREAD;
+	}
+
+	if (status & JMND_CORSICA_SMMU_CSR_INTERRUPT_EVENT_MASk) {
+		arm_smmu_evtq_thread(irq, dev);
+
+		if (smmu->features & ARM_SMMU_FEAT_PRI)
+			arm_smmu_priq_thread(irq, dev);
+	}
+
+	arm_smmu_csr_interrupt_status_ack(smmu, JMND_CORSICA_SMMU_CSR_INTERRUPT_MASK,
+		       JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_CLEAR);
+
+	return IRQ_HANDLED;
+}
+
+static void
 arm_smmu_atc_inv_to_cmd(int ssid, unsigned long iova, size_t size,
 			struct arm_smmu_cmdq_ent *cmd)
 {
@@ -3270,14 +3310,23 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 	irq = smmu->combined_irq;
 	if (irq) {
 		/*
-		 * Cavium ThunderX2 implementation doesn't support unique irq
-		 * lines. Use a single irq line for all the SMMUv3 interrupts.
+		 * Cavium ThunderX2 and JMND Corsica implementation doesn't support
+		 * unique irq lines. Use a single irq line for all the SMMUv3
+		 * interrupts.
 		 */
-		ret = devm_request_threaded_irq(smmu->dev, irq,
-					arm_smmu_combined_irq_handler,
-					arm_smmu_combined_irq_thread,
-					IRQF_ONESHOT,
-					"arm-smmu-v3-combined-irq", smmu);
+		if ((smmu->options & ARM_SMMU_OPT_CUSTOM_CSR)
+		  && (smmu->csr != NULL))
+			ret = devm_request_threaded_irq(smmu->dev, irq,
+							arm_smmu_combined_jmnd_irq_handler,
+							NULL,
+							IRQF_ONESHOT,
+							"arm-smmu-v3-jmnd-irq", smmu);
+		else
+			ret = devm_request_threaded_irq(smmu->dev, irq,
+						arm_smmu_combined_irq_handler,
+						arm_smmu_combined_irq_thread,
+						IRQF_ONESHOT,
+						"arm-smmu-v3-combined-irq", smmu);
 		if (ret < 0)
 			dev_warn(smmu->dev, "failed to enable combined irq\n");
 	} else
@@ -3418,6 +3467,22 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu, bool bypass)
 	if (ret) {
 		dev_err(smmu->dev, "failed to setup irqs\n");
 		return ret;
+	}
+
+	if ((smmu->options & ARM_SMMU_OPT_CUSTOM_CSR) && (smmu->csr != NULL)) {
+		writel_relaxed(0x0,
+				smmu->csr + JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_EN);
+		reg = FIELD_PREP(JMND_CORSICA_SMMU_CSR_INTERRUPT_EN_BIT,
+				JMND_CORSICA_SMMU_CSR_INTERRUPT_MASK);
+		writel_relaxed(reg,
+				smmu->csr + JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_EN);
+		reg = readl_relaxed(smmu->csr +
+				JMND_CORSICA_SMMU_CSR_INTERRUPT_CLUSTER_EN);
+		if (!(reg & JMND_CORSICA_SMMU_CSR_INTERRUPT_MASK)) {
+			dev_err(smmu->dev,
+					"SMMU CSR interrupt_cluster failed\n");
+			return -1;
+		}
 	}
 
 	if (is_kdump_kernel())
@@ -3699,6 +3764,9 @@ static void acpi_smmu_get_options(u32 model, struct arm_smmu_device *smmu)
 	case ACPI_IORT_SMMU_V3_HISILICON_HI161X:
 		smmu->options |= ARM_SMMU_OPT_SKIP_PREFETCH;
 		break;
+	case ACPI_IORT_SMMU_V3_JMND_CORSICA:
+		smmu->options |= ARM_SMMU_OPT_CUSTOM_CSR;
+		break;
 	}
 
 	dev_notice(smmu->dev, "option mask 0x%x\n", smmu->options);
@@ -3868,6 +3936,14 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 					       ARM_SMMU_REG_SZ);
 		if (IS_ERR(smmu->page1))
 			return PTR_ERR(smmu->page1);
+		if (smmu->options & ARM_SMMU_OPT_CUSTOM_CSR) {
+			smmu->csr = arm_smmu_ioremap(dev,
+					ioaddr + SZ_1M - SZ_64K, SZ_64K);
+			if (IS_ERR(smmu->csr)) {
+				dev_warn(dev, "CSR io remap failed\n");
+				return PTR_ERR(smmu->csr);
+			}
+		}
 	} else {
 		smmu->page1 = smmu->base;
 	}
