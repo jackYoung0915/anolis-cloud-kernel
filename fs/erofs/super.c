@@ -10,6 +10,7 @@
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 #include <linux/exportfs.h>
+#include <linux/backing-dev.h>
 #include "xattr.h"
 
 #define CREATE_TRACE_POINTS
@@ -17,37 +18,22 @@
 
 static struct kmem_cache *erofs_inode_cachep __read_mostly;
 
-void _erofs_err(struct super_block *sb, const char *func, const char *fmt, ...)
+void _erofs_printk(struct super_block *sb, const char *fmt, ...)
 {
 	struct va_format vaf;
 	va_list args;
+	int level;
 
 	va_start(args, fmt);
 
-	vaf.fmt = fmt;
+	level = printk_get_level(fmt);
+	vaf.fmt = printk_skip_level(fmt);
 	vaf.va = &args;
-
 	if (sb)
-		pr_err("(device %s): %s: %pV", sb->s_id, func, &vaf);
+		printk("%c%cerofs (device %s): %pV",
+				KERN_SOH_ASCII, level, sb->s_id, &vaf);
 	else
-		pr_err("%s: %pV", func, &vaf);
-	va_end(args);
-}
-
-void _erofs_info(struct super_block *sb, const char *func, const char *fmt, ...)
-{
-	struct va_format vaf;
-	va_list args;
-
-	va_start(args, fmt);
-
-	vaf.fmt = fmt;
-	vaf.va = &args;
-
-	if (sb)
-		pr_info("(device %s): %pV", sb->s_id, &vaf);
-	else
-		pr_info("%pV", &vaf);
+		printk("%c%cerofs: %pV", KERN_SOH_ASCII, level, &vaf);
 	va_end(args);
 }
 
@@ -162,6 +148,7 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 	struct erofs_fscache *fscache;
 	struct erofs_deviceslot *dis;
 	struct bdev_handle *bdev_handle;
+	struct file *file;
 
 	dis = erofs_read_metabuf(buf, sb, *pos, EROFS_KMAP);
 	if (IS_ERR(dis))
@@ -183,13 +170,24 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 			return PTR_ERR(fscache);
 		dif->fscache = fscache;
 	} else if (!sbi->devs->flatdev) {
-		bdev_handle = bdev_open_by_path(dif->path, BLK_OPEN_READ,
-						sb->s_type, NULL);
-		if (IS_ERR(bdev_handle))
-			return PTR_ERR(bdev_handle);
-		dif->bdev_handle = bdev_handle;
-		dif->dax_dev = fs_dax_get_by_bdev(bdev_handle->bdev,
-				&dif->dax_part_off, NULL, NULL);
+		if (erofs_is_fileio_mode(sbi)) {
+			file = filp_open(dif->path, O_RDONLY | O_LARGEFILE, 0);
+			if (IS_ERR(file))
+				return PTR_ERR(file);
+			if (!S_ISREG(file_inode(file)->i_mode)) {
+				fput(file);
+				return -EINVAL;
+			}
+			dif->file = file;
+		} else {
+			bdev_handle = bdev_open_by_path(dif->path, BLK_OPEN_READ,
+					sb->s_type, NULL);
+			if (IS_ERR(bdev_handle))
+				return PTR_ERR(bdev_handle);
+			dif->bdev_handle = bdev_handle;
+			dif->dax_dev = fs_dax_get_by_bdev(bdev_handle->bdev,
+					&dif->dax_part_off, NULL, NULL);
+		}
 	}
 
 	dif->blocks = le32_to_cpu(dis->blocks);
@@ -329,7 +327,7 @@ static int erofs_read_superblock(struct super_block *sb)
 	sbi->build_time = le64_to_cpu(dsb->build_time);
 	sbi->build_time_nsec = le32_to_cpu(dsb->build_time_nsec);
 
-	memcpy(&sb->s_uuid, dsb->uuid, sizeof(dsb->uuid));
+	super_set_uuid(sb, (void *)dsb->uuid, sizeof(dsb->uuid));
 
 	ret = strscpy(sbi->volume_name, dsb->volume_name,
 		      sizeof(dsb->volume_name));
@@ -562,6 +560,22 @@ static const struct export_operations erofs_export_ops = {
 	.get_parent = erofs_get_parent,
 };
 
+static void erofs_set_sysfs_name(struct super_block *sb)
+{
+	struct erofs_sb_info *sbi = EROFS_SB(sb);
+
+	if (sbi->domain_id)
+		super_set_sysfs_name_generic(sb, "%s,%s", sbi->domain_id,
+					     sbi->fsid);
+	else if (sbi->fsid)
+		super_set_sysfs_name_generic(sb, "%s", sbi->fsid);
+	else if (erofs_is_fileio_mode(sbi))
+		super_set_sysfs_name_generic(sb, "%s",
+					     bdi_dev_name(sb->s_bdi));
+	else
+		super_set_sysfs_name_id(sb);
+}
+
 static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct inode *inode;
@@ -574,14 +588,15 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_op = &erofs_sops;
 
 	sbi->blkszbits = PAGE_SHIFT;
-	if (erofs_is_fscache_mode(sb)) {
+	if (!sb->s_bdev) {
 		sb->s_blocksize = PAGE_SIZE;
 		sb->s_blocksize_bits = PAGE_SHIFT;
 
-		err = erofs_fscache_register_fs(sb);
-		if (err)
-			return err;
-
+		if (erofs_is_fscache_mode(sb)) {
+			err = erofs_fscache_register_fs(sb);
+			if (err)
+				return err;
+		}
 		err = super_setup_bdi(sb);
 		if (err)
 			return err;
@@ -605,7 +620,11 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 			errorfc(fc, "unsupported blksize for fscache mode");
 			return -EINVAL;
 		}
-		if (!sb_set_blocksize(sb, 1 << sbi->blkszbits)) {
+
+		if (erofs_is_fileio_mode(sbi)) {
+			sb->s_blocksize = 1 << sbi->blkszbits;
+			sb->s_blocksize_bits = sbi->blkszbits;
+		} else if (!sb_set_blocksize(sb, 1 << sbi->blkszbits)) {
 			errorfc(fc, "failed to set erofs blksize");
 			return -EINVAL;
 		}
@@ -666,6 +685,7 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		return err;
 
+	erofs_set_sysfs_name(sb);
 	err = erofs_register_sysfs(sb);
 	if (err)
 		return err;
@@ -677,11 +697,29 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_sb_info *sbi = fc->s_fs_info;
+	int ret;
 
 	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 
-	return get_tree_bdev(fc, erofs_fc_fill_super);
+	ret = get_tree_bdev_flags(fc, erofs_fc_fill_super,
+		IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) ?
+			GET_TREE_BDEV_QUIET_LOOKUP : 0);
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+	if (ret == -ENOTBLK) {
+		if (!fc->source)
+			return invalf(fc, "No source specified");
+		sbi->fdev = filp_open(fc->source, O_RDONLY | O_LARGEFILE, 0);
+		if (IS_ERR(sbi->fdev))
+			return PTR_ERR(sbi->fdev);
+
+		if (S_ISREG(file_inode(sbi->fdev)->i_mode) &&
+		    sbi->fdev->f_mapping->a_ops->read_folio)
+			return get_tree_nodev(fc, erofs_fc_fill_super);
+		fput(sbi->fdev);
+	}
+#endif
+	return ret;
 }
 
 static int erofs_fc_reconfigure(struct fs_context *fc)
@@ -713,6 +751,8 @@ static int erofs_release_device_info(int id, void *ptr, void *data)
 	fs_put_dax(dif->dax_dev, NULL);
 	if (dif->bdev_handle)
 		bdev_release(dif->bdev_handle);
+	if (dif->file)
+		fput(dif->file);
 	erofs_fscache_unregister_cookie(dif->fscache);
 	dif->fscache = NULL;
 	kfree(dif->path);
@@ -775,7 +815,7 @@ static void erofs_kill_sb(struct super_block *sb)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
-	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid)
+	if ((IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid) || sbi->fdev)
 		kill_anon_super(sb);
 	else
 		kill_block_super(sb);
@@ -785,6 +825,8 @@ static void erofs_kill_sb(struct super_block *sb)
 	erofs_fscache_unregister_fs(sb);
 	kfree(sbi->fsid);
 	kfree(sbi->domain_id);
+	if (sbi->fdev)
+		fput(sbi->fdev);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
 }
@@ -887,7 +929,7 @@ static int erofs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_namelen = EROFS_NAME_LEN;
 
 	if (uuid_is_null(&sb->s_uuid))
-		buf->f_fsid = u64_to_fsid(erofs_is_fscache_mode(sb) ? 0 :
+		buf->f_fsid = u64_to_fsid(!sb->s_bdev ? 0 :
 				huge_encode_dev(sb->s_bdev->bd_dev));
 	else
 		buf->f_fsid = uuid_to_fsid(sb->s_uuid.b);
