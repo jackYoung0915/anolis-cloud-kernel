@@ -6798,13 +6798,19 @@ wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se);
 static DEFINE_PER_CPU(struct callback_head, push_expellee_head);
 DEFINE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
 DEFINE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
+/*
+ * The minimum interval we push expellee tasks from tick.
+ * The default value is an experience value.
+ *
+ * Default: 6 msec, units: nanoseconds
+ */
+unsigned int sysctl_sched_push_expellee_interval = 6000000;
 
 static void __push_expellee(struct rq *rq)
 {
 	struct sched_domain *sd;
 	int cpu = cpu_of(rq);
 	struct task_struct *p, *tmp;
-	struct list_head tasks;
 	struct cpumask *traverse_mask = this_cpu_cpumask_var_ptr(push_expellee_traverse_mask);
 	struct cpumask *traversed_mask = this_cpu_cpumask_var_ptr(push_expellee_traversed_mask);
 
@@ -6813,22 +6819,20 @@ static void __push_expellee(struct rq *rq)
 
 	preempt_disable();
 	rcu_read_lock();
-	INIT_LIST_HEAD(&tasks);
-	list_for_each_entry_safe(p, tmp, &rq->cfs_tasks, se.group_node) {
-		if (is_expellee_task(p)) {
-			get_task_struct(p);
-			deactivate_task(rq, p, DEQUEUE_NOCLOCK);
-			list_add(&p->se.group_node, &tasks);
-		}
-	}
-	raw_spin_rq_unlock_irq(rq);
 
-	list_for_each_entry_safe(p, tmp, &tasks, se.group_node) {
+	list_for_each_entry_safe(p, tmp, &rq->cfs_tasks, se.group_node) {
 		int backup_cpu = -1, dst_cpu = -1;
 		int min_nr_running = INT_MAX;
 		struct rq *dst_rq;
 		bool idle;
 
+		if (need_resched())
+			break;
+		if (rq->nr_expel_immune == rq->cfs.h_nr_running)
+			break;
+		if (!is_expellee_task(p))
+			continue;
+		get_task_struct(p);
 		cpumask_clear(traversed_mask);
 		for_each_domain(cpu, sd) {
 			int i;
@@ -6840,7 +6844,18 @@ static void __push_expellee(struct rq *rq)
 
 				if (id_idle_cpu(p, i, true, &idle)) {
 					dst_cpu = i;
-					goto migrate;
+					dst_rq = cpu_rq(dst_cpu);
+					/*
+					 * In case of lock competition, we use
+					 * raw_spin_rq_trylock() instead of
+					 * double_lock_balance().
+					 */
+					if (raw_spin_rq_trylock(dst_rq)) {
+						goto migrate;
+					} else {
+						dst_cpu = -1;
+						dst_rq = NULL;
+					}
 				} else if (!rq_on_expel(tmp_rq)) {
 					if (tmp_rq->nr_running < min_nr_running) {
 						backup_cpu = i;
@@ -6851,52 +6866,59 @@ static void __push_expellee(struct rq *rq)
 			cpumask_or(traversed_mask, traversed_mask, sched_domain_span(sd));
 		}
 
+		/* If there is no cpu we can migrate now, stop the loop to avoid overhead. */
 		if (dst_cpu == -1) {
 			if (backup_cpu == -1)
-				dst_cpu = cpu;
-			else
-				dst_cpu = backup_cpu;
+				break;
+			dst_cpu = backup_cpu;
+			dst_rq = cpu_rq(dst_cpu);
+			if (!raw_spin_rq_trylock(dst_rq))
+				break;
 		}
 migrate:
-		dst_rq = cpu_rq(dst_cpu);
-		local_irq_disable();
-		double_rq_lock(rq, dst_rq);
-		update_rq_clock(rq);
+		p->on_rq = TASK_ON_RQ_MIGRATING;
+		deactivate_task(rq, p, 0);
 		set_task_cpu(p, dst_cpu);
-		list_del_init(&p->se.group_node);
-		update_rq_clock(dst_rq);
-		activate_task(dst_rq, p, ENQUEUE_NOCLOCK);
-		check_preempt_curr(dst_rq, p, 0);
-		double_rq_unlock(rq, dst_rq);
-		local_irq_enable();
+		activate_task(dst_rq, p, 0);
+		p->on_rq = TASK_ON_RQ_QUEUED;
 		put_task_struct(p);
+
+		resched_curr(dst_rq);
+
+		raw_spin_rq_unlock(dst_rq);
 	}
-	raw_spin_rq_lock_irq(rq);
 	rcu_read_unlock();
 	preempt_enable();
-	rq->last_push_expellee = rq_clock(rq);
+	rq->last_push_expellee = __rq_clock_broken(rq);
+}
+
+static inline bool should_push_expellee(struct rq *rq)
+{
+	return (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
+	    rq->nr_expel_immune < rq->cfs.h_nr_running);
 }
 
 static inline void push_expellee(struct rq *rq)
 {
-	if (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
-	    rq->nr_expel_immune < rq->cfs.h_nr_running)
+	if (should_push_expellee(rq))
 		queue_balance_callback(rq, &per_cpu(push_expellee_head, rq->cpu),
 				       __push_expellee);
 }
 
 void task_tick_gi(struct rq *rq)
 {
-	if (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
-	    rq->nr_expel_immune < rq->cfs.h_nr_running &&
-	    (rq_clock(rq) - max(rq->expel_start, rq->last_push_expellee) > sysctl_sched_latency))
+	if (should_push_expellee(rq) &&
+	    rq_clock(rq) - max(rq->expel_start, rq->last_push_expellee) >
+	     sysctl_sched_push_expellee_interval)
 		resched_curr(rq);
 }
 
 #ifdef CONFIG_NO_HZ_FULL
 bool id_can_stop_tick(struct rq *rq)
 {
-	return sched_feat(ID_PUSH_EXPELLEE) && !expellee_only(rq);
+	if (!sched_feat(ID_PUSH_EXPELLEE))
+		return true;
+	return !expellee_only(rq);
 }
 #endif
 #else
