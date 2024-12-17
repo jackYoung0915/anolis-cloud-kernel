@@ -935,10 +935,11 @@ static inline unsigned long expel_score(struct rq *rq)
 
 static inline bool __is_highclass_task(struct task_struct *p)
 {
+	struct sched_entity *se = p->se.parent ? : &p->se;
 	bool ret;
 
 	rcu_read_lock();
-	ret = p->se.parent ? __is_highclass(p->se.parent) : false;
+	ret = __is_highclass(se);
 	rcu_read_unlock();
 
 	return ret;
@@ -966,12 +967,12 @@ static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 
 static inline bool task_is_expeller(struct task_struct *p)
 {
+	struct sched_entity *se = p->se.parent ? : &p->se;
 	bool ret = false;
 
 	/* Check the identity of task group it belonged */
 	rcu_read_lock();
-	if (p->se.parent)
-		ret = is_expeller(p->se.parent);
+	ret = is_expeller(se);
 	rcu_read_unlock();
 
 	return ret;
@@ -979,20 +980,22 @@ static inline bool task_is_expeller(struct task_struct *p)
 
 inline bool is_underclass_task(struct task_struct *p)
 {
+	struct sched_entity *se = p->se.parent ? : &p->se;
 	bool ret;
 
 	rcu_read_lock();
-	ret = p->se.parent ? __is_underclass(p->se.parent) : false;
+	ret = __is_underclass(se);
 	rcu_read_unlock();
 	return ret;
 }
 
 static inline bool is_idle_saver_task(struct task_struct *p)
 {
+	struct sched_entity *se = p->se.parent ? : &p->se;
 	bool ret;
 
 	rcu_read_lock();
-	ret = p->se.parent ? is_idle_saver(p->se.parent) : false;
+	ret = is_idle_saver(se);
 	rcu_read_unlock();
 
 	return ret;
@@ -1000,13 +1003,14 @@ static inline bool is_idle_saver_task(struct task_struct *p)
 
 static inline bool is_idle_seeker_task(struct task_struct *p)
 {
+	struct sched_entity *se = p->se.parent ? : &p->se;
 	bool ret;
 
 	if (group_identity_disabled())
 		return false;
 
 	rcu_read_lock();
-	ret = p->se.parent ? is_idle_seeker(p->se.parent) : false;
+	ret = is_idle_seeker(se);
 	rcu_read_unlock();
 
 	return ret;
@@ -1350,14 +1354,30 @@ static int tg_clear_identity_down(struct task_group *tg, void *data)
 	return 0;
 }
 
+static void __update_task_identity(struct task_struct *p, int flags);
+static void task_clear_identity(void)
+{
+	struct css_task_iter it;
+	struct task_struct *tsk;
+
+	css_task_iter_start(&root_task_group.css, 0, &it);
+	while ((tsk = css_task_iter_next(&it))) {
+		if (unlikely(&tsk->se.id_flags))
+			__update_task_identity(tsk, 0);
+	}
+	css_task_iter_end(&it);
+}
+
 static inline void group_identity_flip(bool enable)
 {
 	int cpu;
 
 	cpus_read_lock();
 
-	if (!enable)
+	if (!enable) {
 		walk_tg_tree(tg_clear_identity_down, tg_nop, NULL);
+		task_clear_identity();
+	}
 	stop_machine(__group_identity_flip, &enable, cpu_online_mask);
 
 	for_each_cpu_not(cpu, cpu_online_mask)
@@ -1379,7 +1399,7 @@ static void __group_identity_disable(void)
 	unsigned int identity_count = atomic_read(&group_identity_count);
 
 	if (identity_count)
-		pr_info("Group Identity switch: There are still %d cgroups with non-zero identiy.\n",
+		pr_info("Group Identity switch: There are still %d cgroups/tasks with non-zero identiy.\n",
 			identity_count);
 
 	group_identity_flip(false);
@@ -1533,6 +1553,75 @@ static void __update_identity(struct task_group *tg, int flags)
 		group_identity_put();
 }
 
+static void __update_task_identity(struct task_struct *p, int flags)
+{
+	struct sched_entity *se = &p->se;
+	struct cfs_rq *cfs_rq;
+	struct rq_flags rf;
+	int old_id_flags;
+	struct rq *rq;
+	long ei_delta;
+	bool on_rq;
+
+	old_id_flags = se->id_flags;
+
+	if (flags && !old_id_flags)
+		group_identity_get();
+
+	rq = task_rq_lock(p, &rf);
+	update_rq_clock(rq);
+
+	cfs_rq = cfs_rq_of(se);
+	ei_delta = !__is_underclass(se);
+	on_rq = se->on_rq;
+
+	if (on_rq) {
+		if (se != cfs_rq->curr)
+			__dequeue_entity(cfs_rq, se);
+		hierarchy_update_nr_expel_immune(se, -ei_delta);
+		if (__is_highclass(se))
+			rq->nr_high_running--;
+		if (__is_underclass(se))
+			rq->nr_under_running--;
+
+		update_curr(cfs_rq);
+		se->vruntime -= __id_min_vruntime(cfs_rq, se);
+	}
+
+	se->id_flags = flags;
+
+	if (on_rq) {
+		se->vruntime += __id_min_vruntime(cfs_rq, se);
+
+		if (se != cfs_rq->curr)
+			__enqueue_entity(cfs_rq, se);
+		hierarchy_update_nr_expel_immune(se, ei_delta);
+		if (__is_highclass(se))
+			rq->nr_high_running++;
+		if (__is_underclass(se))
+			rq->nr_under_running++;
+
+		update_min_vruntime(cfs_rq);
+	}
+
+#ifdef CONFIG_SCHED_SMT
+	if (is_underclass(se)) {
+		se->expel_start = rq->expel_sum;
+		se->expel_start_ts = rq_clock(rq);
+		se->expel_sum = 0;
+	} else {
+		se->expel_start_ts = 0;
+	}
+	seqlock_init(&se->expel_seq);
+#endif
+	__notify_smt_expeller(rq, rq->curr);
+
+	task_rq_unlock(rq, p, &rf);
+
+	if (!flags && old_id_flags)
+		group_identity_put();
+}
+
 int update_bvt_warp_ns(struct task_group *tg, s64 val)
 {
 	int flags = 0;
@@ -1583,21 +1672,25 @@ unlock:
 	return ret;
 }
 
-int update_identity(struct task_group *tg, s64 val)
+int update_identity(struct task_group *tg, struct task_struct *p, s64 val)
 {
 	int ret = 0;
-
-	mutex_lock(&identity_mutex);
-
-	if (group_identity_disabled()) {
-		ret = -EINVAL;
-		goto unlock;
-	}
 
 	/*
 	 * We can't change the flags of the root cgroup.
 	 */
-	if (!tg->se[0]) {
+	if (tg && !tg->se[0])
+		return -EINVAL;
+
+	/*
+	 * Tasks stuck in root group can update their id_flags.
+	 */
+	if (p && !(p->flags & PF_NO_SETAFFINITY))
+		return -EINVAL;
+
+	mutex_lock(&identity_mutex);
+
+	if (group_identity_disabled()) {
 		ret = -EINVAL;
 		goto unlock;
 	}
@@ -1612,8 +1705,12 @@ int update_identity(struct task_group *tg, s64 val)
 		goto unlock;
 	}
 
-	if (tg->id_flags != val)
+	if (tg && tg->id_flags != val)
 		__update_identity(tg, val);
+
+	if (p && p->se.id_flags != val)
+		__update_task_identity(p, val);
+
 unlock:
 	mutex_unlock(&identity_mutex);
 
@@ -1625,7 +1722,56 @@ int clear_identity(struct task_group *tg)
 	int err = 0;
 
 	if (tg->bvt_warp_ns != 0 || tg->id_flags != 0)
-		err = update_identity(tg, 0);
+		err = update_identity(tg, NULL, 0);
+
+	return err;
+}
+
+int sched_identity_get_pid(pid_t pid, unsigned long uaddr)
+{
+	struct task_struct *task;
+	int err;
+
+	if (!capable(CAP_SYS_NICE))
+		return -EPERM;
+
+	if (uaddr & 3)
+		return -EINVAL;
+
+	rcu_read_lock();
+	task = find_task_by_vpid(pid);
+	if (!task) {
+		rcu_read_unlock();
+		return -ESRCH;
+	}
+	get_task_struct(task);
+	rcu_read_unlock();
+
+	err = put_user(task->se.id_flags, (int __user *)uaddr);
+	put_task_struct(task);
+
+	return err;
+}
+
+int sched_identity_set_pid(pid_t pid, int id_flags)
+{
+	struct task_struct *task;
+	int err;
+
+	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_SYS_NICE))
+		return -EPERM;
+
+	rcu_read_lock();
+	task = find_task_by_vpid(pid);
+	if (!task) {
+		rcu_read_unlock();
+		return -ESRCH;
+	}
+	get_task_struct(task);
+	rcu_read_unlock();
+
+	err = update_identity(NULL, task, id_flags);
+	put_task_struct(task);
 
 	return err;
 }
