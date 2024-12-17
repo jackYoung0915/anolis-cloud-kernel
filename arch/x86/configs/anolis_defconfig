@@ -6675,7 +6675,7 @@ CONFIG_IDLE_INJECT=y
 # end of Performance monitor support
 
 CONFIG_RAS=y
-CONFIG_RAS_CEC=y
+# CONFIG_RAS_CEC is not set
 # CONFIG_RAS_CEC_DEBUG is not set
 # CONFIG_USB4 is not set
 
