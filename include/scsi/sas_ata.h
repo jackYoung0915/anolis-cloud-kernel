@@ -93,6 +93,10 @@ static inline void sas_ata_device_link_abort(struct domain_device *dev,
 {
 }
 
+static inline int smp_ata_check_ready_type(struct ata_link *link)
+{
+	return 0;
+}
 #endif
 
 #endif /* _SAS_ATA_H_ */
