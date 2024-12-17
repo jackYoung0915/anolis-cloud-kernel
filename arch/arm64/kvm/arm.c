@@ -47,6 +47,10 @@
 __asm__(".arch_extension	virt");
 #endif
 
+#ifdef CONFIG_KVM_HISI_VIRT
+#include "hisilicon/hisi_virt.h"
+#endif
+
 DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 #if !defined(CONFIG_KVM_ARM_HOST_VHE_ONLY)
 static DEFINE_PER_CPU(unsigned long, kvm_arm_hyp_stack_page);
@@ -59,6 +63,9 @@ static u32 kvm_next_vmid;
 static DEFINE_SPINLOCK(kvm_vmid_lock);
 
 static bool vgic_present;
+
+/* Capability of non-cacheable snooping */
+bool kvm_ncsnp_support;
 
 static DEFINE_PER_CPU(unsigned char, kvm_arm_hardware_enabled);
 DEFINE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
@@ -1872,6 +1879,12 @@ int kvm_arch_init(void *opaque)
 		kvm_info("HYP mode not available\n");
 		return -ENODEV;
 	}
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	probe_hisi_cpu_type();
+	kvm_ncsnp_support = hisi_ncsnp_supported();
+#endif
+	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
