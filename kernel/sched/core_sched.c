@@ -3,21 +3,15 @@
 #include <linux/prctl.h>
 #include "sched.h"
 
-/*
- * A simple wrapper around refcount. An allocated sched_core_cookie's
- * address is used to compute the cookie of the task.
- */
-struct sched_core_cookie {
-	refcount_t refcnt;
-};
-
-static unsigned long sched_core_alloc_cookie(void)
+static unsigned long sched_core_alloc_cookie(u32 flags)
 {
 	struct sched_core_cookie *ck = kmalloc(sizeof(*ck), GFP_KERNEL);
+
 	if (!ck)
 		return 0;
 
 	refcount_set(&ck->refcnt, 1);
+	ck->flags = flags;
 	sched_core_get();
 
 	return (unsigned long)ck;
@@ -131,6 +125,31 @@ static void __sched_core_set(struct task_struct *p, unsigned long cookie)
 int sysctl_sched_core;
 DEFINE_STATIC_KEY_FALSE(__sysctl_sched_core_enabled);
 
+static bool cookie_may_access(unsigned long cookie)
+{
+	struct sched_core_cookie *ptr = (struct sched_core_cookie *)sched_core_get_cookie(cookie);
+	bool ret = true;
+
+	if (ptr && ptr->flags && !capable(CAP_SYS_NICE))
+		ret = false;
+
+	sched_core_put_cookie(cookie);
+
+	return ret;
+}
+
+static bool task_cookie_may_access(struct task_struct *p)
+{
+	unsigned long flags;
+	bool ret;
+
+	raw_spin_lock_irqsave(&p->pi_lock, flags);
+	ret = cookie_may_access(p->core_cookie);
+	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+
+	return ret;
+}
+
 /* Called from prctl interface: PR_SCHED_CORE */
 int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 			 unsigned long uaddr)
@@ -151,9 +170,18 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 	BUILD_BUG_ON(PR_SCHED_CORE_SCOPE_THREAD_GROUP != PIDTYPE_TGID);
 	BUILD_BUG_ON(PR_SCHED_CORE_SCOPE_PROCESS_GROUP != PIDTYPE_PGID);
 
-	if (type > PIDTYPE_PGID || cmd >= PR_SCHED_CORE_MAX || pid < 0 ||
-	    (cmd != PR_SCHED_CORE_GET && uaddr))
+	if (type > PIDTYPE_PGID || cmd >= PR_SCHED_CORE_MAX || pid < 0)
 		return -EINVAL;
+
+	if (uaddr) {
+		switch (cmd) {
+		case PR_SCHED_CORE_GET:
+		case PR_SCHED_CORE_CREATE: /* reuse uaddr for flags */
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
 
 	if (cmd > PR_SCHED_CORE_SHARE_FROM && cmd < PR_SCHED_CORE_CLEAR)
 		return -EINVAL;
@@ -175,7 +203,8 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 	 * Check if this process has the right to modify the specified
 	 * process. Use the regular "ptrace_may_access()" checks.
 	 */
-	if (!ptrace_may_access(task, PTRACE_MODE_READ_REALCREDS)) {
+	if (!ptrace_may_access(task, PTRACE_MODE_READ_REALCREDS) ||
+	    !task_cookie_may_access(task)) {
 		err = -EPERM;
 		goto out;
 	}
@@ -195,7 +224,11 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 		goto out;
 
 	case PR_SCHED_CORE_CREATE:
-		cookie = sched_core_alloc_cookie();
+		if ((u32)uaddr & ~SCHED_COOKIE_FLAGS_MASK) {
+			err = -EINVAL;
+			goto out;
+		}
+		cookie = sched_core_alloc_cookie((u32)uaddr);
 		if (!cookie) {
 			err = -ENOMEM;
 			goto out;
@@ -212,6 +245,10 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 			goto out;
 		}
 		cookie = sched_core_clone_cookie(task);
+		if (!cookie_may_access(cookie)) {
+			err = -EPERM;
+			goto out;
+		}
 		__sched_core_set(current, cookie);
 		goto out;
 
@@ -224,6 +261,11 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 		goto out;
 	}
 
+	if (!cookie_may_access(cookie)) {
+		err = -EPERM;
+		goto out;
+	}
+
 	if (type == PIDTYPE_PID) {
 		__sched_core_set(task, cookie);
 		goto out;
@@ -233,7 +275,8 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 	grp = task_pid_type(task, type);
 
 	do_each_pid_thread(grp, type, p) {
-		if (!ptrace_may_access(p, PTRACE_MODE_READ_REALCREDS)) {
+		if (!ptrace_may_access(p, PTRACE_MODE_READ_REALCREDS) ||
+		    !task_cookie_may_access(p)) {
 			err = -EPERM;
 			goto out_tasklist;
 		}
