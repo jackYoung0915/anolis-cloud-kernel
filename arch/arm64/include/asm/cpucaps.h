@@ -72,4 +72,7 @@
 
 
 
+
+#define ARM64_HAS_TWED				64
+
 #endif /* __ASM_CPUCAPS_H */
