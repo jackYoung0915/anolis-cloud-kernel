@@ -36,6 +36,7 @@ TARGETS += memfd
 TARGETS += memory-hotplug
 TARGETS += mincore
 TARGETS += mount
+TARGETS += move_mount_set_group
 TARGETS += mqueue
 TARGETS += net
 TARGETS += net/forwarding
