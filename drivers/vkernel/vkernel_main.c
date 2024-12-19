@@ -72,6 +72,10 @@ static int vkernel_no_compat_open(struct inode *inode, struct file *file)
 #define VKERNEL_EVENT_CREATE_VK 0
 #define VKERNEL_EVENT_DESTROY_VK 1
 
+#define VKERNEL_CAP_MASK ((1 << VKERNEL_CAP_ISOLATE_ANON) |\
+	(1 << VKERNEL_CAP_ISOLATE_ANON_PIPE) | \
+	(1 << VKERNEL_CAP_ISOLATE_RAMFS))
+
 static void vkernel_uevent_notify_change(unsigned int type, struct vkernel *vk);
 static DEFINE_MUTEX(event_lock);
 static unsigned long long vkernel_createvk_count;
@@ -222,6 +226,46 @@ static int vkernel_vk_ioctl_restrict_linux_cap(struct vkernel *vk, unsigned long
 	return vkernel_set_linux_cap(vk, &cap);
 }
 
+static int vkernel_vk_ioctl_check_extension(struct vkernel *vk, unsigned long arg)
+{
+	int r = 0;
+
+	switch (arg) {
+	case VKERNEL_CAP_ISOLATE_LOG:
+		r = 0;
+		break;
+	default:
+		r = -EOPNOTSUPP;
+		break;
+	}
+
+	return r;
+}
+
+static int vkernel_vk_ioctl_enable_cap(struct vkernel *vk, unsigned long arg)
+{
+	int r = 0;
+
+	if (arg >= VKERNEL_CAP_NUM)
+		return -EINVAL;
+
+	if (vk->caps & (arg << 1))
+		return 0;
+
+	switch (arg) {
+	case VKERNEL_CAP_ISOLATE_LOG:
+		vk->log_ns = vk->pid_ns->ns.inum;
+		break;
+	default:
+		r = -EOPNOTSUPP;
+	}
+
+	if (!r)
+		vk->caps |= (1 << arg);
+
+	return r;
+}
+
 static int stat_show(struct seq_file *m, void *v)
 {
 	struct vkernel *vk = m->private;
@@ -244,6 +288,10 @@ static int stat_show(struct seq_file *m, void *v)
 	seq_printf(m, "Cap effective: 0x%llx\n", vk->linux_cap.effective.val);
 	seq_printf(m, "Cap bset: 0x%llx\n", vk->linux_cap.bset.val);
 	seq_printf(m, "Cap ambient: 0x%llx\n", vk->linux_cap.ambient.val);
+
+	seq_puts(m, "EXTENSION CAP\n");
+	seq_printf(m, "Isolation caps: 0x%lx\n", vk->caps);
+	seq_printf(m, "Log ns: %u\n", vk->log_ns);
 
 	seq_puts(m, "=== OPERATION ===\n");
 	seq_printf(m, "Op cap_capable: %p\n", vk->ops.cap_capable);
@@ -397,6 +445,10 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 	vk->linux_cap.bset = tsk->cred->cap_bset;
 	vk->linux_cap.ambient = tsk->cred->cap_ambient;
 
+	/* Init extension cap */
+	vk->caps = (1 << VKERNEL_CAP_ISOLATE_LOG);
+	vk->log_ns = vk->pid_ns->ns.inum;
+
 	/* Init default operations */
 	vk->ops.cap_capable = vk_cap_capable;
 	vk->ops.generic_permission = vk_generic_permission;
@@ -517,9 +569,13 @@ static long vkernel_vk_ioctl(struct file *filp,
 	case VKERNEL_SET_SYSCTL_KERNEL:
 	case VKERNEL_SET_SYSCTL_NET:
 	case VKERNEL_SET_SYSCTL_VM:
-	case VKERNEL_CHECK_EXTENSION:
-	case VKERNEL_ENABLE_CAP:
 		r = -EOPNOTSUPP;
+		break;
+	case VKERNEL_CHECK_EXTENSION:
+		r = vkernel_vk_ioctl_check_extension(vk, arg);
+		break;
+	case VKERNEL_ENABLE_CAP:
+		r = vkernel_vk_ioctl_enable_cap(vk, arg);
 		break;
 	case VKERNEL_REGISTER:
 		pr_warn("vkernel: [deprecated] register vk, init %d id %u ret %d\n",
@@ -655,7 +711,7 @@ static long vkernel_dev_ioctl(struct file *filp,
 		r = vkernel_dev_ioctl_destroy_vk(arg);
 		break;
 	case VKERNEL_CHECK_EXTENSION:
-		r = -EOPNOTSUPP;
+		r = vkernel_vk_ioctl_check_extension(NULL, arg);
 		break;
 	case VKERNEL_TRACE_ENABLE:
 	case VKERNEL_TRACE_PAUSE:
