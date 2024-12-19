@@ -1,0 +1,8 @@
+obj-$(CONFIG_VKERNEL_DRIVER) += vkernel.o
+
+ccflags-y := -I$(srctree)/drivers/vkernel/include
+
+vkernel-y := vkernel_main.o syscall.o
+vkernel-y += fs/acl.o
+vkernel-y += security/capability.o
+vkernel-y += utils/kallsyms.o
