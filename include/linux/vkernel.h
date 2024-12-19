@@ -85,6 +85,13 @@
 #define VKERNEL_SYSCALL_ERRNO_BITS		16
 #define VKERNEL_SYSCALL_ERRNO_MASK		((1U << VKERNEL_SYSCALL_ERRNO_BITS) - 1)
 
+/* Extension capability list */
+#define VKERNEL_CAP_ISOLATE_LOG				0
+#define VKERNEL_CAP_ISOLATE_ANON			1
+#define VKERNEL_CAP_ISOLATE_ANON_PIPE		2
+#define VKERNEL_CAP_ISOLATE_RAMFS			3
+#define VKERNEL_CAP_NUM						4
+
 #define current_vk_task	get_current_syscall_task()
 #define current_vk		get_current_syscall_vk()
 
@@ -187,6 +194,10 @@ struct vkernel {
 	struct vkernel_syscall syscall;
 	struct vkernel_acl acl;
 	struct vkernel_linux_cap linux_cap;
+
+	/* extension caps */
+	unsigned long caps;
+	unsigned int log_ns;
 
 	/* operation */
 	struct vkernel_ops ops;

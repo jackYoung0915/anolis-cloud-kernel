@@ -20,6 +20,9 @@ struct printk_info {
 	u8	flags:5;	/* internal record flags */
 	u8	level:3;	/* syslog level */
 	u32	caller_id;	/* thread id or processor id */
+#ifdef CONFIG_VKERNEL
+	u64	ns;			/* log namespace */
+#endif
 
 	struct dev_printk_info	dev_info;
 };
