@@ -23,6 +23,7 @@
 #include "fs.h"
 #include "security.h"
 #include "syscall.h"
+#include "sysctl.h"
 #include "utils.h"
 
 MODULE_AUTHOR("JYH Lab");
@@ -226,6 +227,17 @@ static int vkernel_vk_ioctl_restrict_linux_cap(struct vkernel *vk, unsigned long
 	return vkernel_set_linux_cap(vk, &cap);
 }
 
+static int vkernel_vk_ioctl_set_sysctl_fs(struct vkernel *vk, unsigned long arg)
+{
+	void __user *argp = (void __user *)arg;
+	struct vkernel_sysctl_fs_desc desc;
+
+	if (copy_from_user(&desc, argp, sizeof(desc)))
+		return -EFAULT;
+
+	return vkernel_set_sysctl_fs(&vk->sysctl_fs, &desc);
+}
+
 static int vkernel_vk_ioctl_check_extension(struct vkernel *vk, unsigned long arg)
 {
 	int r = 0;
@@ -292,6 +304,13 @@ static int stat_show(struct seq_file *m, void *v)
 	seq_puts(m, "EXTENSION CAP\n");
 	seq_printf(m, "Isolation caps: 0x%lx\n", vk->caps);
 	seq_printf(m, "Log ns: %u\n", vk->log_ns);
+
+	seq_puts(m, "=== SYSCTL ===\n");
+	seq_printf(m, "fs.file-max=%lu\n", vk->sysctl_fs.files_stat.max_files);
+	seq_printf(m, "fs.nr_open=%u\n", vk->sysctl_fs.nr_open);
+	seq_printf(m, "fs.lease-break-time=%d\n", vk->sysctl_fs.lease_break_time);
+	seq_printf(m, "fs.leases-enable=%d\n", vk->sysctl_fs.leases_enable);
+	seq_printf(m, "fs.mount-max=%u\n", vk->sysctl_fs.mount_max);
 
 	seq_puts(m, "=== OPERATION ===\n");
 	seq_printf(m, "Op cap_capable: %p\n", vk->ops.cap_capable);
@@ -396,6 +415,7 @@ void vkernel_destroy_vk(struct vkernel *vk)
 
 	vkernel_destroy_vk_debugfs(vk);
 
+	vk_uninit_sysctl_fs(&vk->sysctl_fs);
 	vk_uninit_acl(&vk->acl);
 	vk_uninit_syscall(&vk->syscall);
 	kfree(vk);
@@ -449,13 +469,18 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 	vk->caps = (1 << VKERNEL_CAP_ISOLATE_LOG);
 	vk->log_ns = vk->pid_ns->ns.inum;
 
+	/* Init sysctl */
+	r = vk_init_sysctl_fs(&vk->sysctl_fs);
+	if (r)
+		goto err_acl;
+
 	/* Init default operations */
 	vk->ops.cap_capable = vk_cap_capable;
 	vk->ops.generic_permission = vk_generic_permission;
 
 	r = vkernel_create_vk_debugfs(vk, name);
 	if (r)
-		goto err_acl;
+		goto err_fs;
 
 	/* Custom initializations */
 	vk->custom = vkernel_find_custom(custom);
@@ -486,6 +511,8 @@ err_custom_debugfs:
 		module_put(vk->custom->owner);
 
 	vkernel_destroy_vk_debugfs(vk);
+err_fs:
+	vk_uninit_sysctl_fs(&vk->sysctl_fs);
 err_acl:
 	vk_uninit_acl(&vk->acl);
 err_syscall:
@@ -565,7 +592,11 @@ static long vkernel_vk_ioctl(struct file *filp,
 		break;
 	case VKERNEL_SET_CPU_PREF:
 	case VKERNEL_SET_MEMORY_PREF:
+		r = -EOPNOTSUPP;
+		break;
 	case VKERNEL_SET_SYSCTL_FS:
+		r = vkernel_vk_ioctl_set_sysctl_fs(vk, arg);
+		break;
 	case VKERNEL_SET_SYSCTL_KERNEL:
 	case VKERNEL_SET_SYSCTL_NET:
 	case VKERNEL_SET_SYSCTL_VM:
