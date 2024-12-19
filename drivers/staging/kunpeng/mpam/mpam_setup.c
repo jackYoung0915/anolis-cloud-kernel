@@ -56,7 +56,7 @@ mpam_get_domain_from_cpu(int cpu, struct mpam_resctrl_res *res)
 	return NULL;
 }
 
-static int mpam_resctrl_setup_domain(unsigned int cpu,
+static int kunpeng_mpam_resctrl_setup_domain(unsigned int cpu,
 				struct mpam_resctrl_res *res)
 {
 	struct rdt_domain *d;
@@ -65,7 +65,7 @@ static int mpam_resctrl_setup_domain(unsigned int cpu,
 	struct mpam_component *comp_iter, *comp;
 	u32 num_partid;
 	u32 **ctrlval_ptr;
-	enum resctrl_ctrl_type type;
+	enum resctrl_ctrl_type type, type_free;
 	struct list_head *tmp;
 
 	num_partid = mpam_sysprops_num_partid();
@@ -78,9 +78,11 @@ static int mpam_resctrl_setup_domain(unsigned int cpu,
 		}
 	}
 
-	/* cpu with unknown exported component? */
-	if (WARN_ON_ONCE(!comp))
+	if (!comp) {
+		pr_info_once("There is no msc corresponding to CPU%d.\n", cpu);
 		return 0;
+	}
+
 
 	dom = kzalloc_node(sizeof(*dom), GFP_KERNEL, cpu_to_node(cpu));
 	if (!dom)
@@ -96,6 +98,12 @@ static int mpam_resctrl_setup_domain(unsigned int cpu,
 		*ctrlval_ptr = kmalloc_array(num_partid,
 			sizeof(**ctrlval_ptr), GFP_KERNEL);
 		if (!*ctrlval_ptr) {
+			for_each_ctrl_type(type_free) {
+				if (type_free == type)
+					break;
+				ctrlval_ptr = &dom->resctrl_dom.ctrl_val[type_free];
+				kfree(*ctrlval_ptr);
+			}
 			kfree(dom);
 			return -ENOMEM;
 		}
@@ -128,7 +136,7 @@ int mpam_resctrl_cpu_online(unsigned int cpu)
 		if (dom) {
 			cpumask_set_cpu(cpu, &dom->resctrl_dom.cpu_mask);
 		} else {
-			ret = mpam_resctrl_setup_domain(cpu, res);
+			ret = kunpeng_mpam_resctrl_setup_domain(cpu, res);
 			if (ret)
 				return ret;
 		}
@@ -156,13 +164,16 @@ int mpam_resctrl_cpu_offline(unsigned int cpu)
 	struct rdt_domain *d;
 	struct mpam_resctrl_res *res;
 	struct mpam_resctrl_dom *dom;
+	u32 **ctrlval_ptr;
+	enum resctrl_ctrl_type type;
 
 	for_each_supported_resctrl_exports(res) {
 		 d = resctrl_get_domain_from_cpu(cpu, &res->resctrl_res);
 
-		/* cpu with unknown exported component? */
-		if (WARN_ON_ONCE(!d))
+		if (!d) {
+			pr_info_once("There is no msc corresponding to CPU%d.\n", cpu);
 			continue;
+		}
 
 		cpumask_clear_cpu(cpu, &d->cpu_mask);
 
@@ -171,7 +182,14 @@ int mpam_resctrl_cpu_offline(unsigned int cpu)
 
 		list_del(&d->list);
 		dom = container_of(d, struct mpam_resctrl_dom, resctrl_dom);
+		for_each_ctrl_type(type) {
+			ctrlval_ptr = &dom->resctrl_dom.ctrl_val[type];
+			kfree(*ctrlval_ptr);
+		}
+
 		kfree(dom);
+
+		res->resctrl_res.dom_num--;
 	}
 
 	mpam_resctrl_clear_default_cpu(cpu);
@@ -335,6 +353,7 @@ static void mpam_resctrl_pick_event_mbm_local(void)
 
 	if (mpam_has_feature(mpam_feat_msmon_mbwu, res->class->features)) {
 		res->resctrl_res.mon_capable = true;
+		rdt_mon_capable = true;
 		mpam_resctrl_events[QOS_L3_MBM_LOCAL_EVENT_ID] = *res;
 	}
 }
@@ -416,6 +435,9 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 		 * of 1 would appear too fine to make percentage conversions.
 		 */
 		r->mbw.bw_gran = GRAN_MBA_BW;
+		/* do not allow mbw_max/min below mbw.bw_gran */
+		if (r->mbw.min_bw < r->mbw.bw_gran)
+			r->mbw.min_bw = r->mbw.bw_gran;
 
 		/* We will only pick a class that can monitor and control */
 		r->alloc_capable = true;
