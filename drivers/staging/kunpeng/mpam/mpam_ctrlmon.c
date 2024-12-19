@@ -29,8 +29,8 @@
 #include <linux/kernfs.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include "asm/mpam.h"
 
-#include <mpam.h>
 #include "mpam_resource.h"
 #include "mpam_internal.h"
 
@@ -185,6 +185,53 @@ resctrl_dom_ctrl_config(bool cdp_both_ctrl, struct resctrl_resource *r,
 	}
 }
 
+/**
+ * Resync resctrl group domain ctrls, use rdtgrp->resync to indicate
+ * whether the resync procedure will be called. When resync==1, all
+ * domain ctrls of this group be synchronized again. This happens
+ * when rmid of this group is changed, and all configurations need to
+ * be remapped again accordingly.
+ */
+static void resctrl_group_resync_domain_ctrls(struct rdtgroup *rdtgrp,
+			struct resctrl_resource *r, struct rdt_domain *dom)
+{
+	int i;
+	int staged_start, staged_end;
+	struct resctrl_staged_config *cfg;
+	struct sd_closid closid;
+	struct list_head *head;
+	struct rdtgroup *entry;
+	struct msr_param para;
+	bool cdp_both_ctrl;
+
+	cfg = dom->staged_cfg;
+	para.closid = &closid;
+
+	staged_start = (r->cdp_enable) ? CDP_CODE : CDP_BOTH;
+	staged_end = (r->cdp_enable) ? CDP_DATA : CDP_BOTH;
+
+	for (i = staged_start; i <= staged_end; i++) {
+		cdp_both_ctrl = cfg[i].cdp_both_ctrl;
+
+		resctrl_cdp_mpamid_map_val(rdtgrp->closid.intpartid,
+					   cfg[i].conf_type, closid.intpartid);
+		resctrl_cdp_mpamid_map_val(rdtgrp->closid.reqpartid,
+				cfg[i].conf_type, closid.reqpartid);
+		resctrl_dom_ctrl_config(cdp_both_ctrl, r, dom, &para);
+
+		/*
+		 * we should synchronize all child mon groups'
+		 * configuration from this ctrl rdtgrp
+		 */
+		head = &rdtgrp->mon.crdtgrp_list;
+		list_for_each_entry(entry, head, mon.crdtgrp_list) {
+			resctrl_cdp_mpamid_map_val(entry->closid.reqpartid,
+					cfg[i].conf_type, closid.reqpartid);
+			resctrl_dom_ctrl_config(cdp_both_ctrl, r, dom, &para);
+		}
+	}
+}
+
 static void resctrl_group_update_domain_ctrls(struct rdtgroup *rdtgrp,
 			struct resctrl_resource *r, struct rdt_domain *dom)
 {
@@ -205,14 +252,13 @@ static void resctrl_group_update_domain_ctrls(struct rdtgroup *rdtgrp,
 			continue;
 		update_on = false;
 		cdp_both_ctrl = cfg[i].cdp_both_ctrl;
-		/*
-		 * for ctrl group configuration, hw_closid of cfg[i] equals
-		 * to rdtgrp->closid.intpartid.
-		 */
-		closid.intpartid = hw_closid_val(cfg[i].hw_closid);
+
+		resctrl_cdp_mpamid_map_val(rdtgrp->closid.intpartid,
+					   cfg[i].conf_type, closid.intpartid);
 		for_each_ctrl_type(type) {
 			/* if ctrl group's config has changed, refresh it first. */
-			if (dom->ctrl_val[closid.intpartid] != cfg[i].new_ctrl) {
+			if (dom->ctrl_val[type][closid.intpartid] != cfg[i].new_ctrl[type] &&
+				cfg[i].ctrl_updated[type] == true) {
 				/*
 				 * duplicate ctrl group's configuration indexed
 				 * by intpartid from domain ctrl_val array.
@@ -223,6 +269,7 @@ static void resctrl_group_update_domain_ctrls(struct rdtgroup *rdtgrp,
 				dom->ctrl_val[type][closid.intpartid] =
 					cfg[i].new_ctrl[type];
 				dom->have_new_ctrl = true;
+				cfg[i].ctrl_updated[type] = false;
 				update_on = true;
 			}
 		}
@@ -238,6 +285,7 @@ static void resctrl_group_update_domain_ctrls(struct rdtgroup *rdtgrp,
 			resctrl_cdp_mpamid_map_val(entry->closid.reqpartid,
 					cfg[i].conf_type, closid.reqpartid);
 			resctrl_dom_ctrl_config(cdp_both_ctrl, r, dom, &para);
+			cond_resched();
 		}
 	}
 }
@@ -247,8 +295,12 @@ static int resctrl_group_update_domains(struct rdtgroup *rdtgrp,
 {
 	struct rdt_domain *d;
 
-	list_for_each_entry(d, &r->domains, list)
-		resctrl_group_update_domain_ctrls(rdtgrp, r, d);
+	list_for_each_entry(d, &r->domains, list) {
+		if (rdtgrp->resync)
+			resctrl_group_resync_domain_ctrls(rdtgrp, r, d);
+		else
+			resctrl_group_update_domain_ctrls(rdtgrp, r, d);
+	}
 
 	return 0;
 }
@@ -343,6 +395,7 @@ ssize_t resctrl_group_schemata_write(struct kernfs_open_file *of,
 	struct mpam_resctrl_res *res;
 	enum resctrl_conf_type conf_type;
 	struct resctrl_staged_config *cfg;
+	enum resctrl_ctrl_type t;
 	char *tok, *resname;
 	u32 closid;
 	int ret = 0;
@@ -365,13 +418,17 @@ ssize_t resctrl_group_schemata_write(struct kernfs_open_file *of,
 	for_each_supported_resctrl_exports(res) {
 		r = &res->resctrl_res;
 
-		if (r->alloc_enabled) {
-			list_for_each_entry(dom, &r->domains, list) {
-				dom->have_new_ctrl = false;
-				for_each_conf_type(conf_type) {
-					cfg = &dom->staged_cfg[conf_type];
-					cfg->have_new_ctrl = false;
+		if (!r->alloc_enabled)
+			continue;
+
+		list_for_each_entry(dom, &r->domains, list) {
+			dom->have_new_ctrl = false;
+			for_each_conf_type(conf_type) {
+				cfg = &dom->staged_cfg[conf_type];
+				for_each_ctrl_type(t) {
+					cfg->ctrl_updated[t] = false;
 				}
+				cfg->have_new_ctrl = false;
 			}
 		}
 	}
@@ -602,6 +659,8 @@ int resctrl_group_mondata_show(struct seq_file *m, void *arg)
 				r->rid), type, md.u.mon);
 
 			usage += resctrl_dom_mon_data(r, d, md.priv);
+
+			cond_resched();
 		}
 	}
 
@@ -663,19 +722,30 @@ static int resctrl_mkdir_mondata_dom(struct kernfs_node *parent_kn,
 
 	md.u.cdp_both_mon = s->cdp_mc_both;
 
-	snprintf(name, sizeof(name), "mon_%s_%02d", s->name, d->id);
-	kn = __kernfs_create_file(parent_kn, name, 0444,
-				  GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, 0,
-				  &kf_mondata_ops, md.priv, NULL, NULL);
-	if (IS_ERR(kn))
-		return PTR_ERR(kn);
-
-	ret = resctrl_group_kn_set_ugid(kn);
-	if (ret) {
-		pr_info("%s: create name %s, error ret %d\n", __func__, name, ret);
-		kernfs_remove(kn);
-		return ret;
+	if (!parent_kn) {
+		pr_err("%s: error parent_kn null\n", __func__);
+		return -EINVAL;
 	}
+
+	snprintf(name, sizeof(name), "mon_%s_%02d", s->name, d->id);
+	kn = kernfs_find_and_get(parent_kn, name);
+	if (!kn) {
+		kn = __kernfs_create_file(parent_kn, name, 0444,
+					  GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, 0,
+					  &kf_mondata_ops, md.priv, NULL, NULL);
+		if (IS_ERR(kn))
+			return PTR_ERR(kn);
+
+		ret = resctrl_group_kn_set_ugid(kn);
+		if (ret) {
+			pr_info("%s: create name %s, error ret %d\n",
+					__func__, name, ret);
+			kernfs_remove(kn);
+			return ret;
+		}
+	}
+
+	kn->priv = md.priv;
 
 	/* Could we remove the MATCH_* param ? */
 	rr->mon_write(d, md.priv);
@@ -705,7 +775,7 @@ int resctrl_mkdir_mondata_all_subdir(struct kernfs_node *parent_kn,
 {
 	struct resctrl_schema *s;
 	struct resctrl_resource *r;
-	int ret;
+	int ret = 0;
 
 	/*
 	 * Create the subdirectories for each domain. Note that all events
@@ -740,7 +810,6 @@ static int resctrl_group_mkdir_info_resdir(struct resctrl_resource *r,
 	if (IS_ERR(kn_subdir))
 		return PTR_ERR(kn_subdir);
 
-	kernfs_get(kn_subdir);
 	ret = resctrl_group_kn_set_ugid(kn_subdir);
 	if (ret)
 		return ret;
@@ -766,7 +835,6 @@ int resctrl_group_create_info_dir(struct kernfs_node *parent_kn,
 	*kn_info = kernfs_create_dir(parent_kn, "info", parent_kn->mode, NULL);
 	if (IS_ERR(*kn_info))
 		return PTR_ERR(*kn_info);
-	kernfs_get(*kn_info);
 
 	ret = resctrl_group_add_files(*kn_info, RF_TOP_INFO);
 	if (ret)
@@ -801,12 +869,6 @@ int resctrl_group_create_info_dir(struct kernfs_node *parent_kn,
 		}
 	}
 
-	/*
-	 m This extra ref will be put in kernfs_remove() and guarantees
-	 * that @rdtgrp->kn is always accessible.
-	 */
-	kernfs_get(*kn_info);
-
 	ret = resctrl_group_kn_set_ugid(*kn_info);
 	if (ret)
 		goto out_destroy;
@@ -840,11 +902,13 @@ static void rdtgroup_init_mba(struct resctrl_schema *s, u32 closid)
 		cfg = &d->staged_cfg[CDP_BOTH];
 		cfg->cdp_both_ctrl = s->cdp_mc_both;
 		cfg->new_ctrl[SCHEMA_COMM] = rr->ctrl_features[SCHEMA_COMM].default_ctrl;
+		cfg->ctrl_updated[SCHEMA_COMM] = true;
 		resctrl_cdp_mpamid_map(closid, CDP_BOTH, cfg->hw_closid);
 		cfg->have_new_ctrl = true;
 		/* Set extension ctrl default value, e.g. priority/hardlimit */
 		for_each_extend_ctrl_type(t) {
 			cfg->new_ctrl[t] = rr->ctrl_features[t].default_ctrl;
+			cfg->ctrl_updated[t] = true;
 		}
 	}
 }
@@ -892,11 +956,12 @@ static int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
 		if (bitmap_weight(&tmp_cbm, r->cache.cbm_len) <
 			r->cache.min_cbm_bits) {
 			kunpeng_rdt_last_cmd_printf("No space on %s:%d\n",
-						    r->name, d->id);
+				r->name, d->id);
 			return -ENOSPC;
 		}
 
 		resctrl_cdp_mpamid_map(closid, conf_type, cfg->hw_closid);
+		cfg->ctrl_updated[SCHEMA_COMM] = true;
 		cfg->have_new_ctrl = true;
 
 		/*
@@ -906,6 +971,7 @@ static int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
 		for_each_extend_ctrl_type(ctrl_type) {
 			cfg->new_ctrl[ctrl_type] =
 				rr->ctrl_features[ctrl_type].default_ctrl;
+			cfg->ctrl_updated[ctrl_type] = true;
 		}
 	}
 
@@ -954,5 +1020,42 @@ int resctrl_update_groups_config(struct rdtgroup *rdtgrp)
 		}
 	}
 
+	/* after resync all configurations, restore resync to 0 */
+	rdtgrp->resync = 0;
+
 	return ret;
+}
+
+int __resctrl_group_show_options(struct seq_file *seq)
+{
+	struct resctrl_resource *res;
+	struct raw_resctrl_resource *r;
+
+	res = mpam_resctrl_get_resource(RDT_RESOURCE_L3);
+	if (res && res->cdp_enable)
+		seq_puts(seq, ",cdpl3");
+
+	res = mpam_resctrl_get_resource(RDT_RESOURCE_L2);
+	if (res && res->cdp_enable)
+		seq_puts(seq, ",cdpl2");
+
+	r = mpam_get_raw_resctrl_resource(RDT_RESOURCE_L3);
+	if (r && r->ctrl_features[SCHEMA_PBM].enabled)
+		seq_puts(seq, ",caPbm");
+	if (r && r->ctrl_features[SCHEMA_MAX].enabled)
+		seq_puts(seq, ",caMax");
+	if (r && r->ctrl_features[SCHEMA_PRI].enabled)
+		seq_puts(seq, ",caPrio");
+
+	r = mpam_get_raw_resctrl_resource(RDT_RESOURCE_MC);
+	if (r && r->ctrl_features[SCHEMA_MAX].enabled)
+		seq_puts(seq, ",mbMax");
+	if (r && r->ctrl_features[SCHEMA_MIN].enabled)
+		seq_puts(seq, ",mbMin");
+	if (r && r->ctrl_features[SCHEMA_HDL].enabled)
+		seq_puts(seq, ",mbHdl");
+	if (r && r->ctrl_features[SCHEMA_PRI].enabled)
+		seq_puts(seq, ",mbPrio");
+
+	return 0;
 }
