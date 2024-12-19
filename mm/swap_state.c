@@ -310,7 +310,6 @@ void free_page_and_swap_cache(struct page *page)
  */
 void free_pages_and_swap_cache(struct encoded_page **pages, int nr)
 {
-	lru_add_drain();
 	for (int i = 0; i < nr; i++) {
 		struct page *page = encoded_page_ptr(pages[i]);
 
