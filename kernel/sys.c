@@ -64,6 +64,9 @@
 #include <linux/rcupdate.h>
 #include <linux/uidgid.h>
 #include <linux/cred.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/nospec.h>
 
@@ -1457,6 +1460,9 @@ static int do_prlimit(struct task_struct *tsk, unsigned int resource,
 {
 	struct rlimit *rlim;
 	int retval = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (resource >= RLIM_NLIMITS)
 		return -EINVAL;
@@ -1465,6 +1471,12 @@ static int do_prlimit(struct task_struct *tsk, unsigned int resource,
 	if (new_rlim) {
 		if (new_rlim->rlim_cur > new_rlim->rlim_max)
 			return -EINVAL;
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (vk && resource == RLIMIT_NOFILE &&
+				new_rlim->rlim_max > vk->sysctl_fs.nr_open)
+			return -EPERM;
+#endif
 		if (resource == RLIMIT_NOFILE &&
 				new_rlim->rlim_max > sysctl_nr_open)
 			return -EPERM;

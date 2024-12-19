@@ -161,6 +161,31 @@ struct vkernel_linux_cap {
 	kernel_cap_t ambient;
 };
 
+struct vkernel_sysctl_fs_desc {
+	u64 file_max;
+	u32 nr_open;
+	s32 lease_break_time;
+	s32 leases_enable;
+	u32 mount_max;
+};
+
+struct vkernel_sysctl_fs {
+	/* file */
+	struct files_stat_struct files_stat;
+	unsigned int nr_open;
+	long old_max;
+	struct percpu_counter nr_files;
+	/* inode */
+	struct inodes_stat_t inodes_stat;
+	unsigned long __percpu *nr_inodes;
+	unsigned long __percpu *nr_unused;
+	/* lease lock */
+	int leases_enable;
+	int lease_break_time;
+	/* mount */
+	unsigned int mount_max;
+};
+
 struct vkernel;
 
 struct vkernel_ops {
@@ -199,6 +224,9 @@ struct vkernel {
 	unsigned long caps;
 	unsigned int log_ns;
 
+	/* sysctl */
+	struct vkernel_sysctl_fs sysctl_fs;
+
 	/* operation */
 	struct vkernel_ops ops;
 
@@ -236,6 +264,8 @@ int vkernel_set_acl_set(struct vkernel_acl *acl, struct vkernel_file_desc_set *s
 int vkernel_clear_acl_set(struct vkernel_acl *acl, struct vkernel_file_desc_set *set);
 
 int vkernel_set_linux_cap(struct vkernel *vk, struct vkernel_linux_cap *cap);
+
+int vkernel_set_sysctl_fs(struct vkernel_sysctl_fs *fs, struct vkernel_sysctl_fs_desc *desc);
 
 struct vkernel_custom_type *vkernel_find_custom(const char *name);
 int vkernel_register_custom(struct vkernel_custom_type *custom);

@@ -29,6 +29,9 @@
 #include <linux/ima.h>
 #include <linux/swap.h>
 #include <linux/kmemleak.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/atomic.h>
 
@@ -77,8 +80,16 @@ static inline void file_free(struct file *f)
 	security_file_free(f);
 	if (unlikely(f->f_mode & FMODE_BACKING))
 		path_put(backing_file_real_path(f));
-	if (likely(!(f->f_mode & FMODE_NOACCOUNT)))
+	if (likely(!(f->f_mode & FMODE_NOACCOUNT))) {
+#ifdef CONFIG_VKERNEL
+		struct vkernel *vk;
+
+		vk = vkernel_find_vk_by_task(current);
+		if (vk)
+			percpu_counter_dec(&vk->sysctl_fs.nr_files);
+#endif
 		percpu_counter_dec(&nr_files);
+	}
 	call_rcu(&f->f_rcuhead, file_free_rcu);
 }
 
@@ -89,6 +100,13 @@ static long get_nr_files(void)
 {
 	return percpu_counter_read_positive(&nr_files);
 }
+
+#ifdef CONFIG_VKERNEL
+static long vk_get_nr_files(struct vkernel_sysctl_fs *fs)
+{
+	return percpu_counter_read_positive(&fs->nr_files);
+}
+#endif
 
 /*
  * Return the maximum number of open files in the system
@@ -190,7 +208,19 @@ struct file *alloc_empty_file(int flags, const struct cred *cred)
 	static long old_max;
 	struct file *f;
 	int error;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+	struct vkernel_sysctl_fs *fs = NULL;
 
+	vk = vkernel_find_vk_by_task(current);
+	if (vk) {
+		fs = &vk->sysctl_fs;
+		if (vk_get_nr_files(fs) >= fs->files_stat.max_files && !capable(CAP_SYS_ADMIN)) {
+			if (percpu_counter_sum_positive(&fs->nr_files) >= fs->files_stat.max_files)
+				goto over_vk;
+		}
+	}
+#endif
 	/*
 	 * Privileged users can go above max_files
 	 */
@@ -213,10 +243,22 @@ struct file *alloc_empty_file(int flags, const struct cred *cred)
 		return ERR_PTR(error);
 	}
 
+#ifdef CONFIG_VKERNEL
+	if (fs)
+		percpu_counter_inc(&fs->nr_files);
+#endif
 	percpu_counter_inc(&nr_files);
 
 	return f;
 
+#ifdef CONFIG_VKERNEL
+over_vk:
+	/* Ran out of vk filps, fs cannot be NULL here */
+	if (vk_get_nr_files(fs) > fs->old_max) {
+		pr_info("VFS: vkernel file-max limit %lu reached\n", fs->files_stat.max_files);
+		fs->old_max = vk_get_nr_files(fs);
+	}
+#endif
 over:
 	/* Ran out of filps - report that */
 	if (get_nr_files() > old_max) {
