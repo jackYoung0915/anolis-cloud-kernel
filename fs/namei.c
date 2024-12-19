@@ -41,6 +41,9 @@
 #include <linux/bitops.h>
 #include <linux/init_task.h>
 #include <linux/uaccess.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include "internal.h"
 #include "mount.h"
@@ -401,6 +404,16 @@ int generic_permission(struct mnt_idmap *idmap, struct inode *inode,
 		       int mask)
 {
 	int ret;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk) {
+		ret = vk->ops.generic_permission(vk, idmap, inode, mask);
+		if (ret)
+			return ret;
+	}
+#endif
 
 	/*
 	 * Do the basic permission checks.

@@ -25,6 +25,9 @@
 #include <linux/binfmts.h>
 #include <linux/personality.h>
 #include <linux/mnt_idmapping.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 /*
  * If a non-root user executes a setuid-root binary in
@@ -67,6 +70,14 @@ int cap_capable(const struct cred *cred, struct user_namespace *targ_ns,
 		int cap, unsigned int opts)
 {
 	struct user_namespace *ns = targ_ns;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	/* vkernel: check initial capability first */
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && vk->ops.cap_capable(vk, cred, targ_ns, cap, opts))
+		return -EPERM;
+#endif
 
 	/* See if cred has the capability in the target user namespace
 	 * by examining the target user namespace and all of the target
