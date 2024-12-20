@@ -66,6 +66,9 @@
 #include <linux/coredump.h>
 #include <linux/time_namespace.h>
 #include <linux/user_events.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
@@ -760,6 +763,9 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	unsigned long rlim_stack;
 	struct mmu_gather tlb;
 	struct vma_iterator vmi;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 #ifdef CONFIG_STACK_GROWSUP
 	/* Limit stack size */
@@ -784,6 +790,12 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	stack_top = arch_align_stack(stack_top);
 	stack_top = PAGE_ALIGN(stack_top);
 
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && (unlikely(stack_top < vk->sysctl_vm.mmap_min_addr) ||
+	    unlikely(vma->vm_end - vma->vm_start >= stack_top - vk->sysctl_vm.mmap_min_addr)))
+		return -ENOMEM;
+#endif
 	if (unlikely(stack_top < mmap_min_addr) ||
 	    unlikely(vma->vm_end - vma->vm_start >= stack_top - mmap_min_addr))
 		return -ENOMEM;

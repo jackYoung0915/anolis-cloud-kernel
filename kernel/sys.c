@@ -1940,6 +1940,9 @@ static int validate_prctl_map_addr(struct prctl_mm_map *prctl_map)
 {
 	unsigned long mmap_max_addr = TASK_SIZE;
 	int error = -EINVAL, i;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	static const unsigned char offsets[] = {
 		offsetof(struct prctl_mm_map, start_code),
@@ -1962,6 +1965,11 @@ static int validate_prctl_map_addr(struct prctl_mm_map *prctl_map)
 	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
 		u64 val = *(u64 *)((char *)prctl_map + offsets[i]);
 
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (vk && (unsigned long)val < vk->sysctl_vm.mmap_min_addr)
+			goto out;
+#endif
 		if ((unsigned long)val >= mmap_max_addr ||
 		    (unsigned long)val < mmap_min_addr)
 			goto out;
@@ -2147,6 +2155,9 @@ static int prctl_set_mm(int opt, unsigned long addr,
 	};
 	struct vm_area_struct *vma;
 	int error;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (arg5 || (arg4 && (opt != PR_SET_MM_AUXV &&
 			      opt != PR_SET_MM_MAP &&
@@ -2167,6 +2178,11 @@ static int prctl_set_mm(int opt, unsigned long addr,
 	if (opt == PR_SET_MM_AUXV)
 		return prctl_set_auxv(mm, addr, arg4);
 
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && addr < vk->sysctl_vm.mmap_min_addr)
+		return -EINVAL;
+#endif
 	if (addr >= TASK_SIZE || addr < mmap_min_addr)
 		return -EINVAL;
 

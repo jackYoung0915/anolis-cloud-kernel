@@ -330,6 +330,14 @@ struct vkernel_sysctl_net_desc {
 	s32 unix_max_dgram_qlen;
 };
 
+struct vkernel_sysctl_vm_desc {
+	s32 max_map_count;
+	u64 mmap_min_addr;
+	s32 overcommit_memory;
+	s32 overcommit_ratio;
+	u64 overcommit_kbytes;
+};
+
 struct vkernel_sysctl_fs {
 	/* file */
 	struct files_stat_struct files_stat;
@@ -404,6 +412,19 @@ struct vkernel_sysctl_net {
 	struct net *net;
 };
 
+struct vkernel_sysctl_vm {
+	/* map */
+	int max_map_count;
+	unsigned long mmap_min_addr;
+	unsigned long dac_mmap_min_addr;
+	/* overcommit */
+	int overcommit_memory;
+	int overcommit_ratio;
+	unsigned long overcommit_kbytes;
+	struct percpu_counter vm_committed_as;
+	s32 as_batch;
+};
+
 struct vkernel;
 
 struct vkernel_ops {
@@ -446,6 +467,7 @@ struct vkernel {
 	struct vkernel_sysctl_fs sysctl_fs;
 	struct vkernel_sysctl_kernel sysctl_kernel;
 	struct vkernel_sysctl_net sysctl_net;
+	struct vkernel_sysctl_vm sysctl_vm;
 
 	/* operation */
 	struct vkernel_ops ops;
@@ -457,6 +479,11 @@ struct vkernel {
 	/* debug */
 	struct dentry *debugfs_dentry;
 };
+
+#ifdef CONFIG_MEMCG
+unsigned long vk_vm_commit_limit(struct vkernel_sysctl_vm *vm,
+	struct mem_cgroup *memcg);
+#endif
 
 struct vkernel *vkernel_find_vk_by_id(unsigned int id);
 struct vkernel *vkernel_find_vk_by_task(struct task_struct *tsk);
@@ -489,6 +516,7 @@ int vkernel_set_sysctl_fs(struct vkernel_sysctl_fs *fs, struct vkernel_sysctl_fs
 int vkernel_set_sysctl_kernel(struct vkernel_sysctl_kernel *k,
 			struct vkernel_sysctl_kernel_desc *desc);
 int vkernel_set_sysctl_net(struct vkernel_sysctl_net *net, struct vkernel_sysctl_net_desc *desc);
+int vkernel_set_sysctl_vm(struct vkernel_sysctl_vm *vm, struct vkernel_sysctl_vm_desc *desc);
 
 struct vkernel_custom_type *vkernel_find_custom(const char *name);
 int vkernel_register_custom(struct vkernel_custom_type *custom);

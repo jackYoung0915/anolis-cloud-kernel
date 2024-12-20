@@ -31,6 +31,9 @@
 #include <linux/hugetlb.h>
 #include <linux/swapops.h>
 #include <linux/miscdevice.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 static int sysctl_unprivileged_userfaultfd __read_mostly;
 
@@ -1290,11 +1293,19 @@ static __always_inline int validate_unaligned_range(
 	struct mm_struct *mm, __u64 start, __u64 len)
 {
 	__u64 task_size = mm->task_size;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (len & ~PAGE_MASK)
 		return -EINVAL;
 	if (!len)
 		return -EINVAL;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && start < vk->sysctl_vm.mmap_min_addr)
+		return -EINVAL;
+#endif
 	if (start < mmap_min_addr)
 		return -EINVAL;
 	if (start >= task_size)

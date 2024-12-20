@@ -25,6 +25,9 @@
 #include <linux/uaccess.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/mempolicy.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
@@ -605,6 +608,13 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	int err = 0;
 	bool need_rmap_locks;
 	struct vma_iterator vmi;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && mm->map_count >= vk->sysctl_vm.max_map_count - 3)
+		return -ENOMEM;
+#endif
 
 	/*
 	 * We'd prefer to avoid failure later on in do_munmap:
@@ -816,6 +826,9 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 	struct vm_area_struct *vma;
 	unsigned long ret = -EINVAL;
 	unsigned long map_flags = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (offset_in_page(new_addr))
 		goto out;
@@ -841,6 +854,11 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 	 * Check whether current map count plus 2 still leads us to 4 maps below
 	 * the threshold, otherwise return -ENOMEM here to be more safe.
 	 */
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && (mm->map_count + 2) >= vk->sysctl_vm.max_map_count - 3)
+		return -ENOMEM;
+#endif
 	if ((mm->map_count + 2) >= sysctl_max_map_count - 3)
 		return -ENOMEM;
 
