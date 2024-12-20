@@ -290,6 +290,17 @@ static int vkernel_vk_ioctl_set_sysctl_kernel(struct vkernel *vk, unsigned long 
 	return vkernel_set_sysctl_kernel(&vk->sysctl_kernel, &desc);
 }
 
+static int vkernel_vk_ioctl_set_sysctl_net(struct vkernel *vk, unsigned long arg)
+{
+	void __user *argp = (void __user *)arg;
+	struct vkernel_sysctl_net_desc desc;
+
+	if (copy_from_user(&desc, argp, sizeof(desc)))
+		return -EFAULT;
+
+	return vkernel_set_sysctl_net(&vk->sysctl_net, &desc);
+}
+
 static int vkernel_vk_ioctl_check_extension(struct vkernel *vk, unsigned long arg)
 {
 	int r = 0;
@@ -392,6 +403,14 @@ static int stat_show(struct seq_file *m, void *v)
 			vk->sysctl_kernel.key_quota_root_maxkeys);
 	seq_printf(m, "kernel.pty.max=%d\n", vk->sysctl_kernel.pty_limit);
 	seq_printf(m, "kernel.pty.reserve=%d\n", vk->sysctl_kernel.pty_reserve);
+	seq_printf(m, "net.nf_conntrack_max=%u\n", vk->sysctl_net.nf_conntrack_max);
+	seq_printf(m, "net.core.busy_poll=%u\n", vk->sysctl_net.net_busy_poll);
+	seq_printf(m, "net.core.busy_read=%u\n", vk->sysctl_net.net_busy_read);
+	seq_printf(m, "net.core.optmem_max=%d\n", vk->sysctl_net.optmem_max);
+	seq_printf(m, "net.core.wmem_max=%u\n", vk->sysctl_net.wmem_max);
+	seq_printf(m, "net.core.rmem_max=%u\n", vk->sysctl_net.rmem_max);
+	seq_printf(m, "net.core.wmem_default=%u\n", vk->sysctl_net.wmem_default);
+	seq_printf(m, "net.core.rmem_default=%u\n", vk->sysctl_net.rmem_default);
 
 	seq_puts(m, "=== OPERATION ===\n");
 	seq_printf(m, "Op cap_capable: %p\n", vk->ops.cap_capable);
@@ -496,6 +515,7 @@ void vkernel_destroy_vk(struct vkernel *vk)
 
 	vkernel_destroy_vk_debugfs(vk);
 
+	vk_uninit_sysctl_net(&vk->sysctl_net);
 	vk_uninit_sysctl_kernel(&vk->sysctl_kernel);
 	vk_uninit_sysctl_fs(&vk->sysctl_fs);
 	vk_uninit_acl(&vk->acl);
@@ -558,7 +578,9 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 	r = vk_init_sysctl_kernel(&vk->sysctl_kernel);
 	if (r)
 		goto err_fs;
-
+	r = vk_init_sysctl_net(&vk->sysctl_net, tsk);
+	if (r)
+		goto err_kernel;
 
 	/* Init default operations */
 	vk->ops.cap_capable = vk_cap_capable;
@@ -566,7 +588,7 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 
 	r = vkernel_create_vk_debugfs(vk, name);
 	if (r)
-		goto err_kernel;
+		goto err_net;
 
 	/* Custom initializations */
 	vk->custom = vkernel_find_custom(custom);
@@ -597,6 +619,8 @@ err_custom_debugfs:
 		module_put(vk->custom->owner);
 
 	vkernel_destroy_vk_debugfs(vk);
+err_net:
+	vk_uninit_sysctl_net(&vk->sysctl_net);
 err_kernel:
 	vk_uninit_sysctl_kernel(&vk->sysctl_kernel);
 err_fs:
@@ -689,6 +713,8 @@ static long vkernel_vk_ioctl(struct file *filp,
 		r = vkernel_vk_ioctl_set_sysctl_kernel(vk, arg);
 		break;
 	case VKERNEL_SET_SYSCTL_NET:
+		r = vkernel_vk_ioctl_set_sysctl_net(vk, arg);
+		break;
 	case VKERNEL_SET_SYSCTL_VM:
 		r = -EOPNOTSUPP;
 		break;

@@ -20,4 +20,15 @@ void vk_uninit_sysctl_fs(struct vkernel_sysctl_fs *fs);
 int vk_init_sysctl_kernel(struct vkernel_sysctl_kernel *k);
 void vk_uninit_sysctl_kernel(struct vkernel_sysctl_kernel *k);
 
+int vk_init_sysctl_net(struct vkernel_sysctl_net *net, struct task_struct *tsk);
+void vk_uninit_sysctl_net(struct vkernel_sysctl_net *net);
+
+extern int (*tcp_set_default_congestion_control_ptr)(struct net *net, const char *name);
+
+int devconf_proc(struct net *net, struct ipv4_devconf *conf,
+				int val, int i, int type);
+int devconf_forward(struct net *net, struct ipv4_devconf *conf,
+				int val, int i, int type);
+int devconf_flush(struct net *net, struct ipv4_devconf *conf,
+				int val, int i, int type);
 #endif
