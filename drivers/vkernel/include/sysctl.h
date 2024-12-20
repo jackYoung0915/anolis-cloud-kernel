@@ -31,4 +31,10 @@ int devconf_forward(struct net *net, struct ipv4_devconf *conf,
 				int val, int i, int type);
 int devconf_flush(struct net *net, struct ipv4_devconf *conf,
 				int val, int i, int type);
+
+int vk_init_sysctl_vm(struct vkernel_sysctl_vm *vm);
+void vk_uninit_sysctl_vm(struct vkernel_sysctl_vm *vm);
+
+void vk_sync_overcommit_as(struct vkernel *vk);
+
 #endif
