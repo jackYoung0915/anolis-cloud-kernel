@@ -114,16 +114,21 @@ int topology_update_cpu_topology(void)
 	return update_topology;
 }
 
+void __weak arch_rebuild_cpu_topology(void)
+{
+	update_topology = 1;
+	rebuild_sched_domains();
+	pr_debug("sched_domain hierarchy rebuilt, flags updated\n");
+	update_topology = 0;
+}
+
 /*
  * Updating the sched_domains can't be done directly from cpufreq callbacks
  * due to locking, so queue the work for later.
  */
 static void update_topology_flags_workfn(struct work_struct *work)
 {
-	update_topology = 1;
-	rebuild_sched_domains();
-	pr_debug("sched_domain hierarchy rebuilt, flags updated\n");
-	update_topology = 0;
+	arch_rebuild_cpu_topology();
 }
 
 static DEFINE_PER_CPU(u32, freq_factor) = 1;
@@ -508,6 +513,14 @@ const struct cpumask *cpu_coregroup_mask(int cpu)
 
 const struct cpumask *cpu_clustergroup_mask(int cpu)
 {
+	/*
+	 * Forbid cpu_clustergroup_mask() to span more or the same CPUs as
+	 * cpu_coregroup_mask().
+	 */
+	if (cpumask_subset(cpu_coregroup_mask(cpu),
+			   &cpu_topology[cpu].cluster_sibling))
+		return topology_sibling_cpumask(cpu);
+
 	return &cpu_topology[cpu].cluster_sibling;
 }
 
@@ -586,6 +599,8 @@ void remove_cpu_topology(unsigned int cpu)
 		cpumask_clear_cpu(cpu, topology_core_cpumask(sibling));
 	for_each_cpu(sibling, topology_sibling_cpumask(cpu))
 		cpumask_clear_cpu(cpu, topology_sibling_cpumask(sibling));
+	for_each_cpu(sibling, topology_cluster_cpumask(cpu))
+		cpumask_clear_cpu(cpu, topology_cluster_cpumask(sibling));
 	for_each_cpu(sibling, topology_llc_cpumask(cpu))
 		cpumask_clear_cpu(cpu, topology_llc_cpumask(sibling));
 
