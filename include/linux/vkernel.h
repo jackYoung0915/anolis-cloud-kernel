@@ -169,6 +169,41 @@ struct vkernel_sysctl_fs_desc {
 	u32 mount_max;
 };
 
+struct vkernel_sysctl_kernel_desc {
+	u32 msgmax;
+	u32 msgmnb;
+	u32 msgmni;
+	s32 msg_next_id;
+	s32 semmsl;
+	s32 semmns;
+	s32 semopm;
+	s32 semmni;
+	s32 sem_next_id;
+	u64 shmall;
+	u64 shmmax;
+	u64 shmmni;
+	s32 shm_next_id;
+	s32 shm_rmid_forced;
+	s32 numa_balancing;
+	s32 numa_balancing_promote_rate_limit;
+	u32 sched_cfs_bandwidth_slice;
+	u32 sched_child_runs_first;
+	u32 sched_dl_period_max;
+	u32 sched_dl_period_min;
+	s32 sched_rr_timeslice;
+	s32 sched_rt_period;
+	s32 sched_rt_runtime;
+	s32 max_threads;
+	u32 key_gc_delay;
+	u32 key_persistent_keyring_expiry;
+	u32 key_quota_maxbytes;
+	u32 key_quota_maxkeys;
+	u32 key_quota_root_maxbytes;
+	u32 key_quota_root_maxkeys;
+	s32 pty_limit;
+	s32 pty_reserve;
+};
+
 struct vkernel_sysctl_fs {
 	/* file */
 	struct files_stat_struct files_stat;
@@ -184,6 +219,35 @@ struct vkernel_sysctl_fs {
 	int lease_break_time;
 	/* mount */
 	unsigned int mount_max;
+};
+
+struct vkernel_sysctl_kernel {
+	/* TODO: numa balancing, implemented at mem cgroup? */
+	int nb_mode;
+	int nb_promote_rate_limit;
+	/* TODO: sched, implemented at cpu cgroup? */
+	unsigned int sched_cfs_bandwidth_slice;
+	unsigned int sched_child_runs_first;
+	unsigned int sched_dl_period_max;
+	unsigned int sched_dl_period_min;
+	/* NOTE: rt has inflence on rcu */
+	int sched_rr_timeslice;
+	int sched_rt_period;
+	int sched_rt_runtime;
+	/* thread */
+	int nr_threads;
+	int max_threads;
+	/* security keys */
+	unsigned int key_gc_delay;
+	unsigned int persistent_keyring_expiry;
+	unsigned int key_quota_root_maxbytes;
+	unsigned int key_quota_root_maxkeys;
+	unsigned int key_quota_maxbytes;
+	unsigned int key_quota_maxkeys;
+	/* pty */
+	int pty_limit;
+	int pty_reserve;
+	atomic_t pty_count;
 };
 
 struct vkernel;
@@ -226,6 +290,7 @@ struct vkernel {
 
 	/* sysctl */
 	struct vkernel_sysctl_fs sysctl_fs;
+	struct vkernel_sysctl_kernel sysctl_kernel;
 
 	/* operation */
 	struct vkernel_ops ops;
@@ -266,6 +331,8 @@ int vkernel_clear_acl_set(struct vkernel_acl *acl, struct vkernel_file_desc_set 
 int vkernel_set_linux_cap(struct vkernel *vk, struct vkernel_linux_cap *cap);
 
 int vkernel_set_sysctl_fs(struct vkernel_sysctl_fs *fs, struct vkernel_sysctl_fs_desc *desc);
+int vkernel_set_sysctl_kernel(struct vkernel_sysctl_kernel *k,
+			struct vkernel_sysctl_kernel_desc *desc);
 
 struct vkernel_custom_type *vkernel_find_custom(const char *name);
 int vkernel_register_custom(struct vkernel_custom_type *custom);
