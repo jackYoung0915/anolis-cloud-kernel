@@ -53,7 +53,7 @@ static int cvm_vmid_init(void)
 
 static unsigned long tmm_feat_reg0;
 
-static bool tmm_supports(unsigned long feature)
+static __always_inline bool tmm_supports(unsigned long feature)
 {
 	return !!u64_get_bits(tmm_feat_reg0, feature);
 }
