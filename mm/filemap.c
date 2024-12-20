@@ -2401,10 +2401,10 @@ static int generic_file_buffered_read_get_pages(struct kiocb *iocb,
 {
 	struct file *filp = iocb->ki_filp;
 	struct address_space *mapping = filp->f_mapping;
-	struct file_ra_state *ra = &filp->f_ra;
 	pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
 	pgoff_t last_index = (iocb->ki_pos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT;
 	int i, j, nr_got, err = 0;
+	DEFINE_READAHEAD(ractl, filp, &filp->f_ra, mapping, index);
 
 	nr = min_t(unsigned long, last_index - index, nr);
 find_page:
@@ -2418,7 +2418,7 @@ find_page:
 	if (iocb->ki_flags & IOCB_NOIO)
 		return -EAGAIN;
 
-	page_cache_sync_readahead(mapping, ra, filp, index, last_index - index);
+	page_cache_sync_ra(&ractl, last_index - index);
 
 	nr_got = find_get_pages_contig(mapping, index, nr, pages);
 	if (nr_got)
@@ -2435,6 +2435,7 @@ got_pages:
 		loff_t pg_pos = max(iocb->ki_pos,
 				    (loff_t) pg_index << PAGE_SHIFT);
 		loff_t pg_count = iocb->ki_pos + iter->count - pg_pos;
+		DEFINE_READAHEAD(ractl_async, filp, &filp->f_ra, mapping, pg_index);
 
 		if (PageReadahead(page)) {
 			if (iocb->ki_flags & IOCB_NOIO) {
@@ -2444,8 +2445,7 @@ got_pages:
 				err = -EAGAIN;
 				break;
 			}
-			page_cache_async_readahead(mapping, ra, filp, page,
-					pg_index, last_index - pg_index);
+			page_cache_async_ra(&ractl_async, page, last_index - pg_index);
 		}
 
 		if (!PageUptodate(page)) {
