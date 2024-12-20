@@ -1951,6 +1951,8 @@ no_page:
 		/* Init accessed so avoid atomic mark_page_accessed later */
 		if (fgp_flags & FGP_ACCESSED)
 			__SetPageReferenced(page);
+		if (fgp_flags & FGP_DONTCACHE)
+			__SetPageDropbehind(page);
 
 		err = add_to_page_cache_lru(page, mapping, index, gfp_mask);
 		if (unlikely(err)) {
@@ -1967,6 +1969,10 @@ no_page:
 		if (page && (fgp_flags & FGP_FOR_MMAP))
 			unlock_page(page);
 	}
+
+	/* not an uncached lookup, clear uncached if set */
+	if (page && PageDropbehind(page) && !(fgp_flags & FGP_DONTCACHE))
+		ClearPageDropbehind(page);
 
 	return page;
 }
