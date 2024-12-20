@@ -2383,6 +2383,8 @@ generic_file_buffered_read_no_cached_page(struct kiocb *iocb,
 	page = page_cache_alloc(mapping);
 	if (!page)
 		return ERR_PTR(-ENOMEM);
+	if (iocb->ki_flags & IOCB_DONTCACHE)
+		__SetPageDropbehind(page);
 
 	error = add_to_page_cache_lru(page, mapping, index,
 				      mapping_gfp_constraint(mapping, GFP_KERNEL));
@@ -2418,6 +2420,9 @@ find_page:
 	if (iocb->ki_flags & IOCB_NOIO)
 		return -EAGAIN;
 
+	if (iocb->ki_flags & IOCB_DONTCACHE)
+		ractl.dropbehind = 1;
+
 	page_cache_sync_ra(&ractl, last_index - index);
 
 	nr_got = find_get_pages_contig(mapping, index, nr, pages);
@@ -2445,6 +2450,10 @@ got_pages:
 				err = -EAGAIN;
 				break;
 			}
+
+			if (iocb->ki_flags & IOCB_DONTCACHE)
+				ractl_async.dropbehind = 1;
+
 			page_cache_async_ra(&ractl_async, page, last_index - pg_index);
 		}
 
@@ -2485,6 +2494,21 @@ static inline bool pos_same_page(loff_t pos1, loff_t pos2, struct page *page)
 	unsigned int shift = page_shift(page);
 
 	return (pos1 >> shift == pos2 >> shift);
+}
+
+
+static void filemap_end_dropbehind_read(struct address_space *mapping,
+					struct page *page)
+{
+	if (!PageDropbehind(page))
+		return;
+	if (PageWriteback(page) || PageDirty(page))
+		return;
+	if (trylock_page(page)) {
+		if (TestClearPageDropbehind(page))
+			page_unmap_invalidate(mapping, page, 0);
+		unlock_page(page);
+	}
 }
 
 /**
@@ -2610,8 +2634,12 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb,
 			}
 		}
 put_pages:
-		for (i = 0; i < pg_nr; i++)
-			put_page(pages[i]);
+		for (i = 0; i < pg_nr; i++) {
+			struct page *page = pages[i];
+
+			filemap_end_dropbehind_read(mapping, page);
+			put_page(page);
+		}
 	} while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
 
 	file_accessed(filp);
