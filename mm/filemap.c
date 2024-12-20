@@ -1527,12 +1527,35 @@ void unlock_page(struct page *page)
 }
 EXPORT_SYMBOL(unlock_page);
 
+/*
+ * If page was marked as dropbehind, then pages should be dropped when writeback
+ * completes. Do that now. If we fail, it's likely because of a big page -
+ * just reset dropbehind for that case and latter completions should invalidate.
+ */
+static void page_end_dropbehind_write(struct page *page)
+{
+	/*
+	 * Hitting !in_task() should not happen off RWF_DONTCACHE writeback,
+	 * but can happen if normal writeback just happens to find dirty pages
+	 * that were created as part of uncached writeback, and that writeback
+	 * would otherwise not need non-IRQ handling. Just skip the
+	 * invalidation in that case.
+	 */
+	if (in_task() && trylock_page(page)) {
+		if (page->mapping)
+			page_unmap_invalidate(page->mapping, page, 0);
+		unlock_page(page);
+	}
+}
+
 /**
  * end_page_writeback - end writeback against a page
  * @page: the page
  */
 void end_page_writeback(struct page *page)
 {
+	bool page_dropbehind = false;
+
 	/*
 	 * TestClearPageReclaim could be used here but it is an atomic
 	 * operation and overkill in this particular case. Failing to
@@ -1552,11 +1575,17 @@ void end_page_writeback(struct page *page)
 	 * reused before the wake_up_page().
 	 */
 	get_page(page);
+	if (!PageDirty(page))
+		page_dropbehind = TestClearPageDropbehind(page);
+
 	if (!test_clear_page_writeback(page))
 		BUG();
 
 	smp_mb__after_atomic();
 	wake_up_page(page, PG_writeback);
+
+	if (page_dropbehind)
+		page_end_dropbehind_write(page);
 	put_page(page);
 }
 EXPORT_SYMBOL(end_page_writeback);
