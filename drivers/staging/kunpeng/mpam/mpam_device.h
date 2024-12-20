@@ -5,8 +5,7 @@
 #include <linux/err.h>
 #include <linux/cpumask.h>
 #include <linux/types.h>
-
-#include <arm_mpam.h>
+#include "arm_mpam.h"
 
 struct mpam_config;
 
@@ -111,7 +110,7 @@ struct mpam_class {
 
 	struct mutex            lock;
 
-	/* member of mpam_classes */
+	/* member of kunpeng_mpam_classes */
 	struct list_head        classes_list;
 
 	u16                     cmax_wd;

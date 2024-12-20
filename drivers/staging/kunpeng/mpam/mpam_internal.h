@@ -2,7 +2,7 @@
 #ifndef _ASM_ARM64_MPAM_INTERNAL_H
 #define _ASM_ARM64_MPAM_INTERNAL_H
 
-#include <resctrl.h>
+#include "resctrl.h"
 
 typedef u32 mpam_features_t;
 
@@ -329,7 +329,7 @@ int kunpeng_mpam_resctrl_setup(void);
 struct raw_resctrl_resource *
 mpam_get_raw_resctrl_resource(u32 level);
 
-int __init mpam_resctrl_init(void);
+int mpam_resctrl_init(void);
 
 int mpam_resctrl_set_default_cpu(unsigned int cpu);
 void mpam_resctrl_clear_default_cpu(unsigned int cpu);
@@ -341,5 +341,7 @@ int rmid_mon_ptrs_init(u32 nr_rmids);
 
 struct resctrl_resource *
 mpam_resctrl_get_resource(enum resctrl_resource_level level);
+
+void mpam_restore_context(void);
 
 #endif

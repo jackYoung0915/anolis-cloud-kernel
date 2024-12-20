@@ -40,6 +40,7 @@
 #include <asm/tlbflush.h>
 #include <asm/pgalloc.h>
 #include <asm/kfence.h>
+#include <asm/set_memory.h>
 
 u64 idmap_t0sz = TCR_T0SZ(VA_BITS_MIN);
 EXPORT_SYMBOL(idmap_t0sz);
@@ -663,7 +664,7 @@ static void __init map_mem(pgd_t *pgdp)
 	early_kfence_pool = arm64_kfence_alloc_pool();
 
 	if (!can_set_block_and_cont_map() ||
-	    (split_disabled && can_set_direct_map()))
+	    (split_disabled && can_set_direct_map()) || is_cvm_world())
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	/*
@@ -1958,7 +1959,7 @@ int arch_add_memory(int nid, u64 start, u64 size,
 	 * it is possible to protect/unprotect single pages in the KFENCE pool.
 	 */
 	if (!can_set_block_and_cont_map() ||
-	    (split_disabled && can_set_direct_map()))
+	    (split_disabled && can_set_direct_map()) || is_cvm_world())
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	__create_pgd_mapping(swapper_pg_dir, start, __phys_to_virt(start),

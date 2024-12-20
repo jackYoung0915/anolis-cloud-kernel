@@ -30,9 +30,10 @@
 #include <linux/cacheinfo.h>
 #include <linux/string.h>
 #include <linux/nodemask.h>
-#include <asm/mpam_sched.h>
-#include <arm_mpam.h>
+#include "arm_mpam.h"
 
+extern int __init acpi_mpam_parse_table_v2(struct acpi_table_header *table,
+					struct acpi_table_header *pptt);
 /**
  * acpi_mpam_label_cache_component_id() - Recursivly find @min_physid
  * for all leaf CPUs below @cpu_node, use numa node id of @min_cpu_node
@@ -41,7 +42,7 @@
  * @cpu_node:  The point in the toplogy to start the walk
  * @component_id: The id labels the structure mpam_node cache
  */
-static int
+int
 acpi_mpam_label_cache_component_id(struct acpi_table_header *table_hdr,
 					struct acpi_pptt_processor *cpu_node,
 					u32 *component_id)
@@ -72,42 +73,17 @@ acpi_mpam_label_cache_component_id(struct acpi_table_header *table_hdr,
 	return 0;
 }
 
-/**
- * acpi_mpam_label_memory_component_id() - Use proximity_domain id to
- * label mpam memory node, which be signed by @component_id.
- * @proximity_domain: proximity_domain of ACPI MPAM memory node
- * @component_id: The id labels the structure mpam_node memory
- */
-static int acpi_mpam_label_memory_component_id(u8 proximity_domain,
-					u32 *component_id)
+static int __init acpi_mpam_parse_memory(struct acpi_mpam_header *h)
 {
-	u32 nid = (u32)proximity_domain;
-
-	if (nid >= nr_online_nodes) {
-		pr_err_once("Invalid proximity domain\n");
-		return -EINVAL;
-	}
-
-	*component_id = nid;
-	return 0;
-}
-
-static int __init kunpeng_acpi_mpam_parse_memory(struct kunpeng_acpi_mpam_header *h)
-{
-	int ret;
 	u32 component_id;
 	struct mpam_device *dev;
-	struct kunpeng_acpi_mpam_node_memory *node = (struct kunpeng_acpi_mpam_node_memory *)h;
+	struct acpi_mpam_node_memory *node = (struct acpi_mpam_node_memory *)h;
 
-	ret = acpi_mpam_label_memory_component_id(node->proximity_domain,
-							&component_id);
-	if (ret) {
-		pr_err("Failed to label memory component id\n");
-		return -EINVAL;
-	}
+	component_id = acpi_map_pxm_to_node(node->proximity_domain);
+	if (component_id == NUMA_NO_NODE)
+		component_id = 0;
 
-	dev = mpam_device_create_memory(component_id,
-					node->header.base_address);
+	dev = mpam_device_create_memory(component_id, node->header.base_address);
 	if (IS_ERR(dev)) {
 		pr_err("Failed to create memory node\n");
 		return -EINVAL;
@@ -118,7 +94,7 @@ static int __init kunpeng_acpi_mpam_parse_memory(struct kunpeng_acpi_mpam_header
 		node->header.error_interrupt, node->header.error_interrupt_flags);
 }
 
-static int __init kunpeng_acpi_mpam_parse_cache(struct kunpeng_acpi_mpam_header *h,
+static int __init acpi_mpam_parse_cache(struct acpi_mpam_header *h,
 						struct acpi_table_header *pptt)
 {
 	int ret = 0;
@@ -128,7 +104,7 @@ static int __init kunpeng_acpi_mpam_parse_cache(struct kunpeng_acpi_mpam_header 
 	struct cacheinfo *ci;
 	struct acpi_pptt_cache *pptt_cache;
 	struct acpi_pptt_processor *pptt_cpu_node;
-	struct kunpeng_acpi_mpam_node_cache *node = (struct kunpeng_acpi_mpam_node_cache *)h;
+	struct acpi_mpam_node_cache *node = (struct acpi_mpam_node_cache *)h;
 
 	if (!pptt) {
 		pr_err("No PPTT table found, MPAM cannot be configured\n");
@@ -186,12 +162,12 @@ static int __init kunpeng_acpi_mpam_parse_cache(struct kunpeng_acpi_mpam_header 
 		node->header.error_interrupt, node->header.error_interrupt_flags);
 }
 
-static int __init kunpeng_acpi_mpam_parse_table(struct acpi_table_header *table,
-						struct acpi_table_header *pptt)
+static int __init acpi_mpam_parse_table(struct acpi_table_header *table,
+					struct acpi_table_header *pptt)
 {
 	char *table_offset = (char *)(table + 1);
 	char *table_end = (char *)table + table->length;
-	struct kunpeng_acpi_mpam_header *node_hdr;
+	struct acpi_mpam_header *node_hdr;
 	int ret = 0;
 
 	ret = mpam_discovery_start();
@@ -199,32 +175,32 @@ static int __init kunpeng_acpi_mpam_parse_table(struct acpi_table_header *table,
 	if (ret)
 		return ret;
 
-	node_hdr = (struct kunpeng_acpi_mpam_header *)table_offset;
+	node_hdr = (struct acpi_mpam_header *)table_offset;
 	while (table_offset < table_end) {
 		switch (node_hdr->type) {
 
-		case KUNPENG_ACPI_MPAM_TYPE_CACHE:
-			ret = kunpeng_acpi_mpam_parse_cache(node_hdr, pptt);
+		case ACPI_MPAM_TYPE_CACHE:
+			ret = acpi_mpam_parse_cache(node_hdr, pptt);
 			break;
-		case KUNPENG_ACPI_MPAM_TYPE_MEMORY:
-			ret = kunpeng_acpi_mpam_parse_memory(node_hdr);
+		case ACPI_MPAM_TYPE_MEMORY:
+			ret = acpi_mpam_parse_memory(node_hdr);
 			break;
 		default:
 			pr_warn_once("Unknown node type %u offset %ld.",
 					node_hdr->type,
 					(table_offset-(char *)table));
-			/* fall through */
-		case KUNPENG_ACPI_MPAM_TYPE_SMMU:
+			fallthrough;
+		case ACPI_MPAM_TYPE_SMMU:
 			/* not yet supported */
-			/* fall through */
-		case KUNPENG_ACPI_MPAM_TYPE_UNKNOWN:
+			fallthrough;
+		case ACPI_MPAM_TYPE_UNKNOWN:
 			break;
 		}
 		if (ret)
 			break;
 
 		table_offset += node_hdr->length;
-		node_hdr = (struct kunpeng_acpi_mpam_header *)table_offset;
+		node_hdr = (struct acpi_mpam_header *)table_offset;
 	}
 
 	if (ret) {
@@ -239,41 +215,45 @@ static int __init kunpeng_acpi_mpam_parse_table(struct acpi_table_header *table,
 	return ret;
 }
 
-int __init kunpeng_acpi_mpam_parse(void)
+int __init acpi_mpam_parse_version(void)
 {
 	struct acpi_table_header *mpam, *pptt;
 	acpi_status status;
-	int ret;
+	int ret = -EINVAL;
 
 	if (!cpus_have_const_cap(ARM64_MPAM))
 		return 0;
 
-	if (acpi_disabled || kunpeng_mpam_enabled != KUNPENG_MPAM_ENABLE_ACPI)
+	if (acpi_disabled || kunpeng_mpam_enabled != MPAM_ENABLE_ACPI)
 		return 0;
 
 	status = acpi_get_table(ACPI_SIG_MPAM, 0, &mpam);
 	if (ACPI_FAILURE(status))
 		return -ENOENT;
-
+	/* Only pass for hisi */
 	if (strncmp(mpam->oem_id, "HISI", 4)) {
 		acpi_put_table(mpam);
 		return 0;
 	}
-
 	/* PPTT is optional, there may be no mpam cache controls */
 	acpi_get_table(ACPI_SIG_PPTT, 0, &pptt);
 	if (ACPI_FAILURE(status))
 		pptt = NULL;
 
-	ret = kunpeng_acpi_mpam_parse_table(mpam, pptt);
+	/*
+	 * The BIOS of Kunpeng 920 supports MPAM ACPI 1.0, but the ACPI
+	 * revision is wrongly written as 1, so distinguished by
+	 * oem_table_id here.
+	 */
+	if (mpam->revision == 0 || strncmp(mpam->oem_table_id, "HIP08", 5) == 0)
+		ret = acpi_mpam_parse_table(mpam, pptt);
+	else if (mpam->revision == 1)
+		ret = acpi_mpam_parse_table_v2(mpam, pptt);
+	else
+		pr_err("unsupported MPAM ACPI version: %u\n", mpam->revision);
+
 	acpi_put_table(pptt);
 	acpi_put_table(mpam);
 
 	return ret;
 }
-
-/*
- * We want to run after cacheinfo_sysfs_init() has caused the cacheinfo
- * structures to be populated. That runs as a device_initcall.
- */
-device_initcall_sync(kunpeng_acpi_mpam_parse);

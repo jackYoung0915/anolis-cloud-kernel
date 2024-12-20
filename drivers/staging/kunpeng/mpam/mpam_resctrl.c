@@ -32,12 +32,12 @@
 #include <linux/task_work.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/task.h>
-#include <asm/io.h>
+#include "arm_mpam.h"
+
 #include <asm/mpam_sched.h>
+#include "mpam.h"
+#include <asm/io.h>
 
-
-#include <arm_mpam.h>
-#include <mpam.h>
 #include "mpam_device.h"
 #include "mpam_resource.h"
 #include "mpam_internal.h"
@@ -310,13 +310,23 @@ parse_cache(char *buf, struct resctrl_resource *r,
 		return -EINVAL;
 	}
 
-	if (kstrtoul(buf, rr->ctrl_features[type].base, &data))
+	if (kstrtoul(buf, rr->ctrl_features[type].base, &data)) {
+		kunpeng_rdt_last_cmd_printf("Non-hex character in the mask %s\n", buf);
 		return -EINVAL;
+	}
 
-	if (data >= rr->ctrl_features[type].max_wd)
+	if (data >= rr->ctrl_features[type].max_wd) {
+		kunpeng_rdt_last_cmd_puts("Mask out of range\n");
 		return -EINVAL;
+	}
+
+	if (type == SCHEMA_COMM && data == 0) {
+		kunpeng_rdt_last_cmd_puts("No allowed CPBM to be set to 0\n");
+		return -EINVAL;
+	}
 
 	cfg->new_ctrl[type] = data;
+	cfg->ctrl_updated[type] = true;
 	cfg->have_new_ctrl = true;
 
 	return 0;
@@ -335,30 +345,33 @@ parse_bw(char *buf, struct resctrl_resource *r,
 		return -EINVAL;
 	}
 
+	if (kstrtoul(buf, rr->ctrl_features[type].base, &data)) {
+		kunpeng_rdt_last_cmd_printf("Non-decimal digit in MB value %s\n", buf);
+		return -EINVAL;
+	}
+
 	switch (rr->ctrl_features[type].evt) {
 	case QOS_MBA_MAX_EVENT_ID:
 	case QOS_MBA_PBM_EVENT_ID:
-		if (kstrtoul(buf, rr->ctrl_features[type].base, &data))
-			return -EINVAL;
-		data = (data < r->mbw.min_bw) ? r->mbw.min_bw : data;
-		data = roundup(data, r->mbw.bw_gran);
-		break;
 	case QOS_MBA_MIN_EVENT_ID:
-		if (kstrtoul(buf, rr->ctrl_features[type].base, &data))
+		if (data < r->mbw.min_bw || data >= rr->ctrl_features[type].max_wd) {
+			kunpeng_rdt_last_cmd_printf("MB value %ld out of range [%d,%d]\n", data,
+					r->mbw.min_bw, rr->ctrl_features[type].max_wd - 1);
 			return -EINVAL;
-		/* for mbw min feature, 0 of setting is allowed */
+		}
 		data = roundup(data, r->mbw.bw_gran);
 		break;
 	default:
-		if (kstrtoul(buf, rr->ctrl_features[type].base, &data))
+		if (data >= rr->ctrl_features[type].max_wd) {
+			kunpeng_rdt_last_cmd_printf("MB value %ld exceed %d\n", data,
+					rr->ctrl_features[type].max_wd - 1);
 			return -EINVAL;
+		}
 		break;
 	}
 
-	if (data >= rr->ctrl_features[type].max_wd)
-		return -EINVAL;
-
 	cfg->new_ctrl[type] = data;
+	cfg->ctrl_updated[type] = true;
 	cfg->have_new_ctrl = true;
 
 	return 0;
@@ -455,7 +468,7 @@ static u64 cache_rdmon(struct rdt_domain *d, void *md_priv)
 	 * We should judge if return is OK, it is possible affected
 	 * by NRDY bit.
 	 */
-	timeout = READ_ONCE(jiffies) + (1*SEC_CONVERSION);
+	timeout = READ_ONCE(jiffies) + msecs_to_jiffies(1000);
 	do {
 		if (time_after(READ_ONCE(jiffies), timeout)) {
 			err = -ETIMEDOUT;
@@ -496,7 +509,7 @@ static u64 mbw_rdmon(struct rdt_domain *d, void *md_priv)
 	 * We should judge if return is OK, it is possible affected
 	 * by NRDY bit.
 	 */
-	timeout = READ_ONCE(jiffies) + (1*SEC_CONVERSION);
+	timeout = READ_ONCE(jiffies) + msecs_to_jiffies(1000);
 	do {
 		if (time_after(READ_ONCE(jiffies), timeout)) {
 			err = -ETIMEDOUT;
@@ -632,23 +645,24 @@ int closid_bitmap_init(void)
  * @rows:           Number of bits for remap_body[:] bitmap
  * @clos:           Number of bitmaps
  * @nr_usage:       Number rmid we have
- * @stride:         Step stride from transforming rmid to partid and pmg
+ * @step_size:      Step size from traversing the point of matrix once
+ * @step_cnt:       Indicates how many times to traverse(.e.g if cdp;step_cnt=2)
  * @remap_body:     Storing bitmaps' entry and itself
- * @remap_enabled:  Does remap_body init done
  */
 struct rmid_transform {
 	u32 rows;
 	u32 cols;
 	u32 nr_usage;
-	int stride;
+	int step_size;
+	int step_cnt;
 	unsigned long **remap_body;
-	bool remap_enabled;
 };
 static struct rmid_transform rmid_remap_matrix;
+DEFINE_STATIC_KEY_FALSE(rmid_remap_enable_key);
 
 static u32 get_nr_rmids(void)
 {
-	if (!rmid_remap_matrix.remap_enabled)
+	if (!static_branch_likely(&rmid_remap_enable_key))
 		return 0;
 
 	return rmid_remap_matrix.nr_usage;
@@ -687,9 +701,17 @@ static int set_rmid_remap_matrix(u32 rows, u32 cols)
 	 */
 	hw_alloc_times_validate(times, flag);
 	rmid_remap_matrix.cols = rounddown(cols, times);
-	rmid_remap_matrix.stride = times;
+	rmid_remap_matrix.step_cnt = times;
 	if (times > rmid_remap_matrix.cols)
 		return -EINVAL;
+	/*
+	 * if only pmg(Performance Monitor Group)
+	 * work on the monitor, step_size must be
+	 * set to maximum number of columns,
+	 * otherwise set it to 1, such as kunpeng
+	 * 920 does.
+	 */
+	rmid_remap_matrix.step_size = 1;
 
 	/*
 	 * first row of rmid remap matrix is used for indicating
@@ -733,7 +755,8 @@ static int set_rmid_remap_matrix(u32 rows, u32 cols)
 				0, rmid_remap_matrix.rows);
 	}
 
-	rmid_remap_matrix.remap_enabled = 1;
+	/* make column entry of rmid matrix visible */
+	static_branch_enable_cpuslocked(&rmid_remap_enable_key);
 
 	return 0;
 clean:
@@ -748,6 +771,9 @@ clean:
 		rmid_remap_matrix.remap_body = NULL;
 	}
 
+	/* if recreation failed, cannot use rmid remap matrix */
+	static_branch_disable_cpuslocked(&rmid_remap_enable_key);
+
 	return ret;
 }
 
@@ -761,37 +787,102 @@ static u32 probe_rmid_remap_matrix_rows(void)
 	return (u32)mpam_sysprops_num_pmg();
 }
 
-static inline unsigned long **__rmid_remap_bmp(int col)
+static inline unsigned long **__rmid_remap_bmp(u32 col)
 {
-	if (!rmid_remap_matrix.remap_enabled)
+	if (!static_branch_likely(&rmid_remap_enable_key))
 		return NULL;
 
-	if ((u32)col >= rmid_remap_matrix.cols)
+	if (col >= rmid_remap_matrix.cols)
 		return NULL;
 
 	return rmid_remap_matrix.remap_body + col;
 }
 
-#define for_each_rmid_remap_bmp(bmp)	\
-	for (bmp = __rmid_remap_bmp(0);	\
-		bmp <= __rmid_remap_bmp(rmid_remap_matrix.cols - 1); \
-		bmp++)
+/*
+ *  these macros defines how can we traverse rmid remap matrix, there are
+ *  three scenarios:
+ *
+ *  (1) step_size is default set to 1, if only PMG(NR_PMG=4) works, makes
+ *      it equals to number of columns, step_cnt means how many times are
+ *      allocated and released each time, at this time rmid remap matrix
+ *      looks like:
+ *
+ *        ^
+ *        |
+ *         ------column------>
+ *
+ *       RMID  0   1   2   3   (step_size=1)
+ *             `---'
+ *                `--> (step_cnt=2 if cdp enabled)
+ *
+ *       RMID  0   1   2   3   (step_size=1)
+ *             `--
+ *                `--> (step_cnt=1 if cdp disabled)
+ *
+ *  (2) if PARTID(NR_PARTID=4) and PMG(NR_PMG=4) works together, at this
+ *      time rmid remap matrix looks like:
+ *
+ *       ------------row------------>
+ *      |
+ *      |  RMID  0   1   2   3   (step_size=1)
+ *      |        `---'
+ *      |           `--> (step_cnt=2 if cdp enabled)
+ *      |        4   5   6   7
+ *      |        8   9   10  11
+ *      v        12  13  14  15
+ *
+ *  (3) step_size not equal to 1, cross-line traversal, but this scenario
+ *      did not happen yet.
+ */
 
-#define for_each_valid_rmid_remap_bmp(bmp)	\
-		for_each_rmid_remap_bmp(bmp)	\
-			if (bmp && *bmp)
+#define __xy_initialize(x, y, from)           		\
+	(x = from, y = 0)
+#define __xy_overflow(x, y)				\
+	(y >= rmid_remap_matrix.cols)
+#define __x_forward(x)					\
+	(x = (x + 1) % rmid_remap_matrix.cols)
+#define __y_forward(x, y)				\
+	(y += ((x) ? 0 : 1))
 
-#define STRIDE_CHK(stride)	\
-		(stride == rmid_remap_matrix.stride)
+#define __step_xy_initialize(step, x, y, from)		\
+	(x = from, step = 1, y = 0)
+#define __step_align(from)				\
+	(!(from % (rmid_remap_matrix.step_size *	\
+		rmid_remap_matrix.step_cnt)))
+#define __step_overflow(step)				\
+	(__xy_overflow(x, y) ||				\
+		(step > rmid_remap_matrix.step_cnt))
+#define __step_x_forward(x)				\
+	__x_forward(x)
+#define __step_forward(step, x)				\
+	(step += ((x % rmid_remap_matrix.step_size) ? 0 : 1))
+#define __step_y_forward(x, y)				\
+	__y_forward(x, y)
 
-#define STRIDE_INC_CHK(stride)	\
-		(++stride == rmid_remap_matrix.stride)
+#define for_each_rmid_transform_point_step_from(p_entry, step, x, y, from)	\
+	for (__step_xy_initialize(step, x, y, from),				\
+		(p_entry) = __rmid_remap_bmp((from));				\
+		__step_align(from) && !__step_overflow(step);			\
+		__step_x_forward(x),						\
+		__step_forward(step, x),					\
+		__step_y_forward(x, y),						\
+		(p_entry) = __rmid_remap_bmp(x))				\
+			if (unlikely(((p_entry) == NULL) ||			\
+				(*p_entry) == NULL))				\
+				WARN_ON_ONCE(1);				\
+			else
 
-#define STRIDE_CHK_AND_WARN(stride)	\
-do {	\
-	if (!STRIDE_CHK(stride))	\
-		WARN_ON_ONCE("Unexpected stride\n");	\
-} while (0)
+#define for_each_rmid_transform_point_from(p_entry, x, y, from)			\
+	for (__xy_initialize(x, y, from),					\
+		(p_entry) = __rmid_remap_bmp((from));				\
+		!__xy_overflow(x, y);						\
+		__x_forward(x),							\
+		__y_forward(x, y),						\
+		(p_entry) = __rmid_remap_bmp(x))				\
+			if (unlikely(((p_entry) == NULL) ||			\
+				(*p_entry) == NULL))				\
+				WARN_ON_ONCE(1);				\
+			else
 
 static void set_rmid_remap_bmp_occ(unsigned long *bmp)
 {
@@ -801,6 +892,11 @@ static void set_rmid_remap_bmp_occ(unsigned long *bmp)
 static void unset_rmid_remap_bmp_occ(unsigned long *bmp)
 {
 	set_bit(0, bmp);
+}
+
+static int is_rmid_remap_bmp_bdr_set(unsigned long *bmp, int b)
+{
+	return (test_bit(b + 1, bmp) == 0) ? 1 : 0;
 }
 
 static void rmid_remap_bmp_bdr_set(unsigned long *bmp, int b)
@@ -826,6 +922,33 @@ static int is_rmid_remap_bmp_full(unsigned long *bmp)
 			bitmap_full(bmp, rmid_remap_matrix.rows));
 }
 
+static int rmid_remap_bmp_find_step_entry(int partid, bool exclusive)
+{
+	int x, y;
+	unsigned long **bmp;
+
+	if (rmid_remap_matrix.step_size ==
+		rmid_remap_matrix.cols)
+		return 0;
+
+	/* step entry should be non-occupied and aligned */
+	bmp = __rmid_remap_bmp(partid);
+	if (bmp)
+		return ((exclusive && is_rmid_remap_bmp_occ(*bmp)) ||
+			!__step_align(partid)) ? -ENOSPC : partid;
+
+	for_each_rmid_transform_point_from(bmp, x, y, 0) {
+		/*
+		 * do not waste partid resource, start
+		 * from step aligned position.
+		 */
+		if (__step_align(x) && !is_rmid_remap_bmp_occ(*bmp))
+			return x;
+	}
+
+	return -ENOSPC;
+}
+
 static int rmid_remap_bmp_alloc_pmg(unsigned long *bmp)
 {
 	int pos;
@@ -840,8 +963,7 @@ static int rmid_remap_bmp_alloc_pmg(unsigned long *bmp)
 
 static int rmid_remap_matrix_init(void)
 {
-	int stride = 0;
-	int ret;
+	int x, y, step, ret;
 	u32 cols, rows;
 	unsigned long **bmp;
 
@@ -858,14 +980,10 @@ static int rmid_remap_matrix_init(void)
 	 * default rmid, otherwise drop partid = 0 and
 	 * partid = 1 for LxCACHE, LxDATA reservation.
 	 */
-	for_each_valid_rmid_remap_bmp(bmp) {
+	for_each_rmid_transform_point_step_from(bmp, step, x, y, 0) {
 		set_rmid_remap_bmp_occ(*bmp);
-		rmid_remap_bmp_bdr_clear(*bmp, 0);
-		if (STRIDE_INC_CHK(stride))
-			break;
+		rmid_remap_bmp_alloc_pmg(*bmp);
 	}
-
-	STRIDE_CHK_AND_WARN(stride);
 
 	ret = rmid_mon_ptrs_init(rmid_remap_matrix.nr_usage);
 	if (ret)
@@ -909,98 +1027,82 @@ static int rmid_to_partid_pmg(int rmid, int *partid, int *pmg)
 	return 0;
 }
 
-static int __rmid_alloc(int partid)
+static int __rmid_alloc(int partid, int pmg, bool exclusive)
 {
-	int stride = 0;
-	int partid_sel = 0;
-	int ret, pmg;
-	int rmid[2] = {-1, -1};
-	unsigned long **cmp, **bmp;
+	int x, y, step, ret, rmid;
+	bool checkpmg = false;
+	unsigned long **bmp;
 
-	if (partid >= 0) {
-		cmp = __rmid_remap_bmp(partid);
-		if (!cmp) {
-			ret = -EINVAL;
+	if (pmg >= 0)
+		checkpmg = true;
+
+	/* traverse from first non-occupied and step-aligned entry */
+	ret = rmid_remap_bmp_find_step_entry(partid, exclusive);
+	if (ret < 0)
+		goto out;
+	partid = ret;
+
+	for_each_rmid_transform_point_step_from(bmp, step, x, y, partid) {
+		set_rmid_remap_bmp_occ(*bmp);
+
+		/* checking if the given pmg is available */
+		if (checkpmg) {
+			/*
+			 * it can only happened in step_size aligned
+			 * position, so it does not exist pmgs cleared
+			 * before.
+			 */
+			if (is_rmid_remap_bmp_bdr_set(*bmp, pmg + y)) {
+				ret = -EEXIST;
+				goto out;
+			}
+			rmid_remap_bmp_bdr_clear(*bmp, pmg + y);
+			continue;
+		}
+
+		/* alloc available pmg */
+		ret = rmid_remap_bmp_alloc_pmg(*bmp);
+		if (ret < 0)
 			goto out;
-		}
-		for_each_valid_rmid_remap_bmp(bmp) {
-			if (bmp < cmp)
-				continue;
-			set_rmid_remap_bmp_occ(*bmp);
-
-			ret = rmid_remap_bmp_alloc_pmg(*bmp);
-			if (ret < 0)
-				goto out;
+		/* always return first pmg */
+		if (pmg < 0)
 			pmg = ret;
-			rmid[stride] = to_rmid(partid + stride, pmg);
-			if (STRIDE_INC_CHK(stride))
-				break;
-		}
-	} else {
-		for_each_valid_rmid_remap_bmp(bmp) {
-			partid_sel++;
-
-			if (is_rmid_remap_bmp_occ(*bmp))
-				continue;
-			set_rmid_remap_bmp_occ(*bmp);
-
-			ret = rmid_remap_bmp_alloc_pmg(*bmp);
-			if (ret < 0)
-				goto out;
-			pmg = ret;
-			rmid[stride] = to_rmid(partid_sel - 1, pmg);
-			if (STRIDE_INC_CHK(stride))
-				break;
-		}
 	}
 
-	if (!STRIDE_CHK(stride)) {
+	rmid = to_rmid(partid, pmg);
+	if (!is_rmid_valid(rmid)) {
 		ret = -ENOSPC;
 		goto out;
 	}
-
-	ret = assoc_rmid_with_mon(rmid[0]);
-	if (ret)
+	ret = assoc_rmid_with_mon(rmid);
+	if (ret) {
+		rmid_free(rmid);
 		goto out;
+	}
 
-	return rmid[0];
+	return rmid;
 out:
-	rmid_free(rmid[0]);
 	return ret;
 }
 
 int rmid_alloc(int partid)
 {
-	return __rmid_alloc(partid);
+	return __rmid_alloc(partid, -1, false);
 }
 
 void rmid_free(int rmid)
 {
-	int stride = 0;
-	int partid, pmg;
-	unsigned long **bmp, **cmp;
+	int x, y, step, partid, pmg;
+	unsigned long **bmp;
 
 	if (rmid_to_partid_pmg(rmid, &partid, &pmg))
 		return;
 
-	cmp = __rmid_remap_bmp(partid);
-	if (!cmp)
-		return;
-
-	for_each_valid_rmid_remap_bmp(bmp) {
-		if (bmp < cmp)
-			continue;
-
-		rmid_remap_bmp_bdr_set(*bmp, pmg);
-
+	for_each_rmid_transform_point_step_from(bmp, step, x, y, partid) {
+		rmid_remap_bmp_bdr_set(*bmp, pmg + y);
 		if (is_rmid_remap_bmp_full(*bmp))
 			unset_rmid_remap_bmp_occ(*bmp);
-
-		if (STRIDE_INC_CHK(stride))
-			break;
 	}
-
-	STRIDE_CHK_AND_WARN(stride);
 
 	deassoc_rmid_with_mon(rmid);
 }
@@ -1043,7 +1145,7 @@ void kunpeng_closid_free(int closid)
  * Choose a width for the resource name and resource data based on the
  * resource that has widest name and cbm.
  */
-static __init void mpam_init_padding(void)
+static void mpam_init_padding(void)
 {
 	int cl;
 	struct mpam_resctrl_res *res;
@@ -1246,7 +1348,7 @@ static void move_myself(struct callback_head *head)
 	    (rdtgrp->flags & RDT_DELETED)) {
 		current->closid = 0;
 		current->rmid = 0;
-		kfree(rdtgrp);
+		rdtgroup_remove(rdtgrp);
 	}
 
 	preempt_disable();
@@ -1263,7 +1365,7 @@ int __resctrl_group_move_task(struct task_struct *tsk,
 	struct task_move_callback *callback;
 	int ret;
 
-	callback = kzalloc(sizeof(*callback), GFP_KERNEL);
+	callback = kzalloc(sizeof(*callback), GFP_NOWAIT);
 	if (!callback)
 		return -ENOMEM;
 	callback->work.func = move_myself;
@@ -1758,18 +1860,14 @@ static ssize_t resctrl_group_tasks_write(struct kernfs_open_file *of,
 static void show_resctrl_tasks(struct rdtgroup *r, struct seq_file *s)
 {
 	struct task_struct *p, *t;
-	pid_t pid;
 
 	rcu_read_lock();
 	for_each_process_thread(p, t) {
 		if ((r->type == RDTMON_GROUP &&
 			t->rmid == resctrl_navie_rmid(r->mon.rmid)) ||
 			(r->type == RDTCTRL_GROUP &&
-			t->closid == resctrl_navie_closid(r->closid))) {
-			pid = task_pid_vnr(t);
-			if (pid)
-				seq_printf(s, "%d\n", pid);
-		}
+			t->closid == resctrl_navie_closid(r->closid)))
+			seq_printf(s, "%d\n", t->pid);
 	}
 	rcu_read_unlock();
 }
@@ -1810,6 +1908,129 @@ static int resctrl_group_rmid_show(struct kernfs_open_file *of,
 		ret = -ENOENT;
 	resctrl_group_kn_unlock(of->kn);
 
+	return ret;
+}
+
+static ssize_t resctrl_group_rmid_write(struct kernfs_open_file *of,
+		char *buf, size_t nbytes, loff_t off)
+{
+	struct rdtgroup *rdtgrp;
+	int ret = 0;
+	int partid;
+	bool exclusive;
+	int pmg;
+	int rmid;
+	int old_rmid;
+	int old_reqpartid;
+	struct task_struct *p, *t;
+
+	if (kstrtoint(strstrip(buf), 0, &rmid) || rmid < 0)
+		return -EINVAL;
+
+	rdtgrp = resctrl_group_kn_lock_live(of->kn);
+	if (!rdtgrp) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+
+	kunpeng_rdt_last_cmd_clear();
+
+	if (rmid == 0 || rdtgrp->mon.rmid == 0) {
+		ret = -EINVAL;
+		kunpeng_rdt_last_cmd_puts("default rmid 0 is always kept\n");
+		goto unlock;
+	}
+
+	ret = rmid_to_partid_pmg(rmid, &partid, &pmg);
+	if (ret < 0) {
+		ret = -EINVAL;
+		kunpeng_rdt_last_cmd_puts("invalid rmid\n");
+		goto unlock;
+	}
+
+	if (rmid == rdtgrp->mon.rmid)
+		goto unlock;
+
+	if (rdtgrp->type != RDTCTRL_GROUP ||
+			!list_empty(&rdtgrp->mon.crdtgrp_list)) {
+		ret = -EOPNOTSUPP;
+		kunpeng_rdt_last_cmd_puts("unsupported operation\n");
+		goto unlock;
+	}
+
+	old_rmid = rdtgrp->mon.rmid;
+	old_reqpartid = rdtgrp->closid.reqpartid;
+
+	exclusive = (partid == old_reqpartid) ? false : true;
+	ret = __rmid_alloc(partid, pmg, exclusive);
+	if (ret < 0) {
+		kunpeng_rdt_last_cmd_puts("set rmid failed\n");
+		goto unlock;
+	}
+
+	/*
+	 * we use intpartid as group control, use reqpartid for config
+	 * synchronization and monitor, only update the reqpartid
+	 */
+	rdtgrp->closid.reqpartid = partid;
+	rdtgrp->mon.rmid = rmid;
+
+	/* update rmid for mondata */
+	ret = resctrl_mkdir_mondata_all_subdir(rdtgrp->mon.mon_data_kn, rdtgrp);
+	if (ret) {
+		kunpeng_rdt_last_cmd_puts("update rmid for mondata failed\n");
+		goto rollback;
+	}
+
+	/* resync groups configuration */
+	rdtgrp->resync = 1;
+	ret = resctrl_update_groups_config(rdtgrp);
+	if (ret) {
+		kunpeng_rdt_last_cmd_puts("update groups config failed\n");
+		goto rollback;
+	}
+
+	read_lock(&tasklist_lock);
+	for_each_process_thread(p, t) {
+		if (t->closid == rdtgrp->closid.intpartid) {
+			ret = __resctrl_group_move_task(t, rdtgrp);
+			if (ret) {
+				read_unlock(&tasklist_lock);
+				goto rollback;
+			}
+		}
+	}
+	read_unlock(&tasklist_lock);
+
+	update_closid_rmid(&rdtgrp->cpu_mask, rdtgrp);
+	rmid_free(old_rmid);
+
+unlock:
+	resctrl_group_kn_unlock(of->kn);
+	if (ret)
+		return ret;
+
+	return nbytes;
+
+rollback:
+	rdtgrp->mon.rmid = old_rmid;
+	rdtgrp->closid.reqpartid = old_reqpartid;
+
+	/* the old rmid is valid, so mkdir mondata here won't fail */
+	resctrl_mkdir_mondata_all_subdir(rdtgrp->mon.mon_data_kn, rdtgrp);
+
+	rdtgrp->resync = 1;
+	WARN_ON_ONCE(resctrl_update_groups_config(rdtgrp));
+
+	read_lock(&tasklist_lock);
+	for_each_process_thread(p, t) {
+		if (t->closid == rdtgrp->closid.intpartid)
+			WARN_ON_ONCE(__resctrl_group_move_task(t, rdtgrp));
+	}
+	read_unlock(&tasklist_lock);
+
+	rmid_free(rmid);
+	resctrl_group_kn_unlock(of->kn);
 	return ret;
 }
 
@@ -1912,8 +2133,9 @@ static struct rftype res_specific_files[] = {
 	},
 	{
 		.name		= "rmid",
-		.mode		= 0444,
+		.mode		= 0644,
 		.kf_ops		= &resctrl_group_kf_single_ops,
+		.write		= resctrl_group_rmid_write,
 		.seq_show	= resctrl_group_rmid_show,
 		.fflags		= RFTYPE_BASE,
 	},
@@ -1952,17 +2174,19 @@ struct rdt_domain *mpam_find_domain(struct resctrl_resource *r, int id,
 	return NULL;
 }
 
-enum kunpeng_mpam_enable_type __read_mostly kunpeng_mpam_enabled;
+enum mpam_enable_type __read_mostly kunpeng_mpam_enabled;
 static int __init kunpeng_mpam_setup(char *str)
 {
 	if (!strcmp(str, "=acpi"))
-		kunpeng_mpam_enabled = KUNPENG_MPAM_ENABLE_ACPI;
+		kunpeng_mpam_enabled = MPAM_ENABLE_ACPI;
+	else if (!strcmp(str, "=of"))
+		kunpeng_mpam_enabled = MPAM_ENABLE_OF;
 
 	return 1;
 }
 __setup("kpmpam", kunpeng_mpam_setup);
 
-int __init mpam_resctrl_init(void)
+int mpam_resctrl_init(void)
 {
 	mpam_init_padding();
 
@@ -2053,6 +2277,16 @@ void __mpam_sched_in(void)
 	}
 }
 
+void mpam_restore_context(void)
+{
+	struct intel_pqr_state *state = this_cpu_ptr(&pqr_state);
+
+	state->cur_rmid = 0;
+	state->cur_closid = 0;
+
+	mpam_sched_in();
+}
+
 static void
 mpam_update_from_resctrl_cfg(struct mpam_resctrl_res *res,
 			u32 resctrl_cfg, enum rdt_event_id evt,
@@ -2071,6 +2305,8 @@ mpam_update_from_resctrl_cfg(struct mpam_resctrl_res *res,
 	case QOS_MBA_MAX_EVENT_ID:
 		range = MBW_MAX_BWA_FRACT(res->class->bwa_wd);
 		mpam_cfg->mbw_max = (resctrl_cfg * range) / (MAX_MBA_BW - 1);
+		/* correct mbw_max if remainder is too large */
+		mpam_cfg->mbw_max += ((resctrl_cfg * range) % (MAX_MBA_BW - 1)) / range;
 		mpam_cfg->mbw_max =
 			(mpam_cfg->mbw_max > range) ? range : mpam_cfg->mbw_max;
 		mpam_set_feature(mpam_feat_mbw_max, &mpam_cfg->valid);
@@ -2078,6 +2314,8 @@ mpam_update_from_resctrl_cfg(struct mpam_resctrl_res *res,
 	case QOS_MBA_MIN_EVENT_ID:
 		range = MBW_MAX_BWA_FRACT(res->class->bwa_wd);
 		mpam_cfg->mbw_min = (resctrl_cfg * range) / (MAX_MBA_BW - 1);
+		/* correct mbw_min if remainder is too large */
+		mpam_cfg->mbw_min += ((resctrl_cfg * range) % (MAX_MBA_BW - 1)) / range;
 		mpam_cfg->mbw_min =
 			(mpam_cfg->mbw_min > range) ? range : mpam_cfg->mbw_min;
 		mpam_set_feature(mpam_feat_mbw_min, &mpam_cfg->valid);

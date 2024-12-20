@@ -218,6 +218,9 @@ int set_direct_map_default_noflush(struct page *page)
 
 void __kernel_map_pages(struct page *page, int numpages, int enable)
 {
+	if (is_cvm_world())
+		return;
+
 	if (!can_set_direct_map())
 		return;
 

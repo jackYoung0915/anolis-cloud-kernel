@@ -2073,6 +2073,14 @@ config ARM64_CPU_EXTENDED_CTRL
 	  This option provides the IMP_CPUECTLR_EL1 configuration interface
 	  under /sys/devices/system/cpu/cpuX/.
 
+config CVM_GUEST
+	bool "Enable cvm guest run"
+	depends on DMA_RESTRICTED_POOL
+	help
+	  Support CVM guest based on S-EL2
+
+	  If unsure, say N.
+
 menu "Power management options"
 
 source "kernel/power/Kconfig"

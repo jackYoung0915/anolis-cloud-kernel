@@ -25,6 +25,10 @@ kvm-y := $(KVM)/kvm_main.o $(KVM)/coalesced_mmio.o $(KVM)/eventfd.o \
 	 vgic/vgic-mmio-v3.o vgic/vgic-kvm-device.o \
 	 vgic/vgic-its.o vgic/vgic-debug.o
 
+kvm-$(CONFIG_CVM_HOST)	+= tmi.o
+kvm-$(CONFIG_CVM_HOST)	+= cvm.o
+kvm-$(CONFIG_CVM_HOST)	+= cvm_exit.o
+
 kvm-$(CONFIG_KVM_ARM_PMU)  += pmu-emul.o
 kvm-$(CONFIG_VIRT_PLAT_DEV)  += vgic/shadow_dev.o
 
@@ -48,4 +52,7 @@ $(obj)/switch.o: $(obj)/hyp.lds $(obj)/switch.tmp.o FORCE
 
 kvm-y += switch.o
 endif
-obj-$(CONFIG_KVM_HISI_VIRT) += hisilicon/
+
+ifdef CONFIG_KVM_HISI_VIRT
+kvm-y += hisilicon/hisi_virt.o
+endif
