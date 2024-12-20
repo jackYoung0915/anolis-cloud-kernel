@@ -118,6 +118,10 @@ MODULE_PARM_DESC(auto_movable_ratio,
 		"Set the maximum ratio of MOVABLE:KERNEL memory in the system "
 		"in percent for \"auto-movable\" online policy. Default: 301");
 
+bool skip_set_contiguous __read_mostly;
+module_param(skip_set_contiguous, bool, 0644);
+MODULE_PARM_DESC(skip_set_contiguous, "Do not set zone contiguous when online/offline pages");
+
 /*
  * memory_hotplug.auto_movable_numa_aware: consider numa node stats
  */
@@ -1299,7 +1303,8 @@ bool mhp_supports_memmap_on_memory(unsigned long size)
  *
  * we are OK calling __meminit stuff here - we have CONFIG_MEMORY_HOTPLUG
  */
-int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
+int __ref add_memory_resource(int nid, struct resource *res,
+		mhp_t mhp_flags, mhp_t extra_flags)
 {
 	struct mhp_params params = { .pgprot = pgprot_mhp(PAGE_KERNEL) };
 	struct vmem_altmap mhp_altmap = {};
@@ -1340,7 +1345,9 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 	/*
 	 * Self hosted memmap array
 	 */
-	if (mhp_flags & MHP_MEMMAP_ON_MEMORY) {
+	if ((mhp_flags & MHP_MEMMAP_ON_MEMORY) ||
+		((extra_flags & MHP_MEMMAP_ON_MEMORY) &&
+		mhp_memmap_on_memory())) {
 		if (!mhp_supports_memmap_on_memory(size)) {
 			ret = -EINVAL;
 			goto error;
@@ -1414,7 +1421,7 @@ int __ref __add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags)
 	if (IS_ERR(res))
 		return PTR_ERR(res);
 
-	ret = add_memory_resource(nid, res, mhp_flags);
+	ret = add_memory_resource(nid, res, mhp_flags, 0);
 	if (ret < 0)
 		release_memory_resource(res);
 	return ret;
@@ -1454,7 +1461,8 @@ EXPORT_SYMBOL_GPL(add_memory);
  * "System RAM ($DRIVER)".
  */
 int add_memory_driver_managed(int nid, u64 start, u64 size,
-			      const char *resource_name, mhp_t mhp_flags)
+			      const char *resource_name,
+			      mhp_t mhp_flags, mhp_t extra_flags)
 {
 	struct resource *res;
 	int rc;
@@ -1472,7 +1480,7 @@ int add_memory_driver_managed(int nid, u64 start, u64 size,
 		goto out_unlock;
 	}
 
-	rc = add_memory_resource(nid, res, mhp_flags);
+	rc = add_memory_resource(nid, res, mhp_flags, extra_flags);
 	if (rc < 0)
 		release_memory_resource(res);
 
@@ -1494,6 +1502,7 @@ struct zone *test_pages_in_a_zone(unsigned long start_pfn,
 	struct zone *zone = NULL;
 	struct page *page;
 	int i;
+
 	for (pfn = start_pfn, sec_end_pfn = SECTION_ALIGN_UP(start_pfn + 1);
 	     pfn < end_pfn;
 	     pfn = sec_end_pfn, sec_end_pfn += PAGES_PER_SECTION) {
@@ -1879,7 +1888,7 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 
 	/* Mark all sections offline and remove free pages from the buddy. */
 	__offline_isolated_pages(start_pfn, end_pfn);
-	pr_info("Offlined Pages %ld\n", nr_pages);
+	pr_debug("Offlined Pages %ld\n", nr_pages);
 
 	/*
 	 * The memory sections are marked offline, and the pageblock flags
@@ -2167,8 +2176,10 @@ static int try_offline_memory_block(struct memory_block *mem, void *arg)
 	 * Default is MMOP_OFFLINE - change it only if offlining succeeded,
 	 * so try_reonline_memory_block() can do the right thing.
 	 */
-	if (!rc)
+	if (!rc) {
 		**online_types = online_type;
+		mem->nr_vmemmap_pages = 0;
+	}
 
 	(*online_types)++;
 	/* Ignore if already offline. */

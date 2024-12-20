@@ -304,7 +304,7 @@ static void __init memblocks_present(void)
  * the identity pfn - section_mem_map will return the actual
  * physical page frame number.
  */
-static unsigned long sparse_encode_mem_map(struct page *mem_map, unsigned long pnum)
+unsigned long sparse_encode_mem_map(struct page *mem_map, unsigned long pnum)
 {
 	unsigned long coded_mem_map =
 		(unsigned long)(mem_map - (section_nr_to_pfn(pnum)));
@@ -312,6 +312,7 @@ static unsigned long sparse_encode_mem_map(struct page *mem_map, unsigned long p
 	BUG_ON(coded_mem_map & ~SECTION_MAP_MASK);
 	return coded_mem_map;
 }
+EXPORT_SYMBOL(sparse_encode_mem_map);
 
 #ifdef CONFIG_MEMORY_HOTPLUG
 /*
