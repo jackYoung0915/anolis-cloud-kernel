@@ -161,6 +161,12 @@ out:
 		rac->_index++;
 }
 
+static struct page *ractl_alloc_page(struct readahead_control *ractl,
+				       gfp_t gfp_mask)
+{
+	return __page_cache_alloc(gfp_mask);
+}
+
 /**
  * page_cache_ra_unbounded - Start unchecked readahead.
  * @ractl: Readahead control.
@@ -217,7 +223,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 			continue;
 		}
 
-		page = __page_cache_alloc(gfp_mask);
+		page = ractl_alloc_page(ractl, gfp_mask);
 		if (!page)
 			break;
 		if (mapping->a_ops->readpages) {
@@ -694,7 +700,7 @@ void readahead_expand(struct readahead_control *ractl,
 		if (page && !xa_is_value(page))
 			return; /* Page apparently present */
 
-		page = __page_cache_alloc(gfp_mask);
+		page = ractl_alloc_page(ractl, gfp_mask);
 		if (!page)
 			return;
 		if (add_to_page_cache_lru(page, mapping, index, gfp_mask) < 0) {
@@ -717,7 +723,7 @@ void readahead_expand(struct readahead_control *ractl,
 		if (page && !xa_is_value(page))
 			return; /* Page apparently present */
 
-		page = __page_cache_alloc(gfp_mask);
+		page = ractl_alloc_page(ractl, gfp_mask);
 		if (!page)
 			return;
 		if (add_to_page_cache_lru(page, mapping, index, gfp_mask) < 0) {
