@@ -204,6 +204,132 @@ struct vkernel_sysctl_kernel_desc {
 	s32 pty_reserve;
 };
 
+struct vkernel_sysctl_net_desc {
+	u32 nf_conntrack_max;
+	u32 core_busy_poll;
+	u32 core_busy_read;
+	s32 core_dev_weight;
+	s32 core_netdev_budget;
+	s32 core_netdev_budget_us;
+	s32 core_netdev_max_backlog;
+	s32 core_optmem_max;
+	u32 core_wmem_max;
+	u32 core_rmem_max;
+	u32 core_wmem_default;
+	u32 core_rmem_default;
+
+	/* net ns fileds */
+
+	u32 core_somaxconn;
+
+	u8 ipv4_icmp_echo_ignore_all;
+	u8 ipv4_icmp_echo_enable_probe;
+	u8 ipv4_icmp_echo_ignore_broadcasts;
+	u8 ipv4_icmp_ignore_bogus_error_responses;
+	u8 ipv4_icmp_errors_use_inbound_ifaddr;
+	u32 ipv4_icmp_ratelimit;
+	u32 ipv4_icmp_ratemask;
+	s32 ipv4_ip_local_port_range[2];
+	s32 ipv4_max_tw_buckets;
+	u8 ipv4_tcp_ecn;
+	u8 ipv4_tcp_ecn_fallback;
+	u8 ipv4_ip_default_ttl;
+	u8 ipv4_ip_no_pmtu_disc;
+	u8 ipv4_ip_fwd_use_pmtu;
+	u8 ipv4_ip_fwd_update_priority;
+	u8 ipv4_ip_nonlocal_bind;
+	u8 ipv4_ip_autobind_reuse;
+	u8 ipv4_ip_dynaddr;
+	u8 ipv4_ip_early_demux;
+	u8 ipv4_tcp_early_demux;
+	u8 ipv4_udp_early_demux;
+	u8 ipv4_nexthop_compat_mode;
+	u8 ipv4_fwmark_reflect;
+	u8 ipv4_tcp_fwmark_accept;
+	u8 ipv4_tcp_mtu_probing;
+	s32 ipv4_tcp_mtu_probe_floor;
+	s32 ipv4_tcp_base_mss;
+	s32 ipv4_tcp_min_snd_mss;
+	s32 ipv4_tcp_probe_threshold;
+	u32 ipv4_tcp_probe_interval;
+	s32 ipv4_tcp_keepalive_time;
+	s32 ipv4_tcp_keepalive_intvl;
+	u8 ipv4_tcp_keepalive_probes;
+	u8 ipv4_tcp_syn_retries;
+	u8 ipv4_tcp_synack_retries;
+	u8 ipv4_tcp_syncookies;
+	u8 ipv4_tcp_migrate_req;
+	u8 ipv4_tcp_comp_sack_nr;
+	s32 ipv4_tcp_reordering;
+	u8 ipv4_tcp_retries1;
+	u8 ipv4_tcp_retries2;
+	u8 ipv4_tcp_orphan_retries;
+	u8 ipv4_tcp_tw_reuse;
+	s32 ipv4_tcp_fin_timeout;
+	u32 ipv4_tcp_notsent_lowat;
+	u8 ipv4_tcp_sack;
+	u8 ipv4_tcp_window_scaling;
+	u8 ipv4_tcp_timestamps;
+	u8 ipv4_tcp_early_retrans;
+	u8 ipv4_tcp_recovery;
+	u8 ipv4_tcp_thin_linear_timeouts;
+	u8 ipv4_tcp_slow_start_after_idle;
+	u8 ipv4_tcp_retrans_collapse;
+	u8 ipv4_tcp_stdurg;
+	u8 ipv4_tcp_rfc1337;
+	u8 ipv4_tcp_abort_on_overflow;
+	u8 ipv4_tcp_fack;
+	s32 ipv4_tcp_max_reordering;
+	s32 ipv4_tcp_adv_win_scale;
+	u8 ipv4_tcp_dsack;
+	u8 ipv4_tcp_app_win;
+	u8 ipv4_tcp_frto;
+	u8 ipv4_tcp_nometrics_save;
+	u8 ipv4_tcp_no_ssthresh_metrics_save;
+	u8 ipv4_tcp_moderate_rcvbuf;
+	u8 ipv4_tcp_tso_win_divisor;
+	u8 ipv4_tcp_workaround_signed_windows;
+	s32 ipv4_tcp_limit_output_bytes;
+	s32 ipv4_tcp_challenge_ack_limit;
+	s32 ipv4_tcp_min_rtt_wlen;
+	u8 ipv4_tcp_min_tso_segs;
+	u8 ipv4_tcp_tso_rtt_log;
+	u8 ipv4_tcp_autocorking;
+	u8 ipv4_tcp_reflect_tos;
+	s32 ipv4_tcp_invalid_ratelimit;
+	s32 ipv4_tcp_pacing_ss_ratio;
+	s32 ipv4_tcp_pacing_ca_ratio;
+	s32 ipv4_tcp_wmem[3];
+	s32 ipv4_tcp_rmem[3];
+	u32 ipv4_tcp_child_ehash_entries;
+	u64 ipv4_tcp_comp_sack_delay_ns;
+	u64 ipv4_tcp_comp_sack_slack_ns;
+	s32 ipv4_max_syn_backlog;
+	s32 ipv4_tcp_fastopen;
+	u32 ipv4_tcp_fastopen_blackhole_timeout;
+	char ipv4_tcp_congestion_control[TCP_CA_NAME_MAX];
+	u8 ipv4_tcp_plb_enabled;
+	u8 ipv4_tcp_plb_idle_rehash_rounds;
+	u8 ipv4_tcp_plb_rehash_rounds;
+	u8 ipv4_tcp_plb_suspend_rto_sec;
+	s32 ipv4_tcp_plb_cong_thresh;
+	s32 ipv4_udp_wmem_min;
+	s32 ipv4_udp_rmem_min;
+	u8 ipv4_fib_notify_on_flag_change;
+	u8 ipv4_igmp_llm_reports;
+	s32 ipv4_igmp_max_memberships;
+	s32 ipv4_igmp_max_msf;
+	s32 ipv4_igmp_qrv;
+	u32 ipv4_fib_multipath_hash_fields;
+	u8 ipv4_fib_multipath_use_neigh;
+	u8 ipv4_fib_multipath_hash_policy;
+
+	s32 ipv4_conf_all[IPV4_DEVCONF_MAX];
+	s32 ipv4_conf_default[IPV4_DEVCONF_MAX];
+
+	s32 unix_max_dgram_qlen;
+};
+
 struct vkernel_sysctl_fs {
 	/* file */
 	struct files_stat_struct files_stat;
@@ -250,6 +376,34 @@ struct vkernel_sysctl_kernel {
 	atomic_t pty_count;
 };
 
+struct vkernel_sysctl_net {
+	/* netns specific */
+	unsigned int nf_conntrack_max;
+	/* core */
+	unsigned int net_busy_poll;
+	unsigned int net_busy_read;
+	/* napi_struct specific, inactive (not netns specific) */
+	int weight_p;
+	int dev_weight_rx_bias;
+	int dev_weight_tx_bias;
+	int dev_rx_weight;
+	int dev_tx_weight;
+	/* softnet_data specific, inactive (not netns specific) */
+	int netdev_budget;
+	unsigned int netdev_budget_usecs;
+	int netdev_max_backlog;
+	/* sock specific (netns specific) */
+	int optmem_max;
+	u32 wmem_max;
+	u32 rmem_max;
+	u32 wmem_default;
+	u32 rmem_default;
+	/* global (not netns specific) */
+	// struct rps_sock_flow_table __rcu *rps_sock_flow_table;
+	/* netns core, ipv4, ipv4 conf, unix */
+	struct net *net;
+};
+
 struct vkernel;
 
 struct vkernel_ops {
@@ -291,6 +445,7 @@ struct vkernel {
 	/* sysctl */
 	struct vkernel_sysctl_fs sysctl_fs;
 	struct vkernel_sysctl_kernel sysctl_kernel;
+	struct vkernel_sysctl_net sysctl_net;
 
 	/* operation */
 	struct vkernel_ops ops;
@@ -333,6 +488,7 @@ int vkernel_set_linux_cap(struct vkernel *vk, struct vkernel_linux_cap *cap);
 int vkernel_set_sysctl_fs(struct vkernel_sysctl_fs *fs, struct vkernel_sysctl_fs_desc *desc);
 int vkernel_set_sysctl_kernel(struct vkernel_sysctl_kernel *k,
 			struct vkernel_sysctl_kernel_desc *desc);
+int vkernel_set_sysctl_net(struct vkernel_sysctl_net *net, struct vkernel_sysctl_net_desc *desc);
 
 struct vkernel_custom_type *vkernel_find_custom(const char *name);
 int vkernel_register_custom(struct vkernel_custom_type *custom);
