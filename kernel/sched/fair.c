@@ -8185,6 +8185,13 @@ static inline bool cpu_overutilized(int cpu)
 	return !util_fits_cpu(cpu_util(cpu), rq_util_min, rq_util_max, cpu);
 }
 
+#ifdef CONFIG_GROUP_BALANCER
+bool gb_cpu_overutilized(int cpu)
+{
+	return cpu_overutilized(cpu);
+}
+#endif
+
 static inline void update_overutilized_status(struct rq *rq)
 {
 	if (!READ_ONCE(rq->rd->overutilized) && cpu_overutilized(rq->cpu)) {
@@ -8441,6 +8448,16 @@ dequeue_throttle:
 /* Working cpumask for: load_balance, load_balance_newidle. */
 DEFINE_PER_CPU(cpumask_var_t, load_balance_mask);
 DEFINE_PER_CPU(cpumask_var_t, select_idle_mask);
+#ifdef CONFIG_GROUP_BALANCER
+/*
+ * group_balancer_mask is used to mark which cpus have been balanced
+ * to this cpu during this load balance. If the src cpu hasn't been
+ * marked, we will balance the group balancer sched domains of src
+ * cpu and this cpu, and then mark the cpus of the src group balancer
+ * sched domain as balanced.
+ */
+DEFINE_PER_CPU(cpumask_var_t, group_balancer_mask);
+#endif
 
 #ifdef CONFIG_NO_HZ_COMMON
 
@@ -10360,8 +10377,6 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
 
 static unsigned long __read_mostly max_load_balance_interval = HZ/10;
 
-enum fbq_type { regular, remote, all };
-
 /*
  * 'group_type' describes the group of CPUs at the moment of load balancing.
  *
@@ -10400,50 +10415,10 @@ enum group_type {
 	group_overloaded
 };
 
-enum migration_type {
-	migrate_load = 0,
-	migrate_util,
-	migrate_task,
-	migrate_misfit,
-#ifdef CONFIG_GROUP_IDENTITY
-	migrate_identity
-#endif
-};
-
 #define LBF_ALL_PINNED	0x01
 #define LBF_NEED_BREAK	0x02
 #define LBF_DST_PINNED  0x04
 #define LBF_SOME_PINNED	0x08
-
-struct lb_env {
-	struct sched_domain	*sd;
-
-	struct rq		*src_rq;
-	int			src_cpu;
-
-	int			dst_cpu;
-	struct rq		*dst_rq;
-
-	struct cpumask		*dst_grpmask;
-	int			new_dst_cpu;
-	enum cpu_idle_type	idle;
-	long			imbalance;
-	/* The set of CPUs under consideration for load-balancing */
-	struct cpumask		*cpus;
-
-	unsigned int		flags;
-
-	unsigned int		loop;
-	unsigned int		loop_break;
-	unsigned int		loop_max;
-
-	enum fbq_type		fbq_type;
-	enum migration_type	migration_type;
-	struct list_head	tasks;
-#ifdef CONFIG_GROUP_IDENTITY
-	bool			id_need_redo;
-#endif
-};
 
 /*
  * Is this task likely cache-hot:
@@ -11044,6 +11019,14 @@ static void update_cfs_rq_h_load(struct cfs_rq *cfs_rq)
 		cfs_rq->last_h_load_update = now;
 	}
 }
+
+#ifdef CONFIG_GROUP_BALANCER
+unsigned long cfs_h_load(struct cfs_rq *cfs_rq)
+{
+	update_cfs_rq_h_load(cfs_rq);
+	return cfs_rq->h_load;
+}
+#endif
 
 static unsigned long task_h_load(struct task_struct *p)
 {
@@ -12670,6 +12653,7 @@ redo:
 
 	ld_moved = 0;
 	if (busiest->nr_running > 1 || expellee_only(busiest)) {
+		gb_load_balance(&env);
 		/*
 		 * Attempt to move tasks. If find_busiest_group has found
 		 * an imbalance but busiest->nr_running <= 1, the group is
@@ -13052,7 +13036,12 @@ static void rebalance_domains(struct rq *rq, enum cpu_idle_type idle)
 	int update_next_balance = 0;
 	int need_serialize, need_decay = 0;
 	u64 max_cost = 0;
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
 
+	if (group_balancer_enabled())
+		cpumask_clear(gb_mask);
+#endif
 	rcu_read_lock();
 	for_each_domain(cpu, sd) {
 		/*
@@ -13636,7 +13625,12 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 	struct sched_domain *sd;
 	int pulled_task = 0;
 	u64 curr_cost = 0;
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
 
+	if (group_balancer_enabled())
+		cpumask_clear(gb_mask);
+#endif
 	update_misfit_status(NULL, this_rq);
 	/*
 	 * We must set idle_stamp _before_ calling idle_balance(), such that we
@@ -14397,12 +14391,10 @@ void tg_set_specs_ratio(struct task_group *tg)
 
 	specs_ratio = quota / ((1 << BW_SHIFT) / 100);
 
-	if (tg->group_balancer)
-		detach_tg_from_group_balancer_sched_domain(tg);
 	/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
 	tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
 	if (tg->group_balancer)
-		attach_tg_to_group_balancer_sched_domain(tg);
+		tg_specs_change(tg);
 }
 #endif
 

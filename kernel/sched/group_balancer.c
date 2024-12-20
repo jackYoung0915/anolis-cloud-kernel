@@ -9,6 +9,23 @@
 #include <linux/log2.h>
 #include <linux/fs_context.h>
 
+struct gb_lb_env {
+	struct group_balancer_sched_domain	*src;
+	struct group_balancer_sched_domain	*dst;
+	struct group_balancer_sched_domain	*gb_sd;
+	long					imbalance;
+	unsigned long				nr_balance_failed;
+	enum migration_type			migration_type;
+	struct rb_root				task_groups;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+};
+
+DECLARE_PER_CPU(cpumask_var_t, group_balancer_mask);
+
 struct group_balancer_sched_domain {
 	struct group_balancer_sched_domain		*parent;
 	struct list_head				child;
@@ -21,9 +38,11 @@ struct group_balancer_sched_domain {
 	unsigned int					nr_children;
 	/* If free_tg_specs is less than zero, the gb_sd is overloaded. */
 	int						free_tg_specs;
+	unsigned int					depth;
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
+	unsigned long					lower_interval;
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -223,9 +242,14 @@ struct group_balancer_size_level default_size[NR_SIZE_LEVELS];
 #define group_balancer_sched_domain_first_child(gb_sd)		\
 	list_first_entry(&gb_sd->child, struct group_balancer_sched_domain, sibling)
 
+#define __gb_node_2_tg(node)	\
+	rb_entry((node), struct task_group, gb_node)
+
 struct group_balancer_sched_domain *group_balancer_root_domain;
 
 #define MAX_NAME_LEN		128
+#define GB_OVERLOAD		0x1
+#define GB_OVERUTILIZED		0x2
 
 static inline struct cpumask *gb_sd_span(struct group_balancer_sched_domain *gb_sd)
 {
@@ -415,6 +439,7 @@ static ssize_t group_balancer_cpus_write(struct kernfs_open_file *of,
 	old_size_level = get_size_level(gb_sd);
 	cpumask_copy(gb_sd_span(gb_sd), new);
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
+	gb_sd->lower_interval = ilog2(gb_sd->span_weight) * gb_sd->span_weight;
 	new_size_level = get_size_level(gb_sd);
 	if (old_size_level != new_size_level) {
 		list_del(&gb_sd->size_level_sibling);
@@ -577,8 +602,20 @@ static void add_to_tree(struct group_balancer_sched_domain *gb_sd,
 		list_add_tail(&gb_sd->sibling, &parent->child);
 		gb_sd->parent = parent;
 		parent->nr_children++;
+		/*
+		 * When we bi-divide the group balancer sched domain, the parent, middle layer,
+		 * hasn't been added to the tree yet, so for this case, we just let the depth
+		 * increase by 1.
+		 */
+		if (parent->depth)
+			gb_sd->depth = parent->depth + 1;
+		else
+			gb_sd->depth++;
+	} else {
+		gb_sd->depth = 0;
 	}
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
+	gb_sd->lower_interval = ilog2(gb_sd->span_weight) * gb_sd->span_weight;
 	gb_sd->free_tg_specs = 100 * gb_sd->span_weight;
 	add_to_size_level(gb_sd);
 
@@ -602,17 +639,21 @@ static inline bool tg_specs_less(struct rb_node *a, const struct rb_node *b)
 	return specs_a < specs_b;
 }
 
-static int tg_set_soft_cpus_down(struct task_group *tg, void *data)
+static int tg_set_gb_tg_down(struct task_group *tg, void *data)
 {
-	tg->soft_cpus_allowed_ptr = (struct cpumask *)data;
+	struct task_group *gb_tg = (struct task_group *)data;
+
+	tg->soft_cpus_allowed_ptr = gb_tg->soft_cpus_allowed_ptr;
+	tg->gb_tg = gb_tg;
 	tg_inc_soft_cpus_version(tg);
 
 	return 0;
 }
 
-static int tg_unset_soft_cpus_down(struct task_group *tg, void *data)
+static int tg_unset_gb_tg_down(struct task_group *tg, void *data)
 {
 	tg->soft_cpus_allowed_ptr = &tg->soft_cpus_allowed;
+	tg->gb_tg = NULL;
 	tg_inc_soft_cpus_version(tg);
 
 	return 0;
@@ -634,10 +675,8 @@ static void free_group_balancer_sched_domain(struct group_balancer_sched_domain 
 			node = root->rb_node;
 			tg = __node_2_task_group(node);
 			rb_erase(node, root);
-			tg->gb_sd = parent;
-			tg->prev_gb_sd = parent;
 			rb_add(node, &parent->task_groups, tg_specs_less);
-			walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, gb_sd_span(parent));
+			walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
 		}
 	}
 
@@ -872,6 +911,36 @@ up:
 		goto up;
 out:
 	return ret;
+}
+
+/*
+ * After we build the tree, the depth may be not correct as we moved
+ * the subtree during the build process, so we correct the depth by
+ * recalculating.
+ */
+static void set_group_balancer_sched_domain_depth(void)
+{
+	struct group_balancer_sched_domain *parent, *child;
+
+	parent = group_balancer_root_domain;
+	parent->depth = 0;
+down:
+	for_each_gb_sd_child(child, parent) {
+		child->depth = parent->depth + 1;
+		parent = child;
+		goto down;
+up:
+		continue;
+	}
+	if (parent == group_balancer_root_domain)
+		goto out;
+
+	child = parent;
+	parent = parent->parent;
+	if (parent)
+		goto up;
+out:
+	return;
 }
 
 static int build_group_balancer_root_domain(void)
@@ -1151,6 +1220,7 @@ void sched_init_group_balancer_sched_domains(void)
 		pr_err("Group Balancer: Failed to build group balancer sched domains: %d\n", ret);
 	else
 		pr_info("Group Balancer: Build group balancer sched domains successfully.\n");
+	set_group_balancer_sched_domain_depth();
 	write_unlock(&group_balancer_sched_domain_lock);
 	cpus_read_unlock();
 }
@@ -1226,28 +1296,58 @@ static void __exit sched_exit_group_balancer_kernfs(void)
 
 __exitcall(sched_exit_group_balancer_kernfs);
 
-static struct group_balancer_sched_domain *select_idle_gb_sd(int specs,
-							struct group_balancer_sched_domain *prev)
+static unsigned long tg_gb_sd_load(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
 {
-	struct group_balancer_sched_domain *gb_sd, *parent, *child;
+	int cpu;
+	unsigned long load = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		load += cfs_h_load(tg->cfs_rq[cpu]);
+
+	return load;
+}
+
+static unsigned long tg_gb_sd_util(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	unsigned long util = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		util += READ_ONCE(tg->cfs_rq[cpu]->avg.util_est.enqueued);
+
+	return util;
+}
+
+static unsigned long gb_sd_load(struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	unsigned long load = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		load += cpu_rq(cpu)->cfs.avg.load_avg;
+
+	return load;
+}
+
+static unsigned long gb_sd_capacity(struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	int cap = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		cap += cpu_rq(cpu)->cpu_capacity;
+
+	return cap;
+}
+
+static struct group_balancer_sched_domain *select_idle_gb_sd(int specs)
+{
+	struct group_balancer_sched_domain *gb_sd, *child;
 
 	if (specs == -1 || specs > group_balancer_root_domain->span_weight * 100)
 		return group_balancer_root_domain;
 
-	gb_sd = prev;
-	while (gb_sd) {
-		/* Try to find the first gb_sd that satisfied the specs. */
-		if (gb_sd->free_tg_specs >= specs)
-			break;
-		/*
-		 * In order to ensure the affinity as much as possible, we only consider
-		 * ancestors.
-		 */
-		gb_sd = parent;
-	}
-
-	if (!gb_sd)
-		gb_sd = group_balancer_root_domain;
+	gb_sd = group_balancer_root_domain;
 
 	while (gb_sd) {
 		struct group_balancer_sched_domain *max_free_child = NULL;
@@ -1291,6 +1391,23 @@ static struct group_balancer_sched_domain *select_idle_gb_sd(int specs,
 	return gb_sd;
 }
 
+static void
+check_task_group_leap_level(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	struct group_balancer_sched_domain *child;
+	int specs = tg->specs_ratio;
+
+	for_each_gb_sd_child(child, gb_sd) {
+		if (specs <= 100 * child->span_weight) {
+			tg->leap_level = true;
+			tg->leap_level_timestamp = jiffies;
+			return;
+		}
+	}
+
+	tg->leap_level = false;
+}
+
 /*
  * When we attach/detach a task group to/from a domain, we hold the read lock
  * group_balancer_sched_domain_lock first, and then hold gb_sd->lock.
@@ -1301,16 +1418,15 @@ static struct group_balancer_sched_domain *select_idle_gb_sd(int specs,
  * So that there will be no race.
  * TODO: Optimize the lock when we move task groups when balance.
  */
-void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
-					   struct group_balancer_sched_domain *gb_sd)
+void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
+						  struct group_balancer_sched_domain *gb_sd,
+						  bool enable)
 {
 	int specs = tg->specs_ratio;
 	struct group_balancer_sched_domain *parent;
 
 	tg->gb_sd = gb_sd;
-	raw_spin_lock(&gb_sd->lock);
 	rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
-	raw_spin_unlock(&gb_sd->lock);
 
 	if (specs != -1) {
 		for (parent = gb_sd; parent; parent = parent->parent) {
@@ -1319,18 +1435,32 @@ void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
 			raw_spin_unlock(&parent->lock);
 		}
 	}
-	walk_tg_tree_from(tg, tg_set_soft_cpus_down, tg_nop, gb_sd_span(gb_sd));
+
+	tg->soft_cpus_allowed_ptr = gb_sd_span(gb_sd);
+	if (enable)
+		walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
+
+	check_task_group_leap_level(tg, gb_sd);
 }
 
-void remove_tg_from_group_balancer_sched_domain(struct task_group *tg)
+void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
+					   struct group_balancer_sched_domain *gb_sd,
+					   bool enable)
 {
-	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
+	raw_spin_lock(&gb_sd->lock);
+	add_tg_to_group_balancer_sched_domain_locked(tg, gb_sd, enable);
+	raw_spin_unlock(&gb_sd->lock);
+}
+
+static void
+remove_tg_from_group_balancer_sched_domain_locked(struct task_group *tg,
+						  struct group_balancer_sched_domain *gb_sd,
+						  bool disable)
+{
 	int specs = tg->specs_ratio;
 
 	tg->gb_sd = NULL;
-	raw_spin_lock(&gb_sd->lock);
 	rb_erase(&tg->gb_node, &gb_sd->task_groups);
-	raw_spin_unlock(&gb_sd->lock);
 	if (specs != -1) {
 		for (; gb_sd; gb_sd = gb_sd->parent) {
 			raw_spin_lock(&gb_sd->lock);
@@ -1339,35 +1469,420 @@ void remove_tg_from_group_balancer_sched_domain(struct task_group *tg)
 		}
 	}
 
-	walk_tg_tree_from(tg, tg_unset_soft_cpus_down, tg_nop, NULL);
+	if (disable)
+		walk_tg_tree_from(tg, tg_unset_gb_tg_down, tg_nop, NULL);
 }
 
-int attach_tg_to_group_balancer_sched_domain(struct task_group *tg)
+static void
+remove_tg_from_group_balancer_sched_domain(struct task_group *tg,
+					   struct group_balancer_sched_domain *gb_sd,
+					   bool disable)
+{
+	read_lock(&group_balancer_sched_domain_lock);
+	raw_spin_lock(&gb_sd->lock);
+	remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, disable);
+	raw_spin_unlock(&gb_sd->lock);
+	read_unlock(&group_balancer_sched_domain_lock);
+}
+
+int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
+					     struct group_balancer_sched_domain *target,
+					     bool enable)
 {
 	struct group_balancer_sched_domain *gb_sd;
 	int ret = 0;
 
 	read_lock(&group_balancer_sched_domain_lock);
-	gb_sd = select_idle_gb_sd(tg->specs_ratio, tg->prev_gb_sd);
+	if (enable)
+		gb_sd = select_idle_gb_sd(tg->specs_ratio);
+	else
+		gb_sd = target;
 	if (!gb_sd) {
 		ret = -ESRCH;
 		goto out;
 	}
-	add_tg_to_group_balancer_sched_domain(tg, gb_sd);
+	add_tg_to_group_balancer_sched_domain(tg, gb_sd, enable);
 out:
-	tg->prev_gb_sd = gb_sd;
 	read_unlock(&group_balancer_sched_domain_lock);
 	return ret;
 }
 
-void detach_tg_from_group_balancer_sched_domain(struct task_group *tg)
+void detach_tg_from_group_balancer_sched_domain(struct task_group *tg, bool disable)
 {
 	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
 
 	if (!gb_sd)
 		return;
 
+	remove_tg_from_group_balancer_sched_domain(tg, gb_sd, disable);
+}
+
+static void tg_upper_level(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	detach_tg_from_group_balancer_sched_domain(tg, false);
+	/* Considering the case that gb_sd is NULL, we'd better to treat it as enable. */
+	attach_tg_to_group_balancer_sched_domain(tg, gb_sd, !gb_sd);
+}
+
+static bool tg_lower_level(struct task_group *tg)
+{
+	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
+	struct group_balancer_sched_domain *child, *dst;
+	unsigned long tg_child_load, tg_load = 0, tg_dst_load = 0;
+	unsigned long child_load, src_load, dst_load, total_load = 0, migrate_load;
+	unsigned long child_cap, total_cap = 0, src_cap, dst_cap = 0;
+	unsigned long src_imb, dst_imb;
+
+	if (!gb_sd)
+		goto fail;
+
+	/*
+	 * The gb_sd may have some children, and the tasks of may spread across each child.
+	 * Lowering the level of tg is essentially a gathering task, so we will find a child
+	 * that contains the most load of tg to migrate tg to.
+	 */
+	for_each_gb_sd_child(child, gb_sd) {
+		child_load = gb_sd_load(gb_sd);
+		total_load += child_load;
+
+		child_cap = gb_sd_capacity(child);
+		total_cap += child_cap;
+
+		tg_child_load = tg_gb_sd_load(tg, gb_sd);
+		if (tg_child_load > tg_dst_load) {
+			dst = child;
+			tg_dst_load = tg_child_load;
+			dst_load = child_load;
+			dst_cap = child_cap;
+		}
+		tg_load += tg_child_load;
+	}
+
+	if (tg->specs_ratio > 100 * dst->span_weight)
+		goto fail;
+#ifdef CONFIG_NUMA
+	/* We won't allow a task group span more than two numa nodes too long. */
+	if (dst->gb_flags & GROUP_BALANCER_NUMA_FLAG)
+		goto lower;
+#endif
+	/* If we lower the level, we have to make sure that we will not cause imbalance.
+	 *
+	 * src_load        dst_load
+	 * ------------ vs ---------
+	 * src_capacity    dst_capacity
+	 *
+	 */
+
+	migrate_load = tg_load - tg_dst_load;
+
+	src_cap = total_cap - dst_cap;
+	src_load = total_load - dst_load;
+	src_imb = abs(src_load * dst_cap - dst_load * src_cap);
+	dst_imb = abs((src_load - migrate_load) * dst_cap - (dst_load + migrate_load) * src_cap);
+
+	if (dst_imb > src_imb)
+		goto fail;
+#ifdef CONFIG_NUMA
+lower:
+#endif
+	detach_tg_from_group_balancer_sched_domain(tg, false);
+	attach_tg_to_group_balancer_sched_domain(tg, dst, false);
+	/* The task group maybe still leap level, check it. */
+	check_task_group_leap_level(tg, gb_sd);
+
+	return true;
+fail:
+	tg->leap_level_timestamp = jiffies;
+	return false;
+}
+
+static void gb_task_group_tick(struct task_group *tg)
+{
+	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
+
+	if (!gb_sd)
+		return;
+
+	if (!tg->leap_level)
+		return;
+
+	if (!time_after(jiffies, tg->leap_level_timestamp + gb_sd->lower_interval))
+		return;
+
 	read_lock(&group_balancer_sched_domain_lock);
-	remove_tg_from_group_balancer_sched_domain(tg);
+	tg_lower_level(tg);
+	read_unlock(&group_balancer_sched_domain_lock);
+}
+
+static struct task_group *gb_task_group(struct task_struct *p)
+{
+	struct task_group *tg = task_group(p);
+
+	if (tg == &root_task_group || task_group_is_autogroup(tg))
+		return NULL;
+
+	return task_group(p)->gb_tg;
+}
+
+void gb_task_tick(struct task_struct *p)
+{
+	struct task_group *tg = gb_task_group(p);
+
+	if (!group_balancer_enabled())
+		return;
+
+	if (!tg || !tg->group_balancer)
+		return;
+
+	if (!raw_spin_trylock(&tg->gb_lock))
+		return;
+
+	gb_task_group_tick(tg);
+	raw_spin_unlock(&tg->gb_lock);
+}
+
+void tg_specs_change(struct task_group *tg)
+{
+	struct group_balancer_sched_domain *gb_sd;
+	int specs = tg->specs_ratio;
+
+	gb_sd = tg->gb_sd;
+	if (!gb_sd)
+		/* tg->group_balancer is always true here, so find a gb_sd to attach. */
+		goto upper;
+
+	/* If the task group leaps level after specs change, we will lower it later. */
+	check_task_group_leap_level(tg, gb_sd);
+	if (tg->leap_level)
+		return;
+
+	/* This gb_sd still satisfy, don't do anything. */
+	if (specs <= gb_sd->span_weight * 100 || gb_sd == group_balancer_root_domain)
+		return;
+
+	/* The specs doesn't satisfy anymore, upper to find a satisfied gb_sd. */
+	/* Fast path, if the specs is -1 or too large, move it to root domain. */
+	if (specs == -1 || specs > group_balancer_root_domain->span_weight * 100) {
+		gb_sd = group_balancer_root_domain;
+		goto upper;
+	}
+
+	for (; gb_sd; gb_sd = gb_sd->parent) {
+		if (specs <= gb_sd->span_weight * 100)
+			break;
+	}
+
+	if (!gb_sd)
+		gb_sd = group_balancer_root_domain;
+upper:
+	tg_upper_level(tg, gb_sd);
+
+}
+
+static struct group_balancer_sched_domain
+*find_matching_gb_sd(struct group_balancer_sched_domain **src,
+		     struct group_balancer_sched_domain **dst)
+{
+	int src_depth, dst_depth;
+
+	if (!*src || !*dst || *src == *dst)
+		return NULL;
+
+	src_depth = (*src)->depth;
+	dst_depth = (*dst)->depth;
+
+	if (!src_depth || !dst_depth)
+		return NULL;
+
+	while (src_depth > dst_depth) {
+		src_depth--;
+		*src = (*src)->parent;
+	}
+
+	while (dst_depth > src_depth) {
+		dst_depth--;
+		*dst = (*dst)->parent;
+	}
+
+
+	while ((*src)->parent != (*dst)->parent) {
+		*src = (*src)->parent;
+		*dst = (*dst)->parent;
+		if (!*src || !*dst)
+			return NULL;
+	}
+
+	return (*src)->parent;
+}
+
+#define gb_for_each_tg_safe(pos, n, root)					\
+	for (pos = rb_entry_safe(rb_first(root), struct task_group, gb_node);	\
+	     pos && ({ n = rb_entry_safe(rb_next(&pos->gb_node),		\
+			struct task_group, gb_node) ; 1; });				\
+	     pos = n)
+
+static int gb_detach_task_groups(struct gb_lb_env *gb_env)
+{
+	struct group_balancer_sched_domain *gb_sd, *child;
+	struct task_group *tg, *n;
+	unsigned long load, util;
+	int detached = 0;
+
+	gb_sd = gb_env->gb_sd;
+	if (!gb_sd)
+		return 0;
+
+	for_each_gb_sd_child(child, gb_sd) {
+		raw_spin_lock(&child->lock);
+		/* Try the task cgroups with little specs first. */
+		gb_for_each_tg_safe(tg, n, &child->task_groups) {
+			switch (gb_env->migration_type) {
+#ifdef CONFIG_GROUP_IDENTITY
+			case migrate_identity:
+				fallthrough;
+#endif
+			case migrate_load:
+				load = max_t(unsigned long, tg_gb_sd_load(tg, gb_sd), 1);
+				if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
+					continue;
+				gb_env->imbalance -= load;
+				break;
+			case migrate_util:
+				util = tg_gb_sd_util(tg, gb_sd);
+				if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
+					continue;
+				gb_env->imbalance -= util;
+				break;
+			case migrate_task:
+				gb_env->imbalance = 0;
+				break;
+			/*TODO: Perfect strategy of migrate_misfit*/
+			case migrate_misfit:
+				gb_env->imbalance = 0;
+				break;
+			}
+			remove_tg_from_group_balancer_sched_domain_locked(tg, child, false);
+			rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
+			detached++;
+			if (gb_env->imbalance <= 0) {
+				raw_spin_unlock(&child->lock);
+				return detached;
+			}
+		}
+		raw_spin_unlock(&child->lock);
+	}
+
+	return detached;
+}
+
+static void gb_attach_task_groups(struct gb_lb_env *gb_env)
+{
+	struct task_group *tg;
+	struct group_balancer_sched_domain *gb_sd = gb_env->gb_sd;
+	struct rb_node *node;
+	struct rb_root *root = &gb_env->task_groups;
+
+	raw_spin_lock(&gb_sd->lock);
+	while (!RB_EMPTY_ROOT(root)) {
+		node = root->rb_node;
+		tg = __gb_node_2_tg(node);
+		rb_erase(node, &gb_env->task_groups);
+		add_tg_to_group_balancer_sched_domain_locked(tg, gb_sd, false);
+	}
+	raw_spin_unlock(&gb_sd->lock);
+}
+
+static void __update_gb_sd_status(struct group_balancer_sched_domain *gb_sd, int *gb_sd_status)
+{
+	int i, nr_running;
+
+	for_each_cpu(i, gb_sd_span(gb_sd)) {
+		struct rq *rq = cpu_rq(i);
+
+		nr_running = rq->nr_running;
+		if (nr_running > 1)
+			*gb_sd_status |= GB_OVERLOAD;
+
+		if (gb_cpu_overutilized(i))
+			*gb_sd_status |= GB_OVERUTILIZED;
+	}
+}
+
+static void update_gb_sd_status(struct gb_lb_env *gb_env, int *gb_sd_status)
+{
+	if (!gb_env->src)
+		return;
+
+	__update_gb_sd_status(gb_env->src, gb_sd_status);
+}
+
+void gb_load_balance(struct lb_env *env)
+{
+	struct rq *src_rq = env->src_rq, *dst_rq = env->dst_rq;
+	struct gb_lb_env gb_env;
+	struct group_balancer_sched_domain *src, *dst, *gb_sd, *parent;
+	struct rb_node *node;
+	struct task_group *tg;
+	int gb_sd_status = 0;
+	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
+
+	if (!group_balancer_enabled())
+		return;
+
+	/*
+	 * src cpu has balanced some task groups to dst cpu during this load balance
+	 * process, skip it.
+	 */
+	if (cpumask_test_cpu(env->src_cpu, gb_mask))
+		return;
+
+	if (!src_rq || !dst_rq)
+		return;
+
+	read_lock(&group_balancer_sched_domain_lock);
+
+	src = src_rq->gb_sd;
+	dst = dst_rq->gb_sd;
+
+	gb_sd = find_matching_gb_sd(&src, &dst);
+	if (!gb_sd)
+		goto unlock;
+
+	gb_env = (struct gb_lb_env){
+		.src			= src,
+		.dst			= dst,
+		.gb_sd			= gb_sd,
+		.migration_type		= env->migration_type,
+		.imbalance		= env->imbalance,
+		.nr_balance_failed	= env->sd->nr_balance_failed,
+		.task_groups		= RB_ROOT,
+	};
+
+	/*
+	 * If there are some tasks belongs to gb_sd or any ancestor, they can be migrated,
+	 * and we don't migrate tg in this case.
+	 */
+	for (parent = gb_sd; parent; parent = parent->parent) {
+		for (node = rb_first(&parent->task_groups); node; node = rb_next(node)) {
+			tg = __node_2_task_group(node);
+			if (tg->cfs_rq[env->src_cpu]->h_nr_running)
+				goto unlock;
+		}
+	}
+
+	update_gb_sd_status(&gb_env, &gb_sd_status);
+	/*
+	 * If the src domain is not overloaded, or there no imbalance between src and dst domain,
+	 * do not migrate task groups.
+	 */
+	if (!gb_sd_status || !gb_env.imbalance)
+		goto out;
+
+	if (gb_detach_task_groups(&gb_env))
+		gb_attach_task_groups(&gb_env);
+
+out:
+	cpumask_or(gb_mask, gb_mask, gb_sd_span(gb_sd));
+unlock:
 	read_unlock(&group_balancer_sched_domain_lock);
 }

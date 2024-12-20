@@ -8498,6 +8498,9 @@ DECLARE_PER_CPU(cpumask_var_t, select_idle_mask);
 DECLARE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
 DECLARE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+DECLARE_PER_CPU(cpumask_var_t, group_balancer_mask);
+#endif
 
 void __init sched_init(void)
 {
@@ -8547,7 +8550,6 @@ void __init sched_init(void)
 	root_task_group.group_balancer = 0;
 	root_task_group.soft_cpus_version = 0;
 	root_task_group.gb_sd = NULL;
-	root_task_group.prev_gb_sd = NULL;
 #endif
 #ifdef CONFIG_CPUMASK_OFFSTACK
 	for_each_possible_cpu(i) {
@@ -8560,6 +8562,10 @@ void __init sched_init(void)
 			 cpumask_size(), GFP_KERNEL, cpu_to_node(i));
 		per_cpu(push_expellee_traversed_mask, i) = (cpumask_var_t)kzalloc_node(
 			 cpumask_size(), GFP_KERNEL, cpu_to_node(i));
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+		per_cpu(group_balancer_mask, i) = (cpumask_var_t)kzalloc_node(
+			cpumask_size(), GFP_KERNEL, cpu_to_node(i));
 #endif
 	}
 #endif /* CONFIG_CPUMASK_OFFSTACK */
@@ -8995,7 +9001,7 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 	tg->gb_sd = NULL;
-	tg->prev_gb_sd = NULL;
+	raw_spin_lock_init(&tg->gb_lock);
 #endif
 	return tg;
 
@@ -10098,16 +10104,11 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 		retval = validate_group_balancer(tg);
 		if (retval)
 			goto out;
-		retval = attach_tg_to_group_balancer_sched_domain(tg);
+		retval = attach_tg_to_group_balancer_sched_domain(tg, NULL, true);
 		if (retval)
 			goto out;
 	} else {
-		/*
-		 * As gb_sd may be freed by user, set tg->prev_gb_sd NULL to prevent
-		 * use after free.
-		 */
-		tg->prev_gb_sd = NULL;
-		detach_tg_from_group_balancer_sched_domain(tg);
+		detach_tg_from_group_balancer_sched_domain(tg, true);
 	}
 	tg->group_balancer = new;
 out:
