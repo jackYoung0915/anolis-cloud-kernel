@@ -238,6 +238,58 @@ static int vkernel_vk_ioctl_set_sysctl_fs(struct vkernel *vk, unsigned long arg)
 	return vkernel_set_sysctl_fs(&vk->sysctl_fs, &desc);
 }
 
+static int vkernel_vk_ioctl_set_sysctl_kernel(struct vkernel *vk, unsigned long arg)
+{
+	void __user *argp = (void __user *)arg;
+	struct vkernel_sysctl_kernel_desc desc;
+	struct ipc_namespace *ipc_ns;
+
+	if (copy_from_user(&desc, argp, sizeof(desc)))
+		return -EFAULT;
+
+	/* Handle namespace fields */
+	if (vk->init_process->nsproxy)
+		ipc_ns = vk->init_process->nsproxy->ipc_ns;
+	if (likely(ipc_ns)) {
+		if (desc.msgmax)
+			ipc_ns->msg_ctlmax = desc.msgmax;
+		if (desc.msgmnb)
+			ipc_ns->msg_ctlmnb = desc.msgmnb;
+		if (desc.msgmni)
+			ipc_ns->msg_ctlmni = desc.msgmni;
+#ifdef CONFIG_CHECKPOINT_RESTORE
+		if (desc.msg_next_id >= -1)
+			ipc_ns->ids[IPC_MSG_IDS].next_id = desc.msg_next_id;
+#endif
+		if (desc.semmsl > 0)
+			ipc_ns->sem_ctls[0] = desc.semmsl;
+		if (desc.semmns > 0)
+			ipc_ns->sem_ctls[1] = desc.semmns;
+		if (desc.semopm > 0)
+			ipc_ns->sem_ctls[2] = desc.semopm;
+		if (desc.semmni > 0)
+			ipc_ns->sem_ctls[3] = desc.semmni;
+#ifdef CONFIG_CHECKPOINT_RESTORE
+		if (desc.sem_next_id >= -1)
+			ipc_ns->ids[IPC_SEM_IDS].next_id = desc.sem_next_id;
+#endif
+		if (desc.shmall)
+			ipc_ns->shm_ctlall = desc.shmall;
+		if (desc.shmmax)
+			ipc_ns->shm_ctlmax = desc.shmmax;
+		if (desc.shmmni)
+			ipc_ns->shm_ctlmni = desc.shmmni;
+#ifdef CONFIG_CHECKPOINT_RESTORE
+		if (desc.shm_next_id)
+			ipc_ns->ids[IPC_SHM_IDS].next_id = desc.shm_next_id;
+#endif
+		if (desc.shm_rmid_forced == 0 || desc.shm_rmid_forced == 1)
+			ipc_ns->shm_rmid_forced = desc.shm_rmid_forced;
+	}
+
+	return vkernel_set_sysctl_kernel(&vk->sysctl_kernel, &desc);
+}
+
 static int vkernel_vk_ioctl_check_extension(struct vkernel *vk, unsigned long arg)
 {
 	int r = 0;
@@ -311,6 +363,35 @@ static int stat_show(struct seq_file *m, void *v)
 	seq_printf(m, "fs.lease-break-time=%d\n", vk->sysctl_fs.lease_break_time);
 	seq_printf(m, "fs.leases-enable=%d\n", vk->sysctl_fs.leases_enable);
 	seq_printf(m, "fs.mount-max=%u\n", vk->sysctl_fs.mount_max);
+	seq_printf(m, "kernel.numa_balancing=%d\n", vk->sysctl_kernel.nb_mode);
+	seq_printf(m, "kernel.numa_balancing_promote_rate_limit_MBps=%d\n",
+			vk->sysctl_kernel.nb_promote_rate_limit);
+	seq_printf(m, "kernel.sched_cfs_bandwidth_slice_us=%u\n",
+			vk->sysctl_kernel.sched_cfs_bandwidth_slice);
+	seq_printf(m, "kernel.sched_child_runs_first=%u\n",
+			vk->sysctl_kernel.sched_child_runs_first);
+	seq_printf(m, "kernel.sched_deadline_period_max_us=%u\n",
+			vk->sysctl_kernel.sched_dl_period_max);
+	seq_printf(m, "kernel.sched_deadline_period_min_us=%u\n",
+			vk->sysctl_kernel.sched_dl_period_min);
+	seq_printf(m, "kernel.sched_rr_timeslice_ms=%d\n",
+			vk->sysctl_kernel.sched_rr_timeslice);
+	seq_printf(m, "kernel.sched_rt_period_us=%d\n",
+			vk->sysctl_kernel.sched_rt_period);
+	seq_printf(m, "kernel.sched_rt_runtime_us=%d\n",
+			vk->sysctl_kernel.sched_rt_runtime);
+	seq_printf(m, "kernel.threads-max=%d\n", vk->sysctl_kernel.max_threads);
+	seq_printf(m, "kernel.keys.gc_delay=%u\n", vk->sysctl_kernel.key_gc_delay);
+	seq_printf(m, "kernel.keys.maxbytes=%u\n", vk->sysctl_kernel.key_quota_maxbytes);
+	seq_printf(m, "kernel.keys.maxkeys=%u\n", vk->sysctl_kernel.key_quota_maxkeys);
+	seq_printf(m, "kernel.keys.persistent_keyring_expiry=%u\n",
+			vk->sysctl_kernel.persistent_keyring_expiry);
+	seq_printf(m, "kernel.keys.root_maxbytes=%u\n",
+			vk->sysctl_kernel.key_quota_root_maxbytes);
+	seq_printf(m, "kernel.keys.root_maxkeys=%u\n",
+			vk->sysctl_kernel.key_quota_root_maxkeys);
+	seq_printf(m, "kernel.pty.max=%d\n", vk->sysctl_kernel.pty_limit);
+	seq_printf(m, "kernel.pty.reserve=%d\n", vk->sysctl_kernel.pty_reserve);
 
 	seq_puts(m, "=== OPERATION ===\n");
 	seq_printf(m, "Op cap_capable: %p\n", vk->ops.cap_capable);
@@ -415,6 +496,7 @@ void vkernel_destroy_vk(struct vkernel *vk)
 
 	vkernel_destroy_vk_debugfs(vk);
 
+	vk_uninit_sysctl_kernel(&vk->sysctl_kernel);
 	vk_uninit_sysctl_fs(&vk->sysctl_fs);
 	vk_uninit_acl(&vk->acl);
 	vk_uninit_syscall(&vk->syscall);
@@ -473,6 +555,10 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 	r = vk_init_sysctl_fs(&vk->sysctl_fs);
 	if (r)
 		goto err_acl;
+	r = vk_init_sysctl_kernel(&vk->sysctl_kernel);
+	if (r)
+		goto err_fs;
+
 
 	/* Init default operations */
 	vk->ops.cap_capable = vk_cap_capable;
@@ -480,7 +566,7 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 
 	r = vkernel_create_vk_debugfs(vk, name);
 	if (r)
-		goto err_fs;
+		goto err_kernel;
 
 	/* Custom initializations */
 	vk->custom = vkernel_find_custom(custom);
@@ -511,6 +597,8 @@ err_custom_debugfs:
 		module_put(vk->custom->owner);
 
 	vkernel_destroy_vk_debugfs(vk);
+err_kernel:
+	vk_uninit_sysctl_kernel(&vk->sysctl_kernel);
 err_fs:
 	vk_uninit_sysctl_fs(&vk->sysctl_fs);
 err_acl:
@@ -598,6 +686,8 @@ static long vkernel_vk_ioctl(struct file *filp,
 		r = vkernel_vk_ioctl_set_sysctl_fs(vk, arg);
 		break;
 	case VKERNEL_SET_SYSCTL_KERNEL:
+		r = vkernel_vk_ioctl_set_sysctl_kernel(vk, arg);
+		break;
 	case VKERNEL_SET_SYSCTL_NET:
 	case VKERNEL_SET_SYSCTL_VM:
 		r = -EOPNOTSUPP;
