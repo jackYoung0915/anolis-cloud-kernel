@@ -164,7 +164,13 @@ out:
 static struct page *ractl_alloc_page(struct readahead_control *ractl,
 				       gfp_t gfp_mask)
 {
-	return __page_cache_alloc(gfp_mask);
+	struct page *page;
+
+	page = __page_cache_alloc(gfp_mask);
+	if (page && ractl->dropbehind)
+		__SetPageDropbehind(page);
+
+	return page;
 }
 
 /**
