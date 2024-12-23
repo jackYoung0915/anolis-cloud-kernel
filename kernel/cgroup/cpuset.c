@@ -2307,7 +2307,8 @@ static void cpuset_attach(struct cgroup_taskset *tset)
 
 	/* prepare for attach */
 	if (cs == &top_cpuset) {
-		cpumask_copy(cpus_attach, cpu_possible_mask);
+		cpumask_andnot(cpus_attach, cpu_possible_mask,
+				cs->subparts_cpus);
 		wilds_cpus_allowed(cpus_attach);
 	} else
 		guarantee_online_cpus(cs, cpus_attach);
