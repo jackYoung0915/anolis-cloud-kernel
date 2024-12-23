@@ -16,6 +16,7 @@
 /* Device IDs */
 #define TXGBE_DEV_ID_SP1000                     0x1001
 #define TXGBE_DEV_ID_WX1820                     0x2001
+#define TXGBE_VF_DEVICE_ID                      0x1000
 
 /* Subsystem IDs */
 /* SFP */
@@ -497,6 +498,7 @@ struct txgbe_thermal_sensor_data {
 #define TXGBE_TDM_TCP_FLG_H     0x1807C
 #define TXGBE_TDM_VFTE_CLR(_i)  (0x180A0 + ((_i) * 4))
 #define TXGBE_TDM_VLAN_INS(_i)  (0x18100 + ((_i) * 4)) /* 64 of these 0 - 63 */
+#define TXGBE_TDM_DESC_FATAL(i) (0x0180D0 + (i) * 4) /*0-3*/
 /* TDM CTL BIT */
 #define TXGBE_TDM_CTL_TE        0x1 /* Transmit Enable */
 #define TXGBE_TDM_CTL_PADDING   0x2 /* Padding byte number for ipsec ESP */
@@ -1048,7 +1050,7 @@ enum txgbe_fdir_pballoc_type {
 #define TXGBE_PSR_MAX_SZ                0x15020
 
 /****************************** TDB ******************************************/
-#define TXGBE_TDB_RFCS                  0x1CE00
+#define TXGBE_TDB_TFCS                  0x1CE00
 #define TXGBE_TDB_PB_SZ(_i)             (0x1CC00 + ((_i) * 4)) /* 8 of these */
 #define TXGBE_TDB_MNG_TC                0x1CD10
 #define TXGBE_TDB_PRB_CTL               0x17010

@@ -23,6 +23,7 @@
 #include "txgbe_hw.h"
 #include "txgbe_phy.h"
 #include "txgbe_sriov.h"
+#include "txgbe_pcierr.h"
 
 char txgbe_driver_name[] = "txgbe";
 #define DRV_VERSION     __stringify(1.3.5.1-k)
@@ -121,6 +122,55 @@ static inline int txgbe_enumerate_functions(struct txgbe_adapter *adapter)
 	}
 
 	return physfns;
+}
+
+void txgbe_print_tx_hang_status(struct txgbe_adapter *adapter)
+{
+	int pos;
+	u32 value;
+	struct pci_dev *pdev = adapter->pdev;
+	u16 devctl2;
+
+	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_ERR);
+	if (!pos)
+		return;
+	pci_read_config_dword(pdev, pos + PCI_ERR_UNCOR_STATUS, &value);
+	e_info(probe, "AER Uncorrectable Error Status: 0x%08x\n", value);
+	txgbe_aer_print_error(adapter, TXGBE_AER_UNCORRECTABLE, value);
+	pci_read_config_dword(pdev, pos + PCI_ERR_UNCOR_MASK, &value);
+	e_info(probe, "AER Uncorrectable Error Mask: 0x%08x\n", value);
+	pci_read_config_dword(pdev, pos + PCI_ERR_UNCOR_SEVER, &value);
+	e_info(probe, "AER Uncorrectable Error Severity: 0x%08x\n", value);
+	pci_read_config_dword(pdev, pos + PCI_ERR_COR_STATUS, &value);
+	e_info(probe, "AER Correctable Error Status: 0x%08x\n", value);
+	txgbe_aer_print_error(adapter, TXGBE_AER_CORRECTABLE, value);
+	pci_read_config_dword(pdev, pos + PCI_ERR_COR_MASK, &value);
+	e_info(probe, "AER Correctable Error Mask: 0x%08x\n", value);
+	pci_read_config_dword(pdev, pos + PCI_ERR_CAP, &value);
+	e_info(probe, "AER Capabilities and Control Register: 0x%08x\n", value);
+
+	pcie_capability_read_word(pdev, PCI_EXP_DEVCTL2, &devctl2);
+	e_info(probe, "Device Control2 Register: 0x%04x\n", devctl2);
+
+	e_info(probe, "Tx flow control Status[TDB_TFCS 0xCE00]: 0x%x\n",
+	       rd32(&adapter->hw, TXGBE_TDB_TFCS));
+
+	e_info(tx_err, "tdm_desc_fatal_0: 0x%x\n",
+	       rd32(&adapter->hw, 0x180d0));
+	e_info(tx_err, "tdm_desc_fatal_1: 0x%x\n",
+	       rd32(&adapter->hw, 0x180d4));
+	e_info(tx_err, "tdm_desc_fatal_2: 0x%x\n",
+	       rd32(&adapter->hw, 0x180d8));
+	e_info(tx_err, "tdm_desc_fatal_3: 0x%x\n",
+	       rd32(&adapter->hw, 0x180dc));
+	e_info(tx_err, "tdm_desc_nonfatal_0: 0x%x\n",
+	       rd32(&adapter->hw, 0x180c0));
+	e_info(tx_err, "tdm_desc_nonfatal_1: 0x%x\n",
+	       rd32(&adapter->hw, 0x180c4));
+	e_info(tx_err, "tdm_desc_nonfatal_2: 0x%x\n",
+	       rd32(&adapter->hw, 0x180c8));
+	e_info(tx_err, "tdm_desc_nonfatal_3: 0x%x\n",
+	       rd32(&adapter->hw, 0x180cc));
 }
 
 void txgbe_service_event_schedule(struct txgbe_adapter *adapter)
@@ -354,6 +404,29 @@ static inline bool txgbe_check_tx_hang(struct txgbe_ring *tx_ring)
 	return false;
 }
 
+static void txgbe_tx_timeout_dorecovery(struct txgbe_adapter *adapter)
+{
+	/* schedule immediate reset if we believe we hung */
+	if (adapter->hw.bus.lan_id == 0)
+		adapter->flags2 |= TXGBE_FLAG2_PCIE_NEED_RECOVER;
+	else
+		wr32(&adapter->hw, TXGBE_MIS_PF_SM, 1);
+	txgbe_service_event_schedule(adapter);
+}
+
+/**
+ * txgbe_tx_timeout_reset - initiate reset due to Tx timeout
+ * @adapter: driver private struct
+ **/
+static void txgbe_tx_timeout_reset(struct txgbe_adapter *adapter)
+{
+	if (!test_bit(__TXGBE_DOWN, &adapter->state)) {
+		adapter->flags2 |= TXGBE_FLAG2_PF_RESET_REQUESTED;
+		e_warn(drv, "initiating reset due to tx timeout\n");
+		txgbe_service_event_schedule(adapter);
+	}
+}
+
 /**
  * txgbe_tx_timeout - Respond to a Tx Hang
  * @netdev: network interface device structure
@@ -362,27 +435,18 @@ static inline bool txgbe_check_tx_hang(struct txgbe_ring *tx_ring)
 static void txgbe_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 {
 	struct txgbe_adapter *adapter = netdev_priv(netdev);
-	bool real_tx_hang = false;
-	int i;
-	u16 value = 0;
+	bool tdm_desc_fatal = false;
 	u32 value2 = 0, value3 = 0;
+	u16 pci_cmd = 0;
 	u32 head, tail;
-
-	for (i = 0; i < adapter->num_tx_queues; i++) {
-		struct txgbe_ring *tx_ring = adapter->tx_ring[i];
-
-		if (check_for_tx_hang(tx_ring) && txgbe_check_tx_hang(tx_ring))
-			real_tx_hang = true;
-	}
-
-	if (real_tx_hang)
-		netif_warn(adapter, drv, netdev, "Real Tx hang.\n");
+	u16 vid = 0;
+	int i;
 
 	/* Dump the relevant registers to determine the cause of a timeout event. */
-	pci_read_config_word(adapter->pdev, PCI_VENDOR_ID, &value);
-	netif_warn(adapter, drv, netdev, "pci vendor id: 0x%x\n", value);
-	pci_read_config_word(adapter->pdev, PCI_COMMAND, &value);
-	netif_warn(adapter, drv, netdev, "pci command reg: 0x%x.\n", value);
+	pci_read_config_word(adapter->pdev, PCI_VENDOR_ID, &vid);
+	netif_warn(adapter, drv, netdev, "pci vendor id: 0x%x\n", vid);
+	pci_read_config_word(adapter->pdev, PCI_COMMAND, &pci_cmd);
+	netif_warn(adapter, drv, netdev, "pci command reg: 0x%x.\n", pci_cmd);
 
 	value2 = rd32(&adapter->hw, 0x10000);
 	netif_warn(adapter, drv, netdev, "reg mis_pwr: 0x%08x\n", value2);
@@ -414,12 +478,19 @@ static void txgbe_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 		   "PX_IMS0 value is 0x%08x, PX_IMS1 value is 0x%08x\n",
 		   value2, value3);
 
-	if (value2 || value3) {
-		netif_warn(adapter, drv, netdev, "clear interrupt mask.\n");
-		wr32(&adapter->hw, TXGBE_PX_ICS(0), value2);
-		wr32(&adapter->hw, TXGBE_PX_IMC(0), value2);
-		wr32(&adapter->hw, TXGBE_PX_ICS(1), value3);
-		wr32(&adapter->hw, TXGBE_PX_IMC(1), value3);
+	/* only check pf queue tdm desc error */
+	if ((rd32(&adapter->hw, TXGBE_TDM_DESC_FATAL(0)) & 0xffffffff) ||
+	    (rd32(&adapter->hw, TXGBE_TDM_DESC_FATAL(1)) & 0xffffffff))
+		tdm_desc_fatal = true;
+
+	/* PCIe link loss, tdm desc fatal error or memory space can't access */
+	if (vid == TXGBE_FAILED_READ_CFG_WORD ||
+	    tdm_desc_fatal ||
+		!(pci_cmd & 0x2)) {
+		txgbe_tx_timeout_dorecovery(adapter);
+	} else {
+		txgbe_print_tx_hang_status(adapter);
+		txgbe_tx_timeout_reset(adapter);
 	}
 }
 
@@ -1629,6 +1700,18 @@ static irqreturn_t txgbe_msix_other(int __always_unused irq, void *data)
 
 		txgbe_service_event_schedule(adapter);
 	}
+
+	if (eicr & TXGBE_PX_MISC_IC_PCIE_REQ_ERR) {
+		ERROR_REPORT1(hw, TXGBE_ERROR_POLLING,
+			      "lan id %d, PCIe request error founded.\n", hw->bus.lan_id);
+		if (hw->bus.lan_id == 0) {
+			adapter->flags2 |= TXGBE_FLAG2_PCIE_NEED_RECOVER;
+			txgbe_service_event_schedule(adapter);
+		} else {
+			wr32(&adapter->hw, TXGBE_MIS_PF_SM, 1);
+		}
+	}
+
 	if (eicr & TXGBE_PX_MISC_IC_DEV_RST) {
 		adapter->flags2 |= TXGBE_FLAG2_RESET_INTR_RECEIVED;
 		txgbe_service_event_schedule(adapter);
@@ -5365,6 +5448,7 @@ static void txgbe_service_timer(struct timer_list *t)
 	struct txgbe_adapter *adapter = from_timer(adapter, t, service_timer);
 	unsigned long next_event_offset;
 	struct txgbe_hw *hw = &adapter->hw;
+	u32 val = 0;
 
 	/* poll faster when waiting for link */
 	if (adapter->flags & TXGBE_FLAG_NEED_LINK_UPDATE) {
@@ -5374,6 +5458,24 @@ static void txgbe_service_timer(struct timer_list *t)
 			next_event_offset = HZ / 10;
 	} else {
 		next_event_offset = HZ * 2;
+	}
+
+	/* record which func to provoke PCIE recovery */
+	if (rd32(&adapter->hw, TXGBE_MIS_PF_SM) == 1) {
+		val = rd32m(&adapter->hw, TXGBE_MIS_PRB_CTL,
+			    TXGBE_MIS_PRB_CTL_LAN0_UP |
+					TXGBE_MIS_PRB_CTL_LAN1_UP);
+		if (val & TXGBE_MIS_PRB_CTL_LAN0_UP) {
+			if (hw->bus.lan_id == 0) {
+				adapter->flags2 |= TXGBE_FLAG2_PCIE_NEED_RECOVER;
+				e_info(probe, "set recover on Lan0\n");
+				}
+		} else if (val & TXGBE_MIS_PRB_CTL_LAN1_UP) {
+			if (hw->bus.lan_id == 1) {
+				adapter->flags2 |= TXGBE_FLAG2_PCIE_NEED_RECOVER;
+				e_info(probe, "set recover on Lan1\n");
+			}
+		}
 	}
 
 	/* Reset the timer */
@@ -5466,6 +5568,30 @@ unlock:
 	rtnl_unlock();
 }
 
+static void txgbe_check_pcie_subtask(struct txgbe_adapter *adapter)
+{
+	bool status;
+
+	if (!(adapter->flags2 & TXGBE_FLAG2_PCIE_NEED_RECOVER))
+		return;
+
+	txgbe_print_tx_hang_status(adapter);
+
+	wr32m(&adapter->hw, TXGBE_MIS_PF_SM, TXGBE_MIS_PF_SM_SM, 0);
+
+	if (!(adapter->flags & TXGBE_FLAG_SRIOV_ENABLED)) {
+		status = txgbe_check_recovery_capability(adapter->pdev);
+		if (status) {
+			e_info(probe, "do recovery\n");
+			txgbe_pcie_do_recovery(adapter->pdev);
+		} else {
+			e_err(drv, "This platform can't support pcie recovery, skip it\n");
+		}
+	}
+
+	adapter->flags2 &= ~TXGBE_FLAG2_PCIE_NEED_RECOVER;
+}
+
 /**
  * txgbe_service_task - manages and runs subtasks
  * @work: pointer to work_struct containing our data
@@ -5485,6 +5611,7 @@ static void txgbe_service_task(struct work_struct *work)
 		return;
 	}
 
+	txgbe_check_pcie_subtask(adapter);
 	txgbe_reset_subtask(adapter);
 	txgbe_sfp_detection_subtask(adapter);
 	txgbe_sfp_link_config_subtask(adapter);
@@ -5826,6 +5953,7 @@ static void txgbe_tx_csum(struct txgbe_ring *tx_ring,
 	u32 type_tucmd;
 
 	if (skb->ip_summed != CHECKSUM_PARTIAL) {
+csum_failed:
 		if (!(first->tx_flags & TXGBE_TX_FLAGS_HW_VLAN) &&
 		    !(first->tx_flags & TXGBE_TX_FLAGS_CC))
 			return;
@@ -5930,7 +6058,8 @@ static void txgbe_tx_csum(struct txgbe_ring *tx_ring,
 					TXGBE_TXD_L4LEN_SHIFT;
 			break;
 		default:
-			break;
+			skb_checksum_help(skb);
+			goto csum_failed;
 		}
 
 		/* update TX checksum flag */
@@ -7297,6 +7426,245 @@ u16 txgbe_read_pci_cfg_word(struct txgbe_hw *hw, u32 reg)
 	return value;
 }
 
+#ifdef CONFIG_PCI_IOV
+static u32 txgbe_read_pci_cfg_dword(struct txgbe_hw *hw, u32 reg)
+{
+	struct txgbe_adapter *adapter = hw->back;
+	u32 value;
+
+	if (TXGBE_REMOVED(hw->hw_addr))
+		return TXGBE_FAILED_READ_CFG_DWORD;
+	pci_read_config_dword(adapter->pdev, reg, &value);
+	if (value == TXGBE_FAILED_READ_CFG_DWORD &&
+	    txgbe_check_cfg_remove(hw, adapter->pdev))
+		return TXGBE_FAILED_READ_CFG_DWORD;
+	return value;
+}
+#endif /* CONFIG_PCI_IOV */
+
+void txgbe_write_pci_cfg_word(struct txgbe_hw *hw, u32 reg, u16 value)
+{
+	struct txgbe_adapter *adapter = hw->back;
+
+	if (TXGBE_REMOVED(hw->hw_addr))
+		return;
+	pci_write_config_word(adapter->pdev, reg, value);
+}
+
+static inline void txgbe_issue_vf_flr(struct txgbe_adapter *adapter,
+				      struct pci_dev *vfdev)
+{
+	int pos, i;
+	u16 status;
+
+	/* wait for pending transactions on the bus */
+	for (i = 0; i < 4; i++) {
+		if (i)
+			msleep((1 << (i - 1)) * 100);
+
+		pcie_capability_read_word(vfdev, PCI_EXP_DEVSTA, &status);
+		if (!(status & PCI_EXP_DEVSTA_TRPND))
+			goto clear;
+	}
+
+	e_dev_warn("Issuing VFLR with pending transactions\n");
+
+clear:
+	pos = pci_find_capability(vfdev, PCI_CAP_ID_EXP);
+	if (!pos)
+		return;
+
+	e_dev_err("Issuing VFLR for VF %s\n", pci_name(vfdev));
+	pci_write_config_word(vfdev, pos + PCI_EXP_DEVCTL,
+			      PCI_EXP_DEVCTL_BCR_FLR);
+	msleep(100);
+}
+
+/**
+ * txgbe_io_error_detected - called when PCI error is detected
+ * @pdev: Pointer to PCI device
+ * @state: The current pci connection state
+ *
+ * This function is called after a PCI bus error affecting
+ * this device has been detected.
+ */
+static pci_ers_result_t txgbe_io_error_detected(struct pci_dev *pdev,
+						pci_channel_state_t state)
+{
+	struct txgbe_adapter *adapter = pci_get_drvdata(pdev);
+	struct net_device *netdev = adapter->netdev;
+
+#ifdef CONFIG_PCI_IOV
+		struct txgbe_hw *hw = &adapter->hw;
+		struct pci_dev *bdev, *vfdev;
+		u32 dw0, dw1, dw2, dw3;
+		int vf, pos;
+		u16 req_id, pf_func;
+
+		if (adapter->num_vfs == 0)
+			goto skip_bad_vf_detection;
+
+		bdev = pdev->bus->self;
+		while (bdev && (pci_pcie_type(bdev) != PCI_EXP_TYPE_ROOT_PORT))
+			bdev = bdev->bus->self;
+
+		if (!bdev)
+			goto skip_bad_vf_detection;
+
+		pos = pci_find_ext_capability(bdev, PCI_EXT_CAP_ID_ERR);
+		if (!pos)
+			goto skip_bad_vf_detection;
+
+		dw0 = txgbe_read_pci_cfg_dword(hw, pos + PCI_ERR_HEADER_LOG);
+		dw1 = txgbe_read_pci_cfg_dword(hw,
+					       pos + PCI_ERR_HEADER_LOG + 4);
+		dw2 = txgbe_read_pci_cfg_dword(hw,
+					       pos + PCI_ERR_HEADER_LOG + 8);
+		dw3 = txgbe_read_pci_cfg_dword(hw,
+					       pos + PCI_ERR_HEADER_LOG + 12);
+		if (TXGBE_REMOVED(hw->hw_addr))
+			goto skip_bad_vf_detection;
+
+		req_id = dw1 >> 16;
+		/* if bit 7 of the requestor ID is set then it's a VF */
+		if (!(req_id & 0x0080))
+			goto skip_bad_vf_detection;
+
+		pf_func = req_id & 0x01;
+		if ((pf_func & 1) == (pdev->devfn & 1)) {
+			vf = (req_id & 0x7F) >> 1;
+			e_dev_err("VF %d has caused a PCIe error\n", vf);
+			e_dev_err("TLP: dw0: %8.8x\tdw1: %8.8x\tdw2: %8.8x\tdw3: %8.8x\n",
+				  dw0, dw1, dw2, dw3);
+
+			/* Find the pci device of the offending VF */
+			vfdev = pci_get_device(PCI_VENDOR_ID_WANGXUN,
+					       TXGBE_VF_DEVICE_ID, NULL);
+			while (vfdev) {
+				if (vfdev->devfn == (req_id & 0xFF))
+					break;
+				vfdev = pci_get_device(PCI_VENDOR_ID_WANGXUN,
+						       TXGBE_VF_DEVICE_ID, vfdev);
+			}
+			/* There's a slim chance the VF could have been hot
+			 * plugged, so if it is no longer present we don't need
+			 * to issue the VFLR.Just clean up the AER in that case.
+			 */
+			if (vfdev) {
+				txgbe_issue_vf_flr(adapter, vfdev);
+				/* Free device reference count */
+				pci_dev_put(vfdev);
+			}
+
+			pci_aer_clear_nonfatal_status(pdev);
+		}
+
+		/* Even though the error may have occurred on the other port
+		 * we still need to increment the vf error reference count for
+		 * both ports because the I/O resume function will be called
+		 * for both of them.
+		 */
+		adapter->vferr_refcount++;
+
+		return PCI_ERS_RESULT_RECOVERED;
+
+skip_bad_vf_detection:
+#endif /* CONFIG_PCI_IOV */
+
+	if (!test_bit(__TXGBE_SERVICE_INITED, &adapter->state))
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	rtnl_lock();
+	netif_device_detach(netdev);
+
+	if (state == pci_channel_io_perm_failure) {
+		rtnl_unlock();
+		return PCI_ERS_RESULT_DISCONNECT;
+	}
+
+	if (netif_running(netdev))
+		txgbe_close(netdev);
+
+	if (!test_and_set_bit(__TXGBE_DISABLED, &adapter->state))
+		pci_disable_device(pdev);
+	rtnl_unlock();
+
+	/* Request a slot reset. */
+	return PCI_ERS_RESULT_NEED_RESET;
+}
+
+/**
+ * txgbe_io_slot_reset - called after the pci bus has been reset.
+ * @pdev: Pointer to PCI device
+ *
+ * Restart the card from scratch, as if from a cold-boot.
+ */
+static pci_ers_result_t txgbe_io_slot_reset(struct pci_dev *pdev)
+{
+	struct txgbe_adapter *adapter = pci_get_drvdata(pdev);
+	pci_ers_result_t result = PCI_ERS_RESULT_RECOVERED;
+
+	if (pci_enable_device_mem(pdev)) {
+		e_err(probe, "Cannot re-enable PCI device after reset.\n");
+		result = PCI_ERS_RESULT_DISCONNECT;
+	} else {
+		/* atomic_inc() before lock. */
+		smp_mb__before_atomic();
+		clear_bit(__TXGBE_DISABLED, &adapter->state);
+		adapter->hw.hw_addr = adapter->io_addr;
+		pci_set_master(pdev);
+		pci_restore_state(pdev);
+
+		/* After second error pci->state_saved is false, this
+		 * resets it so EEH doesn't break.
+		 */
+		pci_save_state(pdev);
+
+		pci_wake_from_d3(pdev, false);
+
+		txgbe_reset(adapter);
+
+		result = PCI_ERS_RESULT_RECOVERED;
+	}
+
+	pci_aer_clear_nonfatal_status(pdev);
+
+	return result;
+}
+
+/**
+ * txgbe_io_resume - called when traffic can start flowing again.
+ * @pdev: Pointer to PCI device
+ *
+ * This callback is called when the error recovery driver tells us that
+ * its OK to resume normal operation.
+ */
+static void txgbe_io_resume(struct pci_dev *pdev)
+{
+	struct txgbe_adapter *adapter = pci_get_drvdata(pdev);
+	struct net_device *netdev = adapter->netdev;
+
+#ifdef CONFIG_PCI_IOV
+	if (adapter->vferr_refcount) {
+		e_info(drv, "Resuming after VF err\n");
+		adapter->vferr_refcount--;
+		return;
+	}
+#endif
+	rtnl_lock();
+	if (netif_running(netdev))
+		txgbe_open(netdev);
+
+	netif_device_attach(netdev);
+	rtnl_unlock();
+}
+
+static const struct pci_error_handlers txgbe_err_handler = {
+	.error_detected = txgbe_io_error_detected,
+	.slot_reset = txgbe_io_slot_reset,
+	.resume = txgbe_io_resume,
+};
+
 static struct pci_driver txgbe_driver = {
 	.name     = txgbe_driver_name,
 	.id_table = txgbe_pci_tbl,
@@ -7308,6 +7676,7 @@ static struct pci_driver txgbe_driver = {
 #endif
 	.shutdown = txgbe_shutdown,
 	.sriov_configure = txgbe_pci_sriov_configure,
+	.err_handler = &txgbe_err_handler
 };
 
 /**
