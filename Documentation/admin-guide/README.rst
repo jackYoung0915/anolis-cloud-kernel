@@ -5,7 +5,7 @@ Linux kernel release 5.x <http://kernel.org/>
 
 These are the release notes for Linux version 5.  Read them carefully,
 as they tell you what this is all about, explain how to install the
-kernel, and what to do if something goes wrong.
+kernel, and what to do if something goes wrong!
 
 What is Linux?
 --------------
