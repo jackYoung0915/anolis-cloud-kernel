@@ -21,6 +21,7 @@
 #include <linux/mman.h>
 
 #include "fs.h"
+#include "sched.h"
 #include "security.h"
 #include "syscall.h"
 #include "sysctl.h"
@@ -227,6 +228,17 @@ static int vkernel_vk_ioctl_restrict_linux_cap(struct vkernel *vk, unsigned long
 	return vkernel_set_linux_cap(vk, &cap);
 }
 
+static int vkernel_vk_ioctl_set_cpu(struct vkernel *vk, unsigned long arg)
+{
+	void __user *argp = (void __user *)arg;
+	struct vkernel_cpu_desc desc;
+
+	if (copy_from_user(&desc, argp, sizeof(desc)))
+		return -EFAULT;
+
+	return vkernel_set_cpu_pref(vk, &desc);
+}
+
 static int vkernel_vk_ioctl_set_sysctl_fs(struct vkernel *vk, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
@@ -377,6 +389,11 @@ static int stat_show(struct seq_file *m, void *v)
 	seq_printf(m, "Cap effective: 0x%llx\n", vk->linux_cap.effective.val);
 	seq_printf(m, "Cap bset: 0x%llx\n", vk->linux_cap.bset.val);
 	seq_printf(m, "Cap ambient: 0x%llx\n", vk->linux_cap.ambient.val);
+
+	seq_puts(m, "=== RESOURCE ===\n");
+	seq_printf(m, "Cpu policy: %d\n", vk->cpu_pref.policy);
+	seq_printf(m, "Cpu rr timeslice: %lu\n", vk->cpu_pref.rr_timeslice_us);
+	seq_printf(m, "Cpu wakeup gran: %lu\n", vk->cpu_pref.wakeup_gran_us);
 
 	seq_puts(m, "EXTENSION CAP\n");
 	seq_printf(m, "Isolation caps: 0x%lx\n", vk->caps);
@@ -882,6 +899,7 @@ void vkernel_destroy_vk(struct vkernel *vk)
 	vk_uninit_sysctl_net(&vk->sysctl_net);
 	vk_uninit_sysctl_kernel(&vk->sysctl_kernel);
 	vk_uninit_sysctl_fs(&vk->sysctl_fs);
+	vk_uninit_cpu_pref(&vk->cpu_pref);
 	vk_uninit_acl(&vk->acl);
 	vk_uninit_syscall(&vk->syscall);
 	kfree(vk);
@@ -931,6 +949,11 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 	vk->linux_cap.bset = tsk->cred->cap_bset;
 	vk->linux_cap.ambient = tsk->cred->cap_ambient;
 
+	/* Init cpu preference */
+	r = vk_init_cpu_pref(&vk->cpu_pref);
+	if (r)
+		goto err_acl;
+
 	/* Init extension cap */
 	vk->caps = (1 << VKERNEL_CAP_ISOLATE_LOG);
 	vk->log_ns = vk->pid_ns->ns.inum;
@@ -938,7 +961,7 @@ struct vkernel *vkernel_create_vk(struct task_struct *tsk, const char *name,
 	/* Init sysctl */
 	r = vk_init_sysctl_fs(&vk->sysctl_fs);
 	if (r)
-		goto err_acl;
+		goto err_cpu;
 	r = vk_init_sysctl_kernel(&vk->sysctl_kernel);
 	if (r)
 		goto err_fs;
@@ -994,6 +1017,8 @@ err_kernel:
 	vk_uninit_sysctl_kernel(&vk->sysctl_kernel);
 err_fs:
 	vk_uninit_sysctl_fs(&vk->sysctl_fs);
+err_cpu:
+	vk_uninit_cpu_pref(&vk->cpu_pref);
 err_acl:
 	vk_uninit_acl(&vk->acl);
 err_syscall:
@@ -1072,6 +1097,8 @@ static long vkernel_vk_ioctl(struct file *filp,
 		r = vkernel_vk_ioctl_restrict_linux_cap(vk, arg);
 		break;
 	case VKERNEL_SET_CPU_PREF:
+		r = vkernel_vk_ioctl_set_cpu(vk, arg);
+		break;
 	case VKERNEL_SET_MEMORY_PREF:
 		r = -EOPNOTSUPP;
 		break;
