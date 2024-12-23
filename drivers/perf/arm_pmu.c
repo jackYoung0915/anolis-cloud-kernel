@@ -781,6 +781,7 @@ void arm_pmu_set_phys_irq(bool enable)
 
 	put_cpu();
 }
+EXPORT_SYMBOL_GPL(arm_pmu_set_phys_irq);
 #endif
 
 #ifdef CONFIG_CPU_PM
