@@ -263,8 +263,7 @@ struct tmi_tec_run {
 #define KVM_CAP_ARM_TMM_CFG_PMU					4
 
 DECLARE_STATIC_KEY_FALSE(kvm_cvm_is_available);
-DECLARE_STATIC_KEY_FALSE(kvm_cvm_is_enable);
-
+bool hisi_kvm_cvm_is_enabled(void);
 struct kvm_cap_arm_tmm_config_item {
 	__u32 cfg;
 	union {
