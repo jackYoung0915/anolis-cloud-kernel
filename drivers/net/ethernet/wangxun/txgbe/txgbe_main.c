@@ -2989,7 +2989,7 @@ static void txgbe_mac_set_default_filter(struct txgbe_adapter *adapter,
 	      TXGBE_PSR_MAC_SWC_AD_H_AV);
 }
 
-int txgbe_add_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool)
+int txgbe_add_mac_filter(struct txgbe_adapter *adapter, const u8 *addr, u16 pool)
 {
 	struct txgbe_hw *hw = &adapter->hw;
 	u32 i;
@@ -3035,7 +3035,7 @@ static void txgbe_flush_sw_mac_table(struct txgbe_adapter *adapter)
 	txgbe_sync_mac_table(adapter);
 }
 
-int txgbe_del_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool)
+int txgbe_del_mac_filter(struct txgbe_adapter *adapter, const u8 *addr, u16 pool)
 {
 	/* search table for addr, if found, set to 0 and sync */
 	u32 i;
@@ -3068,6 +3068,25 @@ int txgbe_del_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool)
 		return 0;
 	}
 	return -ENOMEM;
+}
+
+static int txgbe_uc_sync(struct net_device *netdev, const unsigned char *addr)
+{
+	struct txgbe_adapter *adapter = netdev_priv(netdev);
+	int ret;
+
+	ret = txgbe_add_mac_filter(adapter, addr, VMDQ_P(0));
+
+	return min_t(int, ret, 0);
+}
+
+static int txgbe_uc_unsync(struct net_device *netdev, const unsigned char *addr)
+{
+	struct txgbe_adapter *adapter = netdev_priv(netdev);
+
+	txgbe_del_mac_filter(adapter, addr, VMDQ_P(0));
+
+	return 0;
 }
 
 /**
@@ -3174,10 +3193,11 @@ void txgbe_set_rx_mode(struct net_device *netdev)
 	 * sufficient space to store all the addresses then enable
 	 * unicast promiscuous mode
 	 */
-	count = txgbe_write_uc_addr_list(netdev, VMDQ_P(0));
-	if (count < 0) {
+	if (__dev_uc_sync(netdev, txgbe_uc_sync, txgbe_uc_unsync)) {
 		vmolr &= ~TXGBE_PSR_VM_L2CTL_ROPE;
-		vmolr |= TXGBE_PSR_VM_L2CTL_UPE;
+		fctrl |= TXGBE_PSR_CTL_UPE;
+		e_dev_warn("uc count is %d, available mac entry is %d, enable promisc mode\n",
+			   netdev_uc_count(netdev), txgbe_available_rars(adapter));
 	}
 
 	/* Write addresses to the MTA, if the attempt fails
@@ -5629,36 +5649,6 @@ static void txgbe_service_task(struct work_struct *work)
 	txgbe_service_event_complete(adapter);
 }
 
-static u8 get_ipv6_proto(struct sk_buff *skb, int offset)
-{
-	struct ipv6hdr *hdr = (struct ipv6hdr *)(skb->data + offset);
-	u8 nexthdr = hdr->nexthdr;
-
-	offset += sizeof(struct ipv6hdr);
-
-	while (ipv6_ext_hdr(nexthdr)) {
-		struct ipv6_opt_hdr _hdr, *hp;
-
-		if (nexthdr == NEXTHDR_NONE)
-			break;
-
-		hp = skb_header_pointer(skb, offset, sizeof(_hdr), &_hdr);
-		if (!hp)
-			break;
-
-		if (nexthdr == NEXTHDR_FRAGMENT)
-			break;
-		else if (nexthdr == NEXTHDR_AUTH)
-			offset +=  ipv6_authlen(hp);
-		else
-			offset +=  ipv6_optlen(hp);
-
-		nexthdr = hp->nexthdr;
-	}
-
-	return nexthdr;
-}
-
 union network_header {
 	struct iphdr *ipv4;
 	struct ipv6hdr *ipv6;
@@ -5671,6 +5661,9 @@ static struct txgbe_dptype encode_tx_desc_ptype(const struct txgbe_tx_buffer *fi
 	u8 tun_prot = 0;
 	u8 l4_prot = 0;
 	u8 ptype = 0;
+	unsigned char *exthdr;
+	unsigned char *l4_hdr;
+	__be16 frag_off;
 
 	if (skb->encapsulation) {
 		union network_header hdr;
@@ -5683,7 +5676,12 @@ static struct txgbe_dptype encode_tx_desc_ptype(const struct txgbe_tx_buffer *fi
 			ptype = TXGBE_PTYPE_TUN_IPV4;
 			break;
 		case htons(ETH_P_IPV6):
-			tun_prot = get_ipv6_proto(skb, skb_network_offset(skb));
+			l4_hdr = skb_transport_header(skb);
+			exthdr = skb_network_header(skb) + sizeof(struct ipv6hdr);
+			tun_prot = ipv6_hdr(skb)->nexthdr;
+			if (l4_hdr != exthdr)
+				ipv6_skip_exthdr(skb, exthdr - skb->data,
+						 &tun_prot, &frag_off);
 			if (tun_prot == NEXTHDR_FRAGMENT)
 				goto encap_frag;
 			ptype = TXGBE_PTYPE_TUN_IPV6;
@@ -5692,7 +5690,8 @@ static struct txgbe_dptype encode_tx_desc_ptype(const struct txgbe_tx_buffer *fi
 			goto exit;
 		}
 
-		if (tun_prot == IPPROTO_IPIP) {
+		if (tun_prot == IPPROTO_IPIP ||
+		    tun_prot == IPPROTO_IPV6) {
 			hdr.raw = (void *)inner_ip_hdr(skb);
 			ptype |= TXGBE_PTYPE_PKT_IPIP;
 		} else if (tun_prot == IPPROTO_UDP) {
@@ -5737,8 +5736,13 @@ static struct txgbe_dptype encode_tx_desc_ptype(const struct txgbe_tx_buffer *fi
 			}
 			break;
 		case 6:
-			l4_prot = get_ipv6_proto(skb,
-						 skb_inner_network_offset(skb));
+			l4_hdr = skb_inner_transport_header(skb);
+			exthdr = skb_inner_network_header(skb) + sizeof(struct ipv6hdr);
+			l4_prot = inner_ipv6_hdr(skb)->nexthdr;
+			if (l4_hdr != exthdr)
+				ipv6_skip_exthdr(skb, exthdr - skb->data,
+						 &l4_prot, &frag_off);
+
 			ptype |= TXGBE_PTYPE_PKT_IPV6;
 			if (l4_prot == NEXTHDR_FRAGMENT) {
 				ptype |= TXGBE_PTYPE_TYP_IPFRAG;
@@ -5750,7 +5754,6 @@ static struct txgbe_dptype encode_tx_desc_ptype(const struct txgbe_tx_buffer *fi
 		}
 	} else {
 encap_frag:
-
 		switch (first->protocol) {
 		case htons(ETH_P_IP):
 			l4_prot = ip_hdr(skb)->protocol;
@@ -5760,16 +5763,22 @@ encap_frag:
 				goto exit;
 			}
 			break;
-#ifdef NETIF_F_IPV6_CSUM
+
 		case htons(ETH_P_IPV6):
-			l4_prot = get_ipv6_proto(skb, skb_network_offset(skb));
+			l4_hdr = skb_transport_header(skb);
+			exthdr = skb_network_header(skb) + sizeof(struct ipv6hdr);
+			l4_prot = ipv6_hdr(skb)->nexthdr;
+			if (l4_hdr != exthdr)
+				ipv6_skip_exthdr(skb, exthdr - skb->data,
+						 &l4_prot, &frag_off);
+
 			ptype = TXGBE_PTYPE_PKT_IP | TXGBE_PTYPE_PKT_IPV6;
 			if (l4_prot == NEXTHDR_FRAGMENT) {
 				ptype |= TXGBE_PTYPE_TYP_IPFRAG;
 				goto exit;
 			}
 			break;
-#endif /* NETIF_F_IPV6_CSUM */
+
 		case htons(ETH_P_1588):
 			ptype = TXGBE_PTYPE_L2_TS;
 			goto exit;
@@ -5825,6 +5834,9 @@ static int txgbe_tso(struct txgbe_ring *tx_ring,
 	u32 tunhdr_eiplen_tunlen = 0;
 
 	u8 tun_prot = 0;
+	unsigned char *exthdr;
+	unsigned char *l4_hdr;
+	__be16 frag_off;
 	bool enc = skb->encapsulation;
 
 	struct ipv6hdr *ipv6h;
@@ -5891,7 +5903,12 @@ static int txgbe_tso(struct txgbe_ring *tx_ring,
 			first->tx_flags |= TXGBE_TX_FLAGS_OUTER_IPV4;
 			break;
 		case htons(ETH_P_IPV6):
+			l4_hdr = skb_transport_header(skb);
+			exthdr = skb_network_header(skb) + sizeof(struct ipv6hdr);
 			tun_prot = ipv6_hdr(skb)->nexthdr;
+			if (l4_hdr != exthdr)
+				ipv6_skip_exthdr(skb, exthdr - skb->data,
+						 &tun_prot, &frag_off);
 			break;
 		default:
 			break;
@@ -5916,6 +5933,7 @@ static int txgbe_tso(struct txgbe_ring *tx_ring,
 					 TXGBE_TXD_TUNNEL_LEN_SHIFT);
 			break;
 		case IPPROTO_IPIP:
+		case IPPROTO_IPV6:
 			tunhdr_eiplen_tunlen = (((char *)inner_ip_hdr(skb) -
 						 (char *)ip_hdr(skb)) >> 2) <<
 						TXGBE_TXD_OUTER_IPLEN_SHIFT;
@@ -5933,6 +5951,12 @@ static int txgbe_tso(struct txgbe_ring *tx_ring,
 	vlan_macip_lens |= first->tx_flags & TXGBE_TX_FLAGS_VLAN_MASK;
 
 	type_tucmd = dptype.ptype << 24;
+
+	if (skb->vlan_proto == htons(ETH_P_8021AD))
+		type_tucmd |= TXGBE_SET_FLAG(first->tx_flags,
+					TXGBE_TX_FLAGS_HW_VLAN,
+					0x1 << TXGBE_TXD_TAG_TPID_SEL_SHIFT);
+
 	txgbe_tx_ctxtdesc(tx_ring, vlan_macip_lens, tunhdr_eiplen_tunlen,
 			  type_tucmd, mss_l4len_idx);
 
@@ -5961,6 +5985,9 @@ csum_failed:
 				  TXGBE_TXD_MACLEN_SHIFT;
 	} else {
 		u8 l4_prot = 0;
+		unsigned char *exthdr;
+		unsigned char *l4_hdr;
+		__be16 frag_off;
 
 		union {
 			struct iphdr *ipv4;
@@ -5982,7 +6009,13 @@ csum_failed:
 				tun_prot = ip_hdr(skb)->protocol;
 				break;
 			case htons(ETH_P_IPV6):
+				l4_hdr = skb_transport_header(skb);
+				exthdr = skb_network_header(skb) + sizeof(struct ipv6hdr);
 				tun_prot = ipv6_hdr(skb)->nexthdr;
+				if (l4_hdr != exthdr)
+					ipv6_skip_exthdr(skb, exthdr - skb->data,
+							 &tun_prot, &frag_off);
+
 				break;
 			default:
 				if (unlikely(net_ratelimit())) {
@@ -6012,6 +6045,7 @@ csum_failed:
 					TXGBE_TXD_TUNNEL_LEN_SHIFT);
 				break;
 			case IPPROTO_IPIP:
+			case IPPROTO_IPV6:
 				tunhdr_eiplen_tunlen =
 					(((char *)inner_ip_hdr(skb) -
 					(char *)ip_hdr(skb)) >> 2) <<
@@ -6037,7 +6071,11 @@ csum_failed:
 		case 6:
 			vlan_macip_lens |=
 				(transport_hdr.raw - network_hdr.raw) >> 1;
+			exthdr = network_hdr.raw + sizeof(struct ipv6hdr);
 			l4_prot = network_hdr.ipv6->nexthdr;
+			if (transport_hdr.raw != exthdr)
+				ipv6_skip_exthdr(skb, exthdr - skb->data,
+						 &l4_prot, &frag_off);
 			break;
 		default:
 			break;
@@ -6070,6 +6108,12 @@ csum_failed:
 	vlan_macip_lens |= first->tx_flags & TXGBE_TX_FLAGS_VLAN_MASK;
 
 	type_tucmd = dptype.ptype << 24;
+
+	if (skb->vlan_proto == htons(ETH_P_8021AD))
+		type_tucmd |= TXGBE_SET_FLAG(first->tx_flags,
+					TXGBE_TX_FLAGS_HW_VLAN,
+					0x1 << TXGBE_TXD_TAG_TPID_SEL_SHIFT);
+
 	txgbe_tx_ctxtdesc(tx_ring, vlan_macip_lens, tunhdr_eiplen_tunlen,
 			  type_tucmd, mss_l4len_idx);
 }

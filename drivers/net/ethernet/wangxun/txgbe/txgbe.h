@@ -801,8 +801,8 @@ static inline struct netdev_queue *txring_txq(const struct txgbe_ring *ring)
 
 int txgbe_wol_supported(struct txgbe_adapter *adapter);
 int txgbe_write_uc_addr_list(struct net_device *netdev, int pool);
-int txgbe_add_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool);
-int txgbe_del_mac_filter(struct txgbe_adapter *adapter, u8 *addr, u16 pool);
+int txgbe_add_mac_filter(struct txgbe_adapter *adapter, const u8 *addr, u16 pool);
+int txgbe_del_mac_filter(struct txgbe_adapter *adapter, const u8 *addr, u16 pool);
 int txgbe_available_rars(struct txgbe_adapter *adapter);
 void txgbe_vlan_mode(struct net_device *netdev, u32 features);
 u32 txgbe_rss_indir_tbl_entries(struct txgbe_adapter *adapter);
