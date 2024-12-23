@@ -161,6 +161,18 @@ struct vkernel_linux_cap {
 	kernel_cap_t ambient;
 };
 
+struct vkernel_cpu_desc {
+	int policy;
+	long rr_timeslice_us;
+	long wakeup_gran_us;
+};
+
+struct vkernel_cpu_pref {
+	unsigned int policy;
+	unsigned long rr_timeslice_us;
+	unsigned long wakeup_gran_us;
+};
+
 struct vkernel_sysctl_fs_desc {
 	u64 file_max;
 	u32 nr_open;
@@ -463,6 +475,9 @@ struct vkernel {
 	unsigned long caps;
 	unsigned int log_ns;
 
+	/* resource */
+	struct vkernel_cpu_pref cpu_pref;
+
 	/* sysctl */
 	struct vkernel_sysctl_fs sysctl_fs;
 	struct vkernel_sysctl_kernel sysctl_kernel;
@@ -511,6 +526,8 @@ int vkernel_set_acl_set(struct vkernel_acl *acl, struct vkernel_file_desc_set *s
 int vkernel_clear_acl_set(struct vkernel_acl *acl, struct vkernel_file_desc_set *set);
 
 int vkernel_set_linux_cap(struct vkernel *vk, struct vkernel_linux_cap *cap);
+
+int vkernel_set_cpu_pref(struct vkernel *vk, struct vkernel_cpu_desc *desc);
 
 int vkernel_set_sysctl_fs(struct vkernel_sysctl_fs *fs, struct vkernel_sysctl_fs_desc *desc);
 int vkernel_set_sysctl_kernel(struct vkernel_sysctl_kernel *k,
