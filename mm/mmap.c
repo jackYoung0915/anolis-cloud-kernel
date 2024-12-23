@@ -1379,8 +1379,17 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	 * memory use of this mapping.
 	 */
 	if (flags & MAP_NORESERVE) {
+		struct rich_container_ext *ext = NULL;
+
 		/* We honor MAP_NORESERVE if allowed to overcommit */
-		if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+		rcu_read_lock();
+		if (in_rich_container(current))
+			ext = rich_container_get_ext();
+		rcu_read_unlock();
+		if (ext) {
+			if (ext->overcommit_memory != OVERCOMMIT_NEVER)
+				vm_flags |= VM_NORESERVE;
+		} else if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
 			vm_flags |= VM_NORESERVE;
 
 		/* hugetlb applies strict overcommit unless MAP_NORESERVE */

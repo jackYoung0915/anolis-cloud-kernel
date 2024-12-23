@@ -23,6 +23,8 @@
 #include <linux/processor.h>
 #include <linux/sizes.h>
 #include <linux/compat.h>
+#include <linux/pid_namespace.h>
+#include <linux/memcontrol.h>
 
 #include <linux/uaccess.h>
 
@@ -839,10 +841,26 @@ int overcommit_ratio_handler(struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
 {
 	int ret;
+	struct ctl_table t;
+	struct rich_container_ext *ext = NULL;
+
+	rcu_read_lock();
+	if (in_rich_container(current))
+		ext = rich_container_get_ext();
+	rcu_read_unlock();
+	if (ext) {
+		t = *table;
+		t.data = &ext->overcommit_ratio;
+		table = &t;
+	}
 
 	ret = proc_dointvec(table, write, buffer, lenp, ppos);
-	if (ret == 0 && write)
-		sysctl_overcommit_kbytes = 0;
+	if (ret == 0 && write) {
+		if (ext)
+			ext->overcommit_kbytes = 0;
+		else
+			sysctl_overcommit_kbytes = 0;
+	}
 	return ret;
 }
 
@@ -851,12 +869,66 @@ static void sync_overcommit_as(struct work_struct *dummy)
 	percpu_counter_sync(&vm_committed_as);
 }
 
+#ifdef CONFIG_SMP
+/* Sync overcommit as manually, since schedule_on_each_cpu
+ * cannot pass rich_container_ext directly
+ */
+static void rich_container_sync_overcommit_as(struct rich_container_ext *ext)
+{
+	struct percpu_counter *fbc = &ext->vm_committed_as;
+	unsigned long flags;
+	int cpu;
+	s32 *pcount;
+	s32 count;
+
+	raw_spin_lock_irqsave(&fbc->lock, flags);
+	for_each_cpu_or(cpu, cpu_online_mask, cpu_dying_mask) {
+		pcount = per_cpu_ptr(fbc->counters, cpu);
+		count = *pcount;
+		fbc->count += count;
+		*pcount -= count;
+	}
+	raw_spin_unlock_irqrestore(&fbc->lock, flags);
+}
+
+void rich_container_mm_compute_batch(struct rich_container_ext *ext,
+	int overcommit_policy)
+{
+	u64 memsized_batch;
+	s32 nr = num_present_cpus();
+	s32 batch = max_t(s32, nr*2, 32);
+	unsigned long ram_pages = totalram_pages();
+
+	if (overcommit_policy == OVERCOMMIT_NEVER)
+		memsized_batch = min_t(u64, ram_pages/nr/256, INT_MAX);
+	else
+		memsized_batch = min_t(u64, ram_pages/nr/4, INT_MAX);
+
+	ext->as_batch = max_t(s32, memsized_batch, batch);
+}
+#else
+static void rich_container_sync_overcommit_as(struct rich_container_ext *ext)
+{
+}
+
+void rich_container_mm_compute_batch(struct rich_container_ext *ext,
+	int overcommit_policy)
+{
+}
+#endif
+
 int overcommit_policy_handler(struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table t;
 	int new_policy = -1;
 	int ret;
+	struct rich_container_ext *ext = NULL;
+
+	rcu_read_lock();
+	if (in_rich_container(current))
+		ext = rich_container_get_ext();
+	rcu_read_unlock();
 
 	/*
 	 * The deviation of sync_overcommit_as could be big with loose policy
@@ -876,11 +948,23 @@ int overcommit_policy_handler(struct ctl_table *table, int write, void *buffer,
 		if (ret || new_policy == -1)
 			return ret;
 
+		if (ext) {
+			rich_container_mm_compute_batch(ext, new_policy);
+			if (new_policy == OVERCOMMIT_NEVER)
+				rich_container_sync_overcommit_as(ext);
+			ext->overcommit_memory = new_policy;
+			return ret;
+		}
 		mm_compute_batch(new_policy);
 		if (new_policy == OVERCOMMIT_NEVER)
 			schedule_on_each_cpu(sync_overcommit_as);
 		sysctl_overcommit_memory = new_policy;
 	} else {
+		if (ext) {
+			t = *table;
+			t.data = &ext->overcommit_memory;
+			table = &t;
+		}
 		ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 	}
 
@@ -891,10 +975,26 @@ int overcommit_kbytes_handler(struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
 {
 	int ret;
+	struct ctl_table t;
+	struct rich_container_ext *ext = NULL;
+
+	rcu_read_lock();
+	if (in_rich_container(current))
+		ext = rich_container_get_ext();
+	rcu_read_unlock();
+	if (ext) {
+		t = *table;
+		t.data = &ext->overcommit_kbytes;
+		table = &t;
+	}
 
 	ret = proc_doulongvec_minmax(table, write, buffer, lenp, ppos);
-	if (ret == 0 && write)
-		sysctl_overcommit_ratio = 0;
+	if (ret == 0 && write) {
+		if (ext)
+			ext->overcommit_ratio = 0;
+		else
+			sysctl_overcommit_ratio = 0;
+	}
 	return ret;
 }
 
@@ -914,6 +1014,28 @@ unsigned long vm_commit_limit(void)
 
 	return allowed;
 }
+
+#ifdef CONFIG_MEMCG
+unsigned long rich_container_vm_commit_limit(struct rich_container_ext *ext,
+	struct mem_cgroup *memcg)
+{
+	unsigned long allowed;
+	struct mem_cgroup *iter;
+	unsigned long limit;
+
+	if (ext->overcommit_kbytes)
+		allowed = ext->overcommit_kbytes >> (PAGE_SHIFT - 10);
+	else {
+		limit = totalram_pages() - hugetlb_total_pages();
+		for (iter = memcg; iter; iter = parent_mem_cgroup(iter))
+			limit = min(limit, iter->memory.max);
+		allowed = (limit * ext->overcommit_ratio / 100);
+	}
+	allowed += min_t(unsigned long, total_swap_pages, memcg->swap.max);
+
+	return allowed;
+}
+#endif
 
 /*
  * Make sure vm_committed_as in one cacheline and not cacheline shared with
@@ -936,6 +1058,14 @@ struct percpu_counter vm_committed_as ____cacheline_aligned_in_smp;
  */
 unsigned long vm_memory_committed(void)
 {
+	struct rich_container_ext *ext = NULL;
+
+	rcu_read_lock();
+	if (in_rich_container(current))
+		ext = rich_container_get_ext();
+	rcu_read_unlock();
+	if (ext)
+		return percpu_counter_sum_positive(&ext->vm_committed_as);
 	return percpu_counter_sum_positive(&vm_committed_as);
 }
 EXPORT_SYMBOL_GPL(vm_memory_committed);
@@ -959,16 +1089,33 @@ EXPORT_SYMBOL_GPL(vm_memory_committed);
 int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 {
 	long allowed;
+	int overcommit = sysctl_overcommit_memory;
+#ifdef CONFIG_MEMCG
+	struct rich_container_ext *ext = NULL;
+	struct mem_cgroup *memcg = NULL;
+	long memcg_allowed;
+
+	rcu_read_lock();
+	if (in_rich_container(current)) {
+		ext = rich_container_get_ext();
+		memcg = rich_container_get_memcg();
+	}
+	rcu_read_unlock();
+	if (ext) {
+		overcommit = ext->overcommit_memory;
+		memcg_allowed = rich_container_vm_commit_limit(ext, memcg);
+	}
+#endif
 
 	vm_acct_memory(pages);
 
 	/*
 	 * Sometimes we want to use more memory than we have
 	 */
-	if (sysctl_overcommit_memory == OVERCOMMIT_ALWAYS)
+	if (overcommit == OVERCOMMIT_ALWAYS)
 		return 0;
 
-	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
+	if (overcommit == OVERCOMMIT_GUESS) {
 		if (pages > totalram_pages() + total_swap_pages)
 			goto error;
 		return 0;
@@ -990,6 +1137,10 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 		allowed -= min_t(long, mm->total_vm / 32, reserve);
 	}
 
+#ifdef CONFIG_MEMCG
+	if (ext && percpu_counter_read_positive(&ext->vm_committed_as) < memcg_allowed)
+		return 0;
+#endif
 	if (percpu_counter_read_positive(&vm_committed_as) < allowed)
 		return 0;
 error:

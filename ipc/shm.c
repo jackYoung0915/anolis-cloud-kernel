@@ -757,11 +757,21 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 		file = hugetlb_file_setup(name, hugesize, acctflag,
 				HUGETLB_SHMFS_INODE, (shmflg >> SHM_HUGE_SHIFT) & SHM_HUGE_MASK);
 	} else {
+		struct rich_container_ext *ext = NULL;
+
 		/*
 		 * Do not allow no accounting for OVERCOMMIT_NEVER, even
 		 * if it's asked for.
 		 */
-		if  ((shmflg & SHM_NORESERVE) &&
+		rcu_read_lock();
+		if (in_rich_container(current))
+			ext = rich_container_get_ext();
+		rcu_read_unlock();
+		if (ext) {
+			if ((shmflg & SHM_NORESERVE) &&
+					ext->overcommit_memory != OVERCOMMIT_NEVER)
+				acctflag = VM_NORESERVE;
+		} else if  ((shmflg & SHM_NORESERVE) &&
 				sysctl_overcommit_memory != OVERCOMMIT_NEVER)
 			acctflag = VM_NORESERVE;
 		file = shmem_kernel_file_setup(name, size, acctflag);

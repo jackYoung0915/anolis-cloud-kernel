@@ -23,17 +23,53 @@
 #include <linux/sched/task.h>
 #include <linux/sched/signal.h>
 #include <linux/idr.h>
+#include <linux/mman.h>
 #include "pid_sysctl.h"
 
 #ifdef CONFIG_RICH_CONTAINER
 int sysctl_rich_container_enable;
 int sysctl_rich_container_source; /* 0 - current; 1 - child_reaper */
+int sysctl_rich_container_ext_enable;
+
+static struct kmem_cache *ext_cachep;
 #endif
 
 static DEFINE_MUTEX(pid_caches_mutex);
 static struct kmem_cache *pid_ns_cachep;
 /* Write once array, filled from the beginning. */
 static struct kmem_cache *pid_cache[MAX_PID_NS_LEVEL];
+
+#ifdef CONFIG_RICH_CONTAINER
+struct rich_container_ext *create_rich_container_ext(void)
+{
+	struct rich_container_ext *ext;
+
+	ext = kmem_cache_zalloc(ext_cachep, GFP_KERNEL);
+	if (!ext)
+		return NULL;
+
+	ext->overcommit_memory = sysctl_overcommit_memory;
+	ext->overcommit_ratio = sysctl_overcommit_ratio;
+	ext->overcommit_kbytes = sysctl_overcommit_kbytes;
+	if (percpu_counter_init(&ext->vm_committed_as, 0, GFP_KERNEL))
+		goto out;
+	ext->as_batch = vm_committed_as_batch;
+
+	return ext;
+
+out:
+	kmem_cache_free(ext_cachep, ext);
+	return NULL;
+}
+
+void destroy_rich_container_ext(struct rich_container_ext *ext)
+{
+	if (!ext)
+		return;
+
+	kmem_cache_free(ext_cachep, ext);
+}
+#endif
 
 /*
  * creates the kmem cache to allocate pids from.
@@ -118,6 +154,7 @@ static struct pid_namespace *create_pid_namespace(struct user_namespace *user_ns
 #if defined(CONFIG_SYSCTL) && defined(CONFIG_MEMFD_CREATE)
 	ns->memfd_noexec_scope = pidns_memfd_noexec_scope(parent_pid_ns);
 #endif
+	ns->ext = create_rich_container_ext();
 	return ns;
 
 out_free_idr:
@@ -136,6 +173,7 @@ static void delayed_free_pidns(struct rcu_head *p)
 	dec_pid_namespaces(ns->ucounts);
 	put_user_ns(ns->user_ns);
 
+	destroy_rich_container_ext(ns->ext);
 	kmem_cache_free(pid_ns_cachep, ns);
 }
 
@@ -482,6 +520,9 @@ static __init int pid_namespaces_init(void)
 #endif
 
 	register_pid_ns_sysctl_table_vm();
+#ifdef CONFIG_RICH_CONTAINER
+	ext_cachep = KMEM_CACHE(rich_container_ext, SLAB_PANIC | SLAB_ACCOUNT);
+#endif
 	return 0;
 }
 

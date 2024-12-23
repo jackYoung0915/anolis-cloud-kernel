@@ -23,6 +23,15 @@ struct fs_pin;
 #define MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED	2 /* same as 1, except MFD_EXEC rejected */
 #endif
 
+struct rich_container_ext {
+	/* overcommit */
+	int overcommit_memory;
+	int overcommit_ratio;
+	unsigned long overcommit_kbytes;
+	struct percpu_counter vm_committed_as;
+	s32 as_batch;
+};
+
 struct pid_namespace {
 	struct idr idr;
 	struct rcu_head rcu;
@@ -41,6 +50,7 @@ struct pid_namespace {
 #if defined(CONFIG_SYSCTL) && defined(CONFIG_MEMFD_CREATE)
 	int memfd_noexec_scope;
 #endif
+	struct rich_container_ext *ext;
 } __randomize_layout;
 
 extern struct pid_namespace init_pid_ns;
@@ -128,6 +138,7 @@ extern int sysctl_rich_container_enable;
 extern int sysctl_rich_container_source;
 extern int sysctl_rich_container_cpuinfo_source;
 extern unsigned int sysctl_rich_container_cpuinfo_sharesbase;
+extern int sysctl_rich_container_ext_enable;
 
 static inline struct task_struct *rich_container_get_scenario(void)
 {
@@ -146,6 +157,17 @@ static inline bool in_rich_container(struct task_struct *tsk)
 }
 
 void rich_container_get_cpuset_cpus(struct cpumask *pmask);
+
+static inline struct rich_container_ext *rich_container_get_ext(void)
+{
+	if (sysctl_rich_container_ext_enable == 0)
+		return NULL;
+
+	return task_active_pid_ns(current)->ext;
+}
+
+struct rich_container_ext *create_rich_container_ext(void);
+void destroy_rich_container_ext(struct rich_container_ext *ext);
 #else
 static inline bool in_rich_container(struct task_struct *tsk)
 {
@@ -157,6 +179,20 @@ static inline void rich_container_get_cpuset_cpus(struct cpumask *pmask)
 }
 
 static inline struct task_struct *rich_container_get_scenario(void)
+{
+	return NULL;
+}
+
+static inline struct rich_container_ext *create_rich_container_ext(void)
+{
+	return NULL;
+}
+
+static inline void destroy_rich_container_ext(struct rich_container_ext *ext)
+{
+}
+
+static inline struct rich_container_ext *rich_container_get_ext(void)
 {
 	return NULL;
 }

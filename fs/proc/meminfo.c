@@ -41,11 +41,14 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 	struct mem_cgroup *memcg = NULL;
 	struct sysinfo_ext ext;
+	struct rich_container_ext *rich = NULL;
+	unsigned long commit_limit;
 
 #ifdef CONFIG_MEMCG
 	rcu_read_lock();
 	if (in_rich_container(current)) {
 		memcg = rich_container_get_memcg();
+		rich = rich_container_get_ext();
 	}
 	rcu_read_unlock();
 #endif
@@ -83,7 +86,17 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		memcg_meminfo(memcg, &i, &ext);
 	}
 
-	committed = percpu_counter_read_positive(&vm_committed_as);
+	if (rich && memcg) {
+#ifdef CONFIG_MEMCG
+		commit_limit = rich_container_vm_commit_limit(rich, memcg);
+#else
+		commit_limit = vm_commit_limit();
+#endif
+		committed = percpu_counter_read_positive(&rich->vm_committed_as);
+	} else {
+		commit_limit = vm_commit_limit();
+		committed = percpu_counter_read_positive(&vm_committed_as);
+	}
 	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
 	sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
 
@@ -151,7 +164,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "Bounce:         ",
 		    global_zone_page_state(NR_BOUNCE));
 	show_val_kb(m, "WritebackTmp:   ", ext.writeback_temp);
-	show_val_kb(m, "CommitLimit:    ", vm_commit_limit());
+	show_val_kb(m, "CommitLimit:    ", commit_limit);
 	show_val_kb(m, "Committed_AS:   ", committed);
 	seq_printf(m, "VmallocTotal:   %8lu kB\n",
 		   (unsigned long)VMALLOC_TOTAL >> 10);

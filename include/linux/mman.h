@@ -5,6 +5,7 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/percpu_counter.h>
+#include <linux/pid_namespace.h>
 
 #include <linux/atomic.h>
 #include <uapi/linux/mman.h>
@@ -77,6 +78,16 @@ unsigned long vm_memory_committed(void);
 
 static inline void vm_acct_memory(long pages)
 {
+	struct rich_container_ext *ext = NULL;
+
+	/* Account pages in current rich container */
+	rcu_read_lock();
+	if (in_rich_container(current))
+		ext = rich_container_get_ext();
+	rcu_read_unlock();
+	if (ext)
+		percpu_counter_add_batch(&ext->vm_committed_as, pages, ext->as_batch);
+
 	percpu_counter_add_batch(&vm_committed_as, pages, vm_committed_as_batch);
 }
 
@@ -162,6 +173,11 @@ calc_vm_flag_bits(struct file *file, unsigned long flags)
 }
 
 unsigned long vm_commit_limit(void);
+
+#ifdef CONFIG_MEMCG
+unsigned long rich_container_vm_commit_limit(struct rich_container_ext *ext,
+	struct mem_cgroup *memcg);
+#endif
 
 #ifndef arch_memory_deny_write_exec_supported
 static inline bool arch_memory_deny_write_exec_supported(void)
