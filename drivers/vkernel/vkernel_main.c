@@ -475,6 +475,348 @@ static const struct file_operations vk_stat_fops = {
 	.llseek = seq_lseek,
 };
 
+static int sysctl_show(struct seq_file *m, void *v)
+{
+	struct vkernel *vk = m->private;
+	struct ipc_namespace *ipc_ns = NULL;
+	struct net *n;
+
+	if (vk->init_process->nsproxy)
+		ipc_ns = vk->init_process->nsproxy->ipc_ns;
+
+	n = vk->sysctl_net.net;
+
+	seq_puts(m, "=== fs ===\n");
+	seq_printf(m, "fs.file-max=%lu\n", vk->sysctl_fs.files_stat.max_files);
+	seq_printf(m, "fs.nr_open=%u\n", vk->sysctl_fs.nr_open);
+	seq_printf(m, "fs.lease-break-time=%d\n", vk->sysctl_fs.lease_break_time);
+	seq_printf(m, "fs.leases-enable=%d\n", vk->sysctl_fs.leases_enable);
+	seq_printf(m, "fs.mount-max=%u\n", vk->sysctl_fs.mount_max);
+
+	seq_puts(m, "=== kernel ===\n");
+	if (ipc_ns) {
+		seq_printf(m, "kernel.msgmax=%u\n", ipc_ns->msg_ctlmax);
+		seq_printf(m, "kernel.msgmnb=%u\n", ipc_ns->msg_ctlmnb);
+		seq_printf(m, "kernel.msgmni=%u\n", ipc_ns->msg_ctlmni);
+#ifdef CONFIG_CHECKPOINT_RESTORE
+		seq_printf(m, "kernel.msg_next_id=%d\n", ipc_ns->ids[IPC_MSG_IDS].next_id);
+#endif
+		seq_printf(m, "kernel.sem=%d %d %d\n",
+				ipc_ns->sem_ctls[0], ipc_ns->sem_ctls[1], ipc_ns->sem_ctls[2]);
+#ifdef CONFIG_CHECKPOINT_RESTORE
+		seq_printf(m, "kernel.sem_next_id=%d\n", ipc_ns->ids[IPC_SEM_IDS].next_id);
+#endif
+		seq_printf(m, "kernel.shmall=%lu\n", ipc_ns->shm_ctlall);
+		seq_printf(m, "kernel.shmmax=%lu\n", ipc_ns->shm_ctlmax);
+		seq_printf(m, "kernel.shmmni=%d\n", ipc_ns->shm_ctlmni);
+#ifdef CONFIG_CHECKPOINT_RESTORE
+		seq_printf(m, "kernel.shm_next_id=%d\n", ipc_ns->ids[IPC_SHM_IDS].next_id);
+#endif
+		seq_printf(m, "kernel.shm_rmid_forced=%d\n", ipc_ns->shm_rmid_forced);
+	}
+	seq_printf(m, "kernel.numa_balancing=%d\n", vk->sysctl_kernel.nb_mode);
+	seq_printf(m, "kernel.numa_balancing_promote_rate_limit_MBps=%d\n",
+			vk->sysctl_kernel.nb_promote_rate_limit);
+	seq_printf(m, "kernel.sched_cfs_bandwidth_slice_us=%u\n",
+			vk->sysctl_kernel.sched_cfs_bandwidth_slice);
+	seq_printf(m, "kernel.sched_child_runs_first=%u\n",
+			vk->sysctl_kernel.sched_child_runs_first);
+	seq_printf(m, "kernel.sched_deadline_period_max_us=%u\n",
+			vk->sysctl_kernel.sched_dl_period_max);
+	seq_printf(m, "kernel.sched_deadline_period_min_us=%u\n",
+			vk->sysctl_kernel.sched_dl_period_min);
+	seq_printf(m, "kernel.sched_rr_timeslice_ms=%d\n",
+			vk->sysctl_kernel.sched_rr_timeslice);
+	seq_printf(m, "kernel.sched_rt_period_us=%d\n",
+			vk->sysctl_kernel.sched_rt_period);
+	seq_printf(m, "kernel.sched_rt_runtime_us=%d\n",
+			vk->sysctl_kernel.sched_rt_runtime);
+	seq_printf(m, "kernel.threads-max=%d\n", vk->sysctl_kernel.max_threads);
+	seq_printf(m, "kernel.keys.gc_delay=%u\n", vk->sysctl_kernel.key_gc_delay);
+	seq_printf(m, "kernel.keys.maxbytes=%u\n", vk->sysctl_kernel.key_quota_maxbytes);
+	seq_printf(m, "kernel.keys.maxkeys=%u\n", vk->sysctl_kernel.key_quota_maxkeys);
+	seq_printf(m, "kernel.keys.persistent_keyring_expiry=%u\n",
+			vk->sysctl_kernel.persistent_keyring_expiry);
+	seq_printf(m, "kernel.keys.root_maxbytes=%u\n",
+			vk->sysctl_kernel.key_quota_root_maxbytes);
+	seq_printf(m, "kernel.keys.root_maxkeys=%u\n",
+			vk->sysctl_kernel.key_quota_root_maxkeys);
+	seq_printf(m, "kernel.pty.max=%d\n", vk->sysctl_kernel.pty_limit);
+	seq_printf(m, "kernel.pty.reserve=%d\n", vk->sysctl_kernel.pty_reserve);
+
+	seq_puts(m, "=== net ===\n");
+	seq_printf(m, "net.nf_conntrack_max=%u\n", vk->sysctl_net.nf_conntrack_max);
+	seq_printf(m, "net.core.busy_poll=%u\n", vk->sysctl_net.net_busy_poll);
+	seq_printf(m, "net.core.busy_read=%u\n", vk->sysctl_net.net_busy_read);
+	seq_printf(m, "net.core.optmem_max=%d\n", vk->sysctl_net.optmem_max);
+	seq_printf(m, "net.core.wmem_max=%u\n", vk->sysctl_net.wmem_max);
+	seq_printf(m, "net.core.rmem_max=%u\n", vk->sysctl_net.rmem_max);
+	seq_printf(m, "net.core.wmem_default=%u\n", vk->sysctl_net.wmem_default);
+	seq_printf(m, "net.core.rmem_default=%u\n", vk->sysctl_net.rmem_default);
+
+	seq_printf(m, "net.core.somaxconn=%d\n", n->core.sysctl_somaxconn);
+	seq_printf(m, "net.ipv4.icmp_echo_ignore_broadcasts=%u\n",
+			n->ipv4.sysctl_icmp_echo_ignore_broadcasts);
+	seq_printf(m, "net.ipv4.ip_local_port_range=%d %d\n",
+			n->ipv4.ip_local_ports.range[0], n->ipv4.ip_local_ports.range[1]);
+	seq_printf(m, "net.ipv4.tcp_max_tw_buckets=%d\n",
+			n->ipv4.tcp_death_row.sysctl_max_tw_buckets);
+	seq_printf(m, "net.ipv4.tcp_ecn=%u\n", n->ipv4.sysctl_tcp_ecn);
+	seq_printf(m, "net.ipv4.ip_default_ttl=%u\n", n->ipv4.sysctl_ip_default_ttl);
+	seq_printf(m, "net.ipv4.ip_no_pmtu_disc=%u\n", n->ipv4.sysctl_ip_no_pmtu_disc);
+	seq_printf(m, "net.ipv4.tcp_keepalive_time=%d\n",
+			READ_ONCE(n->ipv4.sysctl_tcp_keepalive_time) / HZ);
+	seq_printf(m, "net.ipv4.tcp_keepalive_intvl=%d\n",
+			READ_ONCE(n->ipv4.sysctl_tcp_keepalive_intvl) / HZ);
+	seq_printf(m, "net.ipv4.tcp_keepalive_probes=%u\n",
+			n->ipv4.sysctl_tcp_keepalive_probes);
+	seq_printf(m, "net.ipv4.tcp_syn_retries=%u\n", n->ipv4.sysctl_tcp_syn_retries);
+	seq_printf(m, "net.ipv4.tcp_synack_retries=%u\n", n->ipv4.sysctl_tcp_synack_retries);
+	seq_printf(m, "net.ipv4.tcp_syncookies=%u\n", n->ipv4.sysctl_tcp_syncookies);
+	seq_printf(m, "net.ipv4.tcp_reordering=%d\n", n->ipv4.sysctl_tcp_reordering);
+	seq_printf(m, "net.ipv4.tcp_retries1=%u\n", n->ipv4.sysctl_tcp_retries1);
+	seq_printf(m, "net.ipv4.tcp_retries2=%u\n", n->ipv4.sysctl_tcp_retries2);
+	seq_printf(m, "net.ipv4.tcp_orphan_retries=%u\n", n->ipv4.sysctl_tcp_orphan_retries);
+	seq_printf(m, "net.ipv4.tcp_tw_reuse=%u\n", n->ipv4.sysctl_tcp_tw_reuse);
+	seq_printf(m, "net.ipv4.tcp_fin_timeout=%d\n",
+			READ_ONCE(n->ipv4.sysctl_tcp_fin_timeout) / HZ);
+	seq_printf(m, "net.ipv4.tcp_sack=%u\n", n->ipv4.sysctl_tcp_sack);
+	seq_printf(m, "net.ipv4.tcp_window_scaling=%u\n", n->ipv4.sysctl_tcp_window_scaling);
+	seq_printf(m, "net.ipv4.tcp_timestamps=%u\n", n->ipv4.sysctl_tcp_timestamps);
+	seq_printf(m, "net.ipv4.tcp_thin_linear_timeouts=%u\n",
+			n->ipv4.sysctl_tcp_thin_linear_timeouts);
+	seq_printf(m, "net.ipv4.tcp_retrans_collapse=%u\n", n->ipv4.sysctl_tcp_retrans_collapse);
+	seq_printf(m, "net.ipv4.tcp_fack=%u\n", n->ipv4.sysctl_tcp_fack);
+	seq_printf(m, "net.ipv4.tcp_adv_win_scale=%d\n", n->ipv4.sysctl_tcp_adv_win_scale);
+	seq_printf(m, "net.ipv4.tcp_dsack=%u\n", n->ipv4.sysctl_tcp_dsack);
+	seq_printf(m, "net.ipv4.tcp_nometrics_save=%u\n", n->ipv4.sysctl_tcp_nometrics_save);
+	seq_printf(m, "net.ipv4.tcp_moderate_rcvbuf=%u\n", n->ipv4.sysctl_tcp_moderate_rcvbuf);
+	seq_printf(m, "net.ipv4.tcp_min_tso_segs=%u\n", n->ipv4.sysctl_tcp_min_tso_segs);
+	seq_printf(m, "net.ipv4.tcp_wmem=%d %d %d\n",
+			n->ipv4.sysctl_tcp_wmem[0], n->ipv4.sysctl_tcp_wmem[1],
+			n->ipv4.sysctl_tcp_wmem[2]);
+	seq_printf(m, "net.ipv4.tcp_rmem=%d %d %d\n",
+			n->ipv4.sysctl_tcp_rmem[0], n->ipv4.sysctl_tcp_rmem[1],
+			n->ipv4.sysctl_tcp_rmem[2]);
+	seq_printf(m, "net.ipv4.max_syn_backlog=%d\n", n->ipv4.sysctl_max_syn_backlog);
+	seq_printf(m, "net.ipv4.tcp_fastopen=%u\n", n->ipv4.sysctl_tcp_fastopen);
+	seq_printf(m, "net.ipv4.tcp_congestion_control=%s\n",
+			n->ipv4.tcp_congestion_control->name);
+
+	seq_printf(m, "net.ipv4.conf.all.forwarding=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_FORWARDING - 1]);
+	seq_printf(m, "net.ipv4.conf.all.mc_forwarding=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_MC_FORWARDING - 1]);
+	seq_printf(m, "net.ipv4.conf.all.proxy_arp=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_PROXY_ARP - 1]);
+	seq_printf(m, "net.ipv4.conf.all.accept_redirects=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ACCEPT_REDIRECTS - 1]);
+	seq_printf(m, "net.ipv4.conf.all.secure_redirects=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_SECURE_REDIRECTS - 1]);
+	seq_printf(m, "net.ipv4.conf.all.send_redirects=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_SEND_REDIRECTS - 1]);
+	seq_printf(m, "net.ipv4.conf.all.shared_media=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_SHARED_MEDIA - 1]);
+	seq_printf(m, "net.ipv4.conf.all.rp_filter=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_RP_FILTER - 1]);
+	seq_printf(m, "net.ipv4.conf.all.accept_source_route=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ACCEPT_SOURCE_ROUTE - 1]);
+	seq_printf(m, "net.ipv4.conf.all.bootp_relay=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_BOOTP_RELAY - 1]);
+	seq_printf(m, "net.ipv4.conf.all.log_martians=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_LOG_MARTIANS - 1]);
+	seq_printf(m, "net.ipv4.conf.all.tag=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_TAG - 1]);
+	seq_printf(m, "net.ipv4.conf.all.arp_filter=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ARPFILTER - 1]);
+	seq_printf(m, "net.ipv4.conf.all.medium_id=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_MEDIUM_ID - 1]);
+	seq_printf(m, "net.ipv4.conf.all.disable_xfrm=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_NOXFRM - 1]);
+	seq_printf(m, "net.ipv4.conf.all.disable_policy=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_NOPOLICY - 1]);
+	seq_printf(m, "net.ipv4.conf.all.force_igmp_version=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_FORCE_IGMP_VERSION - 1]);
+	seq_printf(m, "net.ipv4.conf.all.arp_announce=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ARP_ANNOUNCE - 1]);
+	seq_printf(m, "net.ipv4.conf.all.arp_ignore=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ARP_IGNORE - 1]);
+	seq_printf(m, "net.ipv4.conf.all.promote_secondaries=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_PROMOTE_SECONDARIES - 1]);
+	seq_printf(m, "net.ipv4.conf.all.arp_accept=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ARP_ACCEPT - 1]);
+	seq_printf(m, "net.ipv4.conf.all.arp_notify=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ARP_NOTIFY - 1]);
+	seq_printf(m, "net.ipv4.conf.all.accept_local=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ACCEPT_LOCAL - 1]);
+	seq_printf(m, "net.ipv4.conf.all.src_valid_mark=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_SRC_VMARK - 1]);
+	seq_printf(m, "net.ipv4.conf.all.proxy_arp_pvlan=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_PROXY_ARP_PVLAN - 1]);
+	seq_printf(m, "net.ipv4.conf.all.route_localnet=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ROUTE_LOCALNET - 1]);
+	seq_printf(m, "net.ipv4.conf.all.igmpv2_unsolicited_report_interval=%d\n",
+			n->ipv4.devconf_all->data[
+				IPV4_DEVCONF_IGMPV2_UNSOLICITED_REPORT_INTERVAL - 1]);
+	seq_printf(m, "net.ipv4.conf.all.igmpv3_unsolicited_report_interval=%d\n",
+			n->ipv4.devconf_all->data[
+				IPV4_DEVCONF_IGMPV3_UNSOLICITED_REPORT_INTERVAL - 1]);
+	seq_printf(m, "net.ipv4.conf.all.ignore_routes_with_linkdown=%d\n",
+			n->ipv4.devconf_all->data[
+				IPV4_DEVCONF_IGNORE_ROUTES_WITH_LINKDOWN - 1]);
+	seq_printf(m, "net.ipv4.conf.all.drop_unicast_in_l2_multicast=%d\n",
+			n->ipv4.devconf_all->data[
+				IPV4_DEVCONF_DROP_UNICAST_IN_L2_MULTICAST - 1]);
+	seq_printf(m, "net.ipv4.conf.all.drop_gratuitous_arp=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_DROP_GRATUITOUS_ARP - 1]);
+	seq_printf(m, "net.ipv4.conf.all.bc_forwarding=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_BC_FORWARDING - 1]);
+	seq_printf(m, "net.ipv4.conf.all.arp_evict_nocarrier=%d\n",
+			n->ipv4.devconf_all->data[IPV4_DEVCONF_ARP_EVICT_NOCARRIER - 1]);
+
+	seq_printf(m, "net.ipv4.conf.default.forwarding=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_FORWARDING - 1]);
+	seq_printf(m, "net.ipv4.conf.default.mc_forwarding=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_MC_FORWARDING - 1]);
+	seq_printf(m, "net.ipv4.conf.default.proxy_arp=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_PROXY_ARP - 1]);
+	seq_printf(m, "net.ipv4.conf.default.accept_redirects=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ACCEPT_REDIRECTS - 1]);
+	seq_printf(m, "net.ipv4.conf.default.secure_redirects=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_SECURE_REDIRECTS - 1]);
+	seq_printf(m, "net.ipv4.conf.default.send_redirects=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_SEND_REDIRECTS - 1]);
+	seq_printf(m, "net.ipv4.conf.default.shared_media=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_SHARED_MEDIA - 1]);
+	seq_printf(m, "net.ipv4.conf.default.rp_filter=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_RP_FILTER - 1]);
+	seq_printf(m, "net.ipv4.conf.default.accept_source_route=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ACCEPT_SOURCE_ROUTE - 1]);
+	seq_printf(m, "net.ipv4.conf.default.bootp_relay=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_BOOTP_RELAY - 1]);
+	seq_printf(m, "net.ipv4.conf.default.log_martians=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_LOG_MARTIANS - 1]);
+	seq_printf(m, "net.ipv4.conf.default.tag=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_TAG - 1]);
+	seq_printf(m, "net.ipv4.conf.default.arp_filter=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ARPFILTER - 1]);
+	seq_printf(m, "net.ipv4.conf.default.medium_id=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_MEDIUM_ID - 1]);
+	seq_printf(m, "net.ipv4.conf.default.disable_xfrm=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_NOXFRM - 1]);
+	seq_printf(m, "net.ipv4.conf.default.disable_policy=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_NOPOLICY - 1]);
+	seq_printf(m, "net.ipv4.conf.default.force_igmp_version=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_FORCE_IGMP_VERSION - 1]);
+	seq_printf(m, "net.ipv4.conf.default.arp_announce=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ARP_ANNOUNCE - 1]);
+	seq_printf(m, "net.ipv4.conf.default.arp_ignore=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ARP_IGNORE - 1]);
+	seq_printf(m, "net.ipv4.conf.default.promote_secondaries=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_PROMOTE_SECONDARIES - 1]);
+	seq_printf(m, "net.ipv4.conf.default.arp_accept=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ARP_ACCEPT - 1]);
+	seq_printf(m, "net.ipv4.conf.default.arp_notify=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ARP_NOTIFY - 1]);
+	seq_printf(m, "net.ipv4.conf.default.accept_local=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ACCEPT_LOCAL - 1]);
+	seq_printf(m, "net.ipv4.conf.default.src_valid_mark=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_SRC_VMARK - 1]);
+	seq_printf(m, "net.ipv4.conf.default.proxy_arp_pvlan=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_PROXY_ARP_PVLAN - 1]);
+	seq_printf(m, "net.ipv4.conf.default.route_localnet=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ROUTE_LOCALNET - 1]);
+	seq_printf(m, "net.ipv4.conf.default.igmpv2_unsolicited_report_interval=%d\n",
+			n->ipv4.devconf_dflt->data[
+				IPV4_DEVCONF_IGMPV2_UNSOLICITED_REPORT_INTERVAL - 1]);
+	seq_printf(m, "net.ipv4.conf.default.igmpv3_unsolicited_report_interval=%d\n",
+			n->ipv4.devconf_dflt->data[
+				IPV4_DEVCONF_IGMPV3_UNSOLICITED_REPORT_INTERVAL - 1]);
+	seq_printf(m, "net.ipv4.conf.default.ignore_routes_with_linkdown=%d\n",
+			n->ipv4.devconf_dflt->data[
+				IPV4_DEVCONF_IGNORE_ROUTES_WITH_LINKDOWN - 1]);
+	seq_printf(m, "net.ipv4.conf.default.drop_unicast_in_l2_multicast=%d\n",
+			n->ipv4.devconf_dflt->data[
+				IPV4_DEVCONF_DROP_UNICAST_IN_L2_MULTICAST - 1]);
+	seq_printf(m, "net.ipv4.conf.default.drop_gratuitous_arp=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_DROP_GRATUITOUS_ARP - 1]);
+	seq_printf(m, "net.ipv4.conf.default.bc_forwarding=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_BC_FORWARDING - 1]);
+	seq_printf(m, "net.ipv4.conf.default.arp_evict_nocarrier=%d\n",
+			n->ipv4.devconf_dflt->data[IPV4_DEVCONF_ARP_EVICT_NOCARRIER - 1]);
+
+	seq_puts(m, "=== vm ===\n");
+	seq_printf(m, "vm.max_map_count=%d\n", vk->sysctl_vm.max_map_count);
+	seq_printf(m, "vm.mmap_min_addr=0x%lx\n", vk->sysctl_vm.mmap_min_addr);
+	seq_printf(m, "vm.dac_mmap_min_addr=0x%lx\n", vk->sysctl_vm.dac_mmap_min_addr);
+	seq_printf(m, "vm.overcommit_kbytes=%lu\n", vk->sysctl_vm.overcommit_kbytes);
+	seq_printf(m, "vm.overcommit_memory=%d\n", vk->sysctl_vm.overcommit_memory);
+	seq_printf(m, "vm.overcommit_ratio=%d\n", vk->sysctl_vm.overcommit_ratio);
+
+	return 0;
+}
+
+static int sysctl_open(struct inode *inode, struct file *file)
+{
+	struct vkernel *vk = inode->i_private;
+	int r;
+
+	if (!vkernel_get_vk_safe(vk))
+		return -ENOENT;
+
+	r = single_open(file, sysctl_show, inode->i_private);
+	if (r < 0)
+		vkernel_put_vk(vk);
+
+	return r;
+}
+
+static int sysctl_release(struct inode *inode, struct file *file)
+{
+	struct vkernel *vk = inode->i_private;
+
+	vkernel_put_vk(vk);
+
+	return single_release(inode, file);
+}
+
+static ssize_t
+sysctl_write(struct file *filp, const char __user *ubuf,
+		size_t cnt, loff_t *ppos)
+{
+	struct inode *inode;
+	struct vkernel *vk;
+	char buf[256];
+	size_t ret;
+
+	inode = file_inode(filp);
+	vk = inode->i_private;
+
+	if (cnt > 255)
+		cnt = 255;
+
+	if (copy_from_user(&buf, ubuf, cnt))
+		return -EFAULT;
+
+	buf[cnt] = 0;
+
+	pr_debug("sysctl write, vk %s, buf %s\n", vk->name, buf);
+
+	ret = vkernel_set_sysctl_raw(vk, buf);
+	if (ret)
+		return ret;
+
+	return cnt;
+}
+
+static const struct file_operations vk_sysctl_fops = {
+	.open = sysctl_open,
+	.release = sysctl_release,
+	.read = seq_read,
+	.write = sysctl_write,
+	.llseek = seq_lseek,
+};
+
 static void vkernel_destroy_vk_debugfs(struct vkernel *vk)
 {
 	if (IS_ERR(vk->debugfs_dentry))
@@ -508,6 +850,7 @@ static int vkernel_create_vk_debugfs(struct vkernel *vk, const char *name)
 	vk->debugfs_dentry = dent;
 
 	debugfs_create_file("stat", 0444, dent, vk, &vk_stat_fops);
+	debugfs_create_file("sysctl", 0644, dent, vk, &vk_sysctl_fops);
 
 	return 0;
 }

@@ -37,4 +37,17 @@ void vk_uninit_sysctl_vm(struct vkernel_sysctl_vm *vm);
 
 void vk_sync_overcommit_as(struct vkernel *vk);
 
+int vkernel_set_sysctl_raw(struct vkernel *vk, char *buf);
+
+/* Defined at ipc/util.h, MODIFIED */
+static inline int sem_check_semmni(struct ipc_namespace *ns)
+{
+	/*
+	 * Check semmni range [0, ipc_mni]
+	 * semmni is the last element of sem_ctls[4] array
+	 */
+	return ((ns->sem_ctls[3] < 0) || (ns->sem_ctls[3] > (1<<15)))
+		? -ERANGE : 0;
+}
+
 #endif
