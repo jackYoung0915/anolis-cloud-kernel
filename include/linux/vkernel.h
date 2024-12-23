@@ -95,6 +95,19 @@
 #define current_vk_task	get_current_syscall_task()
 #define current_vk		get_current_syscall_vk()
 
+#define vk_hugepage_flags_enabled(flags)					       \
+	(flags &				       \
+	 ((1<<TRANSPARENT_HUGEPAGE_FLAG) |		       \
+	  (1<<TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG)))
+
+#define vk_hugepage_flags_always(flags)				\
+	(flags &			\
+	 (1<<TRANSPARENT_HUGEPAGE_FLAG))
+
+#define vk_transparent_hugepage_use_zero_page(flags)				\
+	(flags &					\
+	 (1<<TRANSPARENT_HUGEPAGE_USE_ZERO_PAGE_FLAG))
+
 struct vkernel_desc {
 	char custom[VKERNEL_NAME_LEN];
 	int pid;
@@ -171,6 +184,22 @@ struct vkernel_cpu_pref {
 	unsigned int policy;
 	unsigned long rr_timeslice_us;
 	unsigned long wakeup_gran_us;
+};
+
+struct vkernel_mem_desc {
+	int numa_mode;
+	int shmem_enabled;
+	int thp_enabled;
+	int thp_defrag;
+	int thp_use_zero_page;
+};
+
+struct vkernel_mem_pref {
+	struct mempolicy default_policy;
+	/* TODO: shmem_huge is not supported yet cause of /dev/shm */
+	int shmem_huge;
+	unsigned long thp_flags;
+
 };
 
 struct vkernel_sysctl_fs_desc {
@@ -477,6 +506,7 @@ struct vkernel {
 
 	/* resource */
 	struct vkernel_cpu_pref cpu_pref;
+	struct vkernel_mem_pref mem_pref;
 
 	/* sysctl */
 	struct vkernel_sysctl_fs sysctl_fs;
@@ -499,6 +529,11 @@ struct vkernel {
 unsigned long vk_vm_commit_limit(struct vkernel_sysctl_vm *vm,
 	struct mem_cgroup *memcg);
 #endif
+
+static inline bool vk_thp_disabled_by_hw(unsigned long flags)
+{
+	return flags & (1 << TRANSPARENT_HUGEPAGE_UNSUPPORTED);
+}
 
 struct vkernel *vkernel_find_vk_by_id(unsigned int id);
 struct vkernel *vkernel_find_vk_by_task(struct task_struct *tsk);
@@ -528,6 +563,7 @@ int vkernel_clear_acl_set(struct vkernel_acl *acl, struct vkernel_file_desc_set 
 int vkernel_set_linux_cap(struct vkernel *vk, struct vkernel_linux_cap *cap);
 
 int vkernel_set_cpu_pref(struct vkernel *vk, struct vkernel_cpu_desc *desc);
+int vkernel_set_memory_pref(struct vkernel_mem_pref *mem, struct vkernel_mem_desc *desc);
 
 int vkernel_set_sysctl_fs(struct vkernel_sysctl_fs *fs, struct vkernel_sysctl_fs_desc *desc);
 int vkernel_set_sysctl_kernel(struct vkernel_sysctl_kernel *k,

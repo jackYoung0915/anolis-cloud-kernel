@@ -80,6 +80,9 @@
 #include <linux/sched/sysctl.h>
 #include <linux/page_dup.h>
 
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include <trace/events/kmem.h>
 
 #include <asm/io.h>
@@ -5271,6 +5274,14 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
 	pmd_t entry;
 	vm_fault_t ret = VM_FAULT_FALLBACK;
+#ifdef CONFIG_VKERNEL
+	unsigned long flags = transparent_hugepage_flags;
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		flags = vk->mem_pref.thp_flags;
+#endif
 
 	/*
 	 * It is too late to allocate a small folio, we already have a large
@@ -5278,7 +5289,11 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 	 * PMD mappings, but PTE-mapped THP are fine. So let's simply refuse any
 	 * PMD mappings if THPs are disabled.
 	 */
+#ifdef CONFIG_VKERNEL
+	if (vk_thp_disabled_by_hw(flags) || vma_thp_disabled(vma, vma->vm_flags))
+#else
 	if (thp_disabled_by_hw() || vma_thp_disabled(vma, vma->vm_flags))
+#endif
 		return ret;
 
 	if (!thp_vma_suitable_order(vma, haddr, PMD_ORDER))
