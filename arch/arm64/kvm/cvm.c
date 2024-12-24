@@ -17,27 +17,22 @@
 static DEFINE_SPINLOCK(cvm_vmid_lock);
 static unsigned long *cvm_vmid_bitmap;
 DEFINE_STATIC_KEY_FALSE(kvm_cvm_is_available);
-DEFINE_STATIC_KEY_FALSE(kvm_cvm_is_enable);
+static bool kvm_cvm_is_enable;
 #define SIMD_PAGE_SIZE 0x3000
 
-static int __init setup_cvm_host(char *str)
+bool hisi_kvm_cvm_is_enabled(void)
 {
-	int ret;
-	unsigned int val;
-
-	if (!str)
-		return 0;
-
-	ret = kstrtouint(str, 10, &val);
-	if (ret) {
-		pr_warn("Unable to parse cvm_guest.\n");
-	} else {
-		if (val)
-			static_branch_enable(&kvm_cvm_is_enable);
-	}
-	return ret;
+	return kvm_cvm_is_enable;
+}
+#ifdef MODULE
+module_param_named(cvm_host, kvm_cvm_is_enable, bool, 0444);
+#else
+static int __init setup_cvm_host(char *buf)
+{
+	return strtobool(buf, &kvm_cvm_is_enable);
 }
 early_param("cvm_host", setup_cvm_host);
+#endif
 
 static int cvm_vmid_init(void)
 {

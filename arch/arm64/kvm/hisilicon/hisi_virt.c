@@ -161,7 +161,7 @@ static void hardware_disable_dvmbm(void *data)
 bool hisi_dvmbm_supported(void)
 {
 #ifdef CONFIG_CVM_HOST
-	if (static_branch_unlikely(&kvm_cvm_is_enable))
+	if (hisi_kvm_cvm_is_enabled())
 		return false;
 #endif
 	if (cpu_type != HI_IP09)

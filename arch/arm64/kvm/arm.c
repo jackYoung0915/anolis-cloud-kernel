@@ -2048,7 +2048,7 @@ int kvm_arch_init(void *opaque)
 		return -ENODEV;
 	}
 #ifdef CONFIG_CVM_HOST
-	if (static_branch_unlikely(&kvm_cvm_is_enable) && in_hyp_mode) {
+	if (hisi_kvm_cvm_is_enabled() && in_hyp_mode) {
 		err = kvm_init_tmm();
 		if (err)
 			return err;
