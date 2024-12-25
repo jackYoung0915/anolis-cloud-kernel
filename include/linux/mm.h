@@ -1790,6 +1790,43 @@ extern int mlock_fixup(struct vm_area_struct *vma,
 #define ZAP_ZEROPAGE			0x01
 
 /*
+ * virtio use the following special value to remapping memmap.
+ */
+#define VIRTIO_MEMMAP_RESTORE	(-1UL)
+#define VIRTIO_MEMMAP_COPY		(-2UL)
+#ifdef CONFIG_VIRTIO_MEM
+static inline bool virtio_is_use_memmap(unsigned long addr)
+{
+	return addr == VIRTIO_MEMMAP_RESTORE || addr == VIRTIO_MEMMAP_COPY;
+}
+
+static inline bool virtio_memmap_restore(unsigned long addr)
+{
+	return addr == VIRTIO_MEMMAP_RESTORE;
+}
+
+static inline bool virtio_memmap_copy(unsigned long addr)
+{
+	return addr == VIRTIO_MEMMAP_COPY;
+}
+#else
+static inline bool virtio_is_use_memmap(unsigned long addr)
+{
+	return false;
+}
+
+static inline bool virtio_memmap_restore(unsigned long addr)
+{
+	return false;
+}
+
+static inline bool virtio_memmap_copy(unsigned long addr)
+{
+	return false;
+}
+#endif
+
+/*
  * Parameter block passed down to zap_pte_range in exceptional cases.
  */
 struct zap_details {
@@ -3207,12 +3244,19 @@ static inline void print_vma_addr(char *prefix, unsigned long rip)
 int vmemmap_remap_free(unsigned long start, unsigned long end,
 		       unsigned long reuse);
 int vmemmap_remap_alloc(unsigned long start, unsigned long end,
-			unsigned long reuse, gfp_t gfp_mask);
+			unsigned long reuse, gfp_t gfp_mask, struct list_head *pages);
+#else
+static inline int vmemmap_remap_alloc(unsigned long start, unsigned long end, unsigned long reuse,
+				      gfp_t gfp_mask, struct list_head *pages)
+{
+	return -EINVAL;
+}
 #endif
 
 void *sparse_buffer_alloc(unsigned long size);
 struct page * __populate_section_memmap(unsigned long pfn,
 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap);
+unsigned long sparse_encode_mem_map(struct page *mem_map, unsigned long pnum);
 void pmd_init(void *addr);
 void pud_init(void *addr);
 pgd_t *vmemmap_pgd_populate(unsigned long addr, int node);
