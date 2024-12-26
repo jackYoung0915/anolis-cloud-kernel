@@ -4609,6 +4609,9 @@ static inline void pgalloc_tag_swap(struct folio *new, struct folio *old)
 	union codetag_ref *ref_old, *ref_new;
 	struct alloc_tag *tag_old, *tag_new;
 
+	if (!mem_alloc_profiling_enabled())
+		return;
+
 	tag_old = pgalloc_tag_get(&old->page);
 	if (!tag_old)
 		return;
