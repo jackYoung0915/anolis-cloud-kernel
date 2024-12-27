@@ -4685,7 +4685,22 @@ static vm_fault_t hugetlb_no_page(struct mm_struct *mm,
 		goto out;
 
 retry:
-	page = find_lock_page(mapping, idx);
+	page = find_get_page(mapping, idx);
+	if (page) {
+		if (!trylock_page(page)) {
+			put_page(page);
+			ret = VM_FAULT_RETRY;
+			goto out;
+		} else {
+			/* Has the page been truncated? */
+			if (unlikely(page->mapping != mapping)) {
+				unlock_page(page);
+				put_page(page);
+				goto retry;
+			}
+		}
+	}
+
 	if (!page) {
 		/*
 		 * Check for page in userfault range
@@ -5011,6 +5026,13 @@ out_mutex:
 	 */
 	if (need_wait_lock)
 		wait_on_page_locked(page);
+
+	if (ret == VM_FAULT_RETRY) {
+		page = find_get_page(mapping, idx);
+		if (page)
+			put_and_wait_on_page_locked(page);
+	}
+
 	return ret;
 }
 
