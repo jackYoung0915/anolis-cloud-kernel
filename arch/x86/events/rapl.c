@@ -161,7 +161,7 @@ static inline const struct cpumask *rapl_die_cpumask(unsigned int cpu)
 
 static inline struct rapl_pmu *cpu_to_rapl_pmu(unsigned int cpu)
 {
-	unsigned int dieid = topology_logical_die_id(cpu);
+	unsigned int dieid = rapl_die_id(cpu);
 
 	/*
 	 * The unsigned check also catches the '-1' return value for non
