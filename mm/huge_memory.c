@@ -75,7 +75,10 @@ unsigned long huge_zero_pfn __read_mostly = ~0UL;
 unsigned long huge_anon_orders_always __read_mostly;
 unsigned long huge_anon_orders_madvise __read_mostly;
 unsigned long huge_anon_orders_inherit __read_mostly;
+unsigned long huge_file_orders_always __read_mostly;
+int huge_file_exec_order __read_mostly = -1;
 static bool anon_orders_configured __initdata;
+static bool file_orders_configured;
 
 unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 					 unsigned long vm_flags, bool smaps,
@@ -442,6 +445,7 @@ static const struct attribute_group hugepage_attr_group = {
 static void hugepage_exit_sysfs(struct kobject *hugepage_kobj);
 static void thpsize_release(struct kobject *kobj);
 static DEFINE_SPINLOCK(huge_anon_orders_lock);
+static DEFINE_SPINLOCK(huge_file_orders_lock);
 static LIST_HEAD(thpsize_list);
 
 static ssize_t anon_enabled_show(struct kobject *kobj,
@@ -506,6 +510,52 @@ static ssize_t anon_enabled_store(struct kobject *kobj,
 	return ret;
 }
 
+static ssize_t file_enabled_show(struct kobject *kobj,
+				 struct kobj_attribute *attr, char *buf)
+{
+	int order = to_thpsize(kobj)->order;
+	const char *output;
+	bool exec;
+
+	if (test_bit(order, &huge_file_orders_always)) {
+		exec = READ_ONCE(huge_file_exec_order) == order;
+		output = exec ? "always [always+exec] never" :
+				"[always] always+exec never";
+	} else {
+		output = "always always+exec [never]";
+	}
+
+	return sysfs_emit(buf, "%s\n", output);
+}
+
+static ssize_t file_enabled_store(struct kobject *kobj,
+				  struct kobj_attribute *attr,
+				  const char *buf, size_t count)
+{
+	int order = to_thpsize(kobj)->order;
+	ssize_t ret = count;
+
+	spin_lock(&huge_file_orders_lock);
+
+	if (sysfs_streq(buf, "always")) {
+		set_bit(order, &huge_file_orders_always);
+		if (huge_file_exec_order == order)
+			huge_file_exec_order = -1;
+	} else if (sysfs_streq(buf, "always+exec")) {
+		set_bit(order, &huge_file_orders_always);
+		huge_file_exec_order = order;
+	} else if (sysfs_streq(buf, "never")) {
+		clear_bit(order, &huge_file_orders_always);
+		if (huge_file_exec_order == order)
+			huge_file_exec_order = -1;
+	} else {
+		ret = -EINVAL;
+	}
+
+	spin_unlock(&huge_file_orders_lock);
+	return ret;
+}
+
 static struct kobj_attribute anon_enabled_attr =
 	__ATTR(enabled, 0644, anon_enabled_show, anon_enabled_store);
 
@@ -518,7 +568,11 @@ static const struct attribute_group anon_ctrl_attr_grp = {
 	.attrs = anon_ctrl_attrs,
 };
 
+static struct kobj_attribute file_enabled_attr =
+	__ATTR(file_enabled, 0644, file_enabled_show, file_enabled_store);
+
 static struct attribute *file_ctrl_attrs[] = {
+	&file_enabled_attr.attr,
 #ifdef CONFIG_SHMEM
 	&thpsize_shmem_enabled_attr.attr,
 #endif
@@ -583,6 +637,7 @@ DEFINE_MTHP_STAT_ATTR(split_failed, MTHP_STAT_SPLIT_FAILED);
 DEFINE_MTHP_STAT_ATTR(split_deferred, MTHP_STAT_SPLIT_DEFERRED);
 DEFINE_MTHP_STAT_ATTR(nr_anon, MTHP_STAT_NR_ANON);
 DEFINE_MTHP_STAT_ATTR(nr_anon_partially_mapped, MTHP_STAT_NR_ANON_PARTIALLY_MAPPED);
+DEFINE_MTHP_STAT_ATTR(file_alloc, MTHP_STAT_FILE_ALLOC);
 
 static struct attribute *anon_stats_attrs[] = {
 	&anon_fault_alloc_attr.attr,
@@ -604,6 +659,7 @@ static struct attribute_group anon_stats_attr_grp = {
 };
 
 static struct attribute *file_stats_attrs[] = {
+	&file_alloc_attr.attr,
 #ifdef CONFIG_SHMEM
 	&shmem_alloc_attr.attr,
 	&shmem_fallback_attr.attr,
@@ -724,6 +780,16 @@ static int __init hugepage_init_sysfs(struct kobject **hugepage_kobj)
 	 */
 	if (!anon_orders_configured)
 		huge_anon_orders_inherit = BIT(PMD_ORDER);
+
+	/*
+	 * For pagecache, default to enabling all orders. powerpc's PMD_ORDER
+	 * (and therefore THP_ORDERS_ALL_FILE_DEFAULT) isn't a compile-time
+	 * constant so we have to do this here.
+	 */
+	if (!file_orders_configured) {
+		huge_file_orders_always = THP_ORDERS_ALL_FILE_DEFAULT;
+		file_orders_configured = true;
+	}
 
 	*hugepage_kobj = kobject_create_and_add("transparent_hugepage", mm_kobj);
 	if (unlikely(!*hugepage_kobj)) {
@@ -971,6 +1037,87 @@ err:
 	return 0;
 }
 __setup("thp_anon=", setup_thp_anon);
+
+static int __init setup_thp_file(char *str)
+{
+	char *token, *range, *policy, *subtoken;
+	unsigned long always;
+	char *start_size, *end_size;
+	int start, end, nr, exec;
+	char *p;
+
+	if (!str || strlen(str) + 1 > PAGE_SIZE)
+		goto err;
+	strcpy(str_dup, str);
+
+	always = huge_file_orders_always;
+	exec = huge_file_exec_order;
+	p = str_dup;
+	while ((token = strsep(&p, ";")) != NULL) {
+		range = strsep(&token, ":");
+		policy = token;
+
+		if (!policy)
+			goto err;
+
+		while ((subtoken = strsep(&range, ",")) != NULL) {
+			if (strchr(subtoken, '-')) {
+				start_size = strsep(&subtoken, "-");
+				end_size = subtoken;
+
+				start = get_order_from_str(start_size,
+							   THP_ORDERS_ALL_FILE_DEFAULT);
+				end = get_order_from_str(end_size,
+							 THP_ORDERS_ALL_FILE_DEFAULT);
+			} else {
+				start_size = end_size = subtoken;
+				start = end = get_order_from_str(subtoken,
+								 THP_ORDERS_ALL_FILE_DEFAULT);
+			}
+
+			if (start == -EINVAL) {
+				pr_err("invalid size %s in thp_shmem boot parameter\n",
+				       start_size);
+				goto err;
+			}
+
+			if (end == -EINVAL) {
+				pr_err("invalid size %s in thp_shmem boot parameter\n",
+				       end_size);
+				goto err;
+			}
+
+			if (start < 0 || end < 0 || start > end)
+				goto err;
+
+			nr = end - start + 1;
+			if (!strcmp(policy, "always")) {
+				bitmap_set(&always, start, nr);
+			} else if (!strcmp(policy, "always+exec")) {
+				if (nr != 1)
+					goto err;
+				bitmap_set(&always, start, nr);
+				exec = start;
+			} else if (!strcmp(policy, "never")) {
+				bitmap_clear(&always, start, nr);
+				if (exec != -1 && !test_bit(exec, &always))
+					exec = -1;
+			} else {
+				pr_err("invalid policy %s in thp_file boot parameter\n", policy);
+				goto err;
+			}
+		}
+	}
+
+	huge_file_orders_always = always;
+	huge_file_exec_order = exec;
+	file_orders_configured = true;
+	return 1;
+err:
+	pr_warn("thp_file=%s: cannot parse, ignored\n", str);
+	return 0;
+}
+__setup("thp_file=", setup_thp_file);
 
 pmd_t maybe_pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma)
 {

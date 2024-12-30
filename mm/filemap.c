@@ -1003,9 +1003,15 @@ struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
 			folio = __folio_alloc_node(gfp, order, n);
 		} while (!folio && read_mems_allowed_retry(cpuset_mems_cookie));
 
+		if (folio)
+			count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
 		return folio;
 	}
-	return folio_alloc(gfp, order);
+
+	folio = folio_alloc(gfp, order);
+	if (folio)
+		count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
+	return folio;
 }
 EXPORT_SYMBOL(filemap_alloc_folio);
 #endif
@@ -1960,6 +1966,7 @@ repeat:
 no_page:
 	if (!folio && (fgp_flags & FGP_CREAT)) {
 		unsigned order = FGF_GET_ORDER(fgp_flags);
+		unsigned long orders;
 		int err;
 
 		if ((fgp_flags & FGP_WRITE) && mapping_can_writeback(mapping))
@@ -1975,13 +1982,15 @@ no_page:
 
 		if (!mapping_large_folio_support(mapping))
 			order = 0;
-		if (order > MAX_PAGECACHE_ORDER)
-			order = MAX_PAGECACHE_ORDER;
+
+		orders = file_orders_always() | BIT(0);
+		orders &= BIT(order + 1) - 1;
 		/* If we're not aligned, allocate a smaller folio */
 		if (index & ((1UL << order) - 1))
-			order = __ffs(index);
+			orders &= BIT(__ffs(index) + 1) - 1;
+		order = highest_order(orders);
 
-		do {
+		while (orders) {
 			gfp_t alloc_gfp = gfp;
 
 			err = -ENOMEM;
@@ -2000,7 +2009,9 @@ no_page:
 				break;
 			folio_put(folio);
 			folio = NULL;
-		} while (order-- > 0);
+
+			order = next_order(&orders, order);
+		};
 
 		if (err == -EEXIST)
 			goto repeat;
@@ -3209,6 +3220,7 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	struct file *fpin = NULL;
 	unsigned long vm_flags = vmf->vma->vm_flags;
 	unsigned int mmap_miss;
+	int exec_order = file_exec_order();
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	/* Use the readahead code, even if readahead is disabled */
@@ -3227,6 +3239,16 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 		return fpin;
 	}
 #endif
+
+	/* If explicit order is set for exec mappings, use it. */
+	if ((vm_flags & VM_EXEC) && exec_order >= 0) {
+		fpin = maybe_unlock_mmap_for_io(vmf, fpin);
+		ra->size = 1UL << exec_order;
+		ra->async_size = 0;
+		ractl._index &= ~((unsigned long)ra->size - 1);
+		page_cache_ra_order(&ractl, ra, exec_order);
+		return fpin;
+	}
 
 	/* If we don't want any read-ahead, don't bother */
 	if (vm_flags & VM_RAND_READ)

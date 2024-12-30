@@ -95,6 +95,24 @@ extern struct kobj_attribute thpsize_shmem_enabled_attr;
 #define thp_vma_allowable_order(vma, vm_flags, smaps, in_pf, enforce_sysfs, order) \
 	(!!thp_vma_allowable_orders(vma, vm_flags, smaps, in_pf, enforce_sysfs, BIT(order)))
 
+static inline int lowest_order(unsigned long orders)
+{
+	if (orders)
+		return __ffs(orders);
+	return -1;
+}
+
+static inline int highest_order(unsigned long orders)
+{
+	return fls_long(orders) - 1;
+}
+
+static inline int next_order(unsigned long *orders, int prev)
+{
+	*orders &= ~BIT(prev);
+	return highest_order(*orders);
+}
+
 enum mthp_stat_item {
 	MTHP_STAT_ANON_FAULT_ALLOC,
 	MTHP_STAT_ANON_FAULT_FALLBACK,
@@ -109,6 +127,7 @@ enum mthp_stat_item {
 	MTHP_STAT_SPLIT_DEFERRED,
 	MTHP_STAT_NR_ANON,
 	MTHP_STAT_NR_ANON_PARTIALLY_MAPPED,
+	MTHP_STAT_FILE_ALLOC,
 	__MTHP_STAT_COUNT
 };
 
@@ -155,6 +174,18 @@ extern unsigned long transparent_hugepage_flags;
 extern unsigned long huge_anon_orders_always;
 extern unsigned long huge_anon_orders_madvise;
 extern unsigned long huge_anon_orders_inherit;
+extern unsigned long huge_file_orders_always;
+extern int huge_file_exec_order;
+
+static inline unsigned long file_orders_always(void)
+{
+	return READ_ONCE(huge_file_orders_always);
+}
+
+static inline int file_exec_order(void)
+{
+	return READ_ONCE(huge_file_exec_order);
+}
 
 static inline bool hugepage_global_enabled(void)
 {
@@ -167,17 +198,6 @@ static inline bool hugepage_global_always(void)
 {
 	return transparent_hugepage_flags &
 			(1<<TRANSPARENT_HUGEPAGE_FLAG);
-}
-
-static inline int highest_order(unsigned long orders)
-{
-	return fls_long(orders) - 1;
-}
-
-static inline int next_order(unsigned long *orders, int prev)
-{
-	*orders &= ~BIT(prev);
-	return highest_order(*orders);
 }
 
 /*
@@ -588,14 +608,14 @@ static inline bool thp_migration_supported(void)
 	return false;
 }
 
-static inline int highest_order(unsigned long orders)
+static inline unsigned long file_orders_always(void)
 {
 	return 0;
 }
 
-static inline int next_order(unsigned long *orders, int prev)
+static inline int file_exec_order(void)
 {
-	return 0;
+	return -1;
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 

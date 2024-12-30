@@ -283,6 +283,33 @@ processes. Exceeding the number would block the collapse::
 
 A higher value may increase memory footprint for some workloads.
 
+File-Backed Hugepages
+---------------------
+
+The kernel will automatically select an appropriate THP size for file-backed
+memory from a set of allowed sizes. By default all THP sizes that the page cache
+supports are allowed, but this set can be modified with one of::
+
+        echo always >/sys/kernel/mm/transparent_hugepage/hugepages-<size>kB/file_enabled
+        echo always+exec >/sys/kernel/mm/transparent_hugepage/hugepages-<size>kB/file_enabled
+        echo never >/sys/kernel/mm/transparent_hugepage/hugepages-<size>kB/file_enabled
+
+where <size> is the hugepage size being addressed, the available sizes for which
+vary by system. ``always`` adds the hugepage size to the set of allowed sizes,
+and ``never`` removes the hugepage size from the set of allowed sizes.
+
+``always+exec`` acts like ``always`` but additionally marks the hugepage size as
+the preferred hugepage size for sections of any file mapped executable. A
+maximum of one hugepage size can be marked as ``exec`` at a time, so applying it
+to a new size implicitly removes it from any size it was previously set for.
+
+In some situations, constraining the allowed sizes can reduce memory
+fragmentation, resulting in fewer allocation fallbacks and improved system
+performance.
+
+Note that any changes to the allowed set of sizes only applies to future
+file-backed THP allocations.
+
 Boot parameters
 ===============
 
@@ -337,6 +364,19 @@ sizes not explicitly configured on the command line are implicitly set to
 user, the PMD_ORDER hugepage policy will be overridden. If the policy for
 PMD_ORDER is not defined within a valid ``thp_shmem``, its policy will
 default to ``never``.
+
+Each supported file-backed THP size can be controlled by passing
+``thp_file=<size>[KMG]:<state>``, where ``<size>`` is the THP size and
+``<state>`` is one of ``always``, ``always+exec`` or ``never``.
+
+For example, the following will set 64K THP to ``always+exec``::
+
+        thp_file=64K:always+exec
+
+``thp_file=`` may be specified multiple times to configure all THP sizes as
+required. If ``thp_file=`` is specified at least once, any file-backed THP
+sizes not explicitly configured on the command line are implicitly set to
+``never``.
 
 Hugepages in tmpfs/shmem
 ========================
@@ -584,6 +624,10 @@ nr_anon_partially_mapped
        Note that in corner some cases (e.g., failed migration), we might detect
        an anonymous THP as "partially mapped" and count it here, even though it
        is not actually partially mapped anymore.
+
+file_alloc
+       is incremented every time a file huge page is successfully
+       allocated.
 
 As the system ages, allocating huge pages may be expensive as the
 system uses memory compaction to copy data around memory to free a
