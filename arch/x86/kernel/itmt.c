@@ -157,6 +157,7 @@ void sched_clear_itmt_support(void)
 
 	mutex_unlock(&itmt_update_mutex);
 }
+EXPORT_SYMBOL(sched_set_itmt_support);
 
 int arch_asym_cpu_priority(int cpu)
 {
@@ -181,3 +182,4 @@ void sched_set_itmt_core_prio(int prio, int cpu)
 {
 	per_cpu(sched_core_priority, cpu) = prio;
 }
+EXPORT_SYMBOL(sched_set_itmt_core_prio);
