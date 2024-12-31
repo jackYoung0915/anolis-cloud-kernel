@@ -807,7 +807,7 @@ static void display_histogram(int buckets[])
 
 }
 
-static int __cmd_latency(struct perf_ftrace *ftrace)
+static int __cmd_latency(struct perf_ftrace *ftrace, int argc, const char **argv)
 {
 	char *trace_file;
 	int trace_fd;
@@ -830,6 +830,11 @@ static int __cmd_latency(struct perf_ftrace *ftrace)
 		return -1;
 	}
 
+	signal(SIGINT, sig_handler);
+	signal(SIGUSR1, sig_handler);
+	signal(SIGCHLD, sig_handler);
+	signal(SIGPIPE, sig_handler);
+
 	if (reset_tracing_files(ftrace) < 0) {
 		pr_err("failed to reset ftrace\n");
 		goto out;
@@ -838,6 +843,11 @@ static int __cmd_latency(struct perf_ftrace *ftrace)
 	/* reset ftrace buffer */
 	if (write_tracing_file("trace", "0") < 0)
 		goto out;
+
+	if (argc && evlist__prepare_workload(ftrace->evlist, &ftrace->target, argv, false,
+					     ftrace__workload_exec_failed_signal) < 0) {
+		goto out;
+	}
 
 	if (set_tracing_options(ftrace) < 0)
 		goto out_reset;
@@ -1101,6 +1111,7 @@ enum perf_ftrace_subcommand {
 int cmd_ftrace(int argc, const char **argv)
 {
 	int ret;
+	int (*cmd_trace_ptr)(struct perf_ftrace *ftrace, int argc, const char **argv);
 	struct perf_ftrace ftrace = {
 		.tracer = DEFAULT_TRACER,
 		.target = { .uid = UINT_MAX, },
@@ -1200,6 +1211,30 @@ int cmd_ftrace(int argc, const char **argv)
 
 	select_tracer(&ftrace);
 
+	/* Make system wide (-a) the default target. */
+	if (!argc && target__none(&ftrace.target))
+		ftrace.target.system_wide = true;
+
+	switch (subcmd) {
+	case PERF_FTRACE_TRACE:
+		cmd_trace_ptr = __cmd_ftrace;
+		break;
+	case PERF_FTRACE_LATENCY:
+		if (list_empty(&ftrace.filters)) {
+			pr_err("Should provide a function to measure\n");
+			parse_options_usage(ftrace_usage, options, "T", 1);
+			ret = -EINVAL;
+			goto out_delete_evlist;
+		}
+		cmd_trace_ptr = __cmd_latency;
+		break;
+	case PERF_FTRACE_NONE:
+	default:
+		pr_err("Invalid subcommand\n");
+		ret = -EINVAL;
+		goto out_delete_filters;
+	}
+
 	ret = target__validate(&ftrace.target);
 	if (ret) {
 		char errbuf[512];
@@ -1219,29 +1254,7 @@ int cmd_ftrace(int argc, const char **argv)
 	if (ret < 0)
 		goto out_delete_evlist;
 
-	/* Make system wide (-a) the default target. */
-	if (!argc && target__none(&ftrace.target))
-		ftrace.target.system_wide = true;
-
-	switch (subcmd) {
-	case PERF_FTRACE_TRACE:
-		ret = __cmd_ftrace(&ftrace, argc, argv);
-		break;
-	case PERF_FTRACE_LATENCY:
-		if (list_empty(&ftrace.filters)) {
-			pr_err("Should provide a function to measure\n");
-			parse_options_usage(ftrace_usage, options, "T", 1);
-			ret = -EINVAL;
-			goto out_delete_evlist;
-		}
-		ret = __cmd_latency(&ftrace);
-		break;
-	case PERF_FTRACE_NONE:
-	default:
-		pr_err("Invalid subcommand\n");
-		ret = -EINVAL;
-		break;
-	}
+	ret = cmd_trace_ptr(&ftrace, argc, argv);
 
 out_delete_evlist:
 	evlist__delete(ftrace.evlist);
