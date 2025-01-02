@@ -7,6 +7,7 @@
 
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/numa_balancing.h>
 #include <linux/highmem.h>
@@ -36,6 +37,7 @@
 #include <linux/page_dup.h>
 #include <linux/damon.h>
 #include <linux/prezero.h>
+#include <linux/compat.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
@@ -849,7 +851,10 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 {
 	loff_t off_end = off + len;
 	loff_t off_align = round_up(off, size);
-	unsigned long len_pad, ret;
+	unsigned long len_pad, ret, off_sub;
+
+	if (!IS_ENABLED(CONFIG_64BIT) || in_compat_syscall())
+		return 0;
 
 	if (off_end <= off_align || (off_end - off_align) < size)
 		return 0;
@@ -875,7 +880,13 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 	if (ret == addr)
 		return addr;
 
-	ret += (off - ret) & (size - 1);
+	off_sub = (off - ret) & (size - 1);
+
+	if (current->mm->get_unmapped_area == arch_get_unmapped_area_topdown &&
+	    !off_sub)
+		return ret + size;
+
+	ret += off_sub;
 	return ret;
 }
 
@@ -885,13 +896,10 @@ unsigned long thp_get_unmapped_area(struct file *filp, unsigned long addr,
 	unsigned long ret;
 	loff_t off = (loff_t)pgoff << PAGE_SHIFT;
 
-	if (!IS_DAX(filp->f_mapping->host) || !IS_ENABLED(CONFIG_FS_DAX_PMD))
-		goto out;
-
 	ret = __thp_get_unmapped_area(filp, addr, len, off, flags, PMD_SIZE);
 	if (ret)
 		return ret;
-out:
+
 	return current->mm->get_unmapped_area(filp, addr, len, pgoff, flags);
 }
 EXPORT_SYMBOL_GPL(thp_get_unmapped_area);
