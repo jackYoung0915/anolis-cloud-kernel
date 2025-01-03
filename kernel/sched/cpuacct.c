@@ -990,7 +990,7 @@ static int async_load_calc_open(struct inode *inode, struct file *file)
 	return single_open(file, async_load_calc_show, NULL);
 }
 
-static void async_calc_cgroup_load(void)
+static void async_calc_cgroup_load(unsigned long update_version)
 {
 	int cnt;
 	struct task_group *tg;
@@ -999,18 +999,16 @@ again:
 	cnt = 1;
 	rcu_read_lock();
 	list_for_each_entry_rcu(tg, &sli_tg_list, sli_list) {
-		unsigned long next_update = tg->next_load_update;
-
 		/*
 		 * Need per ca check since after break the list
 		 * could have been changed, otherwise the loop
 		 * will be endless.
 		 */
-		if (time_before(jiffies, next_update + 10))
+		if (update_version == tg->load_update_version)
 			continue;
 
 		task_group_calc_load(tg);
-		tg->next_load_update = jiffies + LOAD_FREQ;
+		tg->load_update_version = update_version;
 
 		/* Take a break for every 100 ca */
 		if (cnt++ >= 100) {
@@ -1025,6 +1023,7 @@ again:
 int load_calc_func(void *unsed)
 {
 	unsigned long next_update = jiffies + LOAD_FREQ;
+	unsigned long update_version = 0;
 
 	while (!kthread_should_stop()) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
@@ -1034,8 +1033,9 @@ int load_calc_func(void *unsed)
 		if (time_before(jiffies, next_update + 10))
 			continue;
 
-		async_calc_cgroup_load();
+		async_calc_cgroup_load(update_version);
 		next_update += LOAD_FREQ;
+		update_version++;
 	}
 
 	return 0;

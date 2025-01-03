@@ -670,7 +670,7 @@ struct task_group {
 	struct cpu_alistats __percpu *alistats;
 	struct list_head	sli_list;
 	bool			sli_enabled;
-	u64			next_load_update;
+	u64			load_update_version;
 	unsigned long		avenrun[3];
 	unsigned long		avenrun_r[3];
 #endif
