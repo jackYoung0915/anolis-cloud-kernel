@@ -10,13 +10,18 @@
 
 #include <linux/types.h>
 
+#define CSV_EXT_CSV3_MULT_LUP_DATA_BIT	0
+#define CSV_EXT_CSV3_MULT_LUP_DATA	(1 << CSV_EXT_CSV3_MULT_LUP_DATA_BIT)
+#define CSV_EXT_CSV3_INJ_SECRET_BIT	1
+#define CSV_EXT_CSV3_INJ_SECRET		(1 << CSV_EXT_CSV3_INJ_SECRET_BIT)
+
 /**
  * Guest/platform management commands
  */
 enum csv3_cmd {
 	/* Guest launch commands */
-	CSV_CMD_SET_GUEST_PRIVATE_MEMORY	= 0x200,
-	CSV_CMD_LAUNCH_ENCRYPT_DATA		= 0x201,
+	CSV3_CMD_SET_GUEST_PRIVATE_MEMORY	= 0x200,
+	CSV3_CMD_LAUNCH_ENCRYPT_DATA		= 0x201,
 	CSV_CMD_LAUNCH_ENCRYPT_VMCB		= 0x202,
 	/* Guest NPT(Nested Page Table) management commands */
 	CSV_CMD_UPDATE_NPT			= 0x203,
@@ -39,14 +44,14 @@ enum csv3_cmd {
 };
 
 /**
- * struct csv_data_launch_encrypt_data - CSV_CMD_LAUNCH_ENCRYPT_DATA command
+ * struct csv3_data_launch_encrypt_data - CSV3_CMD_LAUNCH_ENCRYPT_DATA command
  *
  * @handle: handle of the VM to update
  * @gpa: guest address where data is copied
  * @length: len of memory to be encrypted
  * @data_blocks: memory regions to hold data page address
  */
-struct csv_data_launch_encrypt_data {
+struct csv3_data_launch_encrypt_data {
 	u32 handle;			/* In */
 	u32 reserved;			/* In */
 	u64 gpa;			/* In */
@@ -119,14 +124,14 @@ struct csv_data_memory_region {
 } __packed;
 
 /**
- * struct csv_data_set_guest_private_memory - CSV_CMD_SET_GUEST_PRIVATE_MEMORY
+ * struct csv3_data_set_guest_private_memory - CSV3_CMD_SET_GUEST_PRIVATE_MEMORY
  * command parameters
  *
  * @handle: handle assigned to the VM
  * @nregions: number of memory regions
  * @regions_paddr: address of memory containing multiple memory regions
  */
-struct csv_data_set_guest_private_memory {
+struct csv3_data_set_guest_private_memory {
 	u32 handle;			/* In */
 	u32 nregions;			/* In */
 	u64 regions_paddr;		/* In */
@@ -285,4 +290,25 @@ struct csv_data_receive_encrypt_context {
 	u32 vmcb_block_len;		/* In */
 } __packed;
 
-#endif
+#ifdef CONFIG_CRYPTO_DEV_SP_PSP
+
+/**
+ * csv_get_extension_info - collect extension set of the firmware
+ *
+ * @buf: The buffer to save extension set
+ * @size: The size of the @buf
+ *
+ * Returns:
+ * 0 if @buf is filled with extension bitflags
+ * -%ENODEV if the CSV device is not available
+ * -%EINVAL if @buf is NULL or @size is too smaller
+ */
+int csv_get_extension_info(void *buf, size_t *size);
+
+#else	/* !CONFIG_CRYPTO_DEV_SP_PSP */
+
+static inline int csv_get_extension_info(void *buf, size_t *size) { return -ENODEV; }
+
+#endif	/* !CONFIG_CRYPTO_DEV_SP_PSP */
+
+#endif	/* __PSP_CSV_H__ */

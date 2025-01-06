@@ -1099,6 +1099,13 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_X86_NOTIFY_VMEXIT 219
 
 #define KVM_CAP_SEV_ES_GHCB 500
+#define KVM_CAP_HYGON_COCO_EXT 501
+/* support userspace to request firmware to build CSV3 guest's memory space */
+#define KVM_CAP_HYGON_COCO_EXT_CSV3_SET_PRIV_MEM  (1 << 0)
+/* support request to update CSV3 guest's memory region multiple times */
+#define KVM_CAP_HYGON_COCO_EXT_CSV3_MULT_LUP_DATA (1 << 1)
+/* support request to inject secret to CSV3 guest */
+#define KVM_CAP_HYGON_COCO_EXT_CSV3_INJ_SECRET    (1 << 2)
 
 #define KVM_CAP_ARM_CPU_FEATURE 555
 
@@ -1922,27 +1929,29 @@ struct kvm_hyperv_eventfd {
 #define KVM_X86_NOTIFY_VMEXIT_ENABLED		(1ULL << 0)
 #define KVM_X86_NOTIFY_VMEXIT_USER		(1ULL << 1)
 
-/* CSV command */
-enum csv_cmd_id {
-	KVM_CSV_NR_MIN = 0xc0,
+/* CSV3 command */
+enum csv3_cmd_id {
+	KVM_CSV3_NR_MIN = 0xc0,
 
-	KVM_CSV_INIT = KVM_CSV_NR_MIN,
-	KVM_CSV_LAUNCH_ENCRYPT_DATA,
-	KVM_CSV_LAUNCH_ENCRYPT_VMCB,
-	KVM_CSV_SEND_ENCRYPT_DATA,
-	KVM_CSV_SEND_ENCRYPT_CONTEXT,
-	KVM_CSV_RECEIVE_ENCRYPT_DATA,
-	KVM_CSV_RECEIVE_ENCRYPT_CONTEXT,
-	KVM_CSV_HANDLE_MEMORY,
+	KVM_CSV3_INIT = KVM_CSV3_NR_MIN,
+	KVM_CSV3_LAUNCH_ENCRYPT_DATA,
+	KVM_CSV3_LAUNCH_ENCRYPT_VMCB,
+	KVM_CSV3_SEND_ENCRYPT_DATA,
+	KVM_CSV3_SEND_ENCRYPT_CONTEXT,
+	KVM_CSV3_RECEIVE_ENCRYPT_DATA,
+	KVM_CSV3_RECEIVE_ENCRYPT_CONTEXT,
+	KVM_CSV3_HANDLE_MEMORY,
 
-	KVM_CSV_NR_MAX,
+	KVM_CSV3_SET_GUEST_PRIVATE_MEMORY = 0xc8,
+
+	KVM_CSV3_NR_MAX,
 };
 
 struct kvm_csv_init_data {
 	__u64 nodemask;
 };
 
-struct kvm_csv_launch_encrypt_data {
+struct kvm_csv3_launch_encrypt_data {
 	__u64 gpa;
 	__u64 uaddr;
 	__u32 len;
@@ -1980,7 +1989,7 @@ struct kvm_csv_receive_encrypt_context {
 	__u32 trans_len;
 };
 
-#define KVM_CSV_RELEASE_SHARED_MEMORY (0x0001)
+#define KVM_CSV3_RELEASE_SHARED_MEMORY (0x0001)
 
 struct kvm_csv_handle_memory {
 	__u64 gpa;
