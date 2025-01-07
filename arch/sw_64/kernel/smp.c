@@ -20,7 +20,7 @@
 
 #include "proto.h"
 
-struct smp_rcb_struct *smp_rcb;
+struct smp_rcb_struct *smp_rcb = NULL;
 
 extern struct cpuinfo_sw64 cpu_data[NR_CPUS];
 
@@ -45,8 +45,17 @@ enum ipi_message_type {
 int smp_num_cpus = 1;		/* Number that came online.  */
 EXPORT_SYMBOL(smp_num_cpus);
 
+struct rcid_infomation rcid_info = { 0 };
+
 #define send_sleep_interrupt(cpu)	send_ipi((cpu), II_SLEEP)
 #define send_wakeup_interrupt(cpu)	send_ipi((cpu), II_WAKE)
+
+enum core_version {
+	CORE_VERSION_NONE = 0,
+	CORE_VERSION_C3B  = 1,
+	CORE_VERSION_C4   = 2,
+	CORE_VERSION_RESERVED = 3 /* 3 and greater are reserved */
+};
 
 /*
  * Where secondaries begin a life of C.
@@ -72,10 +81,10 @@ void smp_callin(void)
 
 	/* Set interrupt vector.  */
 	if (is_in_host()) {
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI0_INTEN);
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI1_INTEN);
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI2_INTEN);
-		write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI3_INTEN);
+		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI0_INTEN);
+		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI1_INTEN);
+		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI2_INTEN);
+		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI3_INTEN);
 	}
 	wrent(entInt, 0);
 
@@ -167,9 +176,12 @@ static void __init process_nr_cpu_ids(void)
 	nr_cpu_ids = num_possible_cpus();
 }
 
-void __init smp_rcb_init(void)
+void __init smp_rcb_init(struct smp_rcb_struct *smp_rcb_base_addr)
 {
-	smp_rcb = INIT_SMP_RCB;
+	if (smp_rcb != NULL)
+		return;
+
+	smp_rcb = smp_rcb_base_addr;
 	memset(smp_rcb, 0, sizeof(struct smp_rcb_struct));
 	/* Setup SMP_RCB fields that uses to activate secondary CPU */
 	smp_rcb->restart_entry = __smp_callin;
@@ -203,8 +215,67 @@ void __init setup_smp(void)
 	pr_info("Detected %u possible CPU(s), %u CPU(s) are present\n",
 			nr_cpu_ids, num_present_cpus());
 
-	smp_rcb_init();
+	smp_rcb_init(INIT_SMP_RCB);
 }
+
+void rcid_infomation_init(int core_version)
+{
+	if (rcid_info.initialized)
+		return;
+
+	switch (core_version) {
+		case CORE_VERSION_C3B:
+			rcid_info.thread_bits  = 1;
+			rcid_info.thread_shift = 31;
+			rcid_info.core_bits    = 5;
+			rcid_info.core_shift   = 0;
+			rcid_info.domain_bits  = 2;
+			rcid_info.domain_shift = 5;
+			break;
+		case CORE_VERSION_C4:
+			rcid_info.thread_bits  = 1;
+			rcid_info.thread_shift = 8;
+			rcid_info.core_bits    = 6;
+			rcid_info.core_shift   = 0;
+			rcid_info.domain_bits  = 2;
+			rcid_info.domain_shift = 12;
+			break;
+		default:
+			rcid_info.initialized = 0;
+			return;
+	}
+
+	rcid_info.initialized = 1;
+}
+
+static int get_rcid_field(int rcid, unsigned int shift, unsigned int bits)
+{
+	unsigned int h, l;
+
+	if (WARN_ON_ONCE(!rcid_info.initialized))
+		return -1;
+
+	h = shift + bits - 1;
+	l = shift;
+
+	return (rcid & GENMASK(h, l)) >> shift;
+}
+
+int get_core_id_from_rcid(int rcid)
+{
+	return get_rcid_field(rcid, rcid_info.core_shift, rcid_info.core_bits);
+}
+
+int get_thread_id_from_rcid(int rcid)
+{
+	return get_rcid_field(rcid, rcid_info.thread_shift, rcid_info.thread_bits);
+}
+
+int get_domain_id_from_rcid(int rcid)
+{
+	return get_rcid_field(rcid, rcid_info.domain_shift, rcid_info.domain_bits);
+}
+
 /*
  * Called by smp_init prepare the secondaries
  */
