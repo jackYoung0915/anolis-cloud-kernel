@@ -1,0 +1,9 @@
+* Tue Jan 07 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [6.6.52-2.3.1_rc1%%DIST%%]
+- LoongArch: Set initial pte entry with PAGE_GLOBAL for kernel space (Bibo Mao)
+- LoongArch: Remove superfluous flush_dcache_page() definition (Huacai Chen)
+- LoongArch: Improve hardware page table walker (Huacai Chen)
+- LoongArch: Use accessors to page table entries instead of direct dereference (Huacai Chen)
+- anolis: drivers/gpu: Driver of drm will not be used on LA7A2000 by default (Juxin Gao)
+- anolis: LoongArch: Fixup crashkernel cmdline (gaojuxin)
+- anolis: spec: extract cmdline from rpm spec (Qiao Ma)
+
