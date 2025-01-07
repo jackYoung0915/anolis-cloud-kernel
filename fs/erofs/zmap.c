@@ -34,8 +34,8 @@ static int legacy_load_cluster_from_disk(struct z_erofs_maprecorder *m,
 	unsigned int advise, type;
 
 	m->kaddr = erofs_read_metabuf(&m->map->buf, inode->i_sb,
-				      erofs_blknr(inode->i_sb, pos),
-				      EROFS_KMAP_ATOMIC);
+			erofs_pos(inode->i_sb, erofs_blknr(inode->i_sb, pos)),
+			EROFS_KMAP_ATOMIC);
 	if (IS_ERR(m->kaddr))
 		return PTR_ERR(m->kaddr);
 
@@ -272,7 +272,8 @@ static int compacted_load_cluster_from_disk(struct z_erofs_maprecorder *m,
 out:
 	pos += lcn * (1 << amortizedshift);
 	m->kaddr = erofs_read_metabuf(&m->map->buf, inode->i_sb,
-			erofs_blknr(inode->i_sb, pos), EROFS_KMAP_ATOMIC);
+			erofs_pos(inode->i_sb, erofs_blknr(inode->i_sb, pos)),
+			EROFS_KMAP_ATOMIC);
 	if (IS_ERR(m->kaddr))
 		return PTR_ERR(m->kaddr);
 	return unpack_compacted_index(m, amortizedshift, pos, lookahead);
@@ -619,7 +620,9 @@ static int z_erofs_fill_inode_lazy(struct inode *inode)
 		goto out_unlock;
 
 	pos = ALIGN(erofs_iloc(inode) + vi->inode_isize + vi->xattr_isize, 8);
-	kaddr = erofs_read_metabuf(&buf, sb, erofs_blknr(sb, pos), EROFS_KMAP);
+	kaddr = erofs_read_metabuf(&buf, sb,
+				   erofs_pos(sb, erofs_blknr(sb, pos)),
+				   EROFS_KMAP);
 	if (IS_ERR(kaddr)) {
 		err = PTR_ERR(kaddr);
 		goto out_unlock;

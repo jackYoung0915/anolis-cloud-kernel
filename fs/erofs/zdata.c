@@ -119,53 +119,6 @@ static inline unsigned int z_erofs_pclusterpages(struct z_erofs_pcluster *pcl)
 	return pcl->pclusterpages;
 }
 
-/*
- * bit 30: I/O error occurred on this page
- * bit 0 - 29: remaining parts to complete this page
- */
-#define Z_EROFS_PAGE_EIO			(1 << 30)
-
-static inline void z_erofs_onlinepage_init(struct page *page)
-{
-	union {
-		atomic_t o;
-		unsigned long v;
-	} u = { .o = ATOMIC_INIT(1) };
-
-	set_page_private(page, u.v);
-	smp_wmb();
-	SetPagePrivate(page);
-}
-
-static inline void z_erofs_onlinepage_split(struct page *page)
-{
-	atomic_inc((atomic_t *)&page->private);
-}
-
-static inline void z_erofs_page_mark_eio(struct page *page)
-{
-	int orig;
-
-	do {
-		orig = atomic_read((atomic_t *)&page->private);
-	} while (atomic_cmpxchg((atomic_t *)&page->private, orig,
-				orig | Z_EROFS_PAGE_EIO) != orig);
-}
-
-static inline void z_erofs_onlinepage_endio(struct page *page)
-{
-	unsigned int v;
-
-	DBG_BUGON(!PagePrivate(page));
-	v = atomic_dec_return((atomic_t *)&page->private);
-	if (!(v & ~Z_EROFS_PAGE_EIO)) {
-		set_page_private(page, 0);
-		ClearPagePrivate(page);
-		if (!(v & Z_EROFS_PAGE_EIO))
-			SetPageUptodate(page);
-		unlock_page(page);
-	}
-}
 
 #define Z_EROFS_ONSTACK_PAGES		32
 
@@ -782,7 +735,8 @@ static int z_erofs_read_fragment(struct inode *inode, erofs_off_t pos,
 		cnt = min_t(unsigned int, len - i,
 			    sb->s_blocksize - erofs_blkoff(sb, pos));
 		src = erofs_bread(&buf, packed_inode,
-				  erofs_blknr(sb, pos), EROFS_KMAP);
+				  erofs_pos(sb, erofs_blknr(sb, pos)),
+				  EROFS_KMAP);
 		if (IS_ERR(src)) {
 			erofs_put_metabuf(&buf);
 			return PTR_ERR(src);
@@ -808,7 +762,7 @@ static int z_erofs_do_read_page(struct z_erofs_decompress_frontend *fe,
 	int err = 0;
 
 	/* register locked file pages as online pages in pack */
-	z_erofs_onlinepage_init(page);
+	erofs_onlinepage_init(page);
 
 	spiltted = 0;
 	end = PAGE_SIZE;
@@ -841,11 +795,12 @@ repeat:
 		goto out;
 
 	if (z_erofs_is_inline_pcluster(fe->pcl)) {
+		struct super_block *sb = inode->i_sb;
 		void *mp;
 
-		mp = erofs_read_metabuf(&fe->map.buf, inode->i_sb,
-					erofs_blknr(inode->i_sb, map->m_pa),
-					EROFS_NO_KMAP);
+		mp = erofs_read_metabuf(&fe->map.buf, sb,
+				erofs_pos(sb, erofs_blknr(sb, map->m_pa)),
+				EROFS_NO_KMAP);
 		if (IS_ERR(mp)) {
 			err = PTR_ERR(mp);
 			erofs_err(inode->i_sb,
@@ -907,7 +862,7 @@ hitted:
 	if (err)
 		goto out;
 
-	z_erofs_onlinepage_split(page);
+	erofs_onlinepage_split(page);
 	/* bump up the number of spiltted parts of a page */
 	++spiltted;
 	if (fe->pcl->pageofs_out != (map->m_la & ~PAGE_MASK))
@@ -931,8 +886,8 @@ next_part:
 
 out:
 	if (err)
-		z_erofs_page_mark_eio(page);
-	z_erofs_onlinepage_endio(page);
+		erofs_page_mark_eio(page);
+	erofs_onlinepage_endio(page);
 
 	erofs_dbg("%s, finish page: %pK spiltted: %u map->m_llen %llu",
 		  __func__, page, spiltted, map->m_llen);
@@ -1030,8 +985,8 @@ static void z_erofs_fill_other_copies(struct z_erofs_decompress_backend *be,
 		}
 		kunmap_atomic(dst);
 		if (err)
-			z_erofs_page_mark_eio(bvi->bvec.page);
-		z_erofs_onlinepage_endio(bvi->bvec.page);
+			erofs_page_mark_eio(bvi->bvec.page);
+		erofs_onlinepage_endio(bvi->bvec.page);
 		list_del(p);
 		kfree(bvi);
 	}
@@ -1202,8 +1157,8 @@ out:
 		if (z_erofs_put_shortlivedpage(be->pagepool, page))
 			continue;
 		if (err)
-			z_erofs_page_mark_eio(page);
-		z_erofs_onlinepage_endio(page);
+			erofs_page_mark_eio(page);
+		erofs_onlinepage_endio(page);
 	}
 
 	if (be->decompressed_pages != be->onstack_pages)
@@ -1449,7 +1404,8 @@ static void z_erofs_decompressqueue_endio(struct bio *bio)
 	if (err)
 		q->eio = true;
 	z_erofs_decompress_kickoff(q, -1);
-	bio_put(bio);
+	if (bio->bi_disk)
+		bio_put(bio);
 }
 
 static void z_erofs_submit_queue(struct z_erofs_decompress_frontend *f,
@@ -1516,15 +1472,22 @@ static void z_erofs_submit_queue(struct z_erofs_decompress_frontend *f,
 			if (bio && (cur != last_index + 1 ||
 				    last_bdev != mdev.m_bdev)) {
 submit_bio_retry:
-				submit_bio(bio);
+				if (erofs_is_fileio_mode(EROFS_SB(sb)))
+					erofs_fileio_submit_bio(bio);
+				else
+					submit_bio(bio);
 				bio = NULL;
 			}
 
 			if (!bio) {
-				bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
-				bio->bi_end_io = z_erofs_decompressqueue_endio;
+				if (erofs_is_fileio_mode(EROFS_SB(sb)))
+					bio = erofs_fileio_bio_alloc(&mdev);
+				else
+					bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
 
-				bio_set_dev(bio, mdev.m_bdev);
+				bio->bi_end_io = z_erofs_decompressqueue_endio;
+				if (!erofs_is_fileio_mode(EROFS_SB(sb)))
+					bio_set_dev(bio, mdev.m_bdev);
 				last_bdev = mdev.m_bdev;
 				bio->bi_iter.bi_sector = (sector_t)cur <<
 					(sb->s_blocksize_bits - 9);
@@ -1548,8 +1511,12 @@ submit_bio_retry:
 			move_to_bypass_jobqueue(pcl, qtail, owned_head);
 	} while (owned_head != Z_EROFS_PCLUSTER_TAIL);
 
-	if (bio)
-		submit_bio(bio);
+	if (bio) {
+		if (erofs_is_fileio_mode(EROFS_SB(sb)))
+			erofs_fileio_submit_bio(bio);
+		else
+			submit_bio(bio);
+	}
 
 	/*
 	 * although background is preferred, no one is pending for submission.

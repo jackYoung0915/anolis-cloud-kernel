@@ -47,10 +47,9 @@ void erofs_put_metabuf(struct erofs_buf *buf)
  * anonymous inode in fscache mode.
  */
 void *__erofs_bread(struct super_block *sb, struct erofs_buf *buf,
-		    struct inode *inode, erofs_blk_t blkaddr,
+		    struct inode *inode, erofs_off_t offset,
 		    enum erofs_kmap_type type)
 {
-	erofs_off_t offset = (erofs_off_t)blkaddr << inode->i_blkbits;
 	struct address_space *const mapping = inode->i_mapping;
 	pgoff_t index = offset >> PAGE_SHIFT;
 	struct page *page = buf->page;
@@ -101,24 +100,27 @@ void *__erofs_bread(struct super_block *sb, struct erofs_buf *buf,
 }
 
 void *erofs_bread(struct erofs_buf *buf, struct inode *inode,
-		  erofs_blk_t blkaddr, enum erofs_kmap_type type)
+		  erofs_off_t offset, enum erofs_kmap_type type)
 {
-	return __erofs_bread(NULL, buf, inode, blkaddr, type);
+	return __erofs_bread(NULL, buf, inode, offset, type);
 }
 
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
-			 erofs_blk_t blkaddr, enum erofs_kmap_type type)
+			 erofs_off_t offset, enum erofs_kmap_type type)
 {
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	if (erofs_is_rafsv6_mode(sb))
 		return __erofs_bread(sb, buf, EROFS_SB(sb)->bootstrap->f_inode,
-				     blkaddr, type);
+				     offset, type);
 #endif
 	if (erofs_is_fscache_mode(sb))
 		return erofs_bread(buf, EROFS_SB(sb)->s_fscache->inode,
-				   blkaddr, type);
+				   offset, type);
+	else if (erofs_is_fileio_mode(EROFS_SB(sb)))
+		return erofs_bread(buf, EROFS_SB(sb)->fdev->f_inode,
+				   offset, type);
 
-	return erofs_bread(buf, sb->s_bdev->bd_inode, blkaddr, type);
+	return erofs_bread(buf, sb->s_bdev->bd_inode, offset, type);
 }
 
 int erofs_map_blocks_flatmode(struct inode *inode, struct erofs_map_blocks *map)
@@ -176,7 +178,7 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 	if (map->m_la >= inode->i_size) {
 		/* leave out-of-bound access unmapped */
 		map->m_flags = 0;
-		map->m_plen = 0;
+		map->m_plen = map->m_llen;
 		goto out;
 	}
 
@@ -194,7 +196,9 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 	pos = ALIGN(erofs_iloc(inode) + vi->inode_isize +
 		    vi->xattr_isize, unit) + unit * chunknr;
 
-	kaddr = erofs_read_metabuf(&buf, sb, erofs_blknr(sb, pos), EROFS_KMAP);
+	kaddr = erofs_read_metabuf(&buf, sb,
+				   erofs_pos(sb, erofs_blknr(sb, pos)),
+				   EROFS_KMAP);
 	if (IS_ERR(kaddr)) {
 		err = PTR_ERR(kaddr);
 		goto out;
@@ -249,6 +253,7 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 	map->m_fp = EROFS_SB(sb)->bootstrap;
 #endif
 	map->m_fscache = EROFS_SB(sb)->s_fscache;
+	map->m_fmntp = EROFS_SB(sb)->fdev;
 
 	if (map->m_deviceid) {
 		down_read(&devs->rwsem);
@@ -268,6 +273,7 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 		map->m_fp = dif->blobfile;
 #endif
 		map->m_fscache = dif->fscache;
+		map->m_fmntp = dif->file;
 		up_read(&devs->rwsem);
 	} else if (devs->extra_devices && !devs->flatdev) {
 		down_read(&devs->rwsem);
@@ -288,12 +294,61 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 				map->m_fp = dif->blobfile;
 #endif
 				map->m_fscache = dif->fscache;
+				map->m_fmntp = dif->file;
 				break;
 			}
 		}
 		up_read(&devs->rwsem);
 	}
 	return 0;
+}
+
+/*
+ * bit 30: I/O error occurred on this page
+ * bit 0 - 29: remaining parts to complete this page
+ */
+#define Z_EROFS_PAGE_EIO			(1 << 30)
+
+void erofs_onlinepage_init(struct page *page)
+{
+	union {
+		atomic_t o;
+		unsigned long v;
+	} u = { .o = ATOMIC_INIT(1) };
+
+	set_page_private(page, u.v);
+	smp_wmb();
+	SetPagePrivate(page);
+}
+
+void erofs_onlinepage_split(struct page *page)
+{
+	atomic_inc((atomic_t *)&page->private);
+}
+
+void erofs_page_mark_eio(struct page *page)
+{
+	int orig;
+
+	do {
+		orig = atomic_read((atomic_t *)&page->private);
+	} while (atomic_cmpxchg((atomic_t *)&page->private, orig,
+				orig | Z_EROFS_PAGE_EIO) != orig);
+}
+
+void erofs_onlinepage_endio(struct page *page)
+{
+	unsigned int v;
+
+	DBG_BUGON(!PagePrivate(page));
+	v = atomic_dec_return((atomic_t *)&page->private);
+	if (!(v & ~Z_EROFS_PAGE_EIO)) {
+		set_page_private(page, 0);
+		ClearPagePrivate(page);
+		if (!(v & Z_EROFS_PAGE_EIO))
+			SetPageUptodate(page);
+		unlock_page(page);
+	}
 }
 
 static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
@@ -340,7 +395,8 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 
 		iomap->type = IOMAP_INLINE;
 		ptr = erofs_read_metabuf(&buf, sb,
-				erofs_blknr(sb, mdev.m_pa), EROFS_KMAP);
+				erofs_pos(sb, erofs_blknr(sb, mdev.m_pa)),
+				EROFS_KMAP);
 		if (IS_ERR(ptr))
 			return PTR_ERR(ptr);
 		iomap->inline_data = ptr + erofs_blkoff(sb, mdev.m_pa);

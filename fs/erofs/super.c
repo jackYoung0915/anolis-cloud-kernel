@@ -136,9 +136,11 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 	struct erofs_fscache *fscache;
 	struct erofs_deviceslot *dis;
 	struct block_device *bdev;
+	struct file __maybe_unused *file;
 	void *ptr;
 
-	ptr = erofs_read_metabuf(buf, sb, erofs_blknr(sb, *pos), EROFS_KMAP);
+	ptr = erofs_read_metabuf(buf, sb, erofs_pos(sb, erofs_blknr(sb, *pos)),
+				 EROFS_KMAP);
 	if (IS_ERR(ptr))
 		return PTR_ERR(ptr);
 	dis = ptr + erofs_blkoff(sb, *pos);
@@ -171,11 +173,18 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 		dif->blobfile = f;
 #endif
 	} else if (!sbi->devs->flatdev) {
-		bdev = blkdev_get_by_path(dif->path, FMODE_READ | FMODE_EXCL,
-					  sb->s_type);
-		if (IS_ERR(bdev))
-			return PTR_ERR(bdev);
-		dif->bdev = bdev;
+		if ( erofs_is_fileio_mode(sbi)) {
+			file = filp_open(dif->path, O_RDONLY | O_LARGEFILE, 0);
+			if (IS_ERR(file))
+				return PTR_ERR(file);
+			dif->file = file;
+		} else {
+			bdev = blkdev_get_by_path(dif->path, FMODE_READ | FMODE_EXCL,
+						  sb->s_type);
+			if (IS_ERR(bdev))
+				return PTR_ERR(bdev);
+			dif->bdev = bdev;
+		}
 	}
 
 	dif->blocks = le32_to_cpu(dis->blocks);
@@ -255,7 +264,8 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 	int len, i, cnt;
 
 	*offset = round_up(*offset, 4);
-	ptr = erofs_read_metabuf(buf, sb, erofs_blknr(sb, *offset), EROFS_KMAP);
+	ptr = erofs_read_metabuf(buf, sb,
+			erofs_pos(sb, erofs_blknr(sb, *offset)), EROFS_KMAP);
 	if (IS_ERR(ptr))
 		return ptr;
 
@@ -271,8 +281,9 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 	for (i = 0; i < len; i += cnt) {
 		cnt = min_t(int, sb->s_blocksize - erofs_blkoff(sb, *offset),
 			    len - i);
-		ptr = erofs_read_metabuf(buf, sb, erofs_blknr(sb, *offset),
-					 EROFS_KMAP);
+		ptr = erofs_read_metabuf(buf, sb,
+				erofs_pos(sb, erofs_blknr(sb, *offset)),
+				EROFS_KMAP);
 		if (IS_ERR(ptr)) {
 			kfree(buffer);
 			return ptr;
@@ -302,7 +313,7 @@ static int erofs_read_superblock(struct super_block *sb)
 	void *data;
 	int ret;
 
-	data = erofs_read_metabuf(&buf, sb, 0, EROFS_KMAP);
+	data = erofs_read_metabuf(&buf, sb, erofs_pos(sb, 0), EROFS_KMAP);
 	if (IS_ERR(data)) {
 		erofs_err(sb, "cannot read erofs superblock");
 		return PTR_ERR(data);
@@ -723,6 +734,7 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 	struct inode *inode;
 	struct erofs_sb_info *sbi;
 	struct erofs_fs_context *ctx = fc->fs_private;
+	struct file __maybe_unused *file;
 	int err;
 
 	sb->s_magic = EROFS_SUPER_MAGIC;
@@ -751,9 +763,18 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	sbi->blkszbits = PAGE_SHIFT;
 	if (!sb->s_bdev) {
-		/* fscache or rafsv6 mode */
+		/* fscache or rafsv6 or file-backed mount mode */
 		sb->s_blocksize = PAGE_SIZE;
 		sb->s_blocksize_bits = PAGE_SHIFT;
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+		/* if in the file-backed mount mode */
+		if (fc->source && !sbi->fsid) {
+			file = filp_open(fc->source, O_RDONLY | O_LARGEFILE, 0);
+			if (IS_ERR(file))
+				return PTR_ERR(file);
+			sbi->fdev = file;
+		}
+#endif
 	} else {
 		if (!sb_set_blocksize(sb, PAGE_SIZE)) {
 			errorfc(fc, "failed to set initial blksize");
@@ -852,6 +873,7 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_fs_context *ctx = fc->fs_private;
+	int ret;
 
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	if (ctx->blob_dir_path && !ctx->bootstrap_path) {
@@ -872,7 +894,15 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 	if (ctx->bootstrap_path && ctx->blob_dir_path)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 #endif
-	return get_tree_bdev(fc, erofs_fc_fill_super);
+	ret = get_tree_bdev(fc, erofs_fc_fill_super);
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+	if (ret == -ENOTBLK) {
+		if (!fc->source)
+			return invalf(fc, "No source specified");
+		return get_tree_nodev(fc, erofs_fc_fill_super);
+	}
+#endif
+	return ret;
 }
 
 static int erofs_fc_reconfigure(struct fs_context *fc)
@@ -1012,6 +1042,8 @@ static void erofs_kill_sb(struct super_block *sb)
 	erofs_fscache_unregister_fs(sb);
 	kfree(sbi->fsid);
 	kfree(sbi->domain_id);
+	if (sbi->fdev)
+		fput(sbi->fdev);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
 }
@@ -1132,7 +1164,8 @@ static int erofs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_namelen = EROFS_NAME_LEN;
 
 	if (uuid_is_null(&sb->s_uuid))
-		buf->f_fsid = u64_to_fsid(erofs_is_fscache_mode(sb) ? 0 :
+		buf->f_fsid = u64_to_fsid(erofs_is_fscache_mode(sb) ||
+				erofs_is_fileio_mode(sbi) ? 0 :
 				huge_encode_dev(sb->s_bdev->bd_dev));
 	else
 		buf->f_fsid = uuid_to_fsid(sb->s_uuid.b);

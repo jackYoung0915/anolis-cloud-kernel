@@ -51,6 +51,7 @@ typedef u32 erofs_blk_t;
 struct erofs_device_info {
 	char *path;
 	struct erofs_fscache *fscache;
+	struct file *file;
 	struct block_device *bdev;
 	struct dax_device *dax_dev;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
@@ -138,6 +139,7 @@ struct erofs_sb_info {
 	char *bootstrap_path;
 	char *blob_dir_path;
 #endif
+	struct file *fdev;
 	struct erofs_dev_context *devs;
 	struct dax_device *dax_dev;
 	u64 total_blocks;
@@ -199,11 +201,16 @@ static inline bool erofs_is_rafsv6_mode(struct super_block *sb)
 #endif
 }
 
+static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
+{
+	return IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) && sbi->fdev;
+}
+
 static inline bool erofs_is_fscache_mode(struct super_block *sb)
 {
 	/* to distinguish from rafsv6 which also works in nodev mode */
 	return IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && !sb->s_bdev &&
-	       EROFS_SB(sb)->fsid;
+	       !erofs_is_fileio_mode(EROFS_SB(sb)) && EROFS_SB(sb)->fsid;
 }
 
 enum {
@@ -384,6 +391,7 @@ struct page *erofs_grab_cache_page_nowait(struct address_space *mapping,
 extern const struct super_operations erofs_sops;
 
 extern const struct address_space_operations erofs_raw_access_aops;
+extern const struct address_space_operations erofs_fileio_aops;
 extern const struct address_space_operations z_erofs_aops;
 
 enum {
@@ -454,6 +462,7 @@ struct erofs_map_dev {
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *m_fp;
 #endif
+	struct file *m_fmntp;
 	erofs_off_t m_pa;
 	unsigned int m_deviceid;
 };
@@ -464,11 +473,16 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 void erofs_unmap_metabuf(struct erofs_buf *buf);
 void erofs_put_metabuf(struct erofs_buf *buf);
 void *erofs_bread(struct erofs_buf *buf, struct inode *inode,
-		  erofs_blk_t blkaddr, enum erofs_kmap_type type);
+		  erofs_off_t offset, enum erofs_kmap_type type);
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
-			 erofs_blk_t blkaddr, enum erofs_kmap_type type);
+			 erofs_off_t offset, enum erofs_kmap_type type);
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *dev);
 int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map);
+void erofs_onlinepage_init(struct page *page);
+void erofs_onlinepage_split(struct page *page);
+void erofs_page_mark_eio(struct page *page);
+void erofs_onlinepage_endio(struct page *page);
+
 extern const struct file_operations erofs_file_fops;
 
 /* inode.c */
@@ -555,6 +569,14 @@ static inline void z_erofs_exit_zip_subsystem(void) {}
 static inline void erofs_pcpubuf_init(void) {}
 static inline void erofs_pcpubuf_exit(void) {}
 #endif	/* !CONFIG_EROFS_FS_ZIP */
+
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+struct bio *erofs_fileio_bio_alloc(struct erofs_map_dev *mdev);
+void erofs_fileio_submit_bio(struct bio *bio);
+#else
+static inline struct bio *erofs_fileio_bio_alloc(struct erofs_map_dev *mdev) { return NULL; }
+static inline void erofs_fileio_submit_bio(struct bio *bio) {}
+#endif
 
 #ifdef CONFIG_EROFS_FS_ZIP_LZMA
 int z_erofs_lzma_init(void);
