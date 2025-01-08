@@ -149,11 +149,17 @@ static inline void pgd_populate_safe(struct mm_struct *mm, pgd_t *pgd, p4d_t *p4
 
 static inline p4d_t *p4d_alloc_one(struct mm_struct *mm, unsigned long addr)
 {
+	p4d_t *p4d;
 	gfp_t gfp = GFP_KERNEL_ACCOUNT;
 
 	if (mm == &init_mm)
 		gfp &= ~__GFP_ACCOUNT;
-	return (p4d_t *)get_zeroed_page(gfp);
+	p4d = (p4d_t *)get_zeroed_page(gfp);
+	if (!p4d)
+		return NULL;
+
+	pagetable_p4d_ctor(virt_to_ptdesc(p4d));
+	return p4d;
 }
 
 static inline void p4d_free(struct mm_struct *mm, p4d_t *p4d)
@@ -162,6 +168,7 @@ static inline void p4d_free(struct mm_struct *mm, p4d_t *p4d)
 		return;
 
 	BUG_ON((unsigned long)p4d & (PAGE_SIZE-1));
+	pagetable_p4d_dtor(virt_to_ptdesc(p4d));
 	free_page((unsigned long)p4d);
 }
 
