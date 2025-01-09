@@ -4915,12 +4915,14 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	mutex_lock(&hugetlb_fault_mutex_table[hash]);
 
 	entry = huge_ptep_get(ptep);
-	if (huge_pte_none(entry))
+	if (huge_pte_none(entry)) {
 		/*
 		 * hugetlb_no_page will drop vma lock and hugetlb fault
 		 * mutex internally, which make us return immediately.
 		 */
-		return hugetlb_no_page(mm, vma, mapping, idx, address, ptep, flags);
+		ret = hugetlb_no_page(mm, vma, mapping, idx, address, ptep, flags);
+		goto out_unlock;
+	}
 
 	ret = 0;
 
@@ -5026,6 +5028,7 @@ out_mutex:
 	if (need_wait_lock)
 		wait_on_page_locked(page);
 
+out_unlock:
 	if (ret == VM_FAULT_RETRY) {
 		page = find_get_page(mapping, idx);
 		if (page)
