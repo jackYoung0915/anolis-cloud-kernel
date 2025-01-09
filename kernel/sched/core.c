@@ -9899,6 +9899,10 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 	struct cfs_bandwidth *cfs_b = &tg->cfs_bandwidth;
 	s64 quota = 0, parent_quota = -1;
 
+	/* Skip dying or leaked task group. */
+	if (unlikely((tg->css.flags & CSS_DYING) || !(tg->css.flags & CSS_ONLINE)))
+		return 0;
+
 	if (!tg->parent) {
 		quota = RUNTIME_INF;
 	} else {
