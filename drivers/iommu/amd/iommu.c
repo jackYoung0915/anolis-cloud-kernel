@@ -2238,7 +2238,6 @@ static int pdom_attach_iommu(struct amd_iommu *iommu,
 			     struct protection_domain *pdom)
 {
 	struct pdom_iommu_info *pdom_iommu_info, *curr;
-	struct io_pgtable_cfg *cfg = &pdom->iop.pgtbl.cfg;
 	unsigned long flags;
 	int ret = 0;
 
@@ -2266,10 +2265,6 @@ static int pdom_attach_iommu(struct amd_iommu *iommu,
 		ret = -ENOSPC;
 		goto out_unlock;
 	}
-
-	/* Update NUMA Node ID */
-	if (cfg->amd.nid == NUMA_NO_NODE)
-		cfg->amd.nid = dev_to_node(&iommu->dev->dev);
 
 out_unlock:
 	spin_unlock_irqrestore(&pdom->lock, flags);
@@ -2520,16 +2515,15 @@ void protection_domain_free(struct protection_domain *domain)
 	kfree(domain);
 }
 
-static void protection_domain_init(struct protection_domain *domain, int nid)
+static void protection_domain_init(struct protection_domain *domain)
 {
 	spin_lock_init(&domain->lock);
 	INIT_LIST_HEAD(&domain->dev_list);
 	INIT_LIST_HEAD(&domain->dev_data_list);
 	xa_init(&domain->iommu_array);
-	domain->iop.pgtbl.cfg.amd.nid = nid;
 }
 
-struct protection_domain *protection_domain_alloc(int nid)
+struct protection_domain *protection_domain_alloc(void)
 {
 	struct protection_domain *domain;
 	int domid;
@@ -2545,12 +2539,13 @@ struct protection_domain *protection_domain_alloc(int nid)
 	}
 	domain->id = domid;
 
-	protection_domain_init(domain, nid);
+	protection_domain_init(domain);
 
 	return domain;
 }
 
-static int pdom_setup_pgtable(struct protection_domain *domain)
+static int pdom_setup_pgtable(struct protection_domain *domain,
+			      struct device *dev)
 {
 	struct io_pgtable_ops *pgtbl_ops;
 	enum io_pgtable_fmt fmt;
@@ -2567,6 +2562,7 @@ static int pdom_setup_pgtable(struct protection_domain *domain)
 		return -EPERM;
 	}
 
+	domain->iop.pgtbl.cfg.amd.nid = dev_to_node(dev);
 	pgtbl_ops = alloc_io_pgtable_ops(fmt, &domain->iop.pgtbl.cfg, domain);
 	if (!pgtbl_ops)
 		return -ENOMEM;
@@ -2613,12 +2609,12 @@ do_iommu_domain_alloc(struct device *dev, u32 flags,
 	struct protection_domain *domain;
 	int ret;
 
-	domain = protection_domain_alloc(dev_to_node(dev));
+	domain = protection_domain_alloc();
 	if (!domain)
 		return ERR_PTR(-ENOMEM);
 
 	domain->pd_mode = pgtable;
-	ret = pdom_setup_pgtable(domain);
+	ret = pdom_setup_pgtable(domain, dev);
 	if (ret) {
 		pdom_id_free(domain->id);
 		kfree(domain);
@@ -2727,7 +2723,7 @@ void amd_iommu_init_identity_domain(void)
 
 	identity_domain.id = pdom_id_alloc();
 
-	protection_domain_init(&identity_domain, NUMA_NO_NODE);
+	protection_domain_init(&identity_domain);
 }
 
 static int amd_iommu_attach_device(struct iommu_domain *dom, struct device *dev,
