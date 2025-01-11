@@ -43,6 +43,8 @@
 #include <linux/page_owner.h>
 #include "internal.h"
 #include "hugetlb_vmemmap.h"
+#include <linux/page-isolation.h>
+#include <linux/migrate.h>
 
 int hugetlb_max_hstate __read_mostly;
 unsigned int default_hstate_idx;
@@ -1079,6 +1081,9 @@ static struct page *dequeue_huge_page_node_exact(struct hstate *h, int nid)
 			continue;
 
 		if (PageHWPoison(page))
+			continue;
+
+		if (is_migrate_isolate_page(page))
 			continue;
 
 		list_move(&page->lru, &h->hugepage_activelist);
@@ -2510,6 +2515,44 @@ int isolate_or_dissolve_huge_page(struct page *page, struct list_head *list)
 		ret = 0;
 	else if (!page_count(head))
 		ret = alloc_and_dissolve_huge_page(h, head, list);
+
+	return ret;
+}
+
+/*
+ *  replace_free_hugepage_pages - Replace free hugepage pages in a given pfn
+ *  range with new pages.
+ *  @start_pfn: start pfn of the given pfn range
+ *  @end_pfn: end pfn of the given pfn range
+ *  Returns 0 on success, otherwise negated error.
+ */
+int replace_free_hugepage_pages(unsigned long start_pfn, unsigned long end_pfn)
+{
+	struct hstate *h;
+	struct page *page;
+	int ret = 0;
+
+	LIST_HEAD(isolate_list);
+
+	while (start_pfn < end_pfn) {
+		page = pfn_to_page(start_pfn);
+		if (PageHuge(page)) {
+			h = page_hstate(page);
+		} else {
+			start_pfn++;
+			continue;
+		}
+
+		if (!page_count(page)) {
+			ret = alloc_and_dissolve_huge_page(h, page,
+							       &isolate_list);
+			if (ret)
+				break;
+
+			putback_movable_pages(&isolate_list);
+		}
+		start_pfn++;
+	}
 
 	return ret;
 }
