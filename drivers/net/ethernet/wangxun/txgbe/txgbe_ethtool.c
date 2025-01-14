@@ -1094,7 +1094,7 @@ static void txgbe_get_regs(struct net_device *netdev, struct ethtool_regs *regs,
 	regs_buff[id++] = TXGBE_R32_Q(hw, TXGBE_PSR_LAN_FLEX_CTL);
 
 	/* TDB */
-	regs_buff[id++] = TXGBE_R32_Q(hw, TXGBE_TDB_RFCS);
+	regs_buff[id++] = TXGBE_R32_Q(hw, TXGBE_TDB_TFCS);
 	regs_buff[id++] = TXGBE_R32_Q(hw, TXGBE_TDB_PB_SZ(0));
 	regs_buff[id++] = TXGBE_R32_Q(hw, TXGBE_TDB_UP2TC);
 	regs_buff[id++] = TXGBE_R32_Q(hw, TXGBE_TDB_PBRARB_CTL);
