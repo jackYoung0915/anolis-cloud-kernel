@@ -266,8 +266,8 @@ struct fuse_arg {
 	void *value;
 };
 
-/** FUSE page descriptor */
-struct fuse_page_desc {
+/** FUSE folio descriptor */
+struct fuse_folio_desc {
 	unsigned int length;
 	unsigned int offset;
 };
@@ -300,9 +300,9 @@ struct fuse_args {
 
 struct fuse_args_pages {
 	struct fuse_args args;
-	struct page **pages;
-	struct fuse_page_desc *descs;
-	unsigned int num_pages;
+	struct folio **folios;
+	struct fuse_folio_desc *descs;
+	unsigned int num_folios;
 };
 
 #define FUSE_ARGS(args) struct fuse_args args = {}
@@ -958,25 +958,25 @@ static inline bool fuse_is_bad(struct inode *inode)
 	return unlikely(test_bit(FUSE_I_BAD, &get_fuse_inode(inode)->state));
 }
 
-static inline struct page **fuse_pages_alloc(unsigned int npages, gfp_t flags,
-					     struct fuse_page_desc **desc)
+static inline struct folio **fuse_folios_alloc(unsigned int nfolios, gfp_t flags,
+					       struct fuse_folio_desc **desc)
 {
-	struct page **pages;
+	struct folio **folios;
 
-	pages = kzalloc(npages * (sizeof(struct page *) +
-				  sizeof(struct fuse_page_desc)), flags);
-	*desc = (void *) (pages + npages);
+	folios = kzalloc(nfolios * (sizeof(struct folio *) +
+				    sizeof(struct fuse_folio_desc)), flags);
+	*desc = (void *) (folios + nfolios);
 
-	return pages;
+	return folios;
 }
 
-static inline void fuse_page_descs_length_init(struct fuse_page_desc *descs,
-					       unsigned int index,
-					       unsigned int nr_pages)
+static inline void fuse_folio_descs_length_init(struct fuse_folio_desc *descs,
+						unsigned int index,
+						unsigned int nr_folios)
 {
 	int i;
 
-	for (i = index; i < index + nr_pages; i++)
+	for (i = index; i < index + nr_folios; i++)
 		descs[i].length = PAGE_SIZE - descs[i].offset;
 }
 
@@ -1025,7 +1025,7 @@ struct fuse_io_args {
 		struct {
 			struct fuse_write_in in;
 			struct fuse_write_out out;
-			bool page_locked;
+			bool folio_locked;
 		} write;
 	};
 	struct fuse_args_pages ap;
