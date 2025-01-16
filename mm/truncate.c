@@ -699,7 +699,13 @@ invalidate_complete_page2(struct address_space *mapping, struct page *page)
 
 	dedup_page(page, false);
 
-	put_page(page);	/* pagecache ref */
+	if (PageTransHuge(page) && !PageHuge(page)) {
+		page_ref_sub(page, thp_nr_pages(page));
+		VM_BUG_ON_PAGE(page_count(page) <= 0, page);
+	} else {
+		put_page(page);
+	}
+
 	return 1;
 failed:
 	xa_unlock_irqrestore(&mapping->i_pages, flags);
