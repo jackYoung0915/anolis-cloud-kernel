@@ -5,20 +5,21 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include "bpf_misc.h"
 
 int kprobe_res = 0;
 int kretprobe_res = 0;
 int uprobe_res = 0;
 int uretprobe_res = 0;
 
-SEC("kprobe/sys_nanosleep")
+SEC("kprobe/" SYS_PREFIX "sys_nanosleep")
 int handle_kprobe(struct pt_regs *ctx)
 {
 	kprobe_res = 1;
 	return 0;
 }
 
-SEC("kretprobe/sys_nanosleep")
+SEC("kretprobe/" SYS_PREFIX "sys_nanosleep")
 int BPF_KRETPROBE(handle_kretprobe)
 {
 	kretprobe_res = 2;
