@@ -917,6 +917,33 @@ static int sev_get_api_version(void)
 	return 0;
 }
 
+static int csv_get_api_version_locked(void)
+{
+	struct sev_device *sev = psp_master->sev_data;
+	struct sev_user_data_status status;
+	int error = 0, ret;
+
+	ret = __sev_do_cmd_locked(SEV_CMD_PLATFORM_STATUS,
+				  &status, &error);
+	if (ret) {
+		dev_err(sev->dev,
+			"CSV: failed to get status. Error: %#x\n", error);
+		return ret;
+	}
+
+	sev->api_major = status.api_major;
+	sev->api_minor = status.api_minor;
+	sev->build = status.build;
+	sev->state = status.state;
+
+	/*
+	 * The api version fields of HYGON CSV firmware are not consistent
+	 * with AMD SEV firmware.
+	 */
+	csv_update_api_version(&status);
+
+	return 0;
+}
 static int sev_get_firmware(struct device *dev,
 			    const struct firmware **firmware)
 {
@@ -1318,11 +1345,12 @@ static int csv_ioctl_do_download_firmware(struct sev_issue_cmd *argp)
 	}
 
 	/*
-	 * Synchronize API version status, and return -EIO if the Hygon PSP fails
-	 * to respond to the PLATFORM_STATUS API.
+	 * Synchronize API version status. The return value of csv_get_api_version
+	 * will inform the user of any error encountered when attempting to
+	 * communicate with the Hygon PSP after the DOWNLOAD_FIRMWARE API completes
+	 * successfully.
 	 */
-	if (sev_get_api_version())
-		ret = -EIO;
+	ret = csv_get_api_version_locked();
 
 err_free_page:
 	__free_pages(p, order);
