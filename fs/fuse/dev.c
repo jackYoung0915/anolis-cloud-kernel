@@ -7,6 +7,7 @@
 */
 
 #include "fuse_i.h"
+#include "fuse_dev_i.h"
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -33,8 +34,6 @@ MODULE_ALIAS("devname:fuse");
 #define FUSE_REQ_ID_STEP (1ULL << 1)
 
 static struct kmem_cache *fuse_req_cachep;
-
-static void end_requests(struct list_head *head);
 
 static struct fuse_dev *fuse_get_dev(struct file *file)
 {
@@ -2098,7 +2097,7 @@ static void fuse_requeue_requests(struct fuse_conn *fc,
 		spin_unlock(&fiq->lock);
 		list_for_each_entry(req, to_queue, list)
 			clear_bit(FR_PENDING, &req->flags);
-		end_requests(to_queue);
+		fuse_dev_end_requests(to_queue);
 		return;
 	}
 	/* iq and pq requests are both oldest to newest */
@@ -2455,7 +2454,7 @@ static __poll_t fuse_dev_poll(struct file *file, poll_table *wait)
 }
 
 /* Abort all requests on the given list (pending or processing) */
-static void end_requests(struct list_head *head)
+void fuse_dev_end_requests(struct list_head *head)
 {
 	while (!list_empty(head)) {
 		struct fuse_req *req;
@@ -2562,7 +2561,7 @@ void fuse_abort_conn(struct fuse_conn *fc)
 		wake_up_all(&fc->blocked_waitq);
 		spin_unlock(&fc->lock);
 
-		end_requests(&to_end);
+		fuse_dev_end_requests(&to_end);
 	} else {
 		spin_unlock(&fc->lock);
 	}
@@ -2593,7 +2592,7 @@ int fuse_dev_release(struct inode *inode, struct file *file)
 		spin_unlock(&fpq->lock);
 
 		if (!fc->recovery)
-			end_requests(&to_end);
+			fuse_dev_end_requests(&to_end);
 		else
 			fuse_requeue_requests(fc, &to_end);
 
@@ -2642,7 +2641,7 @@ void fuse_flush_pq(struct fuse_conn *fc)
 	}
 	spin_unlock(&fc->lock);
 
-	end_requests(&to_end);
+	fuse_dev_end_requests(&to_end);
 }
 
 /**
@@ -2708,7 +2707,7 @@ void fuse_resend_pqueue(struct fuse_conn *fc)
 		spin_unlock(&fiq->lock);
 		list_for_each_entry(req, &to_queue, list)
 			clear_bit(FR_PENDING, &req->flags);
-		end_requests(&to_queue);
+		fuse_dev_end_requests(&to_queue);
 		return;
 	}
 	/* iq and pq requests are both oldest to newest */
