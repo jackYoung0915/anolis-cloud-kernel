@@ -229,6 +229,13 @@ static int get_toa_data(struct sk_buff *skb, void *sk_toa_data, int sk_toa_datal
 				ntohl(dbg_vid), &dbg_v6vip);
 
 			return 1;
+		} else if (opcode == TCPOPT_TOA_V6_EX && opsize == TCPOLEN_TOA_V6_EX) {
+			struct toa_data_v6 *tdata;
+
+			memset(sk_toa_data, 0, sizeof(struct toa_data_v6));
+			memcpy(sk_toa_data, ptr - 2, TCPOLEN_TOA_V6_EX);
+			tdata = (struct toa_data_v6 *)sk_toa_data;
+			return 1;
 		}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 		else if (opcode == TCPOPT_TOA_V6 && opsize == TCPOLEN_TOA_V6) {
@@ -308,6 +315,19 @@ static int inet_getname_toa(struct socket *sock, struct sockaddr *uaddr,
 		TOA_DBG("%s: af: %d, cip [%pI6]:%u\n", sin6->sin6_family,
 			__func__, &sin6->sin6_addr, ntohs(sin6->sin6_port));
 
+	} else if (TCPOPT_TOA_V6_EX == option[0] && TCPOLEN_TOA_V6_EX == option[1]) {
+		struct toa_data_v6 *tdata = SK_TOA_DATA(sk);
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)uaddr;
+
+		/* hack to AF_INET6 */
+		*p_retval = sizeof(*sin6);
+		retval = *p_retval;
+		sin6->sin6_family = AF_INET6;
+		sin6->sin6_port = tdata->port;
+		sin6->sin6_flowinfo = 0;
+		sin6->sin6_scope_id = 0;
+		sin6->sin6_addr = tdata->in6;
+
 	} else { /* doesn't belong to us */
 #ifdef TOA_DEBUG
 		struct toa_data *tdata = SK_TOA_DATA(sk);
@@ -346,6 +366,12 @@ static int inet6_getname_toa(struct socket *sock, struct sockaddr *uaddr,
 		sin->sin6_addr = tdata->in6;
 		TOA_DBG("%s: ipv6 = %pI6, port = %u\n",
 			__func__, &sin->sin6_addr, ntohs(sin->sin6_port));
+
+	} else if (TCPOPT_TOA_V6_EX == option[0] && TCPOLEN_TOA_V6_EX == option[1]) {
+		struct toa_data_v6 *tdata = SK_TOA_DATA(sk);
+
+		sin->sin6_port = tdata->port;
+		sin->sin6_addr = tdata->in6;
 
 	} else if (TCPOPT_TOA == option[0] && TCPOLEN_TOA == option[1]) {
 		struct toa_data *tdata = SK_TOA_DATA(sk);
