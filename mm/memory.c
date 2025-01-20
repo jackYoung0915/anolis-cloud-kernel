@@ -6927,11 +6927,15 @@ void __init ptlock_cache_init(void)
 			SLAB_PANIC, NULL);
 }
 
-bool ptlock_alloc(struct ptdesc *ptdesc)
+bool ptlock_alloc(struct ptdesc *ptdesc, bool atomic)
 {
 	spinlock_t *ptl;
+	gfp_t gfp = GFP_KERNEL;
 
-	ptl = kmem_cache_alloc(page_ptl_cachep, GFP_KERNEL);
+	if (atomic)
+		gfp |= GFP_ATOMIC;
+
+	ptl = kmem_cache_alloc(page_ptl_cachep, gfp);
 	if (!ptl)
 		return false;
 	ptdesc->ptl = ptl;
