@@ -1715,7 +1715,8 @@ unsigned long shmem_allowable_huge_orders(struct inode *inode,
 	int order;
 
 	if (vma && ((vm_flags & VM_NOHUGEPAGE) ||
-	    test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags)))
+	    test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags) ||
+	    memcg_thp_control_test(vma->vm_mm, MEMCG_DISABLE_SHMEM_THP)))
 		return 0;
 
 	/* If the hardware/firmware marked hugepage support disabled. */

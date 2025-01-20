@@ -332,6 +332,40 @@ struct thpsize {
 	(transparent_hugepage_flags &					\
 	 (1<<TRANSPARENT_HUGEPAGE_USE_ZERO_PAGE_FLAG))
 
+enum memcg_thp_flag {
+	MEMCG_DISABLE_ANON_THP,
+	MEMCG_DISABLE_SHMEM_THP,
+	MEMCG_DISABLE_FILE_THP,
+	NR_MEMCG_THP_FLAG,
+};
+
+#ifdef CONFIG_MEMCG
+extern bool memcg_thp_control_test(struct mm_struct *mm,
+				   enum memcg_thp_flag flag);
+#else
+static inline bool memcg_thp_control_test(struct mm_struct *mm,
+					  enum memcg_thp_flag flag)
+{
+	return false;
+}
+#endif
+
+static inline bool memcg_transhuge_vma_enabled(struct vm_area_struct *vma)
+{
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (vma_is_anonymous(vma))
+		return !memcg_thp_control_test(mm, MEMCG_DISABLE_ANON_THP);
+
+	if (vma_is_shmem(vma))
+		return !memcg_thp_control_test(mm, MEMCG_DISABLE_SHMEM_THP);
+
+	if (vma->vm_file)
+		return !memcg_thp_control_test(mm, MEMCG_DISABLE_FILE_THP);
+
+	return true;
+}
+
 static inline bool vma_thp_disabled(struct vm_area_struct *vma,
 		unsigned long vm_flags)
 {
@@ -341,7 +375,8 @@ static inline bool vma_thp_disabled(struct vm_area_struct *vma,
 	 * example, s390 kvm.
 	 */
 	return (vm_flags & VM_NOHUGEPAGE) ||
-	       test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags);
+		!memcg_transhuge_vma_enabled(vma) ||
+		test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags);
 }
 
 static inline bool thp_disabled_by_hw(void)
