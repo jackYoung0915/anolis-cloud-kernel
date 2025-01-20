@@ -52,6 +52,17 @@
 #define TCPOLEN_TOA_V6	20
 #endif
 
+/* can be readed from ipv4 or ipv6 */
+#define TCPOPT_TOA_V6_EX	254
+#define TCPOLEN_TOA_V6_EX	20
+
+struct toa_data_v6 {
+	__u8 optcode;
+	__u8 optsize;
+	__be16 port;
+	struct in6_addr in6;
+};
+
 /* MUST be 4 bytes alignment */
 struct toa_data {
 	__u8 optcode;
