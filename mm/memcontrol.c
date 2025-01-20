@@ -66,6 +66,7 @@
 #include <linux/seq_buf.h>
 #include <linux/sched/isolation.h>
 #include <linux/pid_namespace.h>
+#include <linux/proc_fs.h>
 #include "internal.h"
 #include <net/sock.h>
 #include <net/ip.h>
@@ -93,6 +94,11 @@ static bool cgroup_memory_nosocket __ro_after_init;
 
 /* Kernel memory accounting disabled? */
 static bool cgroup_memory_nokmem __ro_after_init;
+
+#ifdef CONFIG_MEMSLI
+/* Cgroup memory SLI disabled? */
+static DEFINE_STATIC_KEY_FALSE(cgroup_memory_nosli);
+#endif /* CONFIG_MEMSLI */
 
 /* BPF memory accounting disabled? */
 static bool cgroup_memory_nobpf __ro_after_init;
@@ -129,9 +135,10 @@ struct mem_cgroup_tree {
 
 static struct mem_cgroup_tree soft_limit_tree __read_mostly;
 
-/* for OOM */
+/* for OOM and MEMSLI */
 struct mem_cgroup_eventfd_list {
 	struct list_head list;
+	struct rcu_head	rcu;
 	struct eventfd_ctx *eventfd;
 };
 
@@ -2792,12 +2799,14 @@ void mem_cgroup_handle_over_high(gfp_t gfp_mask)
 	int nr_retries = MAX_RECLAIM_RETRIES;
 	struct mem_cgroup *memcg;
 	bool in_retry = false;
+	u64 start;
 
 	if (likely(!nr_pages))
 		return;
 
 	memcg = get_mem_cgroup_from_mm(current->mm);
 	current->memcg_nr_pages_over_high = 0;
+	memcg_lat_stat_start(&start);
 
 retry_reclaim:
 	/*
@@ -2859,6 +2868,7 @@ retry_reclaim:
 	psi_memstall_leave(&pflags);
 
 out:
+	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
 	css_put(&memcg->css);
 }
 
@@ -2875,6 +2885,7 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
 	bool drained = false;
 	bool raised_max_event = false;
 	unsigned long pflags;
+	u64 start;
 
 retry:
 	if (consume_stock(memcg, nr_pages))
@@ -2915,10 +2926,12 @@ retry:
 	memcg_memory_event(mem_over_limit, MEMCG_MAX);
 	raised_max_event = true;
 
+	memcg_lat_stat_start(&start);
 	psi_memstall_enter(&pflags);
 	nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages,
 						    gfp_mask, reclaim_options);
 	psi_memstall_leave(&pflags);
+	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
 
 	if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
 		goto retry;
@@ -4520,6 +4533,221 @@ static int mem_cgroup_swappiness_write(struct cgroup_subsys_state *css,
 	return 0;
 }
 
+#ifdef CONFIG_MEMSLI
+#define MEMCG_LAT_STAT_SMP_WRITE(name, sidx)				\
+static void smp_write_##name(void *info)				\
+{									\
+	struct mem_cgroup *memcg = (struct mem_cgroup *)info;		\
+	int i;								\
+									\
+	for (i = MEM_LAT_0_1; i < MEM_LAT_NR_COUNT; i++)		\
+		this_cpu_write(memcg->lat_stat_cpu->item[sidx][i], 0);	\
+}
+
+MEMCG_LAT_STAT_SMP_WRITE(global_direct_reclaim, MEM_LAT_GLOBAL_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_SMP_WRITE(memcg_direct_reclaim, MEM_LAT_MEMCG_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_SMP_WRITE(direct_compact, MEM_LAT_DIRECT_COMPACT)
+MEMCG_LAT_STAT_SMP_WRITE(global_direct_swapout, MEM_LAT_GLOBAL_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_SMP_WRITE(memcg_direct_swapout, MEM_LAT_MEMCG_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_SMP_WRITE(direct_swapin, MEM_LAT_DIRECT_SWAPIN)
+
+smp_call_func_t smp_memcg_lat_write_funcs[] = {
+	smp_write_global_direct_reclaim,
+	smp_write_memcg_direct_reclaim,
+	smp_write_direct_compact,
+	smp_write_global_direct_swapout,
+	smp_write_memcg_direct_swapout,
+	smp_write_direct_swapin,
+};
+
+static int memcg_lat_stat_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+	enum mem_lat_stat_item idx = cft->private;
+	smp_call_func_t func = smp_memcg_lat_write_funcs[idx];
+
+	if (val != 0)
+		return -EINVAL;
+
+	func((void *)memcg);
+	smp_call_function(func, (void *)memcg, 1);
+
+	return 0;
+}
+
+static u64 memcg_lat_stat_gather(struct mem_cgroup *memcg,
+				 enum mem_lat_stat_item sidx,
+				 enum mem_lat_count_t cidx)
+{
+	u64 sum = 0;
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		sum += per_cpu_ptr(memcg->lat_stat_cpu, cpu)->item[sidx][cidx];
+
+	return sum;
+}
+
+static int memcg_lat_stat_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	enum mem_lat_stat_item idx = seq_cft(m)->private;
+
+	seq_printf(m, "0-1ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_0_1));
+	seq_printf(m, "1-5ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_1_5));
+	seq_printf(m, "5-10ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_5_10));
+	seq_printf(m, "10-100ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_10_100));
+	seq_printf(m, "100-500ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_100_500));
+	seq_printf(m, "500-1000ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_500_1000));
+	seq_printf(m, ">=1000ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_1000_INF));
+	seq_printf(m, "total(ms): \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_TOTAL) >> 20);
+
+	return 0;
+}
+
+static int __memcg_lat_stat_register_event(struct mem_cgroup *memcg,
+	struct eventfd_ctx *eventfd, const char *args,
+	enum mem_lat_stat_item sidx)
+{
+	struct mem_cgroup_eventfd_list *evt;
+
+	evt = kmalloc(sizeof(*evt), GFP_KERNEL);
+	if (!evt)
+		return -ENOMEM;
+
+	mutex_lock(&memcg->lat_stat_notify_lock);
+
+	evt->eventfd = eventfd;
+	list_add_rcu(&evt->list, &memcg->lat_stat_notify[sidx]);
+
+	mutex_unlock(&memcg->lat_stat_notify_lock);
+
+	return 0;
+}
+
+static void __memcg_lat_stat_unregister_event(struct mem_cgroup *memcg,
+	struct eventfd_ctx *eventfd, enum mem_lat_stat_item sidx)
+{
+	struct mem_cgroup_eventfd_list *evt, *tmp;
+
+	mutex_lock(&memcg->lat_stat_notify_lock);
+
+	list_for_each_entry_safe(evt, tmp, &memcg->lat_stat_notify[sidx],
+				 list) {
+		if (evt->eventfd == eventfd) {
+			list_del_rcu(&evt->list);
+			kfree_rcu(evt, rcu);
+		}
+	}
+
+	mutex_unlock(&memcg->lat_stat_notify_lock);
+}
+
+#define MEMCG_LAT_STAT_REGISTER_EVENT(name, sidx)			    \
+static int register_event_##name(struct mem_cgroup *memcg,		    \
+	struct eventfd_ctx *eventfd, const char *args)			    \
+{									    \
+	return __memcg_lat_stat_register_event(memcg, eventfd, args, sidx); \
+}									    \
+static void unregister_event_##name(struct mem_cgroup *memcg,		    \
+	struct eventfd_ctx *eventfd)					    \
+{									    \
+	return __memcg_lat_stat_unregister_event(memcg, eventfd, sidx);	    \
+}
+
+MEMCG_LAT_STAT_REGISTER_EVENT(global_direct_reclaim,
+			      MEM_LAT_GLOBAL_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_REGISTER_EVENT(memcg_direct_reclaim,
+			      MEM_LAT_MEMCG_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_REGISTER_EVENT(direct_compact,
+			      MEM_LAT_DIRECT_COMPACT)
+MEMCG_LAT_STAT_REGISTER_EVENT(global_direct_swapout,
+			      MEM_LAT_GLOBAL_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_REGISTER_EVENT(memcg_direct_swapout,
+			      MEM_LAT_MEMCG_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_REGISTER_EVENT(direct_swapin,
+			      MEM_LAT_DIRECT_SWAPIN)
+
+static void memcg_lat_stat_notify_event(struct mem_cgroup *memcg,
+					enum mem_lat_stat_item sidx)
+{
+	struct mem_cgroup_eventfd_list *evt;
+
+	rcu_read_lock();
+
+	list_for_each_entry_rcu(evt, &memcg->lat_stat_notify[sidx], list)
+		eventfd_signal(evt->eventfd, 1);
+
+	rcu_read_unlock();
+}
+
+static enum mem_lat_count_t get_mem_lat_count_idx(u64 duration)
+{
+	enum mem_lat_count_t idx;
+
+	duration = duration >> 20;
+	if (duration < 1)
+		idx = MEM_LAT_0_1;
+	else if (duration < 5)
+		idx = MEM_LAT_1_5;
+	else if (duration < 10)
+		idx = MEM_LAT_5_10;
+	else if (duration < 100)
+		idx = MEM_LAT_10_100;
+	else if (duration < 500)
+		idx = MEM_LAT_100_500;
+	else if (duration < 1000)
+		idx = MEM_LAT_500_1000;
+	else
+		idx = MEM_LAT_1000_INF;
+
+	return idx;
+}
+
+void memcg_lat_stat_start(u64 *start)
+{
+	if (!static_branch_unlikely(&cgroup_memory_nosli) &&
+	    !mem_cgroup_disabled())
+		*start = ktime_get_ns();
+	else
+		*start = 0;
+}
+
+void memcg_lat_stat_end(enum mem_lat_stat_item sidx, u64 start)
+{
+	struct mem_cgroup *memcg, *iter;
+	enum mem_lat_count_t cidx;
+	u64 duration;
+
+	if (static_branch_unlikely(&cgroup_memory_nosli) ||
+	    mem_cgroup_disabled())
+		return;
+
+	if (start == 0)
+		return;
+
+	duration = ktime_get_ns() - start;
+	cidx = get_mem_lat_count_idx(duration);
+	memcg = get_mem_cgroup_from_mm(current->mm);
+	for (iter = memcg; iter; iter = parent_mem_cgroup(iter)) {
+		this_cpu_inc(iter->lat_stat_cpu->item[sidx][cidx]);
+		this_cpu_add(iter->lat_stat_cpu->item[sidx][MEM_LAT_TOTAL],
+			       duration);
+		memcg_lat_stat_notify_event(iter, sidx);
+	}
+	css_put(&memcg->css);
+}
+#endif /* CONFIG_MEMSLI */
+
 static u64 mem_cgroup_priority_read(struct cgroup_subsys_state *css,
 				struct cftype *cft)
 {
@@ -5589,6 +5817,26 @@ static ssize_t memcg_write_event_control(struct kernfs_open_file *of,
 	} else if (!strcmp(name, "memory.memsw.usage_in_bytes")) {
 		event->register_event = memsw_cgroup_usage_register_event;
 		event->unregister_event = memsw_cgroup_usage_unregister_event;
+#ifdef CONFIG_MEMSLI
+	} else if (!strcmp(name, "memory.direct_reclaim_global_latency")) {
+		event->register_event = register_event_global_direct_reclaim;
+		event->unregister_event = unregister_event_global_direct_reclaim;
+	} else if (!strcmp(name, "memory.direct_reclaim_memcg_latency")) {
+		event->register_event = register_event_memcg_direct_reclaim;
+		event->unregister_event = unregister_event_memcg_direct_reclaim;
+	} else if (!strcmp(name, "memory.direct_compact_latency")) {
+		event->register_event = register_event_direct_compact;
+		event->unregister_event = unregister_event_direct_compact;
+	} else if (!strcmp(name, "memory.direct_swapout_global_latency")) {
+		event->register_event = register_event_global_direct_swapout;
+		event->unregister_event = unregister_event_global_direct_swapout;
+	} else if (!strcmp(name, "memory.direct_swapout_memcg_latency")) {
+		event->register_event = register_event_memcg_direct_swapout;
+		event->unregister_event = unregister_event_memcg_direct_swapout;
+	} else if (!strcmp(name, "memory.direct_swapin_latency")) {
+		event->register_event = register_event_direct_swapin;
+		event->unregister_event = unregister_event_direct_swapin;
+#endif
 	} else {
 		ret = -EINVAL;
 		goto out_put_cfile;
@@ -5791,6 +6039,44 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.name = "stat",
 		.seq_show = memory_stat_show,
 	},
+#ifdef CONFIG_MEMSLI
+	{
+		.name = "direct_reclaim_global_latency",
+		.private = MEM_LAT_GLOBAL_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_reclaim_memcg_latency",
+		.private = MEM_LAT_MEMCG_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_compact_latency",
+		.private = MEM_LAT_DIRECT_COMPACT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_global_latency",
+		.private = MEM_LAT_GLOBAL_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_memcg_latency",
+		.private = MEM_LAT_MEMCG_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapin_latency",
+		.private = MEM_LAT_DIRECT_SWAPIN,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+#endif /* CONFIG_MEMSLI */
 	{
 		.name = "exstat",
 		.seq_show = memcg_exstat_show,
@@ -6116,6 +6402,9 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	kfree(memcg->vmstats);
 	free_percpu(memcg->vmstats_percpu);
 	free_percpu(memcg->exstat_cpu);
+#ifdef CONFIG_MEMSLI
+	free_percpu(memcg->lat_stat_cpu);
+#endif
 	kfree(memcg);
 }
 
@@ -6151,6 +6440,16 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 						 GFP_KERNEL_ACCOUNT);
 	if (!memcg->vmstats_percpu)
 		goto fail;
+
+#ifdef CONFIG_MEMSLI
+	memcg->lat_stat_cpu = alloc_percpu_gfp(struct mem_cgroup_lat_stat_cpu,
+					       GFP_KERNEL_ACCOUNT);
+	if (!memcg->lat_stat_cpu)
+		goto fail;
+	for (i = 0; i < MEM_LAT_NR_STAT; i++)
+		INIT_LIST_HEAD(&memcg->lat_stat_notify[i]);
+	mutex_init(&memcg->lat_stat_notify_lock);
+#endif
 
 	memcg->exstat_cpu = alloc_percpu(struct mem_cgroup_exstat_cpu);
 	if (!memcg->exstat_cpu)
@@ -7715,6 +8014,48 @@ static struct cftype memory_files[] = {
 		.seq_show = memory_wmark_scale_factor_show,
 		.write = memory_wmark_scale_factor_write,
 	},
+#ifdef CONFIG_MEMSLI
+	{
+		.name = "direct_reclaim_global_latency",
+		.private = MEM_LAT_GLOBAL_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_reclaim_memcg_latency",
+		.private = MEM_LAT_MEMCG_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_compact_latency",
+		.private = MEM_LAT_DIRECT_COMPACT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_global_latency",
+		.private = MEM_LAT_GLOBAL_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_memcg_latency",
+		.private = MEM_LAT_MEMCG_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapin_latency",
+		.private = MEM_LAT_DIRECT_SWAPIN,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+#endif /* CONFIG_MEMSLI */
+	{
+		.name = "exstat",
+		.seq_show = memcg_exstat_show,
+	},
 	{
 		.name = "events",
 		.flags = CFTYPE_NOT_ON_ROOT,
@@ -8361,6 +8702,58 @@ static int __init enable_cgroup_writeback_v1(char *s)
 __setup("cgwb_v1", enable_cgroup_writeback_v1);
 #endif
 
+#ifdef CONFIG_MEMSLI
+static int memsli_enabled_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", !static_key_enabled(&cgroup_memory_nosli));
+	return 0;
+}
+
+static int memsli_enabled_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, memsli_enabled_show, NULL);
+}
+
+static ssize_t memsli_enabled_write(struct file *file, const char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	char val = -1;
+	int ret = count;
+
+	if (count < 1 || *ppos) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (copy_from_user(&val, ubuf, 1)) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	switch (val) {
+	case '0':
+		static_branch_enable(&cgroup_memory_nosli);
+		break;
+	case '1':
+		static_branch_disable(&cgroup_memory_nosli);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+out:
+	return ret;
+}
+
+static const struct proc_ops memsli_enabled_proc_ops = {
+	.proc_open	= memsli_enabled_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_write	= memsli_enabled_write,
+	.proc_release	= single_release,
+};
+#endif /* CONFIG_MEMSLI */
+
 /*
  * subsys_initcall() for memory controller.
  *
@@ -8372,6 +8765,10 @@ __setup("cgwb_v1", enable_cgroup_writeback_v1);
 static int __init mem_cgroup_init(void)
 {
 	int cpu, node;
+#ifdef CONFIG_MEMSLI
+	proc_mkdir("memsli", NULL);
+	proc_create("memsli/enabled", 0600, NULL, &memsli_enabled_proc_ops);
+#endif /* CONFIG_MEMSLI */
 
 	/*
 	 * Currently s32 type (can refer to struct batched_lruvec_stat) is
