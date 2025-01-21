@@ -1630,6 +1630,7 @@ struct task_struct {
 		struct bio		*wait_bio;
 	};
 	unsigned long wait_moment;
+	bool				proxy_exec;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -2666,5 +2667,12 @@ void create_rich_container_reaper(struct task_struct *tsk);
 #else
 static inline void create_rich_container_reaper(struct task_struct *tsk) { }
 #endif
-
+extern void sched_move_task_to_root_task_group(struct task_struct *tsk,
+					       bool proxy_exec_for_highclass);
+extern void sched_move_task_to_origin_task_group(struct task_struct *tsk);
+DECLARE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
+static inline bool jbd2_proxy_exec_disabled(void)
+{
+	return !static_branch_unlikely(&__jbd2_proxy_exec_enabled);
+}
 #endif
