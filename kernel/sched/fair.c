@@ -547,6 +547,11 @@ static int se_is_idle(struct sched_entity *se)
 
 #endif	/* CONFIG_FAIR_GROUP_SCHED */
 
+int task_is_idle(struct task_struct *p)
+{
+	return task_has_idle_policy(p) || cfs_rq_is_idle(group_cfs_rq(&p->se));
+}
+
 static __always_inline
 void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec);
 
