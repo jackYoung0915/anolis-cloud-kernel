@@ -1346,6 +1346,14 @@ out:
 static void __update_identity(struct task_group *tg, int flags);
 static int tg_clear_identity_down(struct task_group *tg, void *data)
 {
+	bool enable = data;
+
+	if (enable) {
+		/* We're ready to enable group identity, clear the old data. */
+		tg->bvt_warp_ns = tg->id_flags = 0;
+		return 0;
+	}
+
 	if (tg->bvt_warp_ns || tg->id_flags) {
 		__update_identity(tg, 0);
 		tg->bvt_warp_ns = 0;
@@ -1374,8 +1382,8 @@ static inline void group_identity_flip(bool enable)
 
 	cpus_read_lock();
 
+	walk_tg_tree(tg_clear_identity_down, tg_nop, (void *)enable);
 	if (!enable) {
-		walk_tg_tree(tg_clear_identity_down, tg_nop, NULL);
 		task_clear_identity();
 	}
 	stop_machine(__group_identity_flip, &enable, cpu_online_mask);
@@ -1703,8 +1711,13 @@ int update_identity(struct task_group *tg, struct task_struct *p, s64 val)
 	}
 
 	if (group_identity_disabled()) {
-		/* For compatibility, allow setting identity when disabled. */
-		tg->id_flags = val;
+		if (tg) {
+			/* For compatibility, allow setting tg identity when disabled. */
+			tg->id_flags = val;
+		} else {
+			/* Unlike tg, task->se.id_flags will be used directly. Cannot set. */
+			ret = -EINVAL;
+		}
 		goto unlock;
 	}
 
