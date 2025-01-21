@@ -1303,6 +1303,9 @@ struct journal_s
 	 */
 	struct lockdep_map	j_trans_commit_map;
 #endif
+	atomic_t proxy_exec_refcount;
+	bool proxy_exec;
+	bool proxy_exec_for_highclass;
 
 	/**
 	 * @j_fc_cleanup_callback:
@@ -1869,4 +1872,34 @@ static inline int jbd2_handle_buffer_credits(handle_t *handle)
 #define EFSBADCRC	EBADMSG		/* Bad CRC detected */
 #define EFSCORRUPTED	EUCLEAN		/* Filesystem is corrupted */
 
+DECLARE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
+/*
+ * When we get lock, we determine whether the proxy exec path should be taken based on
+ * the user's configuration.
+ * When we release lock, we determin whether the proxy exec path should be taken based
+ * on whether current->proxy_exec is true, to prevent some tasks from staying in the
+ * root task group forever.
+ */
+static inline bool jbd2_proxy_exec_enabled(journal_t *journal, bool lock)
+{
+	if (!static_branch_unlikely(&__jbd2_proxy_exec_enabled))
+		return false;
+
+	if (lock)
+		return journal->proxy_exec;
+
+	return current->proxy_exec;
+}
+
+/*
+ * When get lock, we call jbd2_proxy_exec_try_get().
+ * To avoid the race window between read and add operations, we use atomic_inc_not_zero(),
+ * and if journal->proxy_exec_refcount is zero, return false.
+ */
+static inline bool jbd2_proxy_exec_try_get(journal_t *journal)
+{
+	return atomic_inc_not_zero(&journal->proxy_exec_refcount);
+}
+
+extern void jbd2_proxy_exec_put(journal_t *journal);
 #endif	/* _LINUX_JBD2_H */
