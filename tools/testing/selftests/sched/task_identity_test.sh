@@ -6,15 +6,19 @@
 
 GI_PATH=/proc/sys/kernel/sched_group_identity_enabled
 gi_bak=$(cat $GI_PATH)
+CS_PATH=/proc/sys/kernel/sched_core
+cs_bak=$(cat $CS_PATH)
 SCRIPT_PATH=$(dirname "$0")
 
 cleanup() {
 	echo 0 > $GI_PATH
 	echo $gi_bak > $GI_PATH
+	echo $cs_bak > $CS_PATH
 	exit $1
 }
 
 ksoftirqd_pid=$(pgrep -n "ksoftirqd/")
+echo 0 > $CS_PATH
 
 # should get 0 when gi disabled
 echo 0 > $GI_PATH
