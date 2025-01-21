@@ -726,15 +726,98 @@ extern int clear_identity(struct task_group *tg);
 extern void notify_smt_expeller(struct rq *rq, struct task_struct *p);
 extern unsigned int id_nr_invalid(struct rq *rq);
 extern void update_id_idle_avg(struct rq *rq, u64 delta);
-extern bool is_underclass(struct sched_entity *se);
-extern bool is_underclass_task(struct task_struct *p);
+static inline bool group_identity_disabled(void);
+
+#define ID_NORMAL		0x0000
+#define ID_UNDERCLASS		0x0001
+#define ID_HIGHCLASS		0x0002
+#define ID_SMT_EXPELLER		0x0004
+#define ID_IDLE_SAVER		0x0008
+#define ID_IDLE_SEEKER		0x0010
+#define IDENTITY_FLAGS_MASK	0x00ff
+
+/*
+ * When we talking about identity, there are two viewpoint, that is
+ * level-view and top-view.
+ *
+ * Helpers like is_xxx() is for level-view, usually for the comparison
+ * of two se from the same level, their identity depends on the task
+ * group they standing for, and normal task will never got identity.
+ *
+ * Helpers like is_xxx_task() is for top-view, usually for the task
+ * scheduling decisions, to estimate the cpu situation for tasks.
+ *
+ * To be noticed, identity of task on top-view depends on the identity
+ * of it's group, for example we consider a task from the underclass
+ * group as a underclass task, depite of the fact that it may be the
+ * descendant of a highclass group.
+ */
+static inline bool test_identity(struct sched_entity *se, int flags)
+{
+	return se->id_flags & flags;
+}
+
+static inline bool __is_underclass(struct sched_entity *se)
+{
+	return test_identity(se, ID_UNDERCLASS);
+}
+
+static inline bool is_underclass(struct sched_entity *se)
+{
+	if (group_identity_disabled())
+		return false;
+	return __is_underclass(se);
+}
+
+static inline bool __is_highclass(struct sched_entity *se)
+{
+	return test_identity(se, ID_HIGHCLASS);
+}
+
+static inline bool __is_underclass_task(struct task_struct *p)
+{
+	struct sched_entity *se = p->se.parent ? : &p->se;
+	bool ret;
+
+	rcu_read_lock();
+	ret = __is_underclass(se);
+	rcu_read_unlock();
+	return ret;
+}
+
+static inline bool __is_highclass_task(struct task_struct *p)
+{
+	struct sched_entity *se = p->se.parent ? : &p->se;
+	bool ret;
+
+	rcu_read_lock();
+	ret = __is_highclass(se);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+static inline bool is_underclass_task(struct task_struct *p)
+{
+	if (group_identity_disabled())
+		return false;
+
+	return __is_underclass_task(p);
+}
+
+static inline bool is_highclass_task(struct task_struct *p)
+{
+	if (group_identity_disabled())
+		return false;
+
+	return __is_highclass_task(p);
+}
 
 static inline void clear_task_identity(struct task_struct *p)
 {
 	if (unlikely(p->se.id_flags))
 		update_identity(NULL, p, 0);
 }
-
 #ifdef CONFIG_SCHED_SMT
 extern bool rq_on_expel(struct rq *rq);
 extern void task_tick_gi(struct rq *rq);
@@ -748,6 +831,9 @@ static inline void notify_smt_expeller(struct rq *rq, struct task_struct *p) {}
 static inline unsigned int id_nr_invalid(struct rq *rq) { return 0; }
 static inline void update_id_idle_avg(struct rq *rq, u64 delta) {}
 static inline void task_tick_gi(struct rq *rq) { }
+static inline bool is_underclass(struct sched_entity *curr) { return false; }
+static inline bool is_highclass_task(struct task_struct *p) { return false; }
+static inline bool is_underclass_task(struct task_struct *p) { return false; }
 #endif
 
 /* CFS-related fields in a runqueue */

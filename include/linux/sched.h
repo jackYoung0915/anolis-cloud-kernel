@@ -1511,6 +1511,7 @@ struct task_struct {
 	struct cpumask			cpus_allowed_alt;
 	int				soft_cpus_version;
 #endif
+	bool				proxy_exec;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -2410,5 +2411,12 @@ static inline void sched_check_group_identity_unlock(void) { }
 static inline bool sched_check_sched_core_lock(void) { return true; }
 static inline void sched_check_sched_core_unlock(void) { }
 #endif
-
+extern void sched_move_task_to_root_task_group(struct task_struct *tsk,
+					       bool proxy_exec_for_highclass);
+extern void sched_move_task_to_origin_task_group(struct task_struct *tsk);
+DECLARE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
+static inline bool jbd2_proxy_exec_disabled(void)
+{
+	return !static_branch_unlikely(&__jbd2_proxy_exec_enabled);
+}
 #endif
