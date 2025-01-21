@@ -1497,6 +1497,158 @@ static const struct proc_ops jbd2_stall_thresh_proc_ops = {
 	.proc_release           = single_release,
 };
 
+static atomic_t jbd2_proxy_exec_count;
+static DEFINE_MUTEX(jbd2_proxy_exec_mutex);
+DEFINE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
+
+/*
+ * When we enable proxy exec for journal, we call jbd2_proxy_exec_get().
+ * If we are the first one to enable, we'll also enable __jbd2_proxy_exec_enabled.
+ */
+void jbd2_proxy_exec_get(journal_t *journal)
+{
+	atomic_inc(&journal->proxy_exec_refcount);
+
+	if (atomic_inc_not_zero(&jbd2_proxy_exec_count))
+		return;
+
+	mutex_lock(&jbd2_proxy_exec_mutex);
+	if (!atomic_read(&jbd2_proxy_exec_count))
+		static_branch_enable(&__jbd2_proxy_exec_enabled);
+
+	/* Ensure the static branch is enabled before we increase jbd2_proxy_exec_count. */
+	smp_mb__before_atomic();
+	atomic_inc(&jbd2_proxy_exec_count);
+	mutex_unlock(&jbd2_proxy_exec_mutex);
+}
+
+/*
+ * When we disable proxy exec for journal or release lock, we call jbd2_proxy_exec_put().
+ * If we are the last one to disable proxy exec, we'll also disable __jbd2_proxy_exec_enabled.
+ */
+void jbd2_proxy_exec_put(journal_t *journal)
+{
+	if (!atomic_dec_and_test(&journal->proxy_exec_refcount))
+		return;
+
+	if (atomic_dec_and_mutex_lock(&jbd2_proxy_exec_count, &jbd2_proxy_exec_mutex)) {
+		static_branch_disable(&__jbd2_proxy_exec_enabled);
+		mutex_unlock(&jbd2_proxy_exec_mutex);
+	}
+}
+
+static int jbd2_seq_proxy_exec_show(struct seq_file *m, void *v)
+{
+	journal_t *journal = m->private;
+
+	seq_printf(m, "%d\n", journal->proxy_exec);
+	return 0;
+}
+
+static int jbd2_seq_proxy_exec_open(struct inode *inode, struct file *filp)
+{
+	journal_t *journal = pde_data(inode);
+
+	return single_open(filp, jbd2_seq_proxy_exec_show, journal);
+}
+
+static ssize_t jbd2_seq_proxy_exec_write(struct file *file,
+			const char __user *buf, size_t count, loff_t *offset)
+{
+	struct inode *inode = file_inode(file);
+	journal_t *journal = pde_data(inode);
+	char buffer[PROC_NUMBUF];
+	unsigned long long proxy_exec;
+	int err;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count)) {
+		err = -EFAULT;
+		goto out;
+	}
+
+	err = kstrtoull(strstrip(buffer), 0, &proxy_exec);
+	if (err)
+		goto out;
+	if (proxy_exec != 0 && proxy_exec != 1) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	if (!journal->proxy_exec && proxy_exec)
+		jbd2_proxy_exec_get(journal);
+	else if (journal->proxy_exec && !proxy_exec)
+		jbd2_proxy_exec_put(journal);
+
+	WRITE_ONCE(journal->proxy_exec, proxy_exec);
+
+out:
+	return err < 0 ? err : count;
+}
+
+
+static const struct proc_ops jbd2_proxy_exec_proc_ops = {
+	.proc_open              = jbd2_seq_proxy_exec_open,
+	.proc_read              = seq_read,
+	.proc_write             = jbd2_seq_proxy_exec_write,
+	.proc_lseek             = seq_lseek,
+	.proc_release           = single_release,
+};
+
+static int jbd2_seq_proxy_exec_for_highclass_show(struct seq_file *m, void *v)
+{
+	journal_t *journal = m->private;
+
+	seq_printf(m, "%d\n", journal->proxy_exec_for_highclass);
+	return 0;
+}
+
+static int jbd2_seq_proxy_exec_for_highclass_open(struct inode *inode, struct file *filp)
+{
+	journal_t *journal = pde_data(inode);
+
+	return single_open(filp, jbd2_seq_proxy_exec_for_highclass_show, journal);
+}
+
+static ssize_t jbd2_seq_proxy_exec_for_highclass_write(struct file *file,
+			const char __user *buf, size_t count, loff_t *offset)
+{
+	struct inode *inode = file_inode(file);
+	journal_t *journal = pde_data(inode);
+	char buffer[PROC_NUMBUF];
+	unsigned long long proxy_exec_for_highclass;
+	int err;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count)) {
+		err = -EFAULT;
+		goto out;
+	}
+
+	err = kstrtoull(strstrip(buffer), 0, &proxy_exec_for_highclass);
+	if (err)
+		goto out;
+	if (proxy_exec_for_highclass != 0 && proxy_exec_for_highclass != 1) {
+		err = -EINVAL;
+		goto out;
+	}
+	WRITE_ONCE(journal->proxy_exec_for_highclass, proxy_exec_for_highclass);
+out:
+	return err < 0 ? err : count;
+}
+
+static const struct proc_ops jbd2_proxy_exec_for_highclass_proc_ops = {
+	.proc_open              = jbd2_seq_proxy_exec_for_highclass_open,
+	.proc_read              = seq_read,
+	.proc_write             = jbd2_seq_proxy_exec_for_highclass_write,
+	.proc_lseek             = seq_lseek,
+	.proc_release           = single_release,
+};
+
 static struct proc_dir_entry *proc_jbd2_stats;
 
 static void jbd2_stats_proc_init(journal_t *journal)
@@ -1511,6 +1663,10 @@ static void jbd2_stats_proc_init(journal_t *journal)
 				 &jbd2_stats_proc_ops, journal);
 		proc_create_data("stall_thresh", 0644, journal->j_proc_entry,
 				 &jbd2_stall_thresh_proc_ops, journal);
+		proc_create_data("proxy_exec", 0644, journal->j_proc_entry,
+				&jbd2_proxy_exec_proc_ops, journal);
+		proc_create_data("proxy_exec_for_highclass", 0644, journal->j_proc_entry,
+				&jbd2_proxy_exec_for_highclass_proc_ops, journal);
 	}
 }
 
@@ -1520,6 +1676,8 @@ static void jbd2_stats_proc_exit(journal_t *journal)
 	remove_proc_entry("force_copy", journal->j_proc_entry);
 	remove_proc_entry("stats", journal->j_proc_entry);
 	remove_proc_entry("stall_thresh", journal->j_proc_entry);
+	remove_proc_entry("proxy_exec", journal->j_proc_entry);
+	remove_proc_entry("proxy_exec_for_highclass", journal->j_proc_entry);
 	remove_proc_entry(journal->j_devname, proc_jbd2_stats);
 }
 
@@ -1993,6 +2151,9 @@ journal_t *jbd2_journal_init_inode(struct inode *inode)
 		 "%pg-%lu", journal->j_dev, journal->j_inode->i_ino);
 	strreplace(journal->j_devname, '/', '!');
 	jbd2_stats_proc_init(journal);
+	atomic_set(&journal->proxy_exec_refcount, 0);
+	journal->proxy_exec = false;
+	journal->proxy_exec_for_highclass = false;
 
 	return journal;
 }
