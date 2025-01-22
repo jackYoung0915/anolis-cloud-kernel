@@ -5031,6 +5031,7 @@ out_mutex:
 out_unlock:
 	if (ret == VM_FAULT_RETRY) {
 		page = find_get_page(mapping, idx);
+		mmap_read_unlock(mm);
 		if (page)
 			put_and_wait_on_page_locked(page);
 	}
