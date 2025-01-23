@@ -1623,9 +1623,11 @@ static void sunway_iommu_probe_finalize(struct device *dev)
 	domain = iommu_get_domain_for_dev(dev);
 	if (domain->type == IOMMU_DOMAIN_DMA) {
 		if (min(dev->coherent_dma_mask, *dev->dma_mask) == DMA_BIT_MASK(32))
-			iommu_setup_dma_ops(dev, SW64_DMA_START, SW64_32BIT_DMA_LIMIT);
+			iommu_setup_dma_ops(dev,
+				SW64_DMA_START, SW64_32BIT_DMA_LIMIT - SW64_DMA_START);
 		else
-			iommu_setup_dma_ops(dev, SW64_DMA_START, SW64_64BIT_DMA_LIMIT);
+			iommu_setup_dma_ops(dev,
+				SW64_DMA_START, SW64_64BIT_DMA_LIMIT - SW64_DMA_START);
 	} else
 		set_dma_ops(dev, get_arch_dma_ops(dev->bus));
 }
