@@ -606,6 +606,7 @@ static int iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 	const struct iomap *srcmap = iomap_iter_srcmap(iter);
 	struct page *page;
 	int status = 0;
+	unsigned int flags = AOP_FLAG_NOFS;
 
 	BUG_ON(pos + len > iter->iomap.offset + iter->iomap.length);
 	if (srcmap != &iter->iomap)
@@ -620,8 +621,11 @@ static int iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 			return status;
 	}
 
+	if (iter->flags & IOMAP_DONTCACHE)
+		flags |= AOP_FLAG_DONTCACHE;
+
 	page = grab_cache_page_write_begin(iter->inode->i_mapping,
-				pos >> PAGE_SHIFT, AOP_FLAG_NOFS);
+				pos >> PAGE_SHIFT, flags);
 	if (!page) {
 		status = -ENOMEM;
 		goto out_no_page;
@@ -835,6 +839,9 @@ iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *i,
 		.flags		= IOMAP_WRITE,
 	};
 	int ret;
+
+	if (iocb->ki_flags & IOCB_DONTCACHE)
+		iter.flags |= IOMAP_DONTCACHE;
 
 	while ((ret = iomap_iter(&iter, ops)) > 0)
 		iter.processed = iomap_write_iter(&iter, i);

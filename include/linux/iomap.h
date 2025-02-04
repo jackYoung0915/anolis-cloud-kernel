@@ -144,6 +144,7 @@ struct iomap_page_ops {
 #else
 #define IOMAP_DAX		0
 #endif /* CONFIG_FS_DAX */
+#define IOMAP_DONTCACHE		(1 << 10)
 
 struct iomap_ops {
 	/*
