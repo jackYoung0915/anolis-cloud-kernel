@@ -3515,6 +3515,8 @@ struct page *grab_cache_page_write_begin(struct address_space *mapping,
 
 	if (flags & AOP_FLAG_NOFS)
 		fgp_flags |= FGP_NOFS;
+	if (flags & AOP_FLAG_DONTCACHE)
+		fgp_flags |= FGP_DONTCACHE;
 
 	page = pagecache_get_page(mapping, index, fgp_flags,
 			mapping_gfp_mask(mapping));
