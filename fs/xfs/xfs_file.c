@@ -1472,7 +1472,8 @@ const struct file_operations xfs_file_operations = {
 	.fallocate	= xfs_file_fallocate,
 	.fadvise	= xfs_file_fadvise,
 	.remap_file_range = xfs_file_remap_range,
-	.fop_flags      = FOP_MMAP_SYNC | FOP_BUFFER_RASYNC,
+	.fop_flags      = FOP_MMAP_SYNC | FOP_BUFFER_RASYNC |
+			  FOP_DONTCACHE,
 };
 
 const struct file_operations xfs_dir_file_operations = {
