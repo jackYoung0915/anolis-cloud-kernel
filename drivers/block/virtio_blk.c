@@ -16,6 +16,10 @@
 #include <linux/blk-mq-virtio.h>
 #include <linux/numa.h>
 #include <uapi/linux/virtio_ring.h>
+#include <linux/cdev.h>
+#include <linux/io_uring.h>
+#include <linux/types.h>
+#include <linux/uio.h>
 
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
@@ -23,6 +27,7 @@
 
 /* The maximum number of sg elements that fit into a virtqueue */
 #define VIRTIO_BLK_MAX_SG_ELEMS 32768
+#define VIRTBLK_MINORS		(1U << MINORBITS)
 
 #ifdef CONFIG_ARCH_NO_SG_CHAIN
 #define VIRTIO_BLK_INLINE_SG_CNT	0
@@ -44,7 +49,16 @@ MODULE_PARM_DESC(poll_queues, "The number of dedicated virtqueues for polling I/
 static int major;
 static DEFINE_IDA(vd_index_ida);
 
+static DEFINE_IDA(vd_chr_minor_ida);
+static dev_t vd_chr_devt;
+static struct class *vd_chr_class;
+
 static struct workqueue_struct *virtblk_wq;
+
+struct virtblk_uring_cmd_pdu {
+	struct request *req;
+	struct bio *bio;
+};
 
 struct virtio_blk_vq {
 	struct virtqueue *vq;
@@ -87,14 +101,27 @@ struct virtio_blk {
 	int num_vqs;
 	int io_queues[HCTX_MAX_TYPES];
 	struct virtio_blk_vq *vqs;
+
+	struct cdev cdev;
+	struct device cdev_device;
 };
 
 struct virtblk_req {
 	struct virtio_blk_outhdr out_hdr;
 	u8 status;
 	struct sg_table sg_table;
+	struct sg_table sg_table_extra;
 	struct scatterlist sg[];
 };
+
+#define virtblk_bio_set_disk(bio, disk)			\
+do {							\
+	if ((bio)->bi_disk != disk)			\
+		bio_clear_flag(bio, BIO_BPS_THROTTLED);	\
+	(bio)->bi_disk = disk;				\
+	(bio)->bi_partno = 0;				\
+	bio_associate_blkg(bio);			\
+} while (0)
 
 static inline blk_status_t virtblk_result(struct virtblk_req *vbr)
 {
@@ -114,6 +141,38 @@ static inline struct virtio_blk_vq *get_virtio_blk_vq(struct blk_mq_hw_ctx *hctx
 	struct virtio_blk_vq *vq = &vblk->vqs[hctx->queue_num];
 
 	return vq;
+}
+
+static inline bool vbr_is_bidirectional(struct virtblk_req *vbr)
+{
+	struct request *req = blk_mq_rq_from_pdu(vbr);
+
+	return op_is_bidirectional(req->cmd_flags);
+}
+
+static int virtblk_add_req_bidirectional(struct virtqueue *vq,
+		struct virtblk_req *vbr, struct scatterlist *data_sg,
+		struct scatterlist *data_sg_extra)
+{
+	struct scatterlist hdr, status, *sgs[4];
+	unsigned int num_out = 0, num_in = 0;
+
+	/*
+	 * vritblk_add_req use 'bool' have_data, while we use int num to
+	 * validate both OUT and IN direction have data. For bidirectional
+	 * request, __blk_bios_map_sg_bidir() should map at least 2 segments.
+	 */
+	if ((sg_nents(data_sg) == 0) || (sg_nents(data_sg_extra) == 0))
+		return -EINVAL;
+
+	sg_init_one(&hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
+	sg_init_one(&status, &vbr->status, sizeof(vbr->status));
+	sgs[num_out++] = &hdr;
+	sgs[num_out++] = data_sg;
+	sgs[num_out + num_in++] = data_sg_extra;
+	sgs[num_out + num_in++] = &status;
+
+	return virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
 }
 
 static int virtblk_add_req(struct virtqueue *vq, struct virtblk_req *vbr,
@@ -193,6 +252,46 @@ static void virtblk_unmap_data(struct request *req, struct virtblk_req *vbr)
 				      VIRTIO_BLK_INLINE_SG_CNT);
 }
 
+static void virtblk_unmap_data_bidirectional(struct request *req,
+					     struct virtblk_req *vbr)
+{
+	if (blk_rq_nr_phys_segments(req)) {
+		sg_free_table_chained(&vbr->sg_table,
+				      VIRTIO_BLK_INLINE_SG_CNT);
+		sg_free_table_chained(&vbr->sg_table_extra,
+				      VIRTIO_BLK_INLINE_SG_CNT);
+
+	}
+}
+
+static int virtblk_map_data_bidirectional(struct blk_mq_hw_ctx *hctx,
+				struct request *req, struct virtblk_req *vbr)
+{
+	int err;
+
+	vbr->sg_table.sgl = vbr->sg;
+	err = sg_alloc_table_chained(&vbr->sg_table,
+				     blk_rq_nr_phys_segments(req),
+				     vbr->sg_table.sgl,
+				     VIRTIO_BLK_INLINE_SG_CNT);
+	if (unlikely(err))
+		return -ENOMEM;
+
+	vbr->sg_table_extra.sgl = &vbr->sg[VIRTIO_BLK_INLINE_SG_CNT];
+	err = sg_alloc_table_chained(&vbr->sg_table_extra,
+				     blk_rq_nr_phys_segments(req),
+				     vbr->sg_table_extra.sgl,
+				     VIRTIO_BLK_INLINE_SG_CNT);
+	if (unlikely(err)) {
+		sg_free_table_chained(&vbr->sg_table,
+				      VIRTIO_BLK_INLINE_SG_CNT);
+		return -ENOMEM;
+	}
+
+	return blk_rq_map_sg_bidir(hctx->queue, req,
+				vbr->sg_table.sgl, vbr->sg_table_extra.sgl);
+}
+
 static int virtblk_map_data(struct blk_mq_hw_ctx *hctx, struct request *req,
 		struct virtblk_req *vbr)
 {
@@ -226,19 +325,16 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 {
 	bool unmap = false;
 	u32 type;
-
-	vbr->out_hdr.sector = 0;
+	u64 sector = 0;
 
 	switch (req_op(req)) {
 	case REQ_OP_READ:
 		type = VIRTIO_BLK_T_IN;
-		vbr->out_hdr.sector = cpu_to_virtio64(vdev,
-						      blk_rq_pos(req));
+		sector = blk_rq_pos(req);
 		break;
 	case REQ_OP_WRITE:
 		type = VIRTIO_BLK_T_OUT;
-		vbr->out_hdr.sector = cpu_to_virtio64(vdev,
-						      blk_rq_pos(req));
+		sector = blk_rq_pos(req);
 		break;
 	case REQ_OP_FLUSH:
 		type = VIRTIO_BLK_T_FLUSH;
@@ -251,14 +347,19 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 		unmap = !(req->cmd_flags & REQ_NOUNMAP);
 		break;
 	case REQ_OP_DRV_IN:
-		type = VIRTIO_BLK_T_GET_ID;
-		break;
+	case REQ_OP_DRV_OUT:
+		/* Out header already filled in, nothing to do
+		 * Attention, currently not support DISCARD and
+		 * WRITE_ZEROES for VIRTBLK_PASSTHROUGH.
+		 */
+		return 0;
 	default:
 		WARN_ON_ONCE(1);
 		return BLK_STS_IOERR;
 	}
 
 	vbr->out_hdr.type = cpu_to_virtio32(vdev, type);
+	vbr->out_hdr.sector = cpu_to_virtio64(vdev, sector);
 	vbr->out_hdr.ioprio = cpu_to_virtio32(vdev, req_get_ioprio(req));
 
 	if (type == VIRTIO_BLK_T_DISCARD || type == VIRTIO_BLK_T_WRITE_ZEROES) {
@@ -273,7 +374,10 @@ static inline void virtblk_request_done(struct request *req)
 {
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
 
-	virtblk_unmap_data(req, vbr);
+	if (vbr_is_bidirectional(vbr))
+		virtblk_unmap_data_bidirectional(req, vbr);
+	else
+		virtblk_unmap_data(req, vbr);
 	virtblk_cleanup_cmd(req);
 	blk_mq_end_request(req, virtblk_result(vbr));
 }
@@ -340,14 +444,25 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 	blk_mq_start_request(req);
 
-	num = virtblk_map_data(hctx, req, vbr);
+	if (vbr_is_bidirectional(vbr))
+		num = virtblk_map_data_bidirectional(hctx, req, vbr);
+	else
+		num = virtblk_map_data(hctx, req, vbr);
+
 	if (unlikely(num < 0)) {
 		virtblk_cleanup_cmd(req);
 		return BLK_STS_RESOURCE;
 	}
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
-	err = virtblk_add_req(vblk->vqs[qid].vq, vbr, vbr->sg_table.sgl, num);
+	if (vbr_is_bidirectional(vbr))
+		err = virtblk_add_req_bidirectional(vblk->vqs[qid].vq,
+				      vbr, vbr->sg_table.sgl,
+				      vbr->sg_table_extra.sgl);
+	else
+		err = virtblk_add_req(vblk->vqs[qid].vq, vbr,
+				      vbr->sg_table.sgl, num);
+
 	if (err) {
 		virtqueue_kick(vblk->vqs[qid].vq);
 		/* Don't stop the queue if -ENOMEM: we may have failed to
@@ -356,7 +471,10 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		if (err == -ENOSPC)
 			blk_mq_stop_hw_queue(hctx);
 		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
-		virtblk_unmap_data(req, vbr);
+		if (vbr_is_bidirectional(vbr))
+			virtblk_unmap_data_bidirectional(req, vbr);
+		else
+			virtblk_unmap_data(req, vbr);
 		virtblk_cleanup_cmd(req);
 		switch (err) {
 		case -ENOSPC:
@@ -384,18 +502,24 @@ static int virtblk_get_id(struct gendisk *disk, char *id_str)
 	struct virtio_blk *vblk = disk->private_data;
 	struct request_queue *q = vblk->disk->queue;
 	struct request *req;
+	struct virtblk_req *vbr;
 	int err;
 
 	req = blk_get_request(q, REQ_OP_DRV_IN, 0);
 	if (IS_ERR(req))
 		return PTR_ERR(req);
 
+	vbr = blk_mq_rq_to_pdu(req);
+	vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, VIRTIO_BLK_T_GET_ID);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, req_get_ioprio(req));
+	vbr->out_hdr.sector = 0;
+
 	err = blk_rq_map_kern(q, req, id_str, VIRTIO_BLK_ID_BYTES, GFP_KERNEL);
 	if (err)
 		goto out;
 
 	blk_execute_rq(vblk->disk, req, false);
-	err = blk_status_to_errno(virtblk_result(blk_mq_rq_to_pdu(req)));
+	err = blk_status_to_errno(virtblk_result(vbr));
 out:
 	blk_put_request(req);
 	return err;
@@ -415,9 +539,8 @@ static void virtblk_put(struct virtio_blk *vblk)
 	}
 }
 
-static int virtblk_open(struct block_device *bd, fmode_t mode)
+static int virtblk_device_open(struct virtio_blk *vblk)
 {
-	struct virtio_blk *vblk = bd->bd_disk->private_data;
 	int ret = 0;
 
 	mutex_lock(&vblk->vdev_mutex);
@@ -431,11 +554,19 @@ static int virtblk_open(struct block_device *bd, fmode_t mode)
 	return ret;
 }
 
+static void virtblk_device_release(struct virtio_blk *vblk)
+{
+	virtblk_put(vblk);
+}
+
+static int virtblk_open(struct block_device *bdev, fmode_t mode)
+{
+	return virtblk_device_open(bdev->bd_disk->private_data);
+}
+
 static void virtblk_release(struct gendisk *disk, fmode_t mode)
 {
-	struct virtio_blk *vblk = disk->private_data;
-
-	virtblk_put(vblk);
+	virtblk_device_release(disk->private_data);
 }
 
 /* We provide getgeo only to please some old bootloader/partitioning tools */
@@ -801,7 +932,11 @@ static void virtblk_complete_batch(struct io_comp_batch *iob)
 	struct request *req;
 
 	rq_list_for_each(&iob->req_list, req) {
-		virtblk_unmap_data(req, blk_mq_rq_to_pdu(req));
+		if (op_is_bidirectional(req->cmd_flags))
+			virtblk_unmap_data_bidirectional(req,
+						blk_mq_rq_to_pdu(req));
+		else
+			virtblk_unmap_data(req, blk_mq_rq_to_pdu(req));
 		virtblk_cleanup_cmd(req);
 	}
 	blk_mq_end_request_batch(iob);
@@ -844,6 +979,290 @@ static const struct blk_mq_ops virtio_mq_ops = {
 	.poll		= virtblk_poll,
 };
 
+static inline struct virtblk_uring_cmd_pdu *virtblk_uring_cmd_pdu(
+		struct io_uring_cmd *ioucmd)
+{
+	return io_uring_cmd_to_pdu(ioucmd, struct virtblk_uring_cmd_pdu);
+}
+
+static void virtblk_uring_task_cb(struct io_uring_cmd *ioucmd)
+{
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	struct virtblk_req *vbr = blk_mq_rq_to_pdu(pdu->req);
+
+	if (pdu->bio)
+		blk_rq_unmap_user(pdu->bio);
+	blk_mq_free_request(pdu->req);
+
+	/* currently result has no use, it should be zero as cqe->res */
+	io_uring_cmd_done(ioucmd, virtblk_result(vbr), 0);
+}
+
+static void virtblk_uring_cmd_end_io(struct request *req, blk_status_t err)
+{
+	struct io_uring_cmd *ioucmd = req->end_io_data;
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	/* extract bio before reusing the same field for request */
+	struct bio *bio = pdu->bio;
+	void *cookie = READ_ONCE(ioucmd->cookie);
+
+	pdu->req = req;
+	req->bio = bio;
+
+	/*
+	 * For iopoll, complete it directly.
+	 * Otherwise, move the completion to task work.
+	 */
+	if (cookie != NULL && blk_rq_is_poll(req))
+		virtblk_uring_task_cb(ioucmd);
+	else
+		io_uring_cmd_complete_in_task(ioucmd, virtblk_uring_task_cb);
+}
+
+static int virtblk_map_user_bidirectional(struct request *req, uintptr_t ubuffer,
+		unsigned int iov_count, unsigned int write_iov_count)
+{
+	int ret;
+
+	/*
+	 * USER command should ensure write_iov_count < iov_count
+	 */
+	if (write_iov_count >= iov_count)
+		return -EINVAL;
+
+	/*
+	 * now bidirectional only support READ-after-WRITE mode,
+	 * set WRITE first and clear it later.
+	 */
+	req->cmd_flags |= WRITE;
+	ret = blk_rq_map_user_io(req, NULL, (void __user *)ubuffer,
+				write_iov_count, GFP_KERNEL, true,
+				0, false, rq_data_dir(req));
+	if (ret)
+		return ret;
+
+	ubuffer += write_iov_count * sizeof(struct iovec);
+	req->cmd_flags &= ~WRITE;
+
+	ret = blk_rq_map_user_io(req, NULL, (void __user *)ubuffer,
+				(iov_count - write_iov_count), GFP_KERNEL,
+				true, 0, false, rq_data_dir(req));
+	if (ret)
+		blk_rq_unmap_user(req->bio);
+
+	return ret;
+}
+static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
+		unsigned int bufflen, bool vec, unsigned int num)
+{
+	struct request_queue *q = req->q;
+	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
+
+	if (vbr_is_bidirectional(vbr))
+		return virtblk_map_user_bidirectional(req, ubuffer,
+						      bufflen, num);
+
+	if (!vec)
+		return blk_rq_map_user(q, req, NULL, (void __user *)ubuffer,
+				       bufflen, GFP_KERNEL);
+
+	return blk_rq_map_user_io(req, NULL, (void __user *)ubuffer, bufflen,
+			GFP_KERNEL, true, 0, false, rq_data_dir(req));
+}
+
+static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
+		struct io_uring_cmd *ioucmd, unsigned int issue_flags, bool vec)
+{
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	const struct virtblk_uring_cmd *cmd = ioucmd->cmd;
+	struct request_queue *q = vblk->disk->queue;
+	struct virtblk_req *vbr;
+	struct request *req;
+	struct bio *bio;
+	unsigned int rq_flags = 0;
+	blk_mq_req_flags_t blk_flags = 0;
+	u32 type;
+	uintptr_t data;
+	unsigned long data_len, flag, write_iov_count;
+	int ret;
+
+	type = READ_ONCE(cmd->type);
+	flag = READ_ONCE(cmd->flag);
+	data = READ_ONCE(cmd->data);
+	data_len = READ_ONCE(cmd->data_len);
+	write_iov_count = READ_ONCE(cmd->write_iov_count);
+
+	/* Only support OUT and IN for uring_cmd currently */
+	if ((type != VIRTIO_BLK_T_OUT) && (type != VIRTIO_BLK_T_IN))
+		return -EOPNOTSUPP;
+
+	if (issue_flags & IO_URING_F_NONBLOCK) {
+		rq_flags = REQ_NOWAIT;
+		blk_flags = BLK_MQ_REQ_NOWAIT;
+	}
+	if (issue_flags & IO_URING_F_IOPOLL)
+		rq_flags |= REQ_POLLED;
+	if (flag & VIRTBLK_URING_F_BIDIR)
+		rq_flags |= REQ_BIDIR;
+	rq_flags |= (type & VIRTIO_BLK_T_OUT) ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN;
+retry:
+	req = blk_mq_alloc_request(q, rq_flags, blk_flags);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	req->rq_flags |= RQF_DONTPREP;
+	vbr = blk_mq_rq_to_pdu(req);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, READ_ONCE(cmd->ioprio));
+	vbr->out_hdr.sector = cpu_to_virtio64(vblk->vdev, READ_ONCE(cmd->sector));
+	vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, type);
+
+	if (data && data_len) {
+		ret = virtblk_map_user_request(req, data, data_len, vec, write_iov_count);
+		if (ret) {
+			blk_mq_free_request(req);
+			return ret;
+		}
+	} else {
+		/* user should ensure passthrough command have data */
+		blk_mq_free_request(req);
+		return -EINVAL;
+	}
+
+	if ((issue_flags & IO_URING_F_IOPOLL) && (rq_flags & REQ_POLLED)) {
+		if (unlikely(!req->bio)) {
+			/* we can't poll this, so alloc regular req instead */
+			blk_mq_free_request(req);
+			rq_flags &= ~REQ_POLLED;
+			goto retry;
+		} else {
+			WRITE_ONCE(ioucmd->cookie, req);
+			/* In fact, only first bio in req will use REQ_POLLED */
+			for (bio = req->bio; bio; bio = bio->bi_next)
+				req->bio->bi_opf |= REQ_POLLED;
+		}
+	}
+
+	/* to free bio on completion, as req->bio will be null at that time */
+	pdu->bio = req->bio;
+	req->end_io_data = ioucmd;
+	/* for bid command, req have more than one bio, should associate all */
+	for (bio = req->bio; bio; bio = bio->bi_next)
+		virtblk_bio_set_disk(bio, vblk->disk);
+
+	blk_execute_rq_nowait(NULL, req, 0, virtblk_uring_cmd_end_io);
+	return -EIOCBQUEUED;
+}
+
+static int virtblk_uring_cmd(struct virtio_blk *vblk, struct io_uring_cmd *ioucmd,
+			     unsigned int issue_flags)
+{
+	int ret;
+
+	/* currently we need 128 bytes sqe and 16 bytes cqe */
+	if ((issue_flags & IO_URING_F_SQE128) != IO_URING_F_SQE128)
+		return -EOPNOTSUPP;
+
+	switch (ioucmd->cmd_op) {
+	case VIRTBLK_URING_CMD_IO:
+		ret = virtblk_uring_cmd_io(vblk, ioucmd, issue_flags, false);
+		break;
+	case VIRTBLK_URING_CMD_IO_VEC:
+		ret = virtblk_uring_cmd_io(vblk, ioucmd, issue_flags, true);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+
+	return ret;
+}
+
+static int virtblk_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
+{
+	struct virtio_blk *vblk = container_of(file_inode(ioucmd->file)->i_cdev,
+			struct virtio_blk, cdev);
+
+	return virtblk_uring_cmd(vblk, ioucmd, issue_flags);
+}
+
+int virtblk_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
+				 struct io_comp_batch *iob, unsigned int poll_flags)
+{
+	struct request *req;
+	int ret = 0;
+	struct virtio_blk *vblk;
+	struct request_queue *q;
+
+	req = READ_ONCE(ioucmd->cookie);
+	vblk = container_of(file_inode(ioucmd->file)->i_cdev,
+			struct virtio_blk, cdev);
+	q = vblk->disk->queue;
+	if (test_bit(QUEUE_FLAG_POLL, &q->queue_flags))
+		ret = bio_poll(req->bio, iob, poll_flags);
+	return ret;
+}
+
+static int virtblk_chr_open(struct inode *inode, struct file *file)
+{
+	return virtblk_device_open(container_of(inode->i_cdev, struct virtio_blk, cdev));
+}
+
+static int virtblk_chr_release(struct inode *inode, struct file *file)
+{
+	virtblk_device_release(container_of(inode->i_cdev, struct virtio_blk, cdev));
+	return 0;
+}
+
+static const struct file_operations virtblk_chr_fops = {
+	.owner		= THIS_MODULE,
+	.open		= virtblk_chr_open,
+	.release	= virtblk_chr_release,
+	.uring_cmd	= virtblk_chr_uring_cmd,
+	.uring_cmd_iopoll = virtblk_chr_uring_cmd_iopoll,
+};
+
+static void virtblk_cdev_rel(struct device *dev)
+{
+	ida_free(&vd_chr_minor_ida, MINOR(dev->devt));
+}
+
+static void virtblk_cdev_del(struct cdev *cdev, struct device *cdev_device)
+{
+	cdev_device_del(cdev, cdev_device);
+	put_device(cdev_device);
+}
+
+static int virtblk_cdev_add(struct virtio_blk *vblk)
+{
+	struct cdev *cdev = &vblk->cdev;
+	struct device *cdev_device = &vblk->cdev_device;
+	int minor, ret;
+
+	minor = ida_alloc(&vd_chr_minor_ida, GFP_KERNEL);
+	if (minor < 0)
+		return minor;
+
+	device_initialize(cdev_device);
+	cdev_device->parent = &vblk->vdev->dev;
+	cdev_device->devt = MKDEV(MAJOR(vd_chr_devt), minor);
+	cdev_device->class = vd_chr_class;
+	cdev_device->release = virtblk_cdev_rel;
+
+	ret = dev_set_name(cdev_device, "%sc0", vblk->disk->disk_name);
+	if (ret)
+		goto fail;
+
+	cdev_init(cdev, &virtblk_chr_fops);
+	cdev->owner = THIS_MODULE;
+	ret = cdev_device_add(cdev, cdev_device);
+	if (ret)
+		goto fail;
+
+	return 0;
+fail:
+	put_device(cdev_device);
+	return ret;
+}
+
 static unsigned int virtblk_queue_depth;
 module_param_named(queue_depth, virtblk_queue_depth, uint, 0444);
 
@@ -882,7 +1301,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	/* Prevent integer overflows and honor max vq size */
 	sg_elems = min_t(u32, sg_elems, VIRTIO_BLK_MAX_SG_ELEMS - 2);
 
-	vdev->priv = vblk = kmalloc(sizeof(*vblk), GFP_KERNEL);
+	vdev->priv = vblk = kzalloc(sizeof(*vblk), GFP_KERNEL);
 	if (!vblk) {
 		err = -ENOMEM;
 		goto out_free_index;
@@ -922,9 +1341,15 @@ static int virtblk_probe(struct virtio_device *vdev)
 	vblk->tag_set.queue_depth = queue_depth;
 	vblk->tag_set.numa_node = NUMA_NO_NODE;
 	vblk->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
+	/* For bidirectional passthrough vblk request, both WRITE and READ
+	 * operations need pre-alloc inline SGs. So we should prealloc twice
+	 * the size than original ways. Due to the inability to predict whether
+	 * a request is bidirectional, there may be memory wastage, but won't
+	 * be significant.
+	 */
 	vblk->tag_set.cmd_size =
 		sizeof(struct virtblk_req) +
-		sizeof(struct scatterlist) * VIRTIO_BLK_INLINE_SG_CNT;
+		sizeof(struct scatterlist) * 2 * VIRTIO_BLK_INLINE_SG_CNT;
 	vblk->tag_set.driver_data = vblk;
 	vblk->tag_set.nr_hw_queues = vblk->num_vqs;
 	vblk->tag_set.nr_maps = 1;
@@ -1057,6 +1482,8 @@ static int virtblk_probe(struct virtio_device *vdev)
 	virtio_device_ready(vdev);
 
 	device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups);
+	WARN_ON(virtblk_cdev_add(vblk));
+
 	return 0;
 
 out_free_tags:
@@ -1080,6 +1507,8 @@ static void virtblk_remove(struct virtio_device *vdev)
 
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
+
+	virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
 
 	del_gendisk(vblk->disk);
 	blk_cleanup_queue(vblk->disk->queue);
@@ -1189,11 +1618,27 @@ static int __init init(void)
 		goto out_destroy_workqueue;
 	}
 
+	error = alloc_chrdev_region(&vd_chr_devt, 0, VIRTBLK_MINORS,
+				"vblk-generic");
+	if (error < 0)
+		goto out_unregister_blkdev;
+
+	vd_chr_class = class_create(THIS_MODULE, "vblk-generic");
+	if (IS_ERR(vd_chr_class)) {
+		error = PTR_ERR(vd_chr_class);
+		goto out_unregister_chardev;
+	}
+
 	error = register_virtio_driver(&virtio_blk);
 	if (error)
-		goto out_unregister_blkdev;
+		goto out_destroy_class;
+
 	return 0;
 
+out_destroy_class:
+	class_destroy(vd_chr_class);
+out_unregister_chardev:
+	unregister_chrdev_region(vd_chr_devt, VIRTBLK_MINORS);
 out_unregister_blkdev:
 	unregister_blkdev(major, "virtblk");
 out_destroy_workqueue:
@@ -1204,6 +1649,8 @@ out_destroy_workqueue:
 static void __exit fini(void)
 {
 	unregister_virtio_driver(&virtio_blk);
+	class_destroy(vd_chr_class);
+	unregister_chrdev_region(vd_chr_devt, VIRTBLK_MINORS);
 	unregister_blkdev(major, "virtblk");
 	destroy_workqueue(virtblk_wq);
 }
