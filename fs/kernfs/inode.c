@@ -106,9 +106,9 @@ int kernfs_setattr(struct kernfs_node *kn, const struct iattr *iattr)
 {
 	int ret;
 
-	down_write(&kernfs_rwsem);
+	mutex_lock(&kernfs_mutex);
 	ret = __kernfs_setattr(kn, iattr);
-	up_write(&kernfs_rwsem);
+	mutex_unlock(&kernfs_mutex);
 	return ret;
 }
 
@@ -121,7 +121,7 @@ int kernfs_iop_setattr(struct dentry *dentry, struct iattr *iattr)
 	if (!kn)
 		return -EINVAL;
 
-	down_write(&kernfs_rwsem);
+	mutex_lock(&kernfs_mutex);
 	error = setattr_prepare(dentry, iattr);
 	if (error)
 		goto out;
@@ -134,7 +134,7 @@ int kernfs_iop_setattr(struct dentry *dentry, struct iattr *iattr)
 	setattr_copy(inode, iattr);
 
 out:
-	up_write(&kernfs_rwsem);
+	mutex_unlock(&kernfs_mutex);
 	return error;
 }
 
@@ -189,9 +189,9 @@ int kernfs_iop_getattr(const struct path *path, struct kstat *stat,
 	struct inode *inode = d_inode(path->dentry);
 	struct kernfs_node *kn = inode->i_private;
 
-	down_write(&kernfs_rwsem);
+	mutex_lock(&kernfs_mutex);
 	kernfs_refresh_inode(kn, inode);
-	up_write(&kernfs_rwsem);
+	mutex_unlock(&kernfs_mutex);
 
 	generic_fillattr(inode, stat);
 	return 0;
@@ -281,9 +281,9 @@ int kernfs_iop_permission(struct inode *inode, int mask)
 
 	kn = inode->i_private;
 
-	down_write(&kernfs_rwsem);
+	mutex_lock(&kernfs_mutex);
 	kernfs_refresh_inode(kn, inode);
-	up_write(&kernfs_rwsem);
+	mutex_unlock(&kernfs_mutex);
 
 	return generic_permission(inode, mask);
 }
