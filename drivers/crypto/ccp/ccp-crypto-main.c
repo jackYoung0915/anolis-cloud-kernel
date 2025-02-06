@@ -62,8 +62,13 @@ struct ccp_crypto_queue {
 
 #define CCP_CRYPTO_MAX_QLEN	100
 
-static struct ccp_crypto_queue req_queue;
-static spinlock_t req_queue_lock;
+#define MAX_REQ_QUEUE_NUM	64
+struct ccp_req_queue {
+	struct ccp_crypto_queue req_queue;
+	spinlock_t req_queue_lock;
+};
+
+static struct ccp_req_queue req_queue_arr[MAX_REQ_QUEUE_NUM] = {0};
 
 struct ccp_crypto_cmd {
 	struct list_head entry;
@@ -80,6 +85,7 @@ struct ccp_crypto_cmd {
 
 	/* Used for held command processing to determine state */
 	int ret;
+	int req_queue_idx;
 };
 
 struct ccp_crypto_cpu {
@@ -102,16 +108,17 @@ static struct ccp_crypto_cmd *ccp_crypto_cmd_complete(
 {
 	struct ccp_crypto_cmd *held = NULL, *tmp;
 	unsigned long flags;
+	struct ccp_req_queue *req_queue_data = &req_queue_arr[crypto_cmd->req_queue_idx];
 
 	*backlog = NULL;
 
-	spin_lock_irqsave(&req_queue_lock, flags);
+	spin_lock_irqsave(&req_queue_data->req_queue_lock, flags);
 
 	/* Held cmds will be after the current cmd in the queue so start
 	 * searching for a cmd with a matching tfm for submission.
 	 */
 	tmp = crypto_cmd;
-	list_for_each_entry_continue(tmp, &req_queue.cmds, entry) {
+	list_for_each_entry_continue(tmp, &req_queue_data->req_queue.cmds, entry) {
 		if (crypto_cmd->tfm != tmp->tfm)
 			continue;
 		held = tmp;
@@ -122,25 +129,25 @@ static struct ccp_crypto_cmd *ccp_crypto_cmd_complete(
 	 *   Because cmds can be executed from any point in the cmd list
 	 *   special precautions have to be taken when handling the backlog.
 	 */
-	if (req_queue.backlog != &req_queue.cmds) {
+	if (req_queue_data->req_queue.backlog != &req_queue_data->req_queue.cmds) {
 		/* Skip over this cmd if it is the next backlog cmd */
-		if (req_queue.backlog == &crypto_cmd->entry)
-			req_queue.backlog = crypto_cmd->entry.next;
+		if (req_queue_data->req_queue.backlog == &crypto_cmd->entry)
+			req_queue_data->req_queue.backlog = crypto_cmd->entry.next;
 
-		*backlog = container_of(req_queue.backlog,
+		*backlog = container_of(req_queue_data->req_queue.backlog,
 					struct ccp_crypto_cmd, entry);
-		req_queue.backlog = req_queue.backlog->next;
+		req_queue_data->req_queue.backlog = req_queue_data->req_queue.backlog->next;
 
 		/* Skip over this cmd if it is now the next backlog cmd */
-		if (req_queue.backlog == &crypto_cmd->entry)
-			req_queue.backlog = crypto_cmd->entry.next;
+		if (req_queue_data->req_queue.backlog == &crypto_cmd->entry)
+			req_queue_data->req_queue.backlog = crypto_cmd->entry.next;
 	}
 
 	/* Remove the cmd entry from the list of cmds */
-	req_queue.cmd_count--;
+	req_queue_data->req_queue.cmd_count--;
 	list_del(&crypto_cmd->entry);
 
-	spin_unlock_irqrestore(&req_queue_lock, flags);
+	spin_unlock_irqrestore(&req_queue_data->req_queue_lock, flags);
 
 	return held;
 }
@@ -217,12 +224,15 @@ static int ccp_crypto_enqueue_cmd(struct ccp_crypto_cmd *crypto_cmd)
 	struct ccp_crypto_cmd *active = NULL, *tmp;
 	unsigned long flags;
 	bool free_cmd = true;
+	int req_queue_idx = current->pid % MAX_REQ_QUEUE_NUM;
+	struct ccp_req_queue *req_queue_data = &req_queue_arr[req_queue_idx];
 	int ret;
 
-	spin_lock_irqsave(&req_queue_lock, flags);
+	crypto_cmd->req_queue_idx =  req_queue_idx;
+	spin_lock_irqsave(&req_queue_data->req_queue_lock, flags);
 
 	/* Check if the cmd can/should be queued */
-	if (req_queue.cmd_count >= CCP_CRYPTO_MAX_QLEN) {
+	if (req_queue_data->req_queue.cmd_count >= CCP_CRYPTO_MAX_QLEN) {
 		if (!(crypto_cmd->cmd->flags & CCP_CMD_MAY_BACKLOG)) {
 			ret = -ENOSPC;
 			goto e_lock;
@@ -233,7 +243,7 @@ static int ccp_crypto_enqueue_cmd(struct ccp_crypto_cmd *crypto_cmd)
 	 * with the same tfm in the list then the current cmd cannot
 	 * be submitted to the CCP yet.
 	 */
-	list_for_each_entry(tmp, &req_queue.cmds, entry) {
+	list_for_each_entry(tmp, &req_queue_data->req_queue.cmds, entry) {
 		if (crypto_cmd->tfm != tmp->tfm)
 			continue;
 		active = tmp;
@@ -247,20 +257,20 @@ static int ccp_crypto_enqueue_cmd(struct ccp_crypto_cmd *crypto_cmd)
 			goto e_lock;	/* Error, don't queue it */
 	}
 
-	if (req_queue.cmd_count >= CCP_CRYPTO_MAX_QLEN) {
+	if (req_queue_data->req_queue.cmd_count >= CCP_CRYPTO_MAX_QLEN) {
 		ret = -EBUSY;
-		if (req_queue.backlog == &req_queue.cmds)
-			req_queue.backlog = &crypto_cmd->entry;
+		if (req_queue_data->req_queue.backlog == &req_queue_data->req_queue.cmds)
+			req_queue_data->req_queue.backlog = &crypto_cmd->entry;
 	}
 	crypto_cmd->ret = ret;
 
-	req_queue.cmd_count++;
-	list_add_tail(&crypto_cmd->entry, &req_queue.cmds);
+	req_queue_data->req_queue.cmd_count++;
+	list_add_tail(&crypto_cmd->entry, &req_queue_data->req_queue.cmds);
 
 	free_cmd = false;
 
 e_lock:
-	spin_unlock_irqrestore(&req_queue_lock, flags);
+	spin_unlock_irqrestore(&req_queue_data->req_queue_lock, flags);
 
 	if (free_cmd)
 		kfree(crypto_cmd);
@@ -425,6 +435,8 @@ static void ccp_unregister_algs(void)
 static int ccp_crypto_init(void)
 {
 	int ret;
+	int i;
+	struct ccp_req_queue *req_queue_data = NULL;
 
 	ret = ccp_present();
 	if (ret) {
@@ -432,10 +444,13 @@ static int ccp_crypto_init(void)
 		return ret;
 	}
 
-	spin_lock_init(&req_queue_lock);
-	INIT_LIST_HEAD(&req_queue.cmds);
-	req_queue.backlog = &req_queue.cmds;
-	req_queue.cmd_count = 0;
+	for (i = 0; i < MAX_REQ_QUEUE_NUM; i++) {
+		req_queue_data = &req_queue_arr[i];
+		spin_lock_init(&req_queue_data->req_queue_lock);
+		INIT_LIST_HEAD(&req_queue_data->req_queue.cmds);
+		req_queue_data->req_queue.backlog = &req_queue_data->req_queue.cmds;
+		req_queue_data->req_queue.cmd_count = 0;
+	}
 
 	ret = ccp_register_algs();
 	if (ret)
