@@ -3694,6 +3694,7 @@ static ssize_t smc_sendpage(struct socket *sock, struct page *page,
 		rc = smc_tx_sendpage(smc, page, offset, size, flags);
 		release_sock(sk);
 		SMC_STAT_INC(smc, sendpage_cnt);
+		SMC_STAT_TX_PAYLOAD(smc, size, rc);
 	}
 
 out:
