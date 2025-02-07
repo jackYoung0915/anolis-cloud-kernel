@@ -26,6 +26,9 @@
 #include "virtio_blk_ext.h"
 #endif
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/virtio_blk.h>
+
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
 #define MAX_DISCARD_SEGMENTS 256u
@@ -844,6 +847,8 @@ static inline void virtblk_request_done(struct request *req)
 {
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
 
+	trace_virtblk_request_done(req, vbr->status);
+
 	if (vbr_is_bidirectional(vbr))
 		virtblk_unmap_data_bidirectional(req, vbr);
 	else
@@ -1027,6 +1032,8 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 		num = virtblk_map_data_bidirectional(hctx, req, vbr);
 	else
 		num = virtblk_map_data(hctx, req, vbr);
+
+	trace_virtio_queue_rq(req, vbr_is_bidirectional(vbr), num);
 
 	if (unlikely(num < 0)) {
 		virtblk_cleanup_cmd(req);
@@ -1981,6 +1988,8 @@ retry:
 				req->bio->bi_opf |= REQ_POLLED;
 		}
 	}
+
+	trace_virtblk_uring_cmd_io(req, type, cmd->sector);
 
 	/* to free bio on completion, as req->bio will be null at that time */
 	pdu->bio = req->bio;
