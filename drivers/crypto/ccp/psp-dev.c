@@ -24,6 +24,10 @@
 
 struct psp_device *psp_master;
 
+struct kmem_cache *vpsp_cmd_ctx_slab;
+static struct workqueue_struct *vpsp_wq;
+static struct work_struct vpsp_work;
+
 struct psp_misc_dev *psp_misc;
 int is_hygon_psp;
 
@@ -187,8 +191,12 @@ static irqreturn_t psp_irq_handler_hygon(int irq, void *data)
 			/* Check if it is SEV command completion: */
 			reg = ioread32(psp->io_regs + psp->vdata->sev->cmdresp_reg);
 			if (reg & PSP_CMDRESP_RESP) {
-				sev->int_rcvd = 1;
-				wake_up(&sev->int_queue);
+				if (vpsp_in_ringbuffer_mode) {
+					queue_work(vpsp_wq, &vpsp_work);
+				} else {
+					sev->int_rcvd = 1;
+					wake_up(&sev->int_queue);
+				}
 			}
 		}
 
@@ -499,6 +507,17 @@ static int hygon_psp_additional_setup(struct sp_device *sp)
 	if (!psp_misc) {
 		struct miscdevice *misc;
 
+		vpsp_wq = create_singlethread_workqueue("vpsp_workqueue");
+		if (!vpsp_wq)
+			return -ENOMEM;
+
+		INIT_WORK(&vpsp_work, vpsp_worker_handler);
+
+		vpsp_cmd_ctx_slab = kmem_cache_create("vpsp_cmd_ctx",
+				sizeof(struct vpsp_cmd_ctx), 0, SLAB_HWCACHE_ALIGN, NULL);
+		if (!vpsp_cmd_ctx_slab)
+			return -ENOMEM;
+
 		psp_misc = devm_kzalloc(dev, sizeof(*psp_misc), GFP_KERNEL);
 		if (!psp_misc)
 			return -ENOMEM;
@@ -537,6 +556,9 @@ static void hygon_psp_exit(struct kref *ref)
 	ClearPageReserved(virt_to_page(misc_dev->data_pg_aligned));
 	free_page((unsigned long)misc_dev->data_pg_aligned);
 	psp_misc = NULL;
+	kmem_cache_destroy(vpsp_cmd_ctx_slab);
+	flush_workqueue(vpsp_wq);
+	destroy_workqueue(vpsp_wq);
 }
 
 int psp_dev_init(struct sp_device *sp)
