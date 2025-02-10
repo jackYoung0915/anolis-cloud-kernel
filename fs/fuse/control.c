@@ -31,6 +31,12 @@
 #define PRINT_HEADER(buff, remain, header)	\
 	PRINT_LINE(buff, remain, header)
 
+#define PRINT_REQ(buff, remain,  req)                                   \
+	PRINT_LINE(buff, remain,					\
+		"unique:%llu opcode:%u nodeid:%llu pid:%u flags:%lu sent_time:%llu\n", \
+		req->in.h.unique, req->in.h.opcode, req->in.h.nodeid,	\
+		req->in.h.pid, req->flags, req->send_time)
+
 #define PRINT_STATS(__opname, fc, remain, buff)				\
 	do {								\
 		uint64_t tot_time = atomic64_read(&fc->stats.req_time[__opname]); \
@@ -155,6 +161,66 @@ static ssize_t fuse_conn_waiting_read(struct file *file, char __user *buf,
 	}
 	size = sprintf(tmp, "%ld\n", (long)file->private_data);
 	return simple_read_from_buffer(buf, len, ppos, tmp, size);
+}
+
+static ssize_t fuse_conn_waiting_req_debug(struct file *file, char __user *buf,
+					size_t len, loff_t *ppos)
+{
+	struct fuse_conn *fc;
+	struct fuse_dev *fud;
+	struct fuse_req *req;
+	struct fuse_iqueue *fiq;
+	char *data;
+	char *buff;
+	size_t remain = PAGE_SIZE;
+	int ret;
+	unsigned int i;
+
+	if (*ppos)
+		return 0;
+
+	data = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!data)
+		return 0;
+	buff = data;
+
+	fc = fuse_ctl_file_conn_get(file);
+	if (!fc)
+		return 0;
+
+	spin_lock(&fc->lock);
+	if (!fc->connected)
+		goto out;
+
+	fiq = &fc->iq;
+	list_for_each_entry(fud, &fc->devices, entry) {
+		struct fuse_pqueue *fpq = &fud->pq;
+
+		spin_lock(&fpq->lock);
+		if (fpq->connected) {
+			PRINT_HEADER(buff, remain, "io_queue >>>>>>\n");
+			list_for_each_entry(req, &fpq->io, list) {
+				PRINT_REQ(buff, remain, req);
+			}
+			PRINT_HEADER(buff, remain, "<<<<<<\n");
+			PRINT_HEADER(buff, remain, "processing_queue >>>>>>\n");
+			for (i = 0; i < FUSE_PQ_HASH_SIZE; i++) {
+				list_for_each_entry(req, &fpq->processing[i], list) {
+					PRINT_REQ(buff, remain, req);
+				}
+			}
+			PRINT_HEADER(buff, remain, "<<<<<<\n");
+		}
+		spin_unlock(&fpq->lock);
+	}
+
+out:
+	spin_unlock(&fc->lock);
+	fuse_conn_put(fc);
+	ret = simple_read_from_buffer(buf, len, ppos, data, PAGE_SIZE - remain);
+	kfree(data);
+
+	return ret;
 }
 
 static ssize_t fuse_conn_limit_read(struct file *file, char __user *buf,
@@ -306,6 +372,12 @@ static const struct file_operations fuse_conn_stats_ops = {
 	.llseek = no_llseek,
 };
 
+static const struct file_operations fuse_ctl_waiting_debug_ops = {
+	.open = nonseekable_open,
+	.read = fuse_conn_waiting_req_debug,
+	.llseek = no_llseek,
+};
+
 static struct dentry *fuse_ctl_add_dentry(struct dentry *parent,
 					  struct fuse_conn *fc,
 					  const char *name,
@@ -376,7 +448,9 @@ int fuse_ctl_add_conn(struct fuse_conn *fc)
 				 S_IFREG | 0600, 1, NULL,
 				 &fuse_conn_congestion_threshold_ops) ||
 	    !fuse_ctl_add_dentry(parent, fc, "stats", S_IFREG | 0600, 1,
-				 NULL, &fuse_conn_stats_ops))
+				 NULL, &fuse_conn_stats_ops) ||
+	    !fuse_ctl_add_dentry(parent, fc, "waiting_debug", S_IFREG | 0400, 1,
+				 NULL, &fuse_ctl_waiting_debug_ops))
 		goto err;
 
 	return 0;

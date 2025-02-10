@@ -135,6 +135,12 @@ For each connection the following files exist within this directory:
 	  daemon, including total request count and processing time, grouped
 	  by different fuse opcodes.
 
+	waiting_debug
+
+	  Detailed information about requests which are waiting to be transferred
+	  to userspace or being processed by the filesystem daemon.
+	  This is usually useful for debugging.
+
 Only the owner of the mount may read or write these files.
 
 Interrupting filesystem operations
