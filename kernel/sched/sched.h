@@ -1540,6 +1540,7 @@ struct rq {
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
 #endif
+	bool			booked;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
