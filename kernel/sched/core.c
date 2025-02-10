@@ -8657,6 +8657,7 @@ void __init sched_init(void)
 		rq->expel_start = rq->clock;
 		rq->expel_sum = 0;
 		seqcount_init(&rq->expel_seq);
+		rq->booked = false;
 #endif
 
 #ifdef CONFIG_SCHED_CORE

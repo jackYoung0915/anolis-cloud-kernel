@@ -80,6 +80,7 @@ extern unsigned int sysctl_sched_cfs_bw_burst_enabled;
 #ifdef CONFIG_GROUP_IDENTITY
 extern unsigned int sysctl_sched_bvt_place_epsilon;
 extern unsigned int sysctl_sched_idle_saver_wmark;
+extern unsigned int sysctl_sched_id_book_cpu_nr_tries;
 extern unsigned int sysctl_sched_group_indentity_enabled;
 extern int sched_group_identity_enable_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *lenp,

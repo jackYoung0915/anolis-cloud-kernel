@@ -2033,6 +2033,13 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= proc_dointvec,
 	},
 	{
+		.procname	= "sched_id_book_cpu_nr_tries",
+		.data		= &sysctl_sched_id_book_cpu_nr_tries,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+	{
 		.procname	= "sched_expel_update_interval",
 		.data		= &sysctl_sched_expel_update_interval,
 		.maxlen		= sizeof(unsigned int),
