@@ -85,6 +85,7 @@ static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
 unsigned int sysctl_sched_child_runs_first __read_mostly;
 
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+unsigned int sysctl_sched_id_book_cpu_nr_tries = 5;
 
 int sched_thermal_decay_shift;
 static int __init setup_sched_thermal_decay_shift(char *str)
@@ -181,6 +182,13 @@ static struct ctl_table sched_fair_sysctls[] = {
 		.extra1		= SYSCTL_ZERO,
 	},
 #endif /* CONFIG_NUMA_BALANCING */
+	{
+		.procname	= "sched_id_book_cpu_nr_tries",
+		.data		= &sysctl_sched_id_book_cpu_nr_tries,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
 	{}
 };
 
@@ -6992,6 +7000,12 @@ requeue_delayed_entity(struct sched_entity *se)
 	clear_delayed(se);
 }
 
+static inline void set_rq_booked(struct rq *rq, bool booked)
+{
+	if (sched_feat(ID_BOOK_CPU))
+		rq->booked = booked;
+}
+
 /*
  * The enqueue_task method is called before nr_running is
  * increased. Here we update the fair scheduling stats and
@@ -7127,6 +7141,9 @@ enqueue_throttle:
 	assert_list_leaf_cfs_rq(rq);
 
 	hrtick_update(rq);
+
+	if (!is_idle_task(p))
+		set_rq_booked(rq, false);
 }
 
 static void set_next_buddy(struct sched_entity *se);
@@ -7980,6 +7997,13 @@ static inline bool asym_fits_cpu(unsigned long util,
 	return true;
 }
 
+DEFINE_PER_CPU(bool, has_idle_cpu);
+static inline void set_has_idle_cpu(bool has)
+{
+	if (sched_feat(ID_BOOK_CPU))
+		this_cpu_write(has_idle_cpu, has);
+}
+
 /*
  * Try and locate an idle core/thread in the LLC cache domain.
  */
@@ -8107,6 +8131,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	if ((unsigned int)recent_used_cpu < nr_cpumask_bits)
 		return recent_used_cpu;
 
+	set_has_idle_cpu(false);
 	return target;
 }
 
@@ -8615,6 +8640,19 @@ unlock:
 	return target;
 }
 
+static inline bool found_sched_idle_cpu(void)
+{
+	if (sched_feat(ID_BOOK_CPU))
+		return this_cpu_read(has_idle_cpu);
+	return false;
+}
+
+static inline int get_id_book_cpu_nr_tries(void)
+{
+	if (sched_feat(ID_BOOK_CPU))
+		return sysctl_sched_id_book_cpu_nr_tries;
+	return 0;
+}
 /*
  * select_task_rq_fair: Select target runqueue for the waking task in domains
  * that have the relevant SD flag set. In practice, this is SD_BALANCE_WAKE,
@@ -8635,6 +8673,8 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 	int want_affine = 0;
 	/* SD_flags and WF_flags share the first nibble */
 	int sd_flag = wake_flags & 0xF;
+	struct rq *rq;
+	struct rq_flags rf;
 
 	/*
 	 * required for stable ->cpus_allowed
@@ -8687,8 +8727,27 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 		/* Slow path */
 		new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag);
 	} else if (wake_flags & WF_TTWU) { /* XXX always ? */
+		int nr_tries = get_id_book_cpu_nr_tries();
 		/* Fast path */
+select:
+		set_has_idle_cpu(true);
 		new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
+		if (!is_idle_task(p) && found_sched_idle_cpu()) {
+			rq = cpu_rq(new_cpu);
+			rq_lock(rq, &rf);
+			if (!available_idle_cpu(new_cpu)) {
+				if (nr_tries > 0) {
+					nr_tries--;
+					rq_unlock(rq, &rf);
+					goto select;
+				} else {
+					rq_unlock(rq, &rf);
+				}
+			} else {
+				set_rq_booked(rq, true);
+				rq_unlock(rq, &rf);
+			}
+		}
 	}
 	rcu_read_unlock();
 
