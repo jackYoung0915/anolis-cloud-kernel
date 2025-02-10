@@ -295,6 +295,7 @@ EXPORT_SYMBOL_GPL(fuse_dev_fiq_ops);
 
 static void fuse_send_one(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
+	req->send_time = get_time_now_us();
 	req->in.h.len = sizeof(struct fuse_in_header) +
 		fuse_len_args(req->args->in_numargs,
 			      (struct fuse_arg *) req->args->in_args);
@@ -374,8 +375,6 @@ void fuse_request_end(struct fuse_req *req)
 	WARN_ON(test_bit(FR_PENDING, &req->flags));
 	WARN_ON(test_bit(FR_SENT, &req->flags));
 	if (test_bit(FR_BACKGROUND, &req->flags)) {
-		fuse_update_stats(fc, req->in.h.opcode, req->send_time);
-
 		spin_lock(&fc->bg_lock);
 		clear_bit(FR_BACKGROUND, &req->flags);
 		if (fc->num_background == fc->max_background) {
@@ -400,6 +399,8 @@ void fuse_request_end(struct fuse_req *req)
 		/* Wake up waiter sleeping in request_wait_answer() */
 		wake_up(&req->waitq);
 	}
+
+	fuse_update_stats(fc, req->in.h.opcode, req->send_time);
 
 	if (test_bit(FR_ASYNC, &req->flags))
 		req->args->end(fm, req->args, req->out.h.error);
@@ -470,11 +471,9 @@ static void request_wait_answer(struct fuse_req *req)
 static void __fuse_request_send(struct fuse_req *req)
 {
 	struct fuse_iqueue *fiq = &req->fm->fc->iq;
-	struct fuse_conn *fc = req->fm->fc;
 
 	BUG_ON(test_bit(FR_BACKGROUND, &req->flags));
 
-	req->send_time = get_time_now_us();
 	/* acquire extra reference, since request is still needed after
 	   fuse_request_end() */
 	__fuse_get_request(req);
@@ -483,7 +482,6 @@ static void __fuse_request_send(struct fuse_req *req)
 	request_wait_answer(req);
 	/* Pairs with smp_wmb() in fuse_request_end() */
 	smp_rmb();
-	fuse_update_stats(fc, req->in.h.opcode, req->send_time);
 }
 
 static void fuse_adjust_compat(struct fuse_conn *fc, struct fuse_args *args)
@@ -590,9 +588,6 @@ static bool fuse_request_queue_background(struct fuse_req *req)
 		atomic_inc(&fc->num_waiting);
 	}
 	__set_bit(FR_ISREPLY, &req->flags);
-
-	req->send_time = get_time_now_us();
-
 	spin_lock(&fc->bg_lock);
 	if (likely(fc->connected)) {
 		fc->num_background++;
