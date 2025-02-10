@@ -14,6 +14,35 @@
 
 #define FUSE_CTL_SUPER_MAGIC 0x65735543
 
+#define PRINT_LINE(buff, remain, ...)					\
+	do {								\
+		if (remain) {                                           \
+			size_t used = snprintf(buff, remain, ##__VA_ARGS__); \
+			if (used >= remain) {				\
+				remain = 0;				\
+				buff = NULL;				\
+			} else {					\
+				remain -= used;				\
+				buff += used;				\
+			}						\
+		}                                                       \
+	} while (0)
+
+#define PRINT_HEADER(buff, remain, header)	\
+	PRINT_LINE(buff, remain, header)
+
+#define PRINT_STATS(__opname, fc, remain, buff)				\
+	do {								\
+		uint64_t tot_time = atomic64_read(&fc->stats.req_time[__opname]); \
+		uint64_t cnt = atomic64_read(&fc->stats.req_cnts[__opname]); \
+		PRINT_LINE(buff, remain, "%s: "				\
+			"total reqs: %llu, "				\
+			"tot_time_avg: %llu\n",				\
+			# __opname,					\
+			cnt,						\
+			tot_time / (cnt + 1));				\
+	} while (0)
+
 /*
  * This is non-NULL when the single instance of the control filesystem
  * exists.  Protected by fuse_mutex
@@ -29,6 +58,70 @@ static struct fuse_conn *fuse_ctl_file_conn_get(struct file *file)
 		fc = fuse_conn_get(fc);
 	mutex_unlock(&fuse_mutex);
 	return fc;
+}
+
+static ssize_t fuse_conn_stats_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *f_pos)
+{
+	int i;
+	struct fuse_conn *fc = fuse_ctl_file_conn_get(file);
+
+	if (!fc)
+		return 0;
+
+	for (i = 0; i < FUSE_OP_MAX; i++) {
+		atomic64_set(&fc->stats.req_time[i], 0);
+		atomic64_set(&fc->stats.req_cnts[i], 0);
+	}
+	fuse_conn_put(fc);
+
+	return count;
+}
+
+static ssize_t fuse_conn_stats_read(struct file *file, char __user *buf,
+				size_t len, loff_t *ppos)
+{
+	char *data;
+	char *buff;
+	uint64_t remain = PAGE_SIZE;
+	ssize_t ret;
+	struct fuse_conn *fc = fuse_ctl_file_conn_get(file);
+
+	if (!fc)
+		return 0;
+
+	data = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!data) {
+		fuse_conn_put(fc);
+		return 0;
+	}
+	buff = data;
+
+	PRINT_STATS(FUSE_LOOKUP, fc, remain, buff);
+	PRINT_STATS(FUSE_MKNOD, fc, remain, buff);
+	PRINT_STATS(FUSE_MKDIR, fc, remain, buff);
+	PRINT_STATS(FUSE_OPEN, fc, remain, buff);
+	PRINT_STATS(FUSE_CREATE, fc, remain, buff);
+	PRINT_STATS(FUSE_WRITE, fc, remain, buff);
+	PRINT_STATS(FUSE_GETATTR, fc, remain, buff);
+	PRINT_STATS(FUSE_SETATTR, fc, remain, buff);
+	PRINT_STATS(FUSE_ACCESS, fc, remain, buff);
+	PRINT_STATS(FUSE_UNLINK, fc, remain, buff);
+	PRINT_STATS(FUSE_RMDIR, fc, remain, buff);
+	PRINT_STATS(FUSE_RENAME, fc, remain, buff);
+	PRINT_STATS(FUSE_RELEASE, fc, remain, buff);
+	PRINT_STATS(FUSE_FLUSH, fc, remain, buff);
+	PRINT_STATS(FUSE_FSYNC, fc, remain, buff);
+	PRINT_STATS(FUSE_READ, fc, remain, buff);
+	PRINT_STATS(FUSE_READDIR, fc, remain, buff);
+	PRINT_STATS(FUSE_READDIRPLUS, fc, remain, buff);
+	PRINT_STATS(FUSE_SUMMARY, fc, remain, buff);
+
+	fuse_conn_put(fc);
+	ret = simple_read_from_buffer(buf, len, ppos, data, PAGE_SIZE - remain);
+	kfree(data);
+
+	return ret;
 }
 
 static ssize_t fuse_conn_abort_write(struct file *file, const char __user *buf,
@@ -206,6 +299,13 @@ static const struct file_operations fuse_conn_congestion_threshold_ops = {
 	.llseek = no_llseek,
 };
 
+static const struct file_operations fuse_conn_stats_ops = {
+	.open = nonseekable_open,
+	.read = fuse_conn_stats_read,
+	.write = fuse_conn_stats_write,
+	.llseek = no_llseek,
+};
+
 static struct dentry *fuse_ctl_add_dentry(struct dentry *parent,
 					  struct fuse_conn *fc,
 					  const char *name,
@@ -274,7 +374,9 @@ int fuse_ctl_add_conn(struct fuse_conn *fc)
 				 1, NULL, &fuse_conn_max_background_ops) ||
 	    !fuse_ctl_add_dentry(parent, fc, "congestion_threshold",
 				 S_IFREG | 0600, 1, NULL,
-				 &fuse_conn_congestion_threshold_ops))
+				 &fuse_conn_congestion_threshold_ops) ||
+	    !fuse_ctl_add_dentry(parent, fc, "stats", S_IFREG | 0600, 1,
+				 NULL, &fuse_conn_stats_ops))
 		goto err;
 
 	return 0;

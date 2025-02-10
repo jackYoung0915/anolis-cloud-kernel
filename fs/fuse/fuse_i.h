@@ -43,7 +43,7 @@
 #define FUSE_NAME_MAX 1024
 
 /** Number of dentries for each connection in the control filesystem */
-#define FUSE_CTL_NUM_DENTRIES 5
+#define FUSE_CTL_NUM_DENTRIES 6
 
 /** Maximum of max_pages received in init_out */
 extern unsigned int fuse_max_pages_limit;
@@ -399,6 +399,9 @@ struct fuse_req {
 	/** Used to wake up the task waiting for completion of request*/
 	wait_queue_head_t waitq;
 
+	/** send time*/
+	uint64_t send_time;
+
 #if IS_ENABLED(CONFIG_VIRTIO_FS)
 	/** virtio-fs's physically contiguous buffer for in and out args */
 	void *argbuf;
@@ -549,6 +552,14 @@ struct fuse_fs_context {
 
 	/* fuse_dev pointer to fill in, should contain NULL on entry */
 	void **fudptr;
+};
+
+/**
+ *  Fuse stats for debuging.
+ */
+struct fuse_stats {
+	atomic64_t req_time[FUSE_OP_MAX];
+	atomic64_t req_cnts[FUSE_OP_MAX];
 };
 
 struct fuse_sync_bucket {
@@ -863,6 +874,9 @@ struct fuse_conn {
 
 	/** List of device instances belonging to this connection */
 	struct list_head devices;
+
+	/** fuse stats **/
+	struct fuse_stats stats;
 
 #ifdef CONFIG_FUSE_DAX
 	/* Dax mode */
