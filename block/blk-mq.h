@@ -159,7 +159,7 @@ struct blk_mq_alloc_data {
 	struct blk_mq_ctx *ctx;
 	struct blk_mq_hw_ctx *hctx;
 
-	CK_KABI_RESERVE(1)
+	CK_KABI_REPLACE(CK_KABI_RESERVE(1), __u64 abc)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 };
