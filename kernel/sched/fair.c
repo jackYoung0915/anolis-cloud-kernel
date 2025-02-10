@@ -157,6 +157,7 @@ unsigned int sysctl_sched_bvt_place_epsilon = 1000000UL;
  * Default: 0 msec, units: nanoseconds
  */
 unsigned int sysctl_sched_idle_saver_wmark;
+unsigned int sysctl_sched_id_book_cpu_nr_tries = 5;
 
 #ifdef CONFIG_SCHED_SMT
 /*
@@ -1008,6 +1009,50 @@ static inline u64 get_avg_idle(struct rq *rq)
 		return rq->avg_idle;
 }
 
+DEFINE_PER_CPU(bool, has_id_idle_cpu);
+static inline bool found_id_idle_cpu(void)
+{
+	if (group_identity_disabled())
+		return false;
+	if (sched_feat(ID_BOOK_CPU))
+		return this_cpu_read(has_id_idle_cpu);
+	return false;
+}
+
+static inline void set_has_id_idle_cpu(bool has)
+{
+	if (group_identity_disabled())
+		return;
+	if (sched_feat(ID_BOOK_CPU))
+		this_cpu_write(has_id_idle_cpu, has);
+}
+
+static inline bool rq_booked(struct rq *rq)
+{
+	if (!group_identity_enabled(rq))
+		return false;
+	if (sched_feat(ID_BOOK_CPU))
+		return rq->booked;
+	return false;
+}
+
+static inline void set_rq_booked(struct rq *rq, bool booked)
+{
+	if (!group_identity_enabled(rq))
+		return;
+	if (sched_feat(ID_BOOK_CPU))
+		rq->booked = booked;
+}
+
+static inline int get_id_book_cpu_nr_tries(void)
+{
+	if (group_identity_disabled())
+		return 0;
+	if (sched_feat(ID_BOOK_CPU))
+		return sysctl_sched_id_book_cpu_nr_tries;
+	return 0;
+}
+
 static noinline bool
 id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 {
@@ -1052,6 +1097,9 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 		return false;
 
 	if (need_expel)
+		return false;
+
+	if (is_highclass_task(p) && rq_booked(rq))
 		return false;
 
 	/* CPU full of underclass is idle for highclass */
@@ -2323,6 +2371,12 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 
 	return is_idle;
 }
+
+static inline bool found_id_idle_cpu(void) { return false; }
+static inline void set_has_id_idle_cpu(bool has) { }
+static inline bool rq_booked(struct rq *rq) { return false; }
+static inline void set_rq_booked(struct rq *rq, bool booked) { }
+static inline int get_id_book_cpu_nr_tries(void) { return 0; }
 
 static inline void identity_init_cfs_rq(struct cfs_rq *cfs_rq)
 {
@@ -8276,6 +8330,9 @@ enqueue_throttle:
 	assert_list_leaf_cfs_rq(rq);
 
 	hrtick_update(rq);
+
+	if (is_highclass_task(p))
+		set_rq_booked(rq, false);
 }
 
 static void set_next_buddy(struct sched_entity *se);
@@ -9156,6 +9213,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	if ((unsigned int)recent_used_cpu < nr_cpumask_bits)
 		return recent_used_cpu;
 
+	set_has_id_idle_cpu(false);
 	return target;
 }
 
@@ -9571,6 +9629,8 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 	int new_cpu = prev_cpu;
 	int want_affine = 0;
 	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
+	struct rq *rq;
+	struct rq_flags rf;
 
 	/* Endow LS task the ability to balance at fork */
 	if (is_highclass_task(p) && (sd_flag & SD_BALANCE_FORK))
@@ -9619,9 +9679,27 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 		/* Slow path */
 		new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag);
 	} else if (sd_flag & SD_BALANCE_WAKE) { /* XXX always ? */
+		int nr_tries = get_id_book_cpu_nr_tries();
 		/* Fast path */
-
+select:
+		set_has_id_idle_cpu(true);
 		new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
+		if (is_highclass_task(p) && found_id_idle_cpu()) {
+			rq = cpu_rq(new_cpu);
+			rq_lock(rq, &rf);
+			if (!id_idle_cpu(p, new_cpu, false, NULL)) {
+				if (nr_tries > 0) {
+					nr_tries--;
+					rq_unlock(rq, &rf);
+					goto select;
+				} else {
+					rq_unlock(rq, &rf);
+				}
+			} else {
+				set_rq_booked(rq, true);
+				rq_unlock(rq, &rf);
+			}
+		}
 
 		if (want_affine)
 			current->recent_used_cpu = cpu;

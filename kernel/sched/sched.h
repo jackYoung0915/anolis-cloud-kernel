@@ -1340,6 +1340,7 @@ struct rq {
 	u64			under_exec_sum;
 	u64			under_exec_stamp;
 	u64			avg_id_idle;
+	bool			booked;
 #ifdef CONFIG_SCHED_SMT
 	unsigned long		next_expel_ib;
 	unsigned long		next_expel_update;
