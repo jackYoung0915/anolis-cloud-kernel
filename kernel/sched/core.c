@@ -8667,6 +8667,7 @@ void __init sched_init(void)
 
 		rq->core_cookie = 0UL;
 #endif
+		rq->booked = false;
 #ifdef CONFIG_GROUP_BALANCER
 		rq->gb_sd = NULL;
 #endif
