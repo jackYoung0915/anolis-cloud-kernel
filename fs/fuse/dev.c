@@ -332,13 +332,15 @@ static void fuse_update_stats(struct fuse_conn *fc, int opcode, uint64_t send_ti
 {
 	uint64_t delta_time;
 
-	delta_time = get_time_now_us() - send_time;
+	if (opcode < FUSE_OP_MAX) {
+		delta_time = get_time_now_us() - send_time;
 
-	atomic64_add(delta_time, &fc->stats.req_time[FUSE_SUMMARY]);
-	atomic64_add(delta_time, &fc->stats.req_time[opcode]);
+		atomic64_add(delta_time, &fc->stats.req_time[FUSE_SUMMARY]);
+		atomic64_add(delta_time, &fc->stats.req_time[opcode]);
 
-	atomic64_inc(&fc->stats.req_cnts[FUSE_SUMMARY]);
-	atomic64_inc(&fc->stats.req_cnts[opcode]);
+		atomic64_inc(&fc->stats.req_cnts[FUSE_SUMMARY]);
+		atomic64_inc(&fc->stats.req_cnts[opcode]);
+	}
 }
 
 /*
