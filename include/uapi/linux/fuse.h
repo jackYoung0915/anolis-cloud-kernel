@@ -581,6 +581,7 @@ enum fuse_ext_type {
 };
 
 enum fuse_opcode {
+	FUSE_SUMMARY            = 0,
 	FUSE_LOOKUP		= 1,
 	FUSE_FORGET		= 2,  /* no reply */
 	FUSE_GETATTR		= 3,
@@ -631,6 +632,7 @@ enum fuse_opcode {
 	FUSE_SYNCFS		= 50,
 	FUSE_TMPFILE		= 51,
 	FUSE_STATX		= 52,
+	FUSE_OP_MAX,
 
 	/* CUSE specific operations */
 	CUSE_INIT		= 4096,

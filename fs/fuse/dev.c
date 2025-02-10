@@ -45,6 +45,11 @@ static struct fuse_dev *fuse_get_dev(struct file *file)
 	return READ_ONCE(file->private_data);
 }
 
+static inline uint64_t get_time_now_us(void)
+{
+	return ktime_to_us(ktime_get());
+}
+
 static void fuse_request_init(struct fuse_mount *fm, struct fuse_req *req)
 {
 	INIT_LIST_HEAD(&req->list);
@@ -290,6 +295,7 @@ EXPORT_SYMBOL_GPL(fuse_dev_fiq_ops);
 
 static void fuse_send_one(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
+	req->send_time = get_time_now_us();
 	req->in.h.len = sizeof(struct fuse_in_header) +
 		fuse_len_args(req->args->in_numargs,
 			      (struct fuse_arg *) req->args->in_args);
@@ -320,6 +326,21 @@ static void flush_bg_queue(struct fuse_conn *fc)
 		list_del(&req->list);
 		fc->active_background++;
 		fuse_send_one(fiq, req);
+	}
+}
+
+static void fuse_update_stats(struct fuse_conn *fc, int opcode, uint64_t send_time)
+{
+	uint64_t delta_time;
+
+	if (opcode < FUSE_OP_MAX) {
+		delta_time = get_time_now_us() - send_time;
+
+		atomic64_add(delta_time, &fc->stats.req_time[FUSE_SUMMARY]);
+		atomic64_add(delta_time, &fc->stats.req_time[opcode]);
+
+		atomic64_inc(&fc->stats.req_cnts[FUSE_SUMMARY]);
+		atomic64_inc(&fc->stats.req_cnts[opcode]);
 	}
 }
 
@@ -378,6 +399,8 @@ void fuse_request_end(struct fuse_req *req)
 		/* Wake up waiter sleeping in request_wait_answer() */
 		wake_up(&req->waitq);
 	}
+
+	fuse_update_stats(fc, req->in.h.opcode, req->send_time);
 
 	if (test_bit(FR_ASYNC, &req->flags))
 		req->args->end(fm, req->args, req->out.h.error);
