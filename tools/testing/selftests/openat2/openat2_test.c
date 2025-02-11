@@ -22,7 +22,7 @@
  * XXX: This is wrong on {mips, parisc, powerpc, sparc}.
  */
 #undef	O_LARGEFILE
-#ifdef __aarch64__
+#if defined (__aarch64__) || defined (__sw_64__)
 #define	O_LARGEFILE 0x20000
 #else
 #define	O_LARGEFILE 0x8000
