@@ -1707,6 +1707,7 @@ static void kvm_free_percpu(void)
 	free_percpu(kvm_host_data);
 	free_percpu(kvm_hyp_ctxt);
 }
+
 #else
 static inline void __init register_pmu_handlers(void)
 {
@@ -1724,7 +1725,6 @@ static inline int __init kvm_alloc_percpu(void)
 static void kvm_free_percpu(void)
 {
 }
-#endif
 
 static unsigned long nvhe_percpu_size(void)
 {
@@ -1738,6 +1738,7 @@ static unsigned long nvhe_percpu_order(void)
 
 	return size ? get_order(size) : 0;
 }
+#endif
 
 /* A lookup table holding the hypervisor VA for each vector slot */
 static void *hyp_spectre_vector_selector[BP_HARDEN_EL2_SLOTS];
@@ -1771,6 +1772,24 @@ static int kvm_init_vector_slots(void)
 	return 0;
 }
 
+#ifdef MODULE
+static void cpu_hyp_reset(void)
+{
+}
+
+static void cpu_set_hyp_vector(void)
+{
+	struct bp_hardening_data *data = this_cpu_ptr(&bp_hardening_data);
+	void *vector = hyp_spectre_vector_selector[data->slot];
+
+	*this_cpu_ptr_hyp_sym(kvm_hyp_vector) = (unsigned long)vector;
+}
+
+static void cpu_hyp_init_context(void)
+{
+	kvm_init_host_cpu_context(&this_cpu_ptr(kvm_host_data)->host_ctxt);
+}
+#else
 static void __init cpu_prepare_hyp_mode(int cpu, u32 hyp_va_bits)
 {
 	struct kvm_nvhe_init_params *params = per_cpu_ptr_nvhe_sym(kvm_init_params, cpu);
@@ -1892,6 +1911,7 @@ static void cpu_hyp_init_context(void)
 	if (!is_kernel_in_hyp_mode())
 		cpu_init_hyp_mode();
 }
+#endif
 
 static void cpu_hyp_init_features(void)
 {
@@ -2000,7 +2020,7 @@ static void __init hyp_cpu_pm_init(void)
 	if (!is_protected_kvm_enabled())
 		cpu_pm_register_notifier(&hyp_init_cpu_pm_nb);
 }
-static void __init hyp_cpu_pm_exit(void)
+static void hyp_cpu_pm_exit(void)
 {
 	if (!is_protected_kvm_enabled())
 		cpu_pm_unregister_notifier(&hyp_init_cpu_pm_nb);
@@ -2009,11 +2029,12 @@ static void __init hyp_cpu_pm_exit(void)
 static inline void __init hyp_cpu_pm_init(void)
 {
 }
-static inline void __init hyp_cpu_pm_exit(void)
+static inline void hyp_cpu_pm_exit(void)
 {
 }
 #endif
 
+#ifndef MODULE
 static void __init init_cpu_logical_map(void)
 {
 	unsigned int cpu;
@@ -2054,6 +2075,7 @@ static bool __init init_psci_relay(void)
 	}
 	return true;
 }
+#endif
 
 static int __init init_subsystems(void)
 {
@@ -2118,6 +2140,18 @@ static void __init teardown_subsystems(void)
 	hyp_cpu_pm_exit();
 }
 
+#ifdef MODULE
+static void __init teardown_hyp_mode(void)
+{
+	kvm_err("teardown hyp mode is not allowed\n");
+}
+
+static int __init init_hyp_mode(void)
+{
+	kvm_err("init hyp mode is not allowed\n");
+	return -EPERM;
+}
+#else
 static void __init teardown_hyp_mode(void)
 {
 	int cpu;
@@ -2390,6 +2424,7 @@ out_err:
 	kvm_err("error initializing Hyp mode: %d\n", err);
 	return err;
 }
+#endif
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr)
 {
@@ -2465,13 +2500,20 @@ static __init int kvm_arm_init(void)
 		return -ENODEV;
 	}
 
+	in_hyp_mode = is_kernel_in_hyp_mode();
+
+#ifdef MODULE
+	if (!in_hyp_mode) {
+		kvm_info("KVM module is only allowed in VHE mode\n");
+		return -ENODEV;
+	}
+#endif
+
 	err = kvm_sys_reg_table_init();
 	if (err) {
 		kvm_info("Error initializing system register tables");
 		return err;
 	}
-
-	in_hyp_mode = is_kernel_in_hyp_mode();
 
 	if (cpus_have_final_cap(ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE) ||
 	    cpus_have_final_cap(ARM64_WORKAROUND_1508412))
@@ -2544,3 +2586,15 @@ out_err:
 }
 
 module_init(kvm_arm_init);
+
+#ifdef MODULE
+static void kvm_arm_exit(void)
+{
+	kvm_exit();
+	teardown_subsystems();
+	kvm_free_percpu();
+	kvm_arm_vmid_alloc_free();
+}
+
+module_exit(kvm_arm_exit);
+#endif
