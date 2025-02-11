@@ -4885,6 +4885,7 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	struct address_space *mapping;
 	int need_wait_lock = 0;
 	unsigned long haddr = address & huge_page_mask(h);
+	bool userfault = userfaultfd_missing(vma);
 
 	/*
 	 * Acquire i_mmap_rwsem before calling huge_pte_alloc and hold
@@ -5029,7 +5030,7 @@ out_mutex:
 		wait_on_page_locked(page);
 
 out_unlock:
-	if (ret == VM_FAULT_RETRY) {
+	if (!userfault && (ret == VM_FAULT_RETRY)) {
 		page = find_get_page(mapping, idx);
 		mmap_read_unlock(mm);
 		if (page)
