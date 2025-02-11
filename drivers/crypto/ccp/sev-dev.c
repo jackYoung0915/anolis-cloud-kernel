@@ -32,6 +32,7 @@
 #include "sev-dev.h"
 
 #include "hygon/csv-dev.h"
+#include "vpsp.h"
 
 #define DEVICE_NAME		"sev"
 #define SEV_FW_FILE		"amd/sev.fw"
@@ -63,15 +64,6 @@ extern int psp_mutex_trylock(struct psp_mutex *mutex);
 extern int psp_mutex_unlock(struct psp_mutex *mutex);
 extern int psp_mutex_enabled;
 
-/* defination of variabled used by virtual psp */
-enum VPSP_RB_CHECK_STATUS {
-	RB_NOT_CHECK = 0,
-	RB_CHECKING,
-	RB_CHECKED,
-	RB_CHECK_MAX
-};
-#define VPSP_RB_IS_SUPPORTED(buildid)	(buildid >= 1913)
-#define VPSP_CMD_STATUS_RUNNING		0xffff
 static DEFINE_MUTEX(vpsp_rb_mutex);
 struct csv_ringbuffer_queue vpsp_ring_buffer[CSV_COMMAND_PRIORITY_NUM];
 static uint8_t vpsp_rb_supported;
@@ -1782,6 +1774,28 @@ static int vpsp_ring_buffer_queue_init(void)
 	return 0;
 }
 
+static int vpsp_psp_mutex_trylock(void)
+{
+	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
+
+	if (is_hygon_psp && mutex_enabled)
+		return psp_mutex_trylock(&psp_misc->data_pg_aligned->mb_mutex);
+	else
+		return mutex_trylock(&sev_cmd_mutex);
+}
+
+static int vpsp_psp_mutex_unlock(void)
+{
+	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
+
+	if (is_hygon_psp && mutex_enabled)
+		psp_mutex_unlock(&psp_misc->data_pg_aligned->mb_mutex);
+	else
+		mutex_unlock(&sev_cmd_mutex);
+
+	return 0;
+}
+
 static int __vpsp_ring_buffer_enter_locked(int *error)
 {
 	int ret;
@@ -2000,7 +2014,6 @@ int vpsp_try_get_result(uint8_t prio, uint32_t index, phys_addr_t phy_addr,
 {
 	int ret = 0;
 	struct csv_cmdptr_entry cmd = {0};
-	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
 
 	/* Get the retult directly if the command has been executed */
 	if (index >= 0 && vpsp_get_cmd_status(prio, index) !=
@@ -2010,18 +2023,14 @@ int vpsp_try_get_result(uint8_t prio, uint32_t index, phys_addr_t phy_addr,
 		return 0;
 	}
 
-	if (is_hygon_psp && mutex_enabled)
-		ret = psp_mutex_trylock(&psp_misc->data_pg_aligned->mb_mutex);
-	else
-		ret = mutex_trylock(&sev_cmd_mutex);
-
-	if (ret) {
+	if (vpsp_psp_mutex_trylock()) {
 		/* Use mailbox mode to execute a command if there is only one command */
 		if (vpsp_queue_cmd_size(prio) == 1) {
 			/* dequeue command from queue*/
 			vpsp_dequeue_cmd(prio, index, &cmd);
 			ret = __vpsp_do_cmd_locked(cmd.cmd_id, phy_addr, (int *)psp_ret);
 			psp_ret->status = VPSP_FINISH;
+			vpsp_psp_mutex_unlock();
 			if (unlikely(ret)) {
 				if (ret == -EIO) {
 					ret = 0;
@@ -2036,6 +2045,7 @@ int vpsp_try_get_result(uint8_t prio, uint32_t index, phys_addr_t phy_addr,
 			ret = vpsp_do_ringbuf_cmds_locked((int *)psp_ret, prio,
 					index);
 			psp_ret->status = VPSP_FINISH;
+			vpsp_psp_mutex_unlock();
 			if (unlikely(ret)) {
 				pr_err("[%s]: vpsp_do_ringbuf_cmds_locked failed %d\n",
 						__func__, ret);
@@ -2049,13 +2059,8 @@ int vpsp_try_get_result(uint8_t prio, uint32_t index, phys_addr_t phy_addr,
 		return 0;
 	}
 end:
-	if (is_hygon_psp && mutex_enabled)
-		psp_mutex_unlock(&psp_misc->data_pg_aligned->mb_mutex);
-	else
-		mutex_unlock(&sev_cmd_mutex);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(vpsp_try_get_result);
 
 int vpsp_do_cmd(int cmd, phys_addr_t phy_addr, int *psp_ret)
 {
@@ -2144,7 +2149,6 @@ int vpsp_try_do_cmd(int cmd, phys_addr_t phy_addr, struct vpsp_ret *psp_ret)
 end:
 	return ret;
 }
-EXPORT_SYMBOL_GPL(vpsp_try_do_cmd);
 
 static void sev_exit(struct kref *ref)
 {
