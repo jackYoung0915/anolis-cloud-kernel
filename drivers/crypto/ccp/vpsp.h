@@ -136,7 +136,9 @@ enum VPSP_RB_CHECK_STATUS {
 	RB_CHECK_MAX
 };
 #define VPSP_RB_IS_SUPPORTED(buildid)	(buildid >= 1913)
+#define VPSP_RB_OC_IS_SUPPORTED(buildid)	(buildid >= 2167)
 #define VPSP_CMD_STATUS_RUNNING		0xffff
+#define VPSP_RB_OVERCOMMIT_SIZE		1024
 
 extern bool vpsp_in_ringbuffer_mode;
 extern struct kmem_cache *vpsp_cmd_ctx_slab;
