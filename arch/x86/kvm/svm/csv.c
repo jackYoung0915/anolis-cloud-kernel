@@ -1780,7 +1780,7 @@ static int csv_launch_secret(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	if (!csv3_guest(kvm) ||
 	    !(csv->inuse_ext & KVM_CAP_HYGON_COCO_EXT_CSV3_INJ_SECRET)) {
 		pages = hygon_kvm_hooks.sev_pin_memory(kvm, params.guest_uaddr,
-						       params.guest_len, &n, 1);
+						       params.guest_len, &n, FOLL_WRITE);
 		if (IS_ERR(pages)) {
 			ret = PTR_ERR(pages);
 			goto e_free_data;
