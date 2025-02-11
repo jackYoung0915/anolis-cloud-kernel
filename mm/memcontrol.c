@@ -77,6 +77,9 @@
 #ifdef CONFIG_PAGECACHE_LIMIT
 #include <linux/pagecache_limit.h>
 #endif
+#ifdef CONFIG_TEXT_UNEVICTABLE
+#include <linux/unevictable.h>
+#endif
 
 #include <trace/events/vmscan.h>
 
@@ -4506,6 +4509,10 @@ static int memcg_exstat_show(struct seq_file *m, void *v)
 	seq_printf(m, "pagecache_limit_reclaimed_kb %llu\n",
 		   memcg_exstat_gather(memcg, MEMCG_PGCACHE_RECLAIM) * PAGE_SIZE >> 10);
 #endif
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	seq_printf(m, "unevictable_text_size_kb %lu\n",
+		   memcg_exstat_text_unevict_gather(memcg) >> 10);
+#endif
 	return 0;
 }
 
@@ -5927,6 +5934,55 @@ static int mem_cgroup_slab_show(struct seq_file *m, void *p)
 
 static int memory_stat_show(struct seq_file *m, void *v);
 
+#ifdef CONFIG_TEXT_UNEVICTABLE
+static u64 mem_cgroup_allow_unevictable_read(struct cgroup_subsys_state *css,
+					     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->allow_unevictable;
+}
+
+static int mem_cgroup_allow_unevictable_write(struct cgroup_subsys_state *css,
+					      struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 1)
+		return -EINVAL;
+	if (memcg->allow_unevictable == val)
+		return 0;
+
+	memcg->allow_unevictable = val;
+	if (val)
+		memcg_all_processes_unevict(memcg, true);
+	else
+		memcg_all_processes_unevict(memcg, false);
+
+	return 0;
+}
+
+static u64 mem_cgroup_unevictable_percent_read(struct cgroup_subsys_state *css,
+					       struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->unevictable_percent;
+}
+
+static int mem_cgroup_unevictable_percent_write(struct cgroup_subsys_state *css,
+						struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 100)
+		return -EINVAL;
+
+	memcg->unevictable_percent = val;
+	return 0;
+}
+#endif
+
 #ifdef CONFIG_PAGECACHE_LIMIT
 static u64 mem_cgroup_allow_pgcache_limit_read(struct cgroup_subsys_state *css,
 					     struct cftype *cft)
@@ -6249,6 +6305,18 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
 	},
 #endif
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	{
+		.name = "allow_text_unevictable",
+		.read_u64 = mem_cgroup_allow_unevictable_read,
+		.write_u64 = mem_cgroup_allow_unevictable_write,
+	},
+	{
+		.name = "text_unevictable_percent",
+		.read_u64 = mem_cgroup_unevictable_percent_read,
+		.write_u64 = mem_cgroup_unevictable_percent_write,
+	},
+ #endif
 	{ },	/* terminate */
 };
 
@@ -6515,6 +6583,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	memcg->zswap_max = PAGE_COUNTER_MAX;
 #endif
 	page_counter_set_high(&memcg->swap, PAGE_COUNTER_MAX);
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	memcg->unevictable_percent = 100;
+#endif
 	if (parent) {
 		WRITE_ONCE(memcg->swappiness, mem_cgroup_swappiness(parent));
 		WRITE_ONCE(memcg->oom_kill_disable, READ_ONCE(parent->oom_kill_disable));
@@ -6531,6 +6602,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_PAGECACHE_LIMIT
 		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
 		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
+#endif
+#ifdef CONFIG_TEXT_UNEVICTABLE
+		memcg->allow_unevictable = parent->allow_unevictable;
 #endif
 		page_counter_init(&memcg->memory, &parent->memory);
 		page_counter_init(&memcg->swap, &parent->swap);
@@ -7339,6 +7413,10 @@ static int mem_cgroup_can_attach(struct cgroup_taskset *tset)
 	if (!p)
 		return 0;
 
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	mem_cgroup_can_unevictable(p, memcg);
+#endif
+
 	/*
 	 * We are now committed to this value whatever it is. Changes in this
 	 * tunable will only affect upcoming migrations, not the current one.
@@ -7382,6 +7460,9 @@ static int mem_cgroup_can_attach(struct cgroup_taskset *tset)
 
 static void mem_cgroup_cancel_attach(struct cgroup_taskset *tset)
 {
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	mem_cgroup_cancel_unevictable(tset);
+#endif
 	if (mc.to)
 		mem_cgroup_clear_mc();
 }
