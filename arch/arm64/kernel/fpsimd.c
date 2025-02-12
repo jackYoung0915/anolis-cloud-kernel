@@ -138,6 +138,7 @@ __ro_after_init struct vl_info vl_info[ARM64_VEC_MAX] = {
 	},
 #endif
 };
+EXPORT_SYMBOL_FOR_KVM(vl_info);
 
 static unsigned int vec_vl_inherit_flag(enum vec_type type)
 {
@@ -1731,6 +1732,7 @@ void fpsimd_kvm_prepare(void)
 
 	put_cpu_fpsimd_context();
 }
+EXPORT_SYMBOL_FOR_KVM(fpsimd_kvm_prepare);
 
 /*
  * Associate current's FPSIMD context with this cpu
@@ -1780,6 +1782,7 @@ void fpsimd_bind_state_to_cpu(struct cpu_fp_state *state)
 
 	*last = *state;
 }
+EXPORT_SYMBOL_FOR_KVM(fpsimd_bind_state_to_cpu);
 
 /*
  * Load the userland FPSIMD state of 'current' from memory, but only if the
@@ -1901,6 +1904,7 @@ void fpsimd_save_and_flush_cpu_state(void)
 	fpsimd_flush_cpu_state();
 	__put_cpu_fpsimd_context();
 }
+EXPORT_SYMBOL_FOR_KVM(fpsimd_save_and_flush_cpu_state);
 
 #ifdef CONFIG_KERNEL_MODE_NEON
 
