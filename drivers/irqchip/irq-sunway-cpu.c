@@ -82,6 +82,9 @@ asmlinkage void do_entInt(unsigned long type, unsigned long vector,
 	struct pt_regs *old_regs;
 	extern char __idle_start[], __idle_end[];
 
+	if (*((u32 *)(regs->pc)) >> 16 == 0x79c)
+		regs->pc -= 4;
+
 	/* restart idle routine if it is interrupted */
 	if (regs->pc > (u64)__idle_start && regs->pc < (u64)__idle_end)
 		regs->pc = (u64)__idle_start;
