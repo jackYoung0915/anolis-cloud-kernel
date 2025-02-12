@@ -122,10 +122,14 @@ struct smc_link {
 	} ____cacheline_aligned_in_smp;
 	struct completion	tx_ref_comp;
 
-	struct smc_wr_buf	*wr_rx_bufs;	/* WR recv payload buffers */
+	u8			*wr_rx_bufs;	/* WR recv payload buffers */
 	struct ib_recv_wr	*wr_rx_ibs;	/* WR recv meta data */
 	struct ib_sge		*wr_rx_sges;	/* WR recv scatter meta data */
 	/* above three vectors have wr_rx_cnt elements and use the same index */
+	int			wr_rx_sge_cnt; /* rx sge, V1 is 1, V2 is either 2 or 1 */
+	int			wr_rx_buflen;	/* buffer len for the first sge, len for the
+						 * second sge is lgr shared if rx sge is 2.
+						 */
 	dma_addr_t		wr_rx_dma_addr;	/* DMA address of wr_rx_bufs */
 	dma_addr_t		wr_rx_v2_dma_addr; /* DMA address of v2 rx buf*/
 	u64			wr_rx_id;	/* seq # of last recv WR */
@@ -281,6 +285,8 @@ struct smc_link_group {
 	struct rw_semaphore	sndbufs_lock;	/* protects tx buffers */
 	struct list_head	rmbs[SMC_RMBE_SIZES];	/* rx buffers */
 	struct rw_semaphore	rmbs_lock;	/* protects rx buffers */
+	u64			alloc_sndbufs;	/* stats of tx buffers */
+	u64			alloc_rmbs;	/* stats of rx buffers */
 
 	u8			id[SMC_LGR_ID_SIZE];	/* unique lgr id */
 	struct delayed_work	free_work;	/* delayed freeing of an lgr */
@@ -408,6 +414,7 @@ struct smc_init_info {
 	u8			max_links;
 	u8			first_contact_peer;
 	u8			first_contact_local;
+	u16			feature_mask;
 	unsigned short		vlan_id;
 	u32			rc;
 	u8			negotiated_eid[SMC_MAX_EID_LEN];
@@ -501,6 +508,11 @@ static inline bool smc_link_sendable(struct smc_link *lnk)
 static inline bool smc_link_active(struct smc_link *lnk)
 {
 	return lnk->state == SMC_LNK_ACTIVE;
+}
+
+static inline bool smc_link_shared_v2_rxbuf(struct smc_link *lnk)
+{
+	return lnk->wr_rx_sge_cnt > 1;
 }
 
 static inline void smc_gid_be16_convert(__u8 *buf, u8 *gid_raw)

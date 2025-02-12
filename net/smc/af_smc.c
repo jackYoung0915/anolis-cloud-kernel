@@ -53,6 +53,7 @@
 #include "smc_stats.h"
 #include "smc_tracepoint.h"
 #include "smc_sysctl.h"
+#include "smc_loopback.h"
 
 static DEFINE_MUTEX(smc_server_lgr_pending);	/* serialize link group
 						 * creation on server
@@ -1036,7 +1037,7 @@ static int smc_find_ism_v2_device_clnt(struct smc_sock *smc,
 	int rc = SMC_CLC_DECL_NOSMCDDEV;
 	struct smcd_dev *smcd;
 	int i = 1, entry = 1;
-	bool is_virtual;
+	bool is_emulated;
 	u16 chid;
 
 	if (smcd_indicated(ini->smc_type_v1))
@@ -1048,12 +1049,12 @@ static int smc_find_ism_v2_device_clnt(struct smc_sock *smc,
 		chid = smc_ism_get_chid(smcd);
 		if (!smc_find_ism_v2_is_unique_chid(chid, ini, i))
 			continue;
-		is_virtual = __smc_ism_is_virtual(chid);
+		is_emulated = __smc_ism_is_emulated(chid);
 		if (!smc_pnet_is_pnetid_set(smcd->pnetid) ||
 		    smc_pnet_is_ndev_pnetid(sock_net(&smc->sk), smcd->pnetid)) {
-			if (is_virtual && entry == SMCD_CLC_MAX_V2_GID_ENTRIES)
+			if (is_emulated && entry == SMCD_CLC_MAX_V2_GID_ENTRIES)
 				/* It's the last GID-CHID entry left in CLC
-				 * Proposal SMC-Dv2 extension, but a virtual
+				 * Proposal SMC-Dv2 extension, but an Emulated-
 				 * ISM device will take two entries. So give
 				 * up it and try the next potential ISM device.
 				 */
@@ -1063,7 +1064,7 @@ static int smc_find_ism_v2_device_clnt(struct smc_sock *smc,
 			ini->is_smcd = true;
 			rc = 0;
 			i++;
-			entry = is_virtual ? entry + 2 : entry + 1;
+			entry = is_emulated ? entry + 2 : entry + 1;
 			if (entry > SMCD_CLC_MAX_V2_GID_ENTRIES)
 				break;
 		}
@@ -1116,7 +1117,10 @@ static int smc_find_proposal_devices(struct smc_sock *smc,
 	ini->check_smcrv2 = true;
 	ini->smcrv2.saddr = smc->clcsock->sk->sk_rcv_saddr;
 	if (!(ini->smcr_version & SMC_V2) ||
-	    smc->clcsock->sk->sk_family != AF_INET ||
+#if IS_ENABLED(CONFIG_IPV6)
+	    (smc->clcsock->sk->sk_family == AF_INET6 &&
+	     !ipv6_addr_v4mapped(&smc->clcsock->sk->sk_v6_rcv_saddr)) ||
+#endif
 	    !smc_clc_ueid_count() ||
 	    smc_find_rdma_device(smc, ini))
 		ini->smcr_version &= ~SMC_V2;
@@ -1403,10 +1407,10 @@ static int smc_connect_ism(struct smc_sock *smc,
 		if (rc)
 			return rc;
 
-		if (__smc_ism_is_virtual(ini->ism_chid[ini->ism_selected]))
+		if (__smc_ism_is_emulated(ini->ism_chid[ini->ism_selected]))
 			ini->ism_peer_gid[ini->ism_selected].gid_ext =
 						ntohll(aclc->d1.gid_ext);
-		/* for non-virtual ISM devices, peer gid_ext remains 0. */
+		/* for non-Emulated-ISM devices, peer gid_ext remains 0. */
 	}
 	ini->ism_peer_gid[ini->ism_selected].gid = ntohll(aclc->d0.gid);
 
@@ -2117,10 +2121,10 @@ static void smc_check_ism_v2_match(struct smc_init_info *ini,
 		if (smc_ism_get_chid(smcd) == proposed_chid &&
 		    !smc_ism_cantalk(proposed_gid, ISM_RESERVED_VLANID, smcd)) {
 			ini->ism_peer_gid[*matches].gid = proposed_gid->gid;
-			if (__smc_ism_is_virtual(proposed_chid))
+			if (__smc_ism_is_emulated(proposed_chid))
 				ini->ism_peer_gid[*matches].gid_ext =
 							proposed_gid->gid_ext;
-				/* non-virtual ISM's peer gid_ext remains 0. */
+				/* non-Emulated-ISM's peer gid_ext remains 0. */
 			ini->ism_dev[*matches] = smcd;
 			(*matches)++;
 			break;
@@ -2172,10 +2176,10 @@ static void smc_find_ism_v2_device_serv(struct smc_sock *new_smc,
 		smcd_gid.gid = ntohll(smcd_v2_ext->gidchid[i].gid);
 		smcd_gid.gid_ext = 0;
 		chid = ntohs(smcd_v2_ext->gidchid[i].chid);
-		if (__smc_ism_is_virtual(chid)) {
+		if (__smc_ism_is_emulated(chid)) {
 			if ((i + 1) == smc_v2_ext->hdr.ism_gid_cnt ||
 			    chid != ntohs(smcd_v2_ext->gidchid[i + 1].chid))
-				/* each virtual ISM device takes two GID-CHID
+				/* each Emulated-ISM device takes two GID-CHID
 				 * entries and CHID of the second entry repeats
 				 * that of the first entry.
 				 *
@@ -2489,7 +2493,7 @@ static void smc_listen_work(struct work_struct *work)
 	if (rc)
 		goto out_decl;
 
-	rc = smc_clc_srv_v2x_features_validate(pclc, ini);
+	rc = smc_clc_srv_v2x_features_validate(new_smc, pclc, ini);
 	if (rc)
 		goto out_decl;
 
@@ -2745,7 +2749,7 @@ static int smc_accept(struct socket *sock, struct socket *new_sock,
 			release_sock(clcsk);
 		} else if (!atomic_read(&smc_sk(nsk)->conn.bytes_to_rcv)) {
 			lock_sock(nsk);
-			smc_rx_wait(smc_sk(nsk), &timeo, smc_rx_data_available);
+			smc_rx_wait(smc_sk(nsk), &timeo, 0, smc_rx_data_available);
 			release_sock(nsk);
 		}
 	}
@@ -3578,15 +3582,23 @@ static int __init smc_init(void)
 		goto out_sock;
 	}
 
+	rc = smc_loopback_init();
+	if (rc) {
+		pr_err("%s: smc_loopback_init fails with %d\n", __func__, rc);
+		goto out_ib;
+	}
+
 	rc = tcp_register_ulp(&smc_ulp_ops);
 	if (rc) {
 		pr_err("%s: tcp_ulp_register fails with %d\n", __func__, rc);
-		goto out_ib;
+		goto out_lo;
 	}
 
 	static_branch_enable(&tcp_have_smc);
 	return 0;
 
+out_lo:
+	smc_loopback_exit();
 out_ib:
 	smc_ib_unregister_client();
 out_sock:
@@ -3624,6 +3636,7 @@ static void __exit smc_exit(void)
 	tcp_unregister_ulp(&smc_ulp_ops);
 	sock_unregister(PF_SMC);
 	smc_core_exit();
+	smc_loopback_exit();
 	smc_ib_unregister_client();
 	smc_ism_exit();
 	destroy_workqueue(smc_close_wq);
