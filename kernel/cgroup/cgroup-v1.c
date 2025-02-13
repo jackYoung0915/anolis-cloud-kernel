@@ -635,7 +635,8 @@ static ssize_t cgroup_pool_size_write(struct kernfs_open_file *of,
 	u64 val;
 	int i;
 
-	cgrp = of->kn->parent->priv;
+	guard(rcu)();
+	cgrp = rcu_dereference(of->kn->__parent)->priv;
 
 	if (kstrtoull(buf, 0, &val))
 		return -EINVAL;
@@ -942,7 +943,7 @@ static int cgroup1_rename(struct kernfs_node *kn, struct kernfs_node *new_parent
 
 	if (kernfs_type(kn) != KERNFS_DIR)
 		return -ENOTDIR;
-	if (kn->parent != new_parent)
+	if (rcu_access_pointer(kn->__parent) != new_parent)
 		return -EIO;
 
 	/*
