@@ -141,6 +141,8 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 			EXT_KEY(ZVKT);
 			EXT_KEY(ZVFH);
 			EXT_KEY(ZVFHMIN);
+			EXT_KEY(ZVFBFMIN);
+			EXT_KEY(ZVFBFWMA);
 		}
 
 		if (has_fpu()) {
@@ -149,6 +151,7 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 			EXT_KEY(ZFA);
 			EXT_KEY(ZCD);
 			EXT_KEY(ZCF);
+			EXT_KEY(ZFBFMIN);
 		}
 
 		if (IS_ENABLED(CONFIG_RISCV_ISA_SUPM))
