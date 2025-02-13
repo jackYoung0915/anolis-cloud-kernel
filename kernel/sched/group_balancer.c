@@ -331,12 +331,22 @@ static const struct kernfs_ops group_balancer_kf_single_ops = {
 	.seq_show		= group_balancer_seqfile_show,
 };
 
+static struct group_balancer_sched_domain *kn_parent_priv(struct kernfs_node *kn)
+{
+	/*
+	 * The parent pointer is only valid within RCU section since it can be
+	 * replaced
+	 */
+	guard(rcu)();
+	return rcu_dereference(kn->__parent)->priv;
+}
+
 struct group_balancer_sched_domain *kernfs_to_gb_sd(struct kernfs_node *kn)
 {
 	if (kernfs_type(kn) == KERNFS_DIR)
 		return kn->priv;
 	else
-		return kn->parent->priv;
+		return kn_parent_priv(kn);
 }
 
 struct group_balancer_sched_domain *group_balancer_kn_lock_live(struct kernfs_node *kn)
