@@ -920,6 +920,9 @@ struct fuse_conn {
 	/* Use pages instead of pointer for kernel I/O */
 	unsigned int kvec_pages:1;
 
+	/* Is link not implemented by fs? */
+	unsigned int no_link:1;
+
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;
 
