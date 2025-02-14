@@ -223,7 +223,7 @@ static void pcie_port_disable_hp_interrupt(struct pci_dev *dev)
 			return;
 		}
 
-		usleep_range(1000, 1000);
+		usleep_range(10000, 10000);
 		timeout -= 10;
 	} while (timeout >= 0);
 
