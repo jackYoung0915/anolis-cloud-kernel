@@ -6,7 +6,7 @@
 #include <asm/hmcall.h>
 #include <asm/page.h>
 
-#define NO_SYSCALL	(-1)
+#define NO_SYSCALL	(-0xdead)
 
 #ifdef __KERNEL__
 #ifndef __ASSEMBLY__

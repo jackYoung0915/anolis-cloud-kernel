@@ -77,8 +77,12 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	insn[1] = (0x23U << 26) | (28U << 21) | (8U << 16) | offset;
 	insn[2] = SW64_CALL(R28, R28, 0);
 
-	/* replace the 3 mcount instructions at once */
-	return copy_to_kernel_nofault((void *)pc, insn, 3 * SW64_INSN_SIZE);
+	copy_to_kernel_nofault((void *)pc, insn, SW64_INSN_SIZE);
+	copy_to_kernel_nofault((void *)(pc + 4), insn + 1, SW64_INSN_SIZE);
+	mb();
+	copy_to_kernel_nofault((void *)(pc + 8), insn + 2, SW64_INSN_SIZE);
+
+	return 0;
 }
 
 /*
@@ -90,7 +94,12 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 	unsigned long pc = rec->ip + MCOUNT_LDGP_SIZE;
 	unsigned int insn[3] = {SW64_NOP, SW64_NOP, SW64_NOP};
 
-	return copy_to_kernel_nofault((void *)pc, insn, 3 * SW64_INSN_SIZE);
+	copy_to_kernel_nofault((void *)(pc + 8), insn, SW64_INSN_SIZE);
+	mb();
+	copy_to_kernel_nofault((void *)(pc + 4), insn + 1, SW64_INSN_SIZE);
+	copy_to_kernel_nofault((void *)pc, insn + 2, SW64_INSN_SIZE);
+
+	return 0;
 }
 
 void arch_ftrace_update_code(int command)
