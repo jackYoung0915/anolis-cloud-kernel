@@ -1475,6 +1475,7 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 	atomic_t *mapped = &folio->_nr_pages_mapped;
 	pg_data_t *pgdat = folio_pgdat(folio);
 	int last, nr = 0, nr_pmdmapped = 0;
+	bool partially_mapped = false;
 	enum node_stat_item idx;
 
 	__folio_rmap_sanity_checks(folio, page, nr_pages, level);
@@ -1491,6 +1492,8 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 			if (last)
 				nr++;
 		} while (page++, --nr_pages > 0);
+
+		partially_mapped = nr && atomic_read(mapped);
 		break;
 	case RMAP_LEVEL_PMD:
 		last = atomic_add_negative(-1, &folio->_entire_mapcount);
@@ -1507,6 +1510,8 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 				nr = 0;
 			}
 		}
+
+		partially_mapped = nr && nr < nr_pmdmapped;
 		break;
 	}
 
@@ -1525,13 +1530,14 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 		__lruvec_stat_mod_folio(folio, idx, -nr);
 
 		/*
-		 * Queue anon large folio for deferred split if at least one
-		 * page of the folio is unmapped and at least one page
-		 * is still mapped.
-		 */
-		if (folio_test_large(folio) && folio_test_anon(folio))
-			if (level == RMAP_LEVEL_PTE || nr < nr_pmdmapped)
-				deferred_split_folio(folio);
+		* Queue anon large folio for deferred split if at least one page of
+		* the folio is unmapped and at least one page is still mapped.
+		*
+		* Check partially_mapped first to ensure it is a large folio.
+		*/
+		if (partially_mapped && folio_test_anon(folio) &&
+		!folio_test_partially_mapped(folio))
+			deferred_split_folio(folio, true);
 	}
 
 	/*
