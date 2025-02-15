@@ -149,7 +149,8 @@ iommufd_hwpt_paging_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
 
 	lockdep_assert_held(&ioas->mutex);
 
-	if ((flags || user_data) && !ops->domain_alloc_paging_flags)
+	if ((flags || user_data) &&
+	    (!ops->domain_alloc_paging_flags && !ops->domain_alloc_paging_flags_v2))
 		return ERR_PTR(-EOPNOTSUPP);
 	if (flags & ~valid_flags)
 		return ERR_PTR(-EOPNOTSUPP);
@@ -174,6 +175,14 @@ iommufd_hwpt_paging_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
 
 	if (ops->domain_alloc_paging_flags) {
 		domain = ops->domain_alloc_paging_flags(idev->dev,
+				flags & ~IOMMU_HWPT_FAULT_ID_VALID, user_data);
+		if (IS_ERR(domain)) {
+			rc = PTR_ERR(domain);
+			goto out_abort;
+		}
+		domain->owner = ops;
+	} else if (ops->domain_alloc_paging_flags_v2) {
+		domain = ops->domain_alloc_paging_flags_v2(idev->dev,
 				flags & ~IOMMU_HWPT_FAULT_ID_VALID, ictx->kvm, user_data);
 		if (IS_ERR(domain)) {
 			rc = PTR_ERR(domain);
@@ -260,7 +269,7 @@ iommufd_hwpt_nested_alloc(struct iommufd_ctx *ictx,
 	int rc;
 
 	if ((flags & ~(IOMMU_HWPT_FAULT_ID_VALID | IOMMU_HWPT_ALLOC_PASID)) ||
-	    !user_data->len || !ops->domain_alloc_nested)
+	    !user_data->len || (!ops->domain_alloc_nested && !ops->domain_alloc_nested_v2))
 		return ERR_PTR(-EOPNOTSUPP);
 	if (parent->auto_domain || !parent->nest_parent ||
 	    parent->common.domain->owner != ops)
@@ -276,9 +285,16 @@ iommufd_hwpt_nested_alloc(struct iommufd_ctx *ictx,
 	refcount_inc(&parent->common.obj.users);
 	hwpt_nested->parent = parent;
 
-	domain = ops->domain_alloc_nested(
-		idev->dev, parent->common.domain,
-		flags & ~IOMMU_HWPT_FAULT_ID_VALID, ictx->kvm, user_data);
+	if (ops->domain_alloc_nested) {
+		domain = ops->domain_alloc_nested(
+				idev->dev, parent->common.domain,
+				flags & ~IOMMU_HWPT_FAULT_ID_VALID, user_data);
+	} else {
+		domain = ops->domain_alloc_nested_v2(
+				idev->dev, parent->common.domain,
+				flags & ~IOMMU_HWPT_FAULT_ID_VALID, ictx->kvm, user_data);
+	}
+
 	if (IS_ERR(domain)) {
 		rc = PTR_ERR(domain);
 		goto out_abort;
