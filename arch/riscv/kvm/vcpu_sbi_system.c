@@ -19,7 +19,7 @@ static int kvm_sbi_ext_susp_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 
 	switch (funcid) {
 	case SBI_EXT_SUSP_SYSTEM_SUSPEND:
-		if (cp->a0 != SBI_SUSP_SLEEP_TYPE_SUSPEND_TO_RAM) {
+		if (lower_32_bits(cp->a0) != SBI_SUSP_SLEEP_TYPE_SUSPEND_TO_RAM) {
 			retdata->err_val = SBI_ERR_INVALID_PARAM;
 			return 0;
 		}
