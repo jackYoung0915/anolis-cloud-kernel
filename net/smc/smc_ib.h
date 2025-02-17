@@ -23,6 +23,7 @@
 #define SMC_GID_SIZE			sizeof(union ib_gid)
 
 #define SMC_IB_MAX_SEND_SGE		2
+#define SMC_IWARP_RSVD_PORTS_BASE	65500
 
 struct smc_ib_devices {			/* list of smc ib devices definition */
 	struct list_head	list;
@@ -32,15 +33,20 @@ struct smc_ib_devices {			/* list of smc ib devices definition */
 extern struct smc_ib_devices	smc_ib_devices; /* list of smc ib devices */
 extern struct smc_lgr_list smc_lgr_list; /* list of linkgroups */
 
+struct smc_ib_cq {				/* ib_cq wrapper for smc */
+	struct smc_ib_device	*smcibdev;	/* parent ib device */
+	struct ib_cq		*ib_cq;		/* real ib_cq for link */
+	struct tasklet_struct	tasklet;	/* tasklet for wr */
+	int			load;		/* load of current cq */
+};
+
 struct smc_ib_device {				/* ib-device infos for smc */
 	struct list_head	list;
 	struct ib_device	*ibdev;
 	struct ib_port_attr	pattr[SMC_MAX_PORTS];	/* ib dev. port attrs */
 	struct ib_event_handler	event_handler;	/* global ib_event handler */
-	struct ib_cq		*roce_cq_send;	/* send completion queue */
-	struct ib_cq		*roce_cq_recv;	/* recv completion queue */
-	struct tasklet_struct	send_tasklet;	/* called by send cq handler */
-	struct tasklet_struct	recv_tasklet;	/* called by recv cq handler */
+	int			num_cq;	/* num of snd/rcv cq */
+	struct smc_ib_cq	*smcibcq;  /* send & recv cqs */
 	char			mac[SMC_MAX_PORTS][ETH_ALEN];
 						/* mac address per port*/
 	u8			pnetid[SMC_MAX_PORTS][SMC_MAX_PNETID_LEN];
@@ -52,7 +58,9 @@ struct smc_ib_device {				/* ib-device infos for smc */
 	unsigned long		port_event_mask;
 	DECLARE_BITMAP(ports_going_away, SMC_MAX_PORTS);
 	atomic_t		lnk_cnt;	/* number of links on ibdev */
+	refcount_t		lnk_pending_cnt;/* number of links attempt to use ibdev */
 	wait_queue_head_t	lnks_deleted;	/* wait 4 removal of all links*/
+	wait_queue_head_t	lnks_pending;	/* wait 4 pending establish of links */
 	struct mutex		mutex;		/* protect dev setup+cleanup */
 	atomic_t		lnk_cnt_by_port[SMC_MAX_PORTS];
 						/* number of links per port */
@@ -115,5 +123,8 @@ int smc_ib_determine_gid(struct smc_ib_device *smcibdev, u8 ibport,
 int smc_ib_find_route(struct net *net, __be32 saddr, __be32 daddr,
 		      u8 nexthop_mac[], u8 *uses_gateway);
 bool smc_ib_is_valid_local_systemid(void);
+bool smc_ib_is_iwarp(struct ib_device *ibdev, u8 ibport);
+void smc_ib_get_pending_device(struct smc_ib_device *smcibdev);
+void smc_ib_put_pending_device(struct smc_ib_device *smcibdev);
 int smcr_nl_get_device(struct sk_buff *skb, struct netlink_callback *cb);
 #endif

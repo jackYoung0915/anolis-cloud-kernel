@@ -48,6 +48,7 @@
 #define SMC_CLC_DECL_RELEASEERR	0x03030009  /* release version negotiate failed */
 #define SMC_CLC_DECL_MAXCONNERR	0x0303000a  /* max connections negotiate failed */
 #define SMC_CLC_DECL_MAXLINKERR	0x0303000b  /* max links negotiate failed */
+#define SMC_CLC_DECL_VENDORERR	0x0303000c  /* vendor opts negotiate failed */
 #define SMC_CLC_DECL_MODEUNSUPP	0x03040000  /* smc modes do not match (R or D)*/
 #define SMC_CLC_DECL_RMBE_EC	0x03050000  /* peer has eyecatcher in RMBE    */
 #define SMC_CLC_DECL_OPTUNSUPP	0x03060000  /* fastopen sockopt not supported */
@@ -66,6 +67,8 @@
 #define SMC_CLC_DECL_ERR_RTOK	0x09990001  /*	 rtoken handling failed       */
 #define SMC_CLC_DECL_ERR_RDYLNK	0x09990002  /*	 ib ready link failed	      */
 #define SMC_CLC_DECL_ERR_REGBUF	0x09990003  /*	 reg rdma bufs failed	      */
+#define SMC_CLC_DECL_CREDITSERR	0x09990004  /*   announce credits failed      */
+#define SMC_CLC_DECL_IW_GID_QP	0x099f0000  /*   iw_gid_qp check failed       */
 
 #define SMC_FIRST_CONTACT_MASK	0b10	/* first contact bit within typev2 */
 
@@ -150,11 +153,30 @@ struct smc_clc_msg_proposal_prefix {	/* prefix part of clc proposal message*/
 	u8 ipv6_prefixes_cnt;	/* number of IPv6 prefixes in prefix array */
 } __aligned(4);
 
+/* Alibaba vendor experimental options */
+struct smc_clc_vendor_opt_ali {
+#if defined(__BIG_ENDIAN_BITFIELD)
+	u8 valid : 1,
+	   credits_en : 1,
+	   rwwi_en    : 1,
+	   iw_gid_qp  : 1,
+	   reserved0  : 4;
+#elif defined(__LITTLE_ENDIAN_BITFIELD)
+	u8 reserved0  : 4,
+	   iw_gid_qp  : 1,
+	   rwwi_en    : 1,
+	   credits_en : 1,
+	   valid : 1;
+#endif
+	u8 reserved[3];
+};
+
 struct smc_clc_msg_smcd {	/* SMC-D GID information */
 	struct smc_clc_smcd_gid_chid ism; /* ISM native GID+CHID of requestor */
 	__be16 v2_ext_offset;	/* SMC Version 2 Extension Offset */
 	u8 vendor_oui[3];	/* vendor organizationally unique identifier */
-	u8 vendor_exp_options[5];
+	u8 reserved0;
+	struct smc_clc_vendor_opt_ali vendor_exp_options;
 	u8 reserved[20];
 };
 
@@ -204,7 +226,7 @@ struct smcr_clc_msg_accept_confirm {	/* SMCR accept/confirm */
 	u8 qp_mtu   : 4,
 	   rmbe_size : 4;
 #endif
-	u8 reserved;
+	u8 init_credits;		/* QP rq init credits for rq flowctrl */
 	__be64 rmb_dma_addr;	/* RMB virtual address */
 	u8 reserved2;
 	u8 psn[3];		/* packet sequence number */
@@ -255,7 +277,7 @@ struct smc_clc_first_contact_ext_v2x {
 		u8 reserved3[2];	/* for SMC-D only */
 	};
 	__be16 feature_mask;
-	__be32 vendor_exp_options;
+	struct smc_clc_vendor_opt_ali vendor_exp_options;
 	u8 reserved4[8];
 } __packed;		/* format defined in
 			 * IBM Shared Memory Communications Version 2 (Third Edition)
@@ -445,7 +467,8 @@ int smc_clc_send_accept(struct smc_sock *smc, bool srv_first_contact,
 int smc_clc_srv_v2x_features_validate(struct smc_sock *smc,
 				      struct smc_clc_msg_proposal *pclc,
 				      struct smc_init_info *ini);
-int smc_clc_clnt_v2x_features_validate(struct smc_clc_first_contact_ext *fce,
+int smc_clc_clnt_v2x_features_validate(struct smc_sock *smc,
+				       struct smc_clc_first_contact_ext *fce,
 				       struct smc_init_info *ini);
 int smc_clc_v2x_features_confirm_check(struct smc_clc_msg_accept_confirm *cclc,
 				       struct smc_init_info *ini);

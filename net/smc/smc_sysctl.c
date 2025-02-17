@@ -29,6 +29,8 @@ static int links_per_lgr_min = SMC_LINKS_ADD_LNK_MIN;
 static int links_per_lgr_max = SMC_LINKS_ADD_LNK_MAX;
 static int conns_per_lgr_min = SMC_CONN_PER_LGR_MIN;
 static int conns_per_lgr_max = SMC_CONN_PER_LGR_MAX;
+static unsigned int autosplit_size_min = SZ_32K;
+static unsigned int autosplit_size_max = SZ_512M; /* max size of snd/recv buffer */
 
 static struct ctl_table smc_table[] = {
 	{
@@ -90,6 +92,22 @@ static struct ctl_table smc_table[] = {
 		.extra1		= &conns_per_lgr_min,
 		.extra2		= &conns_per_lgr_max,
 	},
+	{
+		.procname	= "experiment_vendor_options",
+		.data		= &init_net.smc.sysctl_vendor_exp_options,
+		.maxlen		= sizeof(init_net.smc.sysctl_vendor_exp_options),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec,
+	},
+	{
+		.procname	= "autosplit_size",
+		.data		= &init_net.smc.sysctl_autosplit_size,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= &autosplit_size_min,
+		.extra2		= &autosplit_size_max,
+	},
 	{  }
 };
 
@@ -115,13 +133,14 @@ int __net_init smc_sysctl_net_init(struct net *net)
 		goto err_reg;
 
 	net->smc.sysctl_autocorking_size = SMC_AUTOCORKING_DEFAULT_SIZE;
-	net->smc.sysctl_smcr_buf_type = SMCR_PHYS_CONT_BUFS;
+	net->smc.sysctl_smcr_buf_type = SMCR_MIXED_BUFS;
+	net->smc.sysctl_vendor_exp_options = ~0U;
 	net->smc.sysctl_smcr_testlink_time = SMC_LLC_TESTLINK_DEFAULT_TIME;
-	WRITE_ONCE(net->smc.sysctl_wmem, net_smc_wmem_init);
-	WRITE_ONCE(net->smc.sysctl_rmem, net_smc_rmem_init);
+	net->smc.sysctl_wmem = 262144; /* 256 KiB */
+	net->smc.sysctl_rmem = 262144; /* 256 KiB */
 	net->smc.sysctl_max_links_per_lgr = SMC_LINKS_PER_LGR_MAX_PREFER;
 	net->smc.sysctl_max_conns_per_lgr = SMC_CONN_PER_LGR_PREFER;
-
+	net->smc.sysctl_autosplit_size = SZ_128K;
 	return 0;
 
 err_reg:

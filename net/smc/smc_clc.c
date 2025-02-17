@@ -39,6 +39,9 @@ static const char SMC_EYECATCHER[4] = {'\xe2', '\xd4', '\xc3', '\xd9'};
 /* eye catcher "SMCD" EBCDIC for CLC messages */
 static const char SMCD_EYECATCHER[4] = {'\xe2', '\xd4', '\xc3', '\xc4'};
 
+/* ALIBABA OUI */
+static const u8 SMC_VENDOR_OUI_ALIBABA[3] = {0xFC, 0xA6, 0x4C};
+
 static u8 smc_hostname[SMC_MAX_HOSTNAME_LEN];
 
 struct smc_clc_eid_table {
@@ -459,6 +462,14 @@ static int smc_clc_fill_fce_v2x(struct smc_clc_first_contact_ext_v2x *fce_v2x,
 			fce_v2x->max_links = ini->max_links;
 		}
 		fce_v2x->feature_mask = htons(ini->feature_mask);
+
+		if (ini->vendor_opt_valid) {
+			fce_v2x->vendor_exp_options.valid = 1;
+			fce_v2x->vendor_exp_options.credits_en = ini->credits_en;
+			fce_v2x->vendor_exp_options.rwwi_en = ini->rwwi_en;
+			/* always tell peer iw_gid_qp support */
+			fce_v2x->vendor_exp_options.iw_gid_qp = 1;
+		}
 	}
 
 out:
@@ -788,10 +799,8 @@ int smc_clc_wait_msg(struct smc_sock *smc, void *buf, int buflen,
 		reason_code = SMC_CLC_DECL_PEERDECL;
 		smc->peer_diagnosis = ntohl(dclc->peer_diagnosis);
 		if (((struct smc_clc_msg_decline *)buf)->hdr.typev2 &
-						SMC_FIRST_CONTACT_MASK) {
+						SMC_FIRST_CONTACT_MASK)
 			smc->conn.lgr->sync_err = 1;
-			smc_lgr_terminate_sched(smc->conn.lgr);
-		}
 	}
 
 out:
@@ -835,10 +844,34 @@ int smc_clc_send_decline(struct smc_sock *smc, u32 peer_diag_info, u8 version)
 	memset(&msg, 0, sizeof(msg));
 	vec.iov_base = &dclc;
 	vec.iov_len = send_len;
+	mutex_lock(&smc->clcsock_release_lock);
+	if (!smc->clcsock || !smc->clcsock->sk) {
+		mutex_unlock(&smc->clcsock_release_lock);
+		return -EPROTO;
+	}
 	len = kernel_sendmsg(smc->clcsock, &msg, &vec, 1, send_len);
+	mutex_unlock(&smc->clcsock_release_lock);
 	if (len < 0 || len < send_len)
 		len = -EPROTO;
 	return len > 0 ? 0 : len;
+}
+
+inline struct smc_clc_vendor_opt_ali
+smc_clc_vendor_opts_ali_get_config(struct smc_sock *smc)
+{
+	/* smc_clc_vendor_opt_ali is defined in network bytes order,
+	 * but sysctl_vendor_exp_options is assinged in host bytes order.
+	 * So converted sysctl_vendor_exp_options to __be32, in case
+	 * sysctl_vendor_exp_options can be configured compatible either
+	 * on be host or le host.
+	 */
+	__be32 vendor_opts_val =
+		cpu_to_be32(sock_net(&smc->sk)->smc.sysctl_vendor_exp_options);
+
+	BUILD_BUG_ON_MSG(sizeof(struct smc_clc_vendor_opt_ali) > sizeof(unsigned int),
+			 "struct smc_clc_vendor_opt_ali size can not exceeds 4 bytes");
+
+	return *((struct smc_clc_vendor_opt_ali *)&vendor_opts_val);
 }
 
 /* send CLC PROPOSAL message across internal TCP socket */
@@ -924,6 +957,8 @@ int smc_clc_send_proposal(struct smc_sock *smc, struct smc_init_info *ini)
 	} else {
 		struct smc_clc_eid_entry *ueident;
 		u16 v2_ext_offset;
+		struct smc_clc_vendor_opt_ali vendor_config =
+			smc_clc_vendor_opts_ali_get_config(smc);
 
 		v2_ext->hdr.flag.release = SMC_RELEASE;
 		v2_ext_offset = sizeof(*pclc_smcd) -
@@ -933,6 +968,18 @@ int smc_clc_send_proposal(struct smc_sock *smc, struct smc_init_info *ini)
 						pclc_prfx->ipv6_prefixes_cnt *
 						sizeof(ipv6_prfx[0]);
 		pclc_smcd->v2_ext_offset = htons(v2_ext_offset);
+
+		if (vendor_config.valid) {
+			memcpy(pclc_smcd->vendor_oui, SMC_VENDOR_OUI_ALIBABA,
+			       sizeof(SMC_VENDOR_OUI_ALIBABA));
+			pclc_smcd->vendor_exp_options.valid = 1;
+			if (vendor_config.credits_en)
+				pclc_smcd->vendor_exp_options.credits_en = 1;
+			if (vendor_config.rwwi_en)
+				pclc_smcd->vendor_exp_options.rwwi_en = 1;
+			/* iw gid qp bit is not configurable, always support */
+			pclc_smcd->vendor_exp_options.iw_gid_qp = 1;
+		}
 		plen += sizeof(*v2_ext);
 
 		v2_ext->feature_mask = htons(SMC_FEATURE_MASK);
@@ -1113,9 +1160,13 @@ smcr_clc_prep_confirm_accept(struct smc_connection *conn,
 	switch (clc->hdr.type) {
 	case SMC_CLC_ACCEPT:
 		clc->r0.qp_mtu = link->path_mtu;
+		if (first_contact && ini->vendor_opt_valid && ini->credits_en)
+			clc->r0.init_credits = (u8)link->wr_rx_cnt;
 		break;
 	case SMC_CLC_CONFIRM:
 		clc->r0.qp_mtu = min(link->path_mtu, link->peer_mtu);
+		if (first_contact && link->credits_enable)
+			clc->r0.init_credits = (u8)link->wr_rx_cnt;
 		break;
 	}
 	clc->r0.rmbe_size = conn->rmbe_size_comp;
@@ -1247,6 +1298,44 @@ int smc_clc_send_accept(struct smc_sock *new_smc, bool srv_first_contact,
 	return len > 0 ? 0 : len;
 }
 
+void smc_clc_vendor_opt_validate(struct smc_sock *smc,
+				 struct smc_clc_msg_proposal *pclc,
+				 struct smc_init_info *ini)
+{
+	struct smc_clc_msg_smcd *prop_smcd = smc_get_clc_msg_smcd(pclc);
+	struct smc_clc_vendor_opt_ali vendor_config =
+		smc_clc_vendor_opts_ali_get_config(smc);
+
+	if (!prop_smcd || !vendor_config.valid)
+		return;
+
+	if (memcmp(prop_smcd->vendor_oui, SMC_VENDOR_OUI_ALIBABA,
+		   sizeof(SMC_VENDOR_OUI_ALIBABA)))
+		return;
+
+	if (!prop_smcd->vendor_exp_options.valid)
+		return;
+
+	ini->vendor_opt_valid = 1;
+
+	if (vendor_config.credits_en)
+		ini->credits_en = prop_smcd->vendor_exp_options.credits_en;
+	else
+		ini->credits_en = 0;
+
+	if (vendor_config.rwwi_en)
+		ini->rwwi_en = prop_smcd->vendor_exp_options.rwwi_en;
+	else
+		ini->rwwi_en = 0;
+
+	/* iw_gid_qp is not configurable. iw_gid_qp=0 means old version with
+	 * iw_clcsk_qp(use clcsk's IP to create QP), iw_gid_qp=1 means new
+	 * version with iw_gid_qp(use GID to create QP). If peer is old version
+	 * (local is iw_gid_qp and peer is iw_clcsk_qp), gid check is needed.
+	 */
+	ini->iw_gid_qp_chk = !prop_smcd->vendor_exp_options.iw_gid_qp;
+}
+
 int smc_clc_srv_v2x_features_validate(struct smc_sock *smc,
 				      struct smc_clc_msg_proposal *pclc,
 				      struct smc_init_info *ini)
@@ -1257,6 +1346,7 @@ int smc_clc_srv_v2x_features_validate(struct smc_sock *smc,
 	ini->max_conns = SMC_CONN_PER_LGR_MAX;
 	ini->max_links = SMC_LINKS_ADD_LNK_MAX;
 	ini->feature_mask = SMC_FEATURE_MASK;
+	ini->vendor_opt_valid = 0;
 
 	if ((!(ini->smcd_version & SMC_V2) && !(ini->smcr_version & SMC_V2)) ||
 	    ini->release_nr < SMC_RELEASE_1)
@@ -1278,14 +1368,19 @@ int smc_clc_srv_v2x_features_validate(struct smc_sock *smc,
 			return SMC_CLC_DECL_MAXLINKERR;
 	}
 
+	smc_clc_vendor_opt_validate(smc, pclc, ini);
+
 	return 0;
 }
 
-int smc_clc_clnt_v2x_features_validate(struct smc_clc_first_contact_ext *fce,
+int smc_clc_clnt_v2x_features_validate(struct smc_sock *smc,
+				       struct smc_clc_first_contact_ext *fce,
 				       struct smc_init_info *ini)
 {
 	struct smc_clc_first_contact_ext_v2x *fce_v2x =
 		(struct smc_clc_first_contact_ext_v2x *)fce;
+	struct smc_clc_vendor_opt_ali vendor_config =
+		smc_clc_vendor_opts_ali_get_config(smc);
 
 	if (ini->release_nr < SMC_RELEASE_1)
 		return 0;
@@ -1302,6 +1397,23 @@ int smc_clc_clnt_v2x_features_validate(struct smc_clc_first_contact_ext *fce,
 	}
 	/* common supplemental features of server and client */
 	ini->feature_mask = ntohs(fce_v2x->feature_mask) & SMC_FEATURE_MASK;
+
+	if ((!vendor_config.valid && fce_v2x->vendor_exp_options.valid) ||
+	    (!vendor_config.credits_en &&
+	     fce_v2x->vendor_exp_options.credits_en) ||
+	    (!vendor_config.rwwi_en && fce_v2x->vendor_exp_options.rwwi_en))
+		return SMC_CLC_DECL_VENDORERR;
+
+	if (fce_v2x->vendor_exp_options.valid) {
+		ini->vendor_opt_valid = 1;
+		ini->credits_en = fce_v2x->vendor_exp_options.credits_en;
+		ini->rwwi_en = fce_v2x->vendor_exp_options.rwwi_en;
+		/* iw_gid_qp=0 means old version with iw_clcsk_qp, iw_gid_qp=1 means
+		 * new version with iw_gid_qp. If peer is old version(local is iw_gid_qp
+		 * and peer is iw_clcsk_qp), gid check is needed.
+		 */
+		ini->iw_gid_qp_chk = !fce_v2x->vendor_exp_options.iw_gid_qp;
+	}
 
 	return 0;
 }
@@ -1333,6 +1445,12 @@ int smc_clc_v2x_features_confirm_check(struct smc_clc_msg_accept_confirm *cclc,
 	/* common supplemental features returned by client */
 	ini->feature_mask = ntohs(fce_v2x->feature_mask);
 
+	if (ini->vendor_opt_valid &&
+	    (!fce_v2x->vendor_exp_options.valid ||
+	     fce_v2x->vendor_exp_options.credits_en != ini->credits_en ||
+	     fce_v2x->vendor_exp_options.rwwi_en != ini->rwwi_en))
+		return SMC_CLC_DECL_VENDORERR;
+
 	return 0;
 }
 
@@ -1343,6 +1461,8 @@ void smc_clc_get_hostname(u8 **host)
 
 void __init smc_clc_init(void)
 {
+	static const char def_ueid[] = "SMCV2-DEFAULT-UEID";
+	char ueid[SMC_MAX_EID_LEN + 1] = { 0 };
 	struct new_utsname *u;
 
 	memset(smc_hostname, _S, sizeof(smc_hostname)); /* ASCII blanks */
@@ -1358,6 +1478,9 @@ void __init smc_clc_init(void)
 #else
 	smc_clc_eid_table.seid_enabled = 0;
 #endif
+	memset(ueid, ' ', SMC_MAX_EID_LEN); /* fill with space */
+	memcpy(ueid, def_ueid, strlen(def_ueid));
+	smc_clc_ueid_add(ueid);
 }
 
 void smc_clc_exit(void)
