@@ -1281,6 +1281,9 @@ static int vfio_pci_ioctl_get_pci_hot_reset_info(
 	if (ret)
 		return ret;
 
+	if (WARN_ON(!count)) /* Should always be at least one */
+		return -ERANGE;
+
 	if (count > (hdr.argsz - sizeof(hdr)) / sizeof(*devices)) {
 		hdr.count = count;
 		ret = -ENOSPC;
@@ -1325,7 +1328,7 @@ out:
 
 static int
 vfio_pci_ioctl_pci_hot_reset_groups(struct vfio_pci_core_device *vdev,
-				    int array_count, bool slot,
+				    u32 array_count, bool slot,
 				    struct vfio_pci_hot_reset __user *arg)
 {
 	int32_t *group_fds;
@@ -2084,6 +2087,7 @@ static int vfio_pci_bus_notifier(struct notifier_block *nb,
 			 pci_name(pdev));
 		pdev->driver_override = kasprintf(GFP_KERNEL, "%s",
 						  vdev->vdev.ops->name);
+		WARN_ON(!pdev->driver_override);
 	} else if (action == BUS_NOTIFY_BOUND_DRIVER &&
 		   pdev->is_virtfn && physfn == vdev->pdev) {
 		struct pci_driver *drv = pci_dev_driver(pdev);
