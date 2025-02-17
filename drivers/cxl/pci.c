@@ -967,8 +967,8 @@ static struct pci_driver cxl_pci_driver = {
 };
 
 #define CXL_EVENT_HDR_FLAGS_REC_SEVERITY GENMASK(1, 0)
-static void cxl_cper_event_call(enum cxl_event_type ev_type,
-				struct cxl_cper_event_rec *rec)
+static void cxl_handle_cper_event(enum cxl_event_type ev_type,
+				  struct cxl_cper_event_rec *rec)
 {
 	struct cper_cxl_event_devid *device_id = &rec->hdr.device_id;
 	struct pci_dev *pdev __free(pci_dev_put) = NULL;
@@ -977,13 +977,17 @@ static void cxl_cper_event_call(enum cxl_event_type ev_type,
 	unsigned int devfn;
 	u32 hdr_flags;
 
+	pr_debug("CPER event %d for device %u:%u:%u.%u\n", ev_type,
+		 device_id->segment_num, device_id->bus_num,
+		 device_id->device_num, device_id->func_num);
+
 	devfn = PCI_DEVFN(device_id->device_num, device_id->func_num);
 	pdev = pci_get_domain_bus_and_slot(device_id->segment_num,
 					   device_id->bus_num, devfn);
 	if (!pdev)
 		return;
 
-	guard(pci_dev)(pdev);
+	guard(device)(&pdev->dev);
 	if (pdev->driver != &cxl_pci_driver)
 		return;
 
@@ -999,25 +1003,35 @@ static void cxl_cper_event_call(enum cxl_event_type ev_type,
 			       &uuid_null, &rec->event);
 }
 
+static void cxl_cper_work_fn(struct work_struct *work)
+{
+	struct cxl_cper_work_data wd;
+
+	while (cxl_cper_kfifo_get(&wd))
+		cxl_handle_cper_event(wd.event_type, &wd.rec);
+}
+static DECLARE_WORK(cxl_cper_work, cxl_cper_work_fn);
+
 static int __init cxl_pci_driver_init(void)
 {
 	int rc;
 
-	rc = cxl_cper_register_callback(cxl_cper_event_call);
+	rc = pci_register_driver(&cxl_pci_driver);
 	if (rc)
 		return rc;
 
-	rc = pci_register_driver(&cxl_pci_driver);
+	rc = cxl_cper_register_work(&cxl_cper_work);
 	if (rc)
-		cxl_cper_unregister_callback(cxl_cper_event_call);
+		pci_unregister_driver(&cxl_pci_driver);
 
 	return rc;
 }
 
 static void __exit cxl_pci_driver_exit(void)
 {
+	cxl_cper_unregister_work(&cxl_cper_work);
+	cancel_work_sync(&cxl_cper_work);
 	pci_unregister_driver(&cxl_pci_driver);
-	cxl_cper_unregister_callback(cxl_cper_event_call);
 }
 
 module_init(cxl_pci_driver_init);

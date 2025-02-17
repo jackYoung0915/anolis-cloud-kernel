@@ -776,7 +776,7 @@ static void cxl_disable_rch_root_ints(struct cxl_dport *dport)
 	 * the root cmd register's interrupts is required. But, PCI spec
 	 * shows these are disabled by default on reset.
 	 */
-	if (bridge->native_cxl_error) {
+	if (bridge->native_aer) {
 		aer_cmd_mask = (PCI_ERR_ROOT_CMD_COR_EN |
 				PCI_ERR_ROOT_CMD_NONFATAL_EN |
 				PCI_ERR_ROOT_CMD_FATAL_EN);
@@ -792,7 +792,7 @@ void cxl_setup_parent_dport(struct device *host, struct cxl_dport *dport)
 	struct pci_host_bridge *host_bridge;
 
 	host_bridge = to_pci_host_bridge(dport_dev);
-	if (host_bridge->native_cxl_error)
+	if (host_bridge->native_aer)
 		dport->rcrb.aer_cap = cxl_rcrb_to_aer(dport_dev, dport->rcrb.base);
 
 	dport->reg_map.host = host;
@@ -898,11 +898,21 @@ static void cxl_handle_rdport_errors(struct cxl_dev_state *cxlds) { }
 void cxl_cor_error_detected(struct pci_dev *pdev)
 {
 	struct cxl_dev_state *cxlds = pci_get_drvdata(pdev);
+	struct device *dev = &cxlds->cxlmd->dev;
 
-	if (cxlds->rcd)
-		cxl_handle_rdport_errors(cxlds);
+	scoped_guard(device, dev) {
+		if (!dev->driver) {
+			dev_warn(&pdev->dev,
+				 "%s: memdev disabled, abort error handling\n",
+				 dev_name(dev));
+			return;
+		}
 
-	cxl_handle_endpoint_cor_ras(cxlds);
+		if (cxlds->rcd)
+			cxl_handle_rdport_errors(cxlds);
+
+		cxl_handle_endpoint_cor_ras(cxlds);
+	}
 }
 EXPORT_SYMBOL_NS_GPL(cxl_cor_error_detected, CXL);
 
@@ -914,16 +924,25 @@ pci_ers_result_t cxl_error_detected(struct pci_dev *pdev,
 	struct device *dev = &cxlmd->dev;
 	bool ue;
 
-	if (cxlds->rcd)
-		cxl_handle_rdport_errors(cxlds);
+	scoped_guard(device, dev) {
+		if (!dev->driver) {
+			dev_warn(&pdev->dev,
+				 "%s: memdev disabled, abort error handling\n",
+				 dev_name(dev));
+			return PCI_ERS_RESULT_DISCONNECT;
+		}
 
-	/*
-	 * A frozen channel indicates an impending reset which is fatal to
-	 * CXL.mem operation, and will likely crash the system. On the off
-	 * chance the situation is recoverable dump the status of the RAS
-	 * capability registers and bounce the active state of the memdev.
-	 */
-	ue = cxl_handle_endpoint_ras(cxlds);
+		if (cxlds->rcd)
+			cxl_handle_rdport_errors(cxlds);
+		/*
+		 * A frozen channel indicates an impending reset which is fatal to
+		 * CXL.mem operation, and will likely crash the system. On the off
+		 * chance the situation is recoverable dump the status of the RAS
+		 * capability registers and bounce the active state of the memdev.
+		 */
+		ue = cxl_handle_endpoint_ras(cxlds);
+	}
+
 
 	switch (state) {
 	case pci_channel_io_normal:
