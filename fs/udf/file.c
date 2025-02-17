@@ -69,7 +69,7 @@ static vm_fault_t udf_page_mkwrite(struct vm_fault *vmf)
 		goto out_unlock;
 	}
 
-	block_commit_write(page, 0, end);
+	block_commit_write(page_folio(page), 0, end);
 out_dirty:
 	set_page_dirty(page);
 	wait_for_stable_page(page);
