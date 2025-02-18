@@ -251,6 +251,9 @@ static inline int rb_sched_core_cmp(const void *key, const struct rb_node *node)
 
 void sched_core_enqueue(struct rq *rq, struct task_struct *p)
 {
+	if (p->se.sched_delayed)
+		return;
+
 	rq->core->core_task_seq++;
 
 	if (!p->core_cookie)
@@ -261,6 +264,9 @@ void sched_core_enqueue(struct rq *rq, struct task_struct *p)
 
 void sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags)
 {
+	if (p->se.sched_delayed)
+		return;
+
 	rq->core->core_task_seq++;
 
 	if (sched_core_enqueued(p)) {
@@ -526,6 +532,11 @@ sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags) { }
  *   rq->lock. Non-zero indicates the task is runnable, the special
  *   ON_RQ_MIGRATING state is used for migration without holding both
  *   rq->locks. It indicates task_cpu() is not stable, see task_rq_lock().
+ *
+ *   Additionally it is possible to be ->on_rq but still be considered not
+ *   runnable when p->se.sched_delayed is true. These tasks are on the runqueue
+ *   but will be dequeued as soon as they get picked again. See the
+ *   task_is_runnable() helper.
  *
  * p->on_cpu <- { 0, 1 }:
  *
@@ -2109,17 +2120,17 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	if (!(flags & ENQUEUE_NOCLOCK))
 		update_rq_clock(rq);
 
-	if (!(flags & ENQUEUE_RESTORE)) {
-		sched_info_enqueue(rq, p);
-		psi_enqueue(p, (flags & ENQUEUE_WAKEUP) && !(flags & ENQUEUE_MIGRATED));
-	}
-
 	p->sched_class->enqueue_task(rq, p, flags);
 	/*
 	 * Must be after ->enqueue_task() because ENQUEUE_DELAYED can clear
 	 * ->sched_delayed.
 	 */
 	uclamp_rq_inc(rq, p);
+
+	psi_enqueue(p, flags);
+
+	if (!(flags & ENQUEUE_RESTORE))
+		sched_info_enqueue(rq, p);
 
 	if (sched_core_enabled(rq))
 		sched_core_enqueue(rq, p);
@@ -2136,10 +2147,10 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	if (!(flags & DEQUEUE_NOCLOCK))
 		update_rq_clock(rq);
 
-	if (!(flags & DEQUEUE_SAVE)) {
+	if (!(flags & DEQUEUE_SAVE))
 		sched_info_dequeue(rq, p);
-		psi_dequeue(p, flags & DEQUEUE_SLEEP);
-	}
+
+	psi_dequeue(p, flags);
 
 	/*
 	 * Must be before ->dequeue_task() because ->dequeue_task() can 'fail'
@@ -4463,9 +4474,10 @@ static bool __task_needs_rq_lock(struct task_struct *p)
  * @arg: Argument to function.
  *
  * Fix the task in it's current state by avoiding wakeups and or rq operations
- * and call @func(@arg) on it.  This function can use ->on_rq and task_curr()
- * to work out what the state is, if required.  Given that @func can be invoked
- * with a runqueue lock held, it had better be quite lightweight.
+ * and call @func(@arg) on it.  This function can use task_is_runnable() and
+ * task_curr() to work out what the state is, if required.  Given that @func
+ * can be invoked with a runqueue lock held, it had better be quite
+ * lightweight.
  *
  * Returns:
  *   Whatever @func returns
@@ -6207,7 +6219,7 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * opportunity to pull in more work from other CPUs.
 	 */
 	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
-		   rq->nr_running == rq->cfs.h_nr_running)) {
+		   rq->nr_running == rq->cfs.h_nr_queued)) {
 
 		p = pick_next_task_fair(rq, prev, rf);
 		if (unlikely(p == RETRY_TASK))
@@ -6919,7 +6931,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 
 		migrate_disable_switch(rq, prev);
 		psi_account_irqtime(rq, prev, next);
-		psi_sched_switch(prev, next, !task_on_rq_queued(prev));
+		psi_sched_switch(prev, next, !task_on_rq_queued(prev) ||
+					     prev->se.sched_delayed);
 
 		trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next, prev_state);
 
@@ -7250,16 +7263,15 @@ int default_wake_function(wait_queue_entry_t *curr, unsigned mode, int wake_flag
 }
 EXPORT_SYMBOL(default_wake_function);
 
-static void __setscheduler_prio(struct task_struct *p, int prio)
+static const struct sched_class *__setscheduler_class(struct task_struct *p, int prio)
 {
 	if (dl_prio(prio))
-		p->sched_class = &dl_sched_class;
-	else if (rt_prio(prio))
-		p->sched_class = &rt_sched_class;
-	else
-		p->sched_class = &fair_sched_class;
+		return &dl_sched_class;
 
-	p->prio = prio;
+	if (rt_prio(prio))
+		return &rt_sched_class;
+
+	return &fair_sched_class;
 }
 
 #ifdef CONFIG_RT_MUTEXES
@@ -7294,7 +7306,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 {
 	int prio, oldprio, queued, running, queue_flag =
 		DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
-	const struct sched_class *prev_class;
+	const struct sched_class *prev_class, *next_class;
 	struct rq_flags rf;
 	struct rq *rq;
 
@@ -7352,6 +7364,11 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 		queue_flag &= ~DEQUEUE_MOVE;
 
 	prev_class = p->sched_class;
+	next_class = __setscheduler_class(p, prio);
+
+	if (prev_class != next_class && p->se.sched_delayed)
+		dequeue_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_DELAYED | DEQUEUE_NOCLOCK);
+
 	queued = task_on_rq_queued(p);
 	running = task_current(rq, p);
 	if (queued)
@@ -7389,7 +7406,8 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 			p->rt.timeout = 0;
 	}
 
-	__setscheduler_prio(p, prio);
+	p->sched_class = next_class;
+	p->prio = prio;
 
 	if (queued)
 		enqueue_task(rq, p, queue_flag);
@@ -7863,7 +7881,7 @@ static int __sched_setscheduler(struct task_struct *p,
 {
 	int oldpolicy = -1, policy = attr->sched_policy;
 	int retval, oldprio, newprio, queued, running;
-	const struct sched_class *prev_class;
+	const struct sched_class *prev_class, *next_class;
 	struct balance_callback *head;
 	struct rq_flags rf;
 	int reset_on_fork;
@@ -8036,6 +8054,12 @@ change:
 			queue_flags &= ~DEQUEUE_MOVE;
 	}
 
+	prev_class = p->sched_class;
+	next_class = __setscheduler_class(p, newprio);
+
+	if (prev_class != next_class && p->se.sched_delayed)
+		dequeue_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_DELAYED | DEQUEUE_NOCLOCK);
+
 	queued = task_on_rq_queued(p);
 	running = task_current(rq, p);
 	if (queued)
@@ -8043,11 +8067,10 @@ change:
 	if (running)
 		put_prev_task(rq, p);
 
-	prev_class = p->sched_class;
-
 	if (!(attr->sched_flags & SCHED_FLAG_KEEP_PARAMS)) {
 		__setscheduler_params(p, attr);
-		__setscheduler_prio(p, newprio);
+		p->sched_class = next_class;
+		p->prio = newprio;
 	}
 	__setscheduler_uclamp(p, attr);
 
@@ -11604,6 +11627,24 @@ static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 }
 #endif
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static u64 cpu_slice_read_u64(struct cgroup_subsys_state *css,
+				   struct cftype *cft)
+{
+	u64 slice_us = css_tg(css)->slice;
+
+	do_div(slice_us, NSEC_PER_USEC);
+
+	return slice_us;
+}
+
+static int cpu_slice_write_u64(struct cgroup_subsys_state *css,
+				    struct cftype *cftype, u64 slice_us)
+{
+	return sched_group_set_slice(css_tg(css), slice_us);
+}
+#endif
+
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 static int cpu_ht_ratio_write(struct cgroup_subsys_state *css,
 			      struct cftype *cftype, u64 ht_ratio)
@@ -11647,6 +11688,12 @@ static struct cftype cpu_legacy_files[] = {
 		.name = "idle",
 		.read_s64 = cpu_idle_read_s64,
 		.write_s64 = cpu_idle_write_s64,
+	},
+	{
+		.name = "slice_us",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_slice_read_u64,
+		.write_u64 = cpu_slice_write_u64,
 	},
 #endif
 #ifdef CONFIG_CFS_BANDWIDTH
@@ -12196,6 +12243,12 @@ static struct cftype cpu_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_s64 = cpu_idle_read_s64,
 		.write_s64 = cpu_idle_write_s64,
+	},
+	{
+		.name = "slice",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_slice_read_u64,
+		.write_u64 = cpu_slice_write_u64,
 	},
 #endif
 #ifdef CONFIG_CFS_BANDWIDTH
