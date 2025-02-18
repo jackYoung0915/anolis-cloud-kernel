@@ -692,8 +692,6 @@ int page_unmap_invalidate(struct address_space *mapping, struct page *page,
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 
-	if (PageDirty(page))
-		return 0;
 	if (page_mapped(page))
 		unmap_mapping_page(page);
 	BUG_ON(page_mapped(page));
