@@ -1407,6 +1407,19 @@ static void reclaim_coldpgs_action(struct mem_cgroup *memcg,
 	       sizeof(filter.thresholds));
 	up_read(&global_control.rwsem);
 
+	if (FLAG_CTRL(control->flags) & FLAG_IGNORE_AGE) {
+		/*
+		 * For user who wants to use ignore_age mode but do not want
+		 * impact on global setting, we make filter to be overwritten
+		 * by memcg's setting.
+		 */
+		pr_debug("Ignoring age mode, overwrite filter flags & mode\n");
+		down_read(&control->rwsem);
+		filter.flags = FLAG_CTRL(control->flags);
+		filter.mode = FLAG_MODE(control->flags);
+		up_read(&control->rwsem);
+	}
+
 	/*
 	 * The memory cgroup might have offlined subordinate memory cgroups,
 	 * whose cgroup files have been removed. It means there is no way to
@@ -1416,7 +1429,9 @@ static void reclaim_coldpgs_action(struct mem_cgroup *memcg,
 	 * but the amount isn't limited.
 	 */
 	for_each_memcg_tree(memcg, m) {
-		if (m != memcg && mem_cgroup_online(m))
+		if (m != memcg &&
+		    (mem_cgroup_online(m) &&
+		     !reclaim_coldpgs_has_flag(&filter, FLAG_IGNORE_AGE)))
 			continue;
 
 		if (m == memcg) {
@@ -1424,6 +1439,14 @@ static void reclaim_coldpgs_action(struct mem_cgroup *memcg,
 			reclaim_coldpgs_from_memcg(m, &filter);
 		} else {
 			filter.size = 0xFFFFFFFFFF;
+			/*
+			 * When subordinate memcgs are been reclaimed, use
+			 * their parent's reclaim setting is more reasonable.
+			 */
+			down_read(&control->rwsem);
+			m->coldpgs_control.flags = control->flags;
+			m->coldpgs_control.threshold = control->threshold;
+			up_read(&control->rwsem);
 			reclaim_coldpgs_from_memcg(m, &filter);
 		}
 	}
