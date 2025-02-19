@@ -1813,8 +1813,8 @@ TEST_F(TRACE_poke, getpid_runs_normally)
 #elif defined(__sw_64__)
 # define ARCH_REGS		struct user_pt_regs
 # define SYSCALL_NUM(_regs)	(_regs).regs[0]
-# define SYSCALL_RET(_regs)	(_regs).regs[0]
-# define SYSCALL_NUM_RET_SHARE_REG
+# define SYSCALL_RET_SET(_regs, _val)			\
+		TH_LOG("Can't modify syscall return on this architecture")
 #elif defined(__xtensa__)
 # define ARCH_REGS		struct user_pt_regs
 # define SYSCALL_NUM(_regs)	(_regs).syscall
