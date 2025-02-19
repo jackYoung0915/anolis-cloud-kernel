@@ -222,11 +222,12 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 			conn->local_tx_ctrl.prod_flags.urg_data_pending = 1;
 
 		if (!atomic_read(&conn->sndbuf_space) || conn->urg_tx_pend) {
-			if (send_done)
-				return send_done;
 			rc = smc_tx_wait(smc, msg->msg_flags);
-			if (rc)
+			if (rc) {
+				if (send_done)
+					return send_done;
 				goto out_err;
+			}
 			continue;
 		}
 
@@ -330,6 +331,12 @@ static int smc_tx_rdma_write(struct smc_connection *conn, int peer_rmbe_offset,
 		/* offset within RMBE */
 		peer_rmbe_offset;
 	rdma_wr->rkey = lgr->rtokens[conn->rtoken_idx][link->link_idx].rkey;
+	/* rtoken might be deleted if peer freed connection */
+	if (!rdma_wr->rkey ||
+	    (rdma_wr->remote_addr == (conn->tx_off + peer_rmbe_offset))) {
+		pr_warn_ratelimited("smc: unexpected sends during connection termination flow\n");
+		return -EINVAL;
+	}
 	rc = ib_post_send(link->roce_qp, &rdma_wr->wr, NULL);
 	if (rc)
 		smcr_link_down_cond_sched(link);

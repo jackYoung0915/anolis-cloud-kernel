@@ -788,10 +788,8 @@ int smc_clc_wait_msg(struct smc_sock *smc, void *buf, int buflen,
 		reason_code = SMC_CLC_DECL_PEERDECL;
 		smc->peer_diagnosis = ntohl(dclc->peer_diagnosis);
 		if (((struct smc_clc_msg_decline *)buf)->hdr.typev2 &
-						SMC_FIRST_CONTACT_MASK) {
+						SMC_FIRST_CONTACT_MASK)
 			smc->conn.lgr->sync_err = 1;
-			smc_lgr_terminate_sched(smc->conn.lgr);
-		}
 	}
 
 out:
@@ -835,7 +833,13 @@ int smc_clc_send_decline(struct smc_sock *smc, u32 peer_diag_info, u8 version)
 	memset(&msg, 0, sizeof(msg));
 	vec.iov_base = &dclc;
 	vec.iov_len = send_len;
+	mutex_lock(&smc->clcsock_release_lock);
+	if (!smc->clcsock || !smc->clcsock->sk) {
+		mutex_unlock(&smc->clcsock_release_lock);
+		return -EPROTO;
+	}
 	len = kernel_sendmsg(smc->clcsock, &msg, &vec, 1, send_len);
+	mutex_unlock(&smc->clcsock_release_lock);
 	if (len < 0 || len < send_len)
 		len = -EPROTO;
 	return len > 0 ? 0 : len;
@@ -1343,6 +1347,8 @@ void smc_clc_get_hostname(u8 **host)
 
 void __init smc_clc_init(void)
 {
+	static const char def_ueid[] = "SMCV2-DEFAULT-UEID";
+	char ueid[SMC_MAX_EID_LEN + 1] = { 0 };
 	struct new_utsname *u;
 
 	memset(smc_hostname, _S, sizeof(smc_hostname)); /* ASCII blanks */
@@ -1358,6 +1364,9 @@ void __init smc_clc_init(void)
 #else
 	smc_clc_eid_table.seid_enabled = 0;
 #endif
+	memset(ueid, ' ', SMC_MAX_EID_LEN); /* fill with space */
+	memcpy(ueid, def_ueid, strlen(def_ueid));
+	smc_clc_ueid_add(ueid);
 }
 
 void smc_clc_exit(void)

@@ -135,35 +135,38 @@ static inline void smc_wr_tx_process_cqe(struct ib_wc *wc)
 
 static void smc_wr_tx_tasklet_fn(struct tasklet_struct *t)
 {
-	struct smc_ib_device *dev = from_tasklet(dev, t, send_tasklet);
+	struct smc_ib_cq *smcibcq = from_tasklet(smcibcq, t, tasklet);
 	struct ib_wc wc[SMC_WR_MAX_POLL_CQE];
-	int i = 0, rc;
-	int polled = 0;
+	int i, rc;
 
 again:
-	polled++;
 	do {
 		memset(&wc, 0, sizeof(wc));
-		rc = ib_poll_cq(dev->roce_cq_send, SMC_WR_MAX_POLL_CQE, wc);
-		if (polled == 1) {
-			ib_req_notify_cq(dev->roce_cq_send,
-					 IB_CQ_NEXT_COMP |
-					 IB_CQ_REPORT_MISSED_EVENTS);
-		}
-		if (!rc)
-			break;
+		rc = ib_poll_cq(smcibcq->ib_cq, SMC_WR_MAX_POLL_CQE, wc);
 		for (i = 0; i < rc; i++)
 			smc_wr_tx_process_cqe(&wc[i]);
+		if (rc < SMC_WR_MAX_POLL_CQE)
+			/* If < SMC_WR_MAX_POLL_CQE, the CQ should have been
+			 * drained, no need to poll again.
+			 */
+			break;
 	} while (rc > 0);
-	if (polled == 1)
+
+	/* With IB_CQ_REPORT_MISSED_EVENTS, if ib_req_notify_cq() returns 0,
+	 * then it is safe to wait for the next event; else we must poll the
+	 * CQ again to make sure we won't miss any event.
+	 */
+	if (ib_req_notify_cq(smcibcq->ib_cq,
+			     IB_CQ_NEXT_COMP |
+			     IB_CQ_REPORT_MISSED_EVENTS) > 0)
 		goto again;
 }
 
 void smc_wr_tx_cq_handler(struct ib_cq *ib_cq, void *cq_context)
 {
-	struct smc_ib_device *dev = (struct smc_ib_device *)cq_context;
+	struct smc_ib_cq *smcibcq = (struct smc_ib_cq *)cq_context;
 
-	tasklet_schedule(&dev->send_tasklet);
+	tasklet_schedule(&smcibcq->tasklet);
 }
 
 /*---------------------------- request submission ---------------------------*/
@@ -306,8 +309,6 @@ int smc_wr_tx_send(struct smc_link *link, struct smc_wr_tx_pend_priv *priv)
 	struct smc_wr_tx_pend *pend;
 	int rc;
 
-	ib_req_notify_cq(link->smcibdev->roce_cq_send,
-			 IB_CQ_NEXT_COMP | IB_CQ_REPORT_MISSED_EVENTS);
 	pend = container_of(priv, struct smc_wr_tx_pend, priv);
 	rc = ib_post_send(link->roce_qp, &link->wr_tx_ibs[pend->idx], NULL);
 	if (rc) {
@@ -323,7 +324,7 @@ int smc_wr_tx_v2_send(struct smc_link *link, struct smc_wr_tx_pend_priv *priv,
 	int rc;
 
 	link->wr_tx_v2_ib->sg_list[0].length = len;
-	ib_req_notify_cq(link->smcibdev->roce_cq_send,
+	ib_req_notify_cq(link->smcibcq_send->ib_cq,
 			 IB_CQ_NEXT_COMP | IB_CQ_REPORT_MISSED_EVENTS);
 	rc = ib_post_send(link->roce_qp, link->wr_tx_v2_ib, NULL);
 	if (rc) {
@@ -367,7 +368,7 @@ int smc_wr_reg_send(struct smc_link *link, struct ib_mr *mr)
 {
 	int rc;
 
-	ib_req_notify_cq(link->smcibdev->roce_cq_send,
+	ib_req_notify_cq(link->smcibcq_send->ib_cq,
 			 IB_CQ_NEXT_COMP | IB_CQ_REPORT_MISSED_EVENTS);
 	link->wr_reg_state = POSTED;
 	link->wr_reg.wr.wr_id = (u64)(uintptr_t)mr;
@@ -478,34 +479,38 @@ static inline void smc_wr_rx_process_cqes(struct ib_wc wc[], int num)
 
 static void smc_wr_rx_tasklet_fn(struct tasklet_struct *t)
 {
-	struct smc_ib_device *dev = from_tasklet(dev, t, recv_tasklet);
+	struct smc_ib_cq *smcibcq = from_tasklet(smcibcq, t, tasklet);
 	struct ib_wc wc[SMC_WR_MAX_POLL_CQE];
-	int polled = 0;
 	int rc;
 
 again:
-	polled++;
 	do {
 		memset(&wc, 0, sizeof(wc));
-		rc = ib_poll_cq(dev->roce_cq_recv, SMC_WR_MAX_POLL_CQE, wc);
-		if (polled == 1) {
-			ib_req_notify_cq(dev->roce_cq_recv,
-					 IB_CQ_SOLICITED_MASK
-					 | IB_CQ_REPORT_MISSED_EVENTS);
-		}
-		if (!rc)
+		rc = ib_poll_cq(smcibcq->ib_cq, SMC_WR_MAX_POLL_CQE, wc);
+		if (rc > 0)
+			smc_wr_rx_process_cqes(&wc[0], rc);
+		if (rc < SMC_WR_MAX_POLL_CQE)
+			/* If < SMC_WR_MAX_POLL_CQE, the CQ should have been
+			 * drained, no need to poll again.
+			 */
 			break;
-		smc_wr_rx_process_cqes(&wc[0], rc);
 	} while (rc > 0);
-	if (polled == 1)
+
+	/* With IB_CQ_REPORT_MISSED_EVENTS, if ib_req_notify_cq() returns 0,
+	 * then it is safe to wait for the next event; else we must poll the
+	 * CQ again to make sure we won't miss any event.
+	 */
+	if (ib_req_notify_cq(smcibcq->ib_cq,
+			     IB_CQ_NEXT_COMP |
+			     IB_CQ_REPORT_MISSED_EVENTS) > 0)
 		goto again;
 }
 
 void smc_wr_rx_cq_handler(struct ib_cq *ib_cq, void *cq_context)
 {
-	struct smc_ib_device *dev = (struct smc_ib_device *)cq_context;
+	struct smc_ib_cq *smcibcq = (struct smc_ib_cq *)cq_context;
 
-	tasklet_schedule(&dev->recv_tasklet);
+	tasklet_schedule(&smcibcq->tasklet);
 }
 
 int smc_wr_rx_post_init(struct smc_link *link)
@@ -838,14 +843,24 @@ no_mem:
 
 void smc_wr_remove_dev(struct smc_ib_device *smcibdev)
 {
-	tasklet_kill(&smcibdev->recv_tasklet);
-	tasklet_kill(&smcibdev->send_tasklet);
+	int i;
+
+	for (i = 0; i < smcibdev->num_cq_peer; i++) {
+		tasklet_kill(&smcibdev->smcibcq_send[i].tasklet);
+		tasklet_kill(&smcibdev->smcibcq_recv[i].tasklet);
+	}
 }
 
 void smc_wr_add_dev(struct smc_ib_device *smcibdev)
 {
-	tasklet_setup(&smcibdev->recv_tasklet, smc_wr_rx_tasklet_fn);
-	tasklet_setup(&smcibdev->send_tasklet, smc_wr_tx_tasklet_fn);
+	int i;
+
+	for (i = 0; i < smcibdev->num_cq_peer; i++) {
+		tasklet_setup(&smcibdev->smcibcq_send[i].tasklet,
+			      smc_wr_tx_tasklet_fn);
+		tasklet_setup(&smcibdev->smcibcq_recv[i].tasklet,
+			      smc_wr_rx_tasklet_fn);
+	}
 }
 
 static void smcr_wr_tx_refs_free(struct percpu_ref *ref)

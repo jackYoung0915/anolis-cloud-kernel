@@ -241,12 +241,12 @@ static void smc_llc_flow_parallel(struct smc_link_group *lgr, u8 flow_type,
 	}
 	/* drop parallel or already-in-progress llc requests */
 	if (flow_type != msg_type)
-		pr_warn_once("smc: SMC-R lg %*phN net %llu dropped parallel "
-			     "LLC msg: msg %d flow %d role %d\n",
-			     SMC_LGR_ID_SIZE, &lgr->id,
-			     lgr->net->net_cookie,
-			     qentry->msg.raw.hdr.common.type,
-			     flow_type, lgr->role);
+		pr_warn_ratelimited("smc: SMC-R lg %*phN net %llu dropped parallel "
+				    "LLC msg: msg %d flow %d role %d\n",
+				    SMC_LGR_ID_SIZE, &lgr->id,
+				    lgr->net->net_cookie,
+				    qentry->msg.raw.hdr.common.type,
+				    flow_type, lgr->role);
 	kfree(qentry);
 }
 
@@ -359,12 +359,12 @@ struct smc_llc_qentry *smc_llc_wait(struct smc_link_group *lgr,
 					   smc_llc_flow_qentry_clr(flow));
 			return NULL;
 		}
-		pr_warn_once("smc: SMC-R lg %*phN net %llu dropped unexpected LLC msg: "
-			     "msg %d exp %d flow %d role %d flags %x\n",
-			     SMC_LGR_ID_SIZE, &lgr->id, lgr->net->net_cookie,
-			     rcv_msg, exp_msg,
-			     flow->type, lgr->role,
-			     flow->qentry->msg.raw.hdr.flags);
+		pr_warn_ratelimited("smc: SMC-R lg %*phN net %llu dropped unexpected LLC msg: "
+				    "msg %d exp %d flow %d role %d flags %x\n",
+				    SMC_LGR_ID_SIZE, &lgr->id, lgr->net->net_cookie,
+				    rcv_msg, exp_msg,
+				    flow->type, lgr->role,
+				    flow->qentry->msg.raw.hdr.flags);
 		smc_llc_flow_qentry_del(flow);
 	}
 out:
@@ -1033,6 +1033,7 @@ int smc_llc_cli_add_link(struct smc_link *link, struct smc_llc_qentry *qentry)
 	struct smc_llc_msg_add_link *llc = &qentry->msg.add_link;
 	enum smc_lgr_type lgr_new_t = SMC_LGR_SYMMETRIC;
 	struct smc_link_group *lgr = smc_get_lgr(link);
+	struct smc_ib_device *ibdev_selected = NULL;
 	struct smc_init_info *ini = NULL;
 	struct smc_link *lnk_new = NULL;
 	int lnk_idx, rc = 0;
@@ -1074,13 +1075,29 @@ int smc_llc_cli_add_link(struct smc_link *link, struct smc_llc_qentry *qentry)
 		ini->ib_dev = link->smcibdev;
 		ini->ib_port = link->ibport;
 	}
+
+	mutex_lock(&smc_ib_devices.mutex);
+	if (lgr->smc_version == SMC_V2)
+		ibdev_selected = ini->smcrv2.ib_dev_v2;
+	else if (lgr->smc_version < SMC_V2)
+		ibdev_selected = ini->ib_dev;
+	if (list_empty(&ibdev_selected->list)) {
+		rc = -ENODEV;
+		ibdev_selected = NULL;
+		mutex_unlock(&smc_ib_devices.mutex);
+		goto out_reject;
+	}
+	smc_ib_get_pending_device(ibdev_selected);	/* put below */
+	mutex_unlock(&smc_ib_devices.mutex);
+
 	lnk_idx = smc_llc_alloc_alt_link(lgr, lgr_new_t);
 	if (lnk_idx < 0)
-		goto out_reject;
+		goto out_pending_dev;
 	lnk_new = &lgr->lnk[lnk_idx];
+	lnk_new->iw_conn_param = link->iw_conn_param;
 	rc = smcr_link_init(lgr, lnk_new, lnk_idx, ini);
 	if (rc)
-		goto out_reject;
+		goto out_pending_dev;
 	smc_llc_save_add_link_info(lnk_new, llc);
 	lnk_new->link_id = llc->link_num;	/* SMC server assigns link id */
 	smc_llc_link_set_uid(lnk_new);
@@ -1110,11 +1127,15 @@ int smc_llc_cli_add_link(struct smc_link *link, struct smc_llc_qentry *qentry)
 		}
 	}
 	rc = smc_llc_cli_conf_link(link, ini, lnk_new, lgr_new_t);
-	if (!rc)
+	if (!rc) {
+		smc_ib_put_pending_device(ibdev_selected);
 		goto out;
+	}
 out_clear_lnk:
 	lnk_new->state = SMC_LNK_INACTIVE;
 	smcr_link_clear(lnk_new, false);
+out_pending_dev:
+	smc_ib_put_pending_device(ibdev_selected);
 out_reject:
 	smc_llc_cli_add_link_reject(qentry);
 out:
@@ -1407,6 +1428,7 @@ int smc_llc_srv_add_link(struct smc_link *link,
 			 struct smc_llc_qentry *req_qentry)
 {
 	enum smc_lgr_type lgr_new_t = SMC_LGR_SYMMETRIC;
+	struct smc_ib_device *ibdev_selected = NULL;
 	struct smc_link_group *lgr = link->lgr;
 	struct smc_llc_msg_add_link *add_llc;
 	struct smc_llc_qentry *qentry = NULL;
@@ -1452,15 +1474,31 @@ int smc_llc_srv_add_link(struct smc_link *link,
 		ini->ib_dev = link->smcibdev;
 		ini->ib_port = link->ibport;
 	}
+
+	mutex_lock(&smc_ib_devices.mutex);
+	if (lgr->smc_version == SMC_V2)
+		ibdev_selected = ini->smcrv2.ib_dev_v2;
+	else if (lgr->smc_version < SMC_V2)
+		ibdev_selected = ini->ib_dev;
+	if (list_empty(&ibdev_selected->list)) {
+		rc = -ENODEV;
+		ibdev_selected = NULL;
+		mutex_unlock(&smc_ib_devices.mutex);
+		goto out;
+	}
+	smc_ib_get_pending_device(ibdev_selected);	/* put below */
+	mutex_unlock(&smc_ib_devices.mutex);
+
 	lnk_idx = smc_llc_alloc_alt_link(lgr, lgr_new_t);
 	if (lnk_idx < 0) {
 		rc = 0;
-		goto out;
+		goto out_dev;
 	}
 
+	lgr->lnk[lnk_idx].iw_conn_param = link->iw_conn_param;
 	rc = smcr_link_init(lgr, &lgr->lnk[lnk_idx], lnk_idx, ini);
 	if (rc)
-		goto out;
+		goto out_dev;
 	link_new = &lgr->lnk[lnk_idx];
 
 	rc = smcr_buf_map_lgr(link_new);
@@ -1512,6 +1550,8 @@ int smc_llc_srv_add_link(struct smc_link *link,
 	rc = smc_llc_srv_conf_link(link, link_new, lgr_new_t);
 	if (rc)
 		goto out_err;
+
+	smc_ib_put_pending_device(ibdev_selected);
 	kfree(ini);
 	return 0;
 out_err:
@@ -1519,6 +1559,8 @@ out_err:
 		link_new->state = SMC_LNK_INACTIVE;
 		smcr_link_clear(link_new, false);
 	}
+out_dev:
+	smc_ib_put_pending_device(ibdev_selected);
 out:
 	kfree(ini);
 	if (send_req_add_link_resp)
@@ -2183,7 +2225,7 @@ int smc_llc_link_init(struct smc_link *link)
 
 void smc_llc_link_active(struct smc_link *link)
 {
-	pr_warn_ratelimited("smc: SMC-R lg %*phN net %llu link added: id %*phN, "
+	pr_info_ratelimited("smc: SMC-R lg %*phN net %llu link added: id %*phN, "
 			    "peerid %*phN, ibdev %s, ibport %d\n",
 			    SMC_LGR_ID_SIZE, &link->lgr->id,
 			    link->lgr->net->net_cookie,
@@ -2202,7 +2244,7 @@ void smc_llc_link_active(struct smc_link *link)
 void smc_llc_link_clear(struct smc_link *link, bool log)
 {
 	if (log)
-		pr_warn_ratelimited("smc: SMC-R lg %*phN net %llu link removed: id %*phN"
+		pr_info_ratelimited("smc: SMC-R lg %*phN net %llu link removed: id %*phN"
 				    ", peerid %*phN, ibdev %s, ibport %d\n",
 				    SMC_LGR_ID_SIZE, &link->lgr->id,
 				    link->lgr->net->net_cookie,

@@ -44,6 +44,48 @@ struct smc_ib_devices smc_ib_devices = {	/* smc-registered ib devices */
 
 u8 local_systemid[SMC_SYSTEMID_LEN];		/* unique system identifier */
 
+static void smc_ib_modify_qp_iw_extension(struct smc_link *lnk)
+{
+	struct iw_ext_conn_param *iw_param = &lnk->iw_conn_param;
+	__be32 saddr_v4, daddr_v4;
+	bool use_rsvd_ports;
+
+	/* IPs are stored as union, treat them as IPv4
+	 * for easy comparison.
+	 */
+	saddr_v4 = iw_param->sk_addr.saddr_v4;
+	daddr_v4 = iw_param->sk_addr.daddr_v4;
+
+	if (saddr_v4 < daddr_v4) {
+		use_rsvd_ports = true;
+	} else if (saddr_v4 > daddr_v4) {
+		use_rsvd_ports = false;
+	} else {
+		/* if sip == dip, then lqpn must be
+		 * different from rqpn.
+		 */
+		if (lnk->roce_qp->qp_num < lnk->peer_qpn)
+			use_rsvd_ports = true;
+		else
+			use_rsvd_ports = false;
+	}
+
+	/* eRDMA iWARP MAX qp_num is 128K, that is a maximum of 128K
+	 * RC links can be formed. So here we reserve 2^4 ports in
+	 * one side, and with maximum of 2^16 ports in another side
+	 * to form 2^20 different 5-tuples for eRDMA iWARP RC link.
+	 */
+	if (use_rsvd_ports) {
+		iw_param->sk_addr.sport =
+			rsvd_ports_base + ((lnk->peer_qpn >> 16) & 0xF);
+		iw_param->sk_addr.dport = htons(lnk->peer_qpn & 0xFFFF);
+	} else {
+		iw_param->sk_addr.sport = lnk->roce_qp->qp_num & 0xFFFF;
+		iw_param->sk_addr.dport = htons(rsvd_ports_base +
+			      ((lnk->roce_qp->qp_num >> 16) & 0xF));
+	}
+}
+
 static int smc_ib_modify_qp_init(struct smc_link *lnk)
 {
 	struct ib_qp_attr qp_attr;
@@ -89,6 +131,12 @@ static int smc_ib_modify_qp_rtr(struct smc_link *lnk)
 					 */
 	qp_attr.min_rnr_timer = SMC_QP_MIN_RNR_TIMER;
 
+	if (reserve_mode &&
+	    smc_ib_is_iwarp(lnk->smcibdev->ibdev, lnk->ibport)) {
+		smc_ib_modify_qp_iw_extension(lnk);
+		qp_attr_mask |= IB_QP_RESERVED1;
+	}
+
 	return ib_modify_qp(lnk->roce_qp, &qp_attr, qp_attr_mask);
 }
 
@@ -133,10 +181,16 @@ int smc_ib_ready_link(struct smc_link *lnk)
 	if (rc)
 		goto out;
 	smc_wr_remember_qp_attr(lnk);
-	rc = ib_req_notify_cq(lnk->smcibdev->roce_cq_recv,
+	rc = ib_req_notify_cq(lnk->smcibcq_recv->ib_cq,
 			      IB_CQ_SOLICITED_MASK);
 	if (rc)
 		goto out;
+
+	rc = ib_req_notify_cq(lnk->smcibcq_send->ib_cq,
+			      IB_CQ_NEXT_COMP | IB_CQ_REPORT_MISSED_EVENTS);
+	if (rc)
+		goto out;
+
 	rc = smc_wr_rx_post_init(lnk);
 	if (rc)
 		goto out;
@@ -154,12 +208,25 @@ out:
 
 static int smc_ib_fill_mac(struct smc_ib_device *smcibdev, u8 ibport)
 {
+	struct ib_device *ibdev = smcibdev->ibdev;
 	const struct ib_gid_attr *attr;
+	struct net_device *ndev;
 	int rc;
 
 	attr = rdma_get_gid_attr(smcibdev->ibdev, ibport, 0);
 	if (IS_ERR(attr))
 		return -ENODEV;
+
+	if (smc_ib_is_iwarp(ibdev, ibport)) {
+		if (!ibdev->ops.get_netdev)
+			return -ENODEV;
+		ndev = ibdev->ops.get_netdev(ibdev, ibport);
+		if (!ndev)
+			return -ENODEV;
+		ether_addr_copy(smcibdev->mac[ibport - 1], ndev->dev_addr);
+		dev_put(ndev);
+		return 0;
+	}
 
 	rc = rdma_read_gid_l2_fields(attr, NULL, smcibdev->mac[ibport - 1]);
 	rdma_put_gid_attr(attr);
@@ -237,6 +304,59 @@ static int smc_ib_determine_gid_rcu(const struct net_device *ndev,
 			*sgid_index = attr->index;
 		return 0;
 	}
+
+	/* Note: This is a tricky workaround for eRDMA iWARP.
+	 *
+	 * eRDAM iWARP has only one GID of type IB_GID_TYPE_IB which is
+	 * converted from the MAC address. But RoCEv2 device have GID of
+	 * type IB_GID_TYPE_ROCE_UDP_ENCAP which is converted from the
+	 * IPv4 or IPv6 address. The IPv4 GID is used by SMCRv2 protocol
+	 * to record IPv4 address of peer.
+	 *
+	 * So in order to make SMCRv2 works well with eRDMA iWARP, we
+	 * do not record the real MAC GID of eRDMA iWARP, but convert the
+	 * IPv4 address of the net_device corresponding to eRDMA iWARP
+	 * into an IPv4 GID and record it.
+	 */
+	if (smcrv2 && attr->gid_type == IB_GID_TYPE_IB) {
+		struct in_device *in_dev = __in_dev_get_rcu(ndev);
+		const struct in_ifaddr *ifa, *ifa_prefer = NULL;
+		struct net *net = dev_net(ndev);
+
+		if (!in_dev)
+			goto out;
+		/* the one with the same subnet as smcrv2->saddr is
+		 * perferred, otherwise the first one is selected.
+		 */
+		in_dev_for_each_ifa_rcu(ifa, in_dev) {
+			if (ifa->ifa_address == cpu_to_be32(INADDR_NONE))
+				continue;
+			if (!ifa_prefer)
+				ifa_prefer = ifa;
+			if (inet_ifa_match(smcrv2->saddr, ifa)) {
+				ifa_prefer = ifa;
+				break;
+			}
+		}
+		if (!ifa_prefer)
+			goto out;
+		if (smcrv2->daddr && smc_ib_find_route(net,
+						       ifa_prefer->ifa_address,
+						       smcrv2->daddr,
+						       smcrv2->nexthop_mac,
+						       &smcrv2->uses_gateway))
+			goto out;
+		if (gid)
+			ipv6_addr_set_v4mapped(ifa_prefer->ifa_address,
+					       (struct in6_addr *)gid);
+		if (sgid_index)
+			*sgid_index = attr->index;
+
+		/* save the GID of type IB_GID_TYPE_IB */
+		memcpy(smcrv2->eiwarp_gid, &attr->gid, SMC_GID_SIZE);
+		return 0;
+	}
+
 	if (smcrv2 && attr->gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP &&
 	    smc_ib_gid_to_ipv4((u8 *)&attr->gid) != cpu_to_be32(INADDR_NONE)) {
 		struct in_device *in_dev = __in_dev_get_rcu(ndev);
@@ -275,28 +395,40 @@ int smc_ib_determine_gid(struct smc_ib_device *smcibdev, u8 ibport,
 			 unsigned short vlan_id, u8 gid[], u8 *sgid_index,
 			 struct smc_init_info_smcrv2 *smcrv2)
 {
+	struct ib_device *ibdev = smcibdev->ibdev;
 	const struct ib_gid_attr *attr;
 	const struct net_device *ndev;
+	bool iwarp_ndev = false;
 	int i;
 
+	iwarp_ndev = smc_ib_is_iwarp(ibdev, ibport) && ibdev->ops.get_netdev;
+
 	for (i = 0; i < smcibdev->pattr[ibport - 1].gid_tbl_len; i++) {
-		attr = rdma_get_gid_attr(smcibdev->ibdev, ibport, i);
+		attr = rdma_get_gid_attr(ibdev, ibport, i);
 		if (IS_ERR(attr))
 			continue;
 
 		rcu_read_lock();
-		ndev = rdma_read_gid_attr_ndev_rcu(attr);
-		if (!IS_ERR(ndev) &&
+		if (iwarp_ndev)
+			ndev = ibdev->ops.get_netdev(ibdev, ibport);
+		else
+			ndev = rdma_read_gid_attr_ndev_rcu(attr);
+
+		if (ndev && !IS_ERR(ndev) &&
 		    ((!vlan_id && !is_vlan_dev(ndev)) ||
 		     (vlan_id && is_vlan_dev(ndev) &&
 		      vlan_dev_vlan_id(ndev) == vlan_id))) {
 			if (!smc_ib_determine_gid_rcu(ndev, attr, gid,
 						      sgid_index, smcrv2)) {
+				if (iwarp_ndev)
+					dev_put((struct net_device *)ndev);
 				rcu_read_unlock();
 				rdma_put_gid_attr(attr);
 				return 0;
 			}
 		}
+		if (ndev && iwarp_ndev)
+			dev_put((struct net_device *)ndev);
 		rcu_read_unlock();
 		rdma_put_gid_attr(attr);
 	}
@@ -317,7 +449,9 @@ static bool smc_ib_check_link_gid(u8 gid[SMC_GID_SIZE], bool smcrv2,
 			continue;
 
 		rcu_read_lock();
-		if ((!smcrv2 && attr->gid_type == IB_GID_TYPE_ROCE) ||
+		if ((smcrv2 && attr->gid_type == IB_GID_TYPE_IB &&
+		     smc_ib_is_iwarp(smcibdev->ibdev, ibport)) ||
+		    (!smcrv2 && attr->gid_type == IB_GID_TYPE_ROCE) ||
 		    (smcrv2 && attr->gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP &&
 		     !(ipv6_addr_type((const struct in6_addr *)&attr->gid)
 				     & IPV6_ADDR_LINKLOCAL)))
@@ -332,6 +466,7 @@ static bool smc_ib_check_link_gid(u8 gid[SMC_GID_SIZE], bool smcrv2,
 /* check all links if the gid is still defined on smcibdev */
 static void smc_ib_gid_check(struct smc_ib_device *smcibdev, u8 ibport)
 {
+	bool is_iwarp = smc_ib_is_iwarp(smcibdev->ibdev, ibport);
 	struct smc_link_group *lgr;
 	int i;
 
@@ -346,7 +481,9 @@ static void smc_ib_gid_check(struct smc_ib_device *smcibdev, u8 ibport)
 			if (lgr->lnk[i].state == SMC_LNK_UNUSED ||
 			    lgr->lnk[i].smcibdev != smcibdev)
 				continue;
-			if (!smc_ib_check_link_gid(lgr->lnk[i].gid,
+			if (!smc_ib_check_link_gid(is_iwarp ?
+						   lgr->lnk[i].eiwarp_gid :
+						   lgr->lnk[i].gid,
 						   lgr->smc_version == SMC_V2,
 						   smcibdev, ibport))
 				smcr_port_err(smcibdev, ibport);
@@ -631,6 +768,36 @@ int smcr_nl_get_device(struct sk_buff *skb, struct netlink_callback *cb)
 	return skb->len;
 }
 
+static struct smc_ib_cq *smc_ib_get_least_used_cq(struct smc_ib_device *smcibdev,
+						  bool is_send)
+{
+	struct smc_ib_cq *smcibcq, *cq;
+	int min, i;
+
+	if (is_send)
+		smcibcq = smcibdev->smcibcq_send;
+	else
+		smcibcq = smcibdev->smcibcq_recv;
+
+	cq = smcibcq;
+	min = cq->load;
+
+	for (i = 0; i < smcibdev->num_cq_peer; i++) {
+		if (smcibcq[i].load < min) {
+			cq = &smcibcq[i];
+			min = cq->load;
+		}
+	}
+
+	cq->load++;
+	return cq;
+}
+
+static void smc_ib_put_cq(struct smc_ib_cq *smcibcq)
+{
+	smcibcq->load--;
+}
+
 static void smc_ib_qp_event_handler(struct ib_event *ibevent, void *priv)
 {
 	struct smc_link *lnk = (struct smc_link *)priv;
@@ -654,19 +821,28 @@ static void smc_ib_qp_event_handler(struct ib_event *ibevent, void *priv)
 
 void smc_ib_destroy_queue_pair(struct smc_link *lnk)
 {
-	if (lnk->roce_qp)
+	if (lnk->roce_qp) {
 		ib_destroy_qp(lnk->roce_qp);
+		smc_ib_put_cq(lnk->smcibcq_send);
+		smc_ib_put_cq(lnk->smcibcq_recv);
+	}
 	lnk->roce_qp = NULL;
+	lnk->smcibcq_send = NULL;
+	lnk->smcibcq_recv = NULL;
 }
 
 /* create a queue pair within the protection domain for a link */
 int smc_ib_create_queue_pair(struct smc_link *lnk)
 {
+	struct smc_ib_cq *smcibcq_send = smc_ib_get_least_used_cq(lnk->smcibdev,
+								  true);
+	struct smc_ib_cq *smcibcq_recv = smc_ib_get_least_used_cq(lnk->smcibdev,
+								  false);
 	struct ib_qp_init_attr qp_attr = {
 		.event_handler = smc_ib_qp_event_handler,
 		.qp_context = lnk,
-		.send_cq = lnk->smcibdev->roce_cq_send,
-		.recv_cq = lnk->smcibdev->roce_cq_recv,
+		.send_cq = smcibcq_send->ib_cq,
+		.recv_cq = smcibcq_recv->ib_cq,
 		.srq = NULL,
 		.cap = {
 				/* include unsolicited rdma_writes as well,
@@ -681,14 +857,21 @@ int smc_ib_create_queue_pair(struct smc_link *lnk)
 		.sq_sig_type = IB_SIGNAL_REQ_WR,
 		.qp_type = IB_QPT_RC,
 	};
+	struct ib_device *ib_dev = lnk->smcibdev->ibdev;
 	int rc;
+
+	if (smc_ib_is_iwarp(ib_dev, lnk->ibport))
+		qp_attr.create_flags |= IB_QP_CREATE_IWARP_WITHOUT_CM;
 
 	lnk->roce_qp = ib_create_qp(lnk->roce_pd, &qp_attr);
 	rc = PTR_ERR_OR_ZERO(lnk->roce_qp);
-	if (IS_ERR(lnk->roce_qp))
+	if (IS_ERR(lnk->roce_qp)) {
 		lnk->roce_qp = NULL;
-	else
+	} else {
+		lnk->smcibcq_send = smcibcq_send;
+		lnk->smcibcq_recv = smcibcq_recv;
 		smc_wr_remember_qp_attr(lnk);
+	}
 	return rc;
 }
 
@@ -835,11 +1018,29 @@ void smc_ib_buf_unmap_sg(struct smc_link *lnk,
 	buf_slot->sgt[lnk->link_idx].sgl->dma_address = 0;
 }
 
+static void smc_ib_cleanup_cq(struct smc_ib_device *smcibdev)
+{
+	int i;
+
+	for (i = 0; i < smcibdev->num_cq_peer; i++) {
+		if (smcibdev->smcibcq_send[i].ib_cq)
+			ib_destroy_cq(smcibdev->smcibcq_send[i].ib_cq);
+
+		if (smcibdev->smcibcq_recv[i].ib_cq)
+			ib_destroy_cq(smcibdev->smcibcq_recv[i].ib_cq);
+	}
+	smc_wr_remove_dev(smcibdev);
+
+	kfree(smcibdev->smcibcq_send);
+	kfree(smcibdev->smcibcq_recv);
+}
+
 long smc_ib_setup_per_ibdev(struct smc_ib_device *smcibdev)
 {
-	struct ib_cq_init_attr cqattr =	{
-		.cqe = SMC_MAX_CQE, .comp_vector = 0 };
+	struct ib_cq_init_attr cqattr = { .cqe = SMC_MAX_CQE };
 	int cqe_size_order, smc_order;
+	struct smc_ib_cq *smcibcq;
+	int i, num_cq_peer;
 	long rc;
 
 	mutex_lock(&smcibdev->mutex);
@@ -851,28 +1052,53 @@ long smc_ib_setup_per_ibdev(struct smc_ib_device *smcibdev)
 	smc_order = MAX_ORDER - cqe_size_order;
 	if (SMC_MAX_CQE + 2 > (0x00000001 << smc_order) * PAGE_SIZE)
 		cqattr.cqe = (0x00000001 << smc_order) * PAGE_SIZE - 2;
-	smcibdev->roce_cq_send = ib_create_cq(smcibdev->ibdev,
-					      smc_wr_tx_cq_handler, NULL,
-					      smcibdev, &cqattr);
-	rc = PTR_ERR_OR_ZERO(smcibdev->roce_cq_send);
-	if (IS_ERR(smcibdev->roce_cq_send)) {
-		smcibdev->roce_cq_send = NULL;
-		goto out;
-	}
-	smcibdev->roce_cq_recv = ib_create_cq(smcibdev->ibdev,
-					      smc_wr_rx_cq_handler, NULL,
-					      smcibdev, &cqattr);
-	rc = PTR_ERR_OR_ZERO(smcibdev->roce_cq_recv);
-	if (IS_ERR(smcibdev->roce_cq_recv)) {
-		smcibdev->roce_cq_recv = NULL;
+	num_cq_peer = min_t(int, smcibdev->ibdev->num_comp_vectors,
+			    num_online_cpus());
+	smcibdev->num_cq_peer = num_cq_peer;
+	smcibdev->smcibcq_send = kcalloc(num_cq_peer, sizeof(*smcibcq),
+					 GFP_KERNEL);
+	if (!smcibdev->smcibcq_send) {
+		rc = -ENOMEM;
 		goto err;
+	}
+	smcibdev->smcibcq_recv = kcalloc(num_cq_peer, sizeof(*smcibcq),
+					 GFP_KERNEL);
+	if (!smcibdev->smcibcq_recv) {
+		rc = -ENOMEM;
+		goto err;
+	}
+
+	/* initialize CQs */
+	for (i = 0; i < num_cq_peer; i++) {
+		/* initialize send CQ */
+		smcibcq = &smcibdev->smcibcq_send[i];
+		smcibcq->smcibdev = smcibdev;
+		smcibcq->is_send = 1;
+		cqattr.comp_vector = i;
+		smcibcq->ib_cq = ib_create_cq(smcibdev->ibdev,
+					      smc_wr_tx_cq_handler, NULL,
+					      smcibcq, &cqattr);
+		rc = PTR_ERR_OR_ZERO(smcibcq->ib_cq);
+		if (IS_ERR(smcibcq->ib_cq))
+			goto err;
+
+		/* initialize recv CQ */
+		smcibcq = &smcibdev->smcibcq_recv[i];
+		smcibcq->smcibdev = smcibdev;
+		cqattr.comp_vector = num_cq_peer - 1 - i; /* reverse to spread snd/rcv */
+		smcibcq->ib_cq = ib_create_cq(smcibdev->ibdev,
+					      smc_wr_rx_cq_handler, NULL,
+					      smcibcq, &cqattr);
+		rc = PTR_ERR_OR_ZERO(smcibcq->ib_cq);
+		if (IS_ERR(smcibcq->ib_cq))
+			goto err;
 	}
 	smc_wr_add_dev(smcibdev);
 	smcibdev->initialized = 1;
 	goto out;
 
 err:
-	ib_destroy_cq(smcibdev->roce_cq_send);
+	smc_ib_cleanup_cq(smcibdev);
 out:
 	mutex_unlock(&smcibdev->mutex);
 	return rc;
@@ -884,9 +1110,7 @@ static void smc_ib_cleanup_per_ibdev(struct smc_ib_device *smcibdev)
 	if (!smcibdev->initialized)
 		goto out;
 	smcibdev->initialized = 0;
-	ib_destroy_cq(smcibdev->roce_cq_recv);
-	ib_destroy_cq(smcibdev->roce_cq_send);
-	smc_wr_remove_dev(smcibdev);
+	smc_ib_cleanup_cq(smcibdev);
 out:
 	mutex_unlock(&smcibdev->mutex);
 }
@@ -935,14 +1159,102 @@ void smc_ib_ndev_change(struct net_device *ndev, unsigned long event)
 	mutex_unlock(&smc_ib_devices.mutex);
 }
 
+bool smc_ib_is_iwarp(struct ib_device *ibdev, u8 ibport)
+{
+	return rdma_protocol_iwarp(ibdev, ibport);
+}
+
+void smc_ib_get_pending_device(struct smc_ib_device *smcibdev)
+{
+	refcount_inc(&smcibdev->lnk_pending_cnt);
+}
+
+void smc_ib_put_pending_device(struct smc_ib_device *smcibdev)
+{
+	if (refcount_dec_and_test(&smcibdev->lnk_pending_cnt))
+		wake_up(&smcibdev->lnks_pending);
+}
+
+/* Reserve socket ports of each net namespace which can be accessed
+ * by eRDMA (iWARP) device for out-bound RC establishment.
+ */
+static int smc_iw_reserve_ports(struct smc_ib_device *smcibdev)
+{
+	struct ib_device *ibdev = smcibdev->ibdev;
+	struct net *net, *_net;
+	int rc;
+
+	if (!reserve_mode)
+		return 0;
+	if (!smc_ib_is_iwarp(ibdev, 1))
+		return 0;
+
+	down_read(&net_rwsem);
+	for_each_net(net) {
+		/* for net can access ibdev */
+		if (!rdma_dev_access_netns(ibdev, net))
+			continue;
+		/* check if already reserved*/
+		if (atomic_inc_return(&net->smc.iwarp_cnt) > 1)
+			continue;
+
+		rc = smcr_iw_net_reserve_ports(net);
+		if (rc) {
+			atomic_dec(&net->smc.iwarp_cnt);
+			goto release;
+		}
+	}
+	up_read(&net_rwsem);
+	return 0;
+
+release:
+	/* release ports and recover */
+	for_each_net(_net) {
+		if (_net == net)
+			break;
+		if (!rdma_dev_access_netns(ibdev, _net))
+			continue;
+		if (!atomic_dec_and_test(&_net->smc.iwarp_cnt))
+			continue;
+		smcr_iw_net_release_ports(_net);
+	}
+	up_read(&net_rwsem);
+	return rc;
+}
+
+static void smc_iw_release_ports(struct smc_ib_device *smcibdev)
+{
+	struct ib_device *ibdev = smcibdev->ibdev;
+	struct net *net;
+
+	if (!reserve_mode)
+		return;
+	if (!smc_ib_is_iwarp(ibdev, 1))
+		return;
+
+	down_read(&net_rwsem);
+	for_each_net(net) {
+		/* for net can access ibdev */
+		if (!rdma_dev_access_netns(ibdev, net))
+			continue;
+		/* check if need release */
+		if (!atomic_dec_and_test(&net->smc.iwarp_cnt))
+			continue;
+
+		smcr_iw_net_release_ports(net);
+	}
+	up_read(&net_rwsem);
+}
+
 /* callback function for ib_register_client() */
 static int smc_ib_add_dev(struct ib_device *ibdev)
 {
 	struct smc_ib_device *smcibdev;
+	int i, rc = 0;
 	u8 port_cnt;
-	int i;
 
-	if (ibdev->node_type != RDMA_NODE_IB_CA)
+	if (ibdev->node_type != RDMA_NODE_IB_CA &&
+	    ibdev->node_type != RDMA_NODE_RNIC)
 		return -EOPNOTSUPP;
 
 	smcibdev = kzalloc(sizeof(*smcibdev), GFP_KERNEL);
@@ -950,9 +1262,16 @@ static int smc_ib_add_dev(struct ib_device *ibdev)
 		return -ENOMEM;
 
 	smcibdev->ibdev = ibdev;
+	rc = smc_iw_reserve_ports(smcibdev);
+	if (rc) {
+		kfree(smcibdev);
+		return rc;
+	}
 	INIT_WORK(&smcibdev->port_event_work, smc_ib_port_event_work);
 	atomic_set(&smcibdev->lnk_cnt, 0);
+	refcount_set(&smcibdev->lnk_pending_cnt, 1);
 	init_waitqueue_head(&smcibdev->lnks_deleted);
+	init_waitqueue_head(&smcibdev->lnks_pending);
 	mutex_init(&smcibdev->mutex);
 	mutex_lock(&smc_ib_devices.mutex);
 	list_add_tail(&smcibdev->list, &smc_ib_devices.list);
@@ -964,7 +1283,7 @@ static int smc_ib_add_dev(struct ib_device *ibdev)
 
 	/* trigger reading of the port attributes */
 	port_cnt = smcibdev->ibdev->phys_port_cnt;
-	pr_warn_ratelimited("smc: adding ib device %s with port count %d\n",
+	pr_info_ratelimited("smc: adding ib device %s with port count %d\n",
 			    smcibdev->ibdev->name, port_cnt);
 	for (i = 0;
 	     i < min_t(size_t, port_cnt, SMC_MAX_PORTS);
@@ -975,7 +1294,7 @@ static int smc_ib_add_dev(struct ib_device *ibdev)
 					   smcibdev->pnetid[i]))
 			smc_pnetid_by_table_ib(smcibdev, i + 1);
 		smc_copy_netdev_ifindex(smcibdev, i);
-		pr_warn_ratelimited("smc:    ib device %s port %d has pnetid "
+		pr_info_ratelimited("smc:    ib device %s port %d has pnetid "
 				    "%.16s%s\n",
 				    smcibdev->ibdev->name, i + 1,
 				    smcibdev->pnetid[i],
@@ -995,9 +1314,13 @@ static void smc_ib_remove_dev(struct ib_device *ibdev, void *client_data)
 	mutex_lock(&smc_ib_devices.mutex);
 	list_del_init(&smcibdev->list); /* remove from smc_ib_devices */
 	mutex_unlock(&smc_ib_devices.mutex);
-	pr_warn_ratelimited("smc: removing ib device %s\n",
+	smc_ib_put_pending_device(smcibdev);
+	wait_event(smcibdev->lnks_pending,	/* wait for no pending usage */
+		   !refcount_read(&smcibdev->lnk_pending_cnt));
+	pr_info_ratelimited("smc: removing ib device %s\n",
 			    smcibdev->ibdev->name);
 	smc_smcr_terminate_all(smcibdev);
+	smc_iw_release_ports(smcibdev);
 	smc_ib_cleanup_per_ibdev(smcibdev);
 	ib_unregister_event_handler(&smcibdev->event_handler);
 	cancel_work_sync(&smcibdev->port_event_work);

@@ -92,11 +92,14 @@ struct smc_rdma_wr {				/* work requests per message
 #define SMC_LGR_ID_SIZE		4
 
 struct smc_link {
+	struct iw_ext_conn_param	iw_conn_param;
 	struct smc_ib_device	*smcibdev;	/* ib-device */
 	u8			ibport;		/* port - values 1 | 2 */
 	struct ib_pd		*roce_pd;	/* IB protection domain,
 						 * unique for every RoCE QP
 						 */
+	struct smc_ib_cq	*smcibcq_recv;	/* cq for recv */
+	struct smc_ib_cq	*smcibcq_send;	/* cq for send */
 	struct ib_qp		*roce_qp;	/* IB queue pair */
 	struct ib_qp_attr	qp_attr;	/* IB queue pair attributes */
 
@@ -147,6 +150,8 @@ struct smc_link {
 	enum smc_wr_reg_state	wr_reg_state;	/* state of wr_reg request */
 
 	u8			gid[SMC_GID_SIZE];/* gid matching used vlan id*/
+	u8			eiwarp_gid[SMC_GID_SIZE];
+						/* gid of eRDMA iWARP device */
 	u8			sgid_index;	/* gid index for vlan id      */
 	u32			peer_qpn;	/* QP number of peer */
 	enum ib_mtu		path_mtu;	/* used mtu */
@@ -392,6 +397,7 @@ struct smc_init_info_smcrv2 {
 	struct smc_ib_device	*ib_dev_v2;
 	u8			ib_port_v2;
 	u8			ib_gid_v2[SMC_GID_SIZE];
+	u8			eiwarp_gid[SMC_GID_SIZE];
 
 	/* Additional output fields when clc_sk and daddr is set as well */
 	u8			uses_gateway;
@@ -604,6 +610,8 @@ struct smc_link *smc_switch_conns(struct smc_link_group *lgr,
 				  struct smc_link *from_lnk, bool is_dev_err);
 void smcr_link_down_cond(struct smc_link *lnk);
 void smcr_link_down_cond_sched(struct smc_link *lnk);
+int smcr_iw_net_reserve_ports(struct net *net);
+void smcr_iw_net_release_ports(struct net *net);
 int smc_nl_get_sys_info(struct sk_buff *skb, struct netlink_callback *cb);
 int smcr_nl_get_lgr(struct sk_buff *skb, struct netlink_callback *cb);
 int smcr_nl_get_link(struct sk_buff *skb, struct netlink_callback *cb);
