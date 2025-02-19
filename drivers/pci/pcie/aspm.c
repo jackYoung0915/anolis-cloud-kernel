@@ -7,6 +7,7 @@
  * Copyright (C) Shaohua Li (shaohua.li@intel.com)
  */
 
+#include <linux/bitfield.h>
 #include <linux/kernel.h>
 #include <linux/math.h>
 #include <linux/module.h>
@@ -85,6 +86,7 @@ void pci_restore_aspm_l1ss_state(struct pci_dev *pdev)
 	struct pci_dev *parent = pdev->bus->self;
 	u32 *cap, pl_ctl1, pl_ctl2, pl_l1_2_enable;
 	u32 cl_ctl1, cl_ctl2, cl_l1_2_enable;
+	u16 clnkctl, plnkctl;
 
 	/*
 	 * In case BIOS enabled L1.2 when resuming, we need to disable it first
@@ -108,6 +110,17 @@ void pci_restore_aspm_l1ss_state(struct pci_dev *pdev)
 	cap = &pl_save_state->cap.data[0];
 	pl_ctl2 = *cap++;
 	pl_ctl1 = *cap;
+
+	/* Make sure L0s/L1 are disabled before updating L1SS config */
+	pcie_capability_read_word(pdev, PCI_EXP_LNKCTL, &clnkctl);
+	pcie_capability_read_word(parent, PCI_EXP_LNKCTL, &plnkctl);
+	if (FIELD_GET(PCI_EXP_LNKCTL_ASPMC, clnkctl) ||
+	    FIELD_GET(PCI_EXP_LNKCTL_ASPMC, plnkctl)) {
+		pcie_capability_write_word(pdev, PCI_EXP_LNKCTL,
+					   clnkctl & ~PCI_EXP_LNKCTL_ASPMC);
+		pcie_capability_write_word(parent, PCI_EXP_LNKCTL,
+					   plnkctl & ~PCI_EXP_LNKCTL_ASPMC);
+	}
 
 	/*
 	 * Disable L1.2 on this downstream endpoint device first, followed
@@ -140,6 +153,13 @@ void pci_restore_aspm_l1ss_state(struct pci_dev *pdev)
 				       pl_ctl1 | pl_l1_2_enable);
 		pci_write_config_dword(pdev, pdev->l1ss + PCI_L1SS_CTL1,
 				       cl_ctl1 | cl_l1_2_enable);
+	}
+
+	/* Restore L0s/L1 if they were enabled */
+	if (FIELD_GET(PCI_EXP_LNKCTL_ASPMC, clnkctl) ||
+	    FIELD_GET(PCI_EXP_LNKCTL_ASPMC, plnkctl)) {
+		pcie_capability_write_word(parent, PCI_EXP_LNKCTL, plnkctl);
+		pcie_capability_write_word(pdev, PCI_EXP_LNKCTL, clnkctl);
 	}
 }
 
@@ -416,7 +436,7 @@ static void pcie_aspm_configure_common_clock(struct pcie_link_state *link)
 /* Convert L0s latency encoding to ns */
 static u32 calc_l0s_latency(u32 lnkcap)
 {
-	u32 encoding = (lnkcap & PCI_EXP_LNKCAP_L0SEL) >> 12;
+	u32 encoding = FIELD_GET(PCI_EXP_LNKCAP_L0SEL, lnkcap);
 
 	if (encoding == 0x7)
 		return (5 * 1000);	/* > 4us */
@@ -434,7 +454,7 @@ static u32 calc_l0s_acceptable(u32 encoding)
 /* Convert L1 latency encoding to ns */
 static u32 calc_l1_latency(u32 lnkcap)
 {
-	u32 encoding = (lnkcap & PCI_EXP_LNKCAP_L1EL) >> 15;
+	u32 encoding = FIELD_GET(PCI_EXP_LNKCAP_L1EL, lnkcap);
 
 	if (encoding == 0x7)
 		return (65 * 1000);	/* > 64us */
@@ -520,11 +540,11 @@ static void pcie_aspm_check_latency(struct pci_dev *endpoint)
 	link = endpoint->bus->self->link_state;
 
 	/* Calculate endpoint L0s acceptable latency */
-	encoding = (endpoint->devcap & PCI_EXP_DEVCAP_L0S) >> 6;
+	encoding = FIELD_GET(PCI_EXP_DEVCAP_L0S, endpoint->devcap);
 	acceptable_l0s = calc_l0s_acceptable(encoding);
 
 	/* Calculate endpoint L1 acceptable latency */
-	encoding = (endpoint->devcap & PCI_EXP_DEVCAP_L1) >> 9;
+	encoding = FIELD_GET(PCI_EXP_DEVCAP_L1, endpoint->devcap);
 	acceptable_l1 = calc_l1_acceptable(encoding);
 
 	while (link) {
@@ -584,22 +604,24 @@ static void aspm_calc_l12_info(struct pcie_link_state *link,
 	u32 pl1_2_enables, cl1_2_enables;
 
 	/* Choose the greater of the two Port Common_Mode_Restore_Times */
-	val1 = (parent_l1ss_cap & PCI_L1SS_CAP_CM_RESTORE_TIME) >> 8;
-	val2 = (child_l1ss_cap & PCI_L1SS_CAP_CM_RESTORE_TIME) >> 8;
+	val1 = FIELD_GET(PCI_L1SS_CAP_CM_RESTORE_TIME, parent_l1ss_cap);
+	val2 = FIELD_GET(PCI_L1SS_CAP_CM_RESTORE_TIME, child_l1ss_cap);
 	t_common_mode = max(val1, val2);
 
 	/* Choose the greater of the two Port T_POWER_ON times */
-	val1   = (parent_l1ss_cap & PCI_L1SS_CAP_P_PWR_ON_VALUE) >> 19;
-	scale1 = (parent_l1ss_cap & PCI_L1SS_CAP_P_PWR_ON_SCALE) >> 16;
-	val2   = (child_l1ss_cap & PCI_L1SS_CAP_P_PWR_ON_VALUE) >> 19;
-	scale2 = (child_l1ss_cap & PCI_L1SS_CAP_P_PWR_ON_SCALE) >> 16;
+	val1   = FIELD_GET(PCI_L1SS_CAP_P_PWR_ON_VALUE, parent_l1ss_cap);
+	scale1 = FIELD_GET(PCI_L1SS_CAP_P_PWR_ON_SCALE, parent_l1ss_cap);
+	val2   = FIELD_GET(PCI_L1SS_CAP_P_PWR_ON_VALUE, child_l1ss_cap);
+	scale2 = FIELD_GET(PCI_L1SS_CAP_P_PWR_ON_SCALE, child_l1ss_cap);
 
 	if (calc_l12_pwron(parent, scale1, val1) >
 	    calc_l12_pwron(child, scale2, val2)) {
-		ctl2 |= scale1 | (val1 << 3);
+		ctl2 |= FIELD_PREP(PCI_L1SS_CTL2_T_PWR_ON_SCALE, scale1) |
+			FIELD_PREP(PCI_L1SS_CTL2_T_PWR_ON_VALUE, val1);
 		t_power_on = calc_l12_pwron(parent, scale1, val1);
 	} else {
-		ctl2 |= scale2 | (val2 << 3);
+		ctl2 |= FIELD_PREP(PCI_L1SS_CTL2_T_PWR_ON_SCALE, scale2) |
+			FIELD_PREP(PCI_L1SS_CTL2_T_PWR_ON_VALUE, val2);
 		t_power_on = calc_l12_pwron(child, scale2, val2);
 	}
 
@@ -615,7 +637,9 @@ static void aspm_calc_l12_info(struct pcie_link_state *link,
 	 */
 	l1_2_threshold = 2 + 4 + t_common_mode + t_power_on;
 	encode_l12_threshold(l1_2_threshold, &scale, &value);
-	ctl1 |= t_common_mode << 8 | scale << 29 | value << 16;
+	ctl1 |= FIELD_PREP(PCI_L1SS_CTL1_CM_RESTORE_TIME, t_common_mode) |
+		FIELD_PREP(PCI_L1SS_CTL1_LTR_L12_TH_VALUE, value) |
+		FIELD_PREP(PCI_L1SS_CTL1_LTR_L12_TH_SCALE, scale);
 
 	/* Some broken devices only support dword access to L1 SS */
 	pci_read_config_dword(parent, parent->l1ss + PCI_L1SS_CTL1, &pctl1);
