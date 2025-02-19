@@ -2519,6 +2519,14 @@ int isolate_or_dissolve_huge_page(struct page *page, struct list_head *list)
 	return ret;
 }
 
+void wait_for_freed_hugetlb_pages(void)
+{
+	if (llist_empty(&hpage_freelist))
+		return;
+
+	flush_work(&free_hpage_work);
+}
+
 /*
  *  replace_free_hugepage_pages - Replace free hugepage pages in a given pfn
  *  range with new pages.
