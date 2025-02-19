@@ -69,6 +69,19 @@ struct workqueue_struct	*smc_close_wq;	/* wq for close work */
 static void smc_tcp_listen_work(struct work_struct *);
 static void smc_connect_work(struct work_struct *);
 
+/* default use reserve_mode */
+bool reserve_mode = true;
+
+/* default disable SMC-D loopback */
+bool loopback_enable;
+module_param(loopback_enable, bool, 0444);
+MODULE_PARM_DESC(loopback_enable, "Enable SMC-D loopback support");
+
+/* rsvd_ports_base must less than (u16 MAX - 8) */
+u16 rsvd_ports_base = SMC_IWARP_RSVD_PORTS_BASE;
+module_param(rsvd_ports_base, ushort, 0444);
+MODULE_PARM_DESC(rsvd_ports_base, "base of rsvd ports for reserve_mode");
+
 int smc_nl_dump_hs_limitation(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	struct smc_nl_dmp_ctx *cb_ctx = smc_nl_dmp_ctx(cb);
@@ -327,7 +340,7 @@ static int smc_release(struct socket *sock)
 	if (smc->connect_nonblock && old_state == SMC_INIT)
 		tcp_abort(smc->clcsock->sk, ECONNABORTED);
 
-	if (cancel_work_sync(&smc->connect_work))
+	if (smc->connect_nonblock && cancel_work_sync(&smc->connect_work))
 		sock_put(&smc->sk); /* sock_hold in smc_connect for passive closing */
 
 	if (sk->sk_state == SMC_LISTEN)
@@ -338,8 +351,8 @@ static int smc_release(struct socket *sock)
 	else
 		lock_sock(sk);
 
-	if (old_state == SMC_INIT && sk->sk_state == SMC_ACTIVE &&
-	    !smc->use_fallback)
+	if ((old_state == SMC_INIT || smc->conn.killed) &&
+	    sk->sk_state == SMC_ACTIVE && !smc->use_fallback)
 		smc_close_active_abort(smc);
 
 	rc = __smc_release(smc);
@@ -370,8 +383,8 @@ void smc_sk_init(struct net *net, struct sock *sk, int protocol)
 	sk->sk_state = SMC_INIT;
 	sk->sk_destruct = smc_destruct;
 	sk->sk_protocol = protocol;
-	WRITE_ONCE(sk->sk_sndbuf, 2 * READ_ONCE(net->smc.sysctl_wmem));
-	WRITE_ONCE(sk->sk_rcvbuf, 2 * READ_ONCE(net->smc.sysctl_rmem));
+	WRITE_ONCE(sk->sk_sndbuf, READ_ONCE(net->smc.sysctl_wmem));
+	WRITE_ONCE(sk->sk_rcvbuf, READ_ONCE(net->smc.sysctl_rmem));
 	INIT_WORK(&smc->tcp_listen_work, smc_tcp_listen_work);
 	INIT_WORK(&smc->connect_work, smc_connect_work);
 	INIT_DELAYED_WORK(&smc->conn.tx_work, smc_tx_work);
@@ -737,6 +750,16 @@ static void smc_link_save_peer_info(struct smc_link *link,
 	memcpy(link->peer_mac, ini->peer_mac, sizeof(link->peer_mac));
 	link->peer_psn = ntoh24(clc->r0.psn);
 	link->peer_mtu = clc->r0.qp_mtu;
+	link->credits_enable = (ini->vendor_opt_valid && ini->credits_en &&
+				clc->r0.init_credits) ? 1 : 0;
+	if (link->credits_enable) {
+		atomic_set(&link->peer_rq_credits, clc->r0.init_credits);
+		/* set peer rq credits watermark, if less than init_credits * 2/3,
+		 * then credit announcement is needed.
+		 */
+		link->peer_cr_watermark_low =
+			max(clc->r0.init_credits * 2 / 3, 1);
+	}
 }
 
 static void smc_stat_inc_fback_rsn_cnt(struct smc_sock *smc,
@@ -1104,6 +1127,20 @@ static int smc_find_proposal_devices(struct smc_sock *smc,
 		ini->smcr_version &= ~SMC_V1;
 	/* else RDMA is supported for this connection */
 
+	/* make sure SMC_V1 ibdev still available */
+	if (ini->smcr_version & SMC_V1) {
+		mutex_lock(&smc_ib_devices.mutex);
+		if (list_empty(&ini->ib_dev->list)) {
+			ini->ib_dev = NULL;
+			ini->ib_port = 0;
+			ini->smcr_version &= ~SMC_V1;
+		} else {
+			/* put in __smc_connect */
+			smc_ib_get_pending_device(ini->ib_dev);
+		}
+		mutex_unlock(&smc_ib_devices.mutex);
+	}
+
 	ini->smc_type_v1 = smc_indicated_type(ini->smcd_version & SMC_V1,
 					      ini->smcr_version & SMC_V1);
 
@@ -1125,6 +1162,20 @@ static int smc_find_proposal_devices(struct smc_sock *smc,
 	    smc_find_rdma_device(smc, ini))
 		ini->smcr_version &= ~SMC_V2;
 	ini->check_smcrv2 = false;
+
+	/* make sure SMC_V2 ibdev still available */
+	if (ini->smcr_version & SMC_V2) {
+		mutex_lock(&smc_ib_devices.mutex);
+		if (list_empty(&ini->smcrv2.ib_dev_v2->list)) {
+			ini->smcrv2.ib_dev_v2 = NULL;
+			ini->smcrv2.ib_port_v2 = 0;
+			ini->smcr_version &= ~SMC_V2;
+		} else {
+			/* put in __smc_connect */
+			smc_ib_get_pending_device(ini->smcrv2.ib_dev_v2);
+		}
+		mutex_unlock(&smc_ib_devices.mutex);
+	}
 
 	ini->smc_type_v2 = smc_indicated_type(ini->smcd_version & SMC_V2,
 					      ini->smcr_version & SMC_V2);
@@ -1204,29 +1255,58 @@ static int smc_connect_rdma_v2_prepare(struct smc_sock *smc,
 {
 	struct smc_clc_first_contact_ext *fce =
 		smc_get_clc_first_contact_ext(aclc, false);
-	struct net *net = sock_net(&smc->sk);
+	struct ib_device *ibdev =
+		ini->smcrv2.ib_dev_v2->ibdev;
+	u8 ibport = ini->smcrv2.ib_port_v2;
+	struct net *net;
 	int rc;
 
 	if (!ini->first_contact_peer || aclc->hdr.version == SMC_V1)
 		return 0;
 
-	if (fce->v2_direct) {
-		memcpy(ini->smcrv2.nexthop_mac, &aclc->r0.lcl.mac, ETH_ALEN);
-		ini->smcrv2.uses_gateway = false;
-	} else {
-		if (smc_ib_find_route(net, smc->clcsock->sk->sk_rcv_saddr,
+	if (smc_ib_is_iwarp(ibdev, ibport)) {
+		/* eRDMA specific: allow mismatch.
+		 * e.g. peer claims indirect, but we find its direct.
+		 * so no matter what peer claims, always check route.
+		 */
+		struct net_device *ndev;
+
+		if (!ibdev->ops.get_netdev)
+			return -ENODEV;
+		ndev = ibdev->ops.get_netdev(ibdev, ibport);
+		if (!ndev)
+			return -ENODEV;
+
+		net = dev_net(ndev);
+		if (smc_ib_find_route(net,
+				      smc_ib_gid_to_ipv4(ini->smcrv2.ib_gid_v2),
 				      smc_ib_gid_to_ipv4(aclc->r0.lcl.gid),
 				      ini->smcrv2.nexthop_mac,
-				      &ini->smcrv2.uses_gateway))
+				      &ini->smcrv2.uses_gateway)) {
+			dev_put(ndev);
 			return SMC_CLC_DECL_NOROUTE;
-		if (!ini->smcrv2.uses_gateway) {
-			/* mismatch: peer claims indirect, but its direct */
-			return SMC_CLC_DECL_NOINDIRECT;
+		}
+		dev_put(ndev);
+	} else {
+		if (fce->v2_direct) {
+			memcpy(ini->smcrv2.nexthop_mac, &aclc->r0.lcl.mac, ETH_ALEN);
+			ini->smcrv2.uses_gateway = false;
+		} else {
+			net = sock_net(&smc->sk);
+			if (smc_ib_find_route(net, smc->clcsock->sk->sk_rcv_saddr,
+					      smc_ib_gid_to_ipv4(aclc->r0.lcl.gid),
+					      ini->smcrv2.nexthop_mac,
+					      &ini->smcrv2.uses_gateway))
+				return SMC_CLC_DECL_NOROUTE;
+			if (!ini->smcrv2.uses_gateway) {
+				/* mismatch: peer claims indirect, but its direct */
+				return SMC_CLC_DECL_NOINDIRECT;
+			}
 		}
 	}
 
 	ini->release_nr = fce->release;
-	rc = smc_clc_clnt_v2x_features_validate(fce, ini);
+	rc = smc_clc_clnt_v2x_features_validate(smc, fce, ini);
 	if (rc)
 		return rc;
 
@@ -1311,6 +1391,11 @@ static int smc_connect_rdma(struct smc_sock *smc,
 			goto connect_abort;
 		}
 	} else {
+		if (smc_llc_announce_credits(link, SMC_LLC_RESP, true)) {
+			reason_code = SMC_CLC_DECL_CREDITSERR;
+			goto connect_abort;
+		}
+
 		/* reg sendbufs if they were vzalloced */
 		if (smc->conn.sndbuf_desc->is_vm) {
 			if (smcr_lgr_reg_sndbufs(link, smc->conn.sndbuf_desc)) {
@@ -1398,7 +1483,7 @@ static int smc_connect_ism(struct smc_sock *smc,
 				smc_get_clc_first_contact_ext(aclc, true);
 
 			ini->release_nr = fce->release;
-			rc = smc_clc_clnt_v2x_features_validate(fce, ini);
+			rc = smc_clc_clnt_v2x_features_validate(smc, fce, ini);
 			if (rc)
 				return rc;
 		}
@@ -1570,6 +1655,10 @@ static int __smc_connect(struct smc_sock *smc)
 	if (rc)
 		goto vlan_cleanup;
 
+	if (ini->smcrv2.ib_dev_v2)
+		smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
+	if (ini->ib_dev)
+		smc_ib_put_pending_device(ini->ib_dev);
 	SMC_STAT_CLNT_SUCC_INC(sock_net(smc->clcsock->sk), aclc);
 	smc_connect_ism_vlan_cleanup(smc, ini);
 	kfree(buf);
@@ -1580,6 +1669,10 @@ vlan_cleanup:
 	smc_connect_ism_vlan_cleanup(smc, ini);
 	kfree(buf);
 fallback:
+	if (ini->smcrv2.ib_dev_v2)
+		smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
+	if (ini->ib_dev)
+		smc_ib_put_pending_device(ini->ib_dev);
 	kfree(ini);
 	return smc_connect_decline_fallback(smc, rc, version);
 }
@@ -1783,8 +1876,8 @@ static void smc_accept_enqueue(struct sock *parent, struct sock *sk)
 	sock_hold(sk); /* sock_put in smc_accept_unlink () */
 	spin_lock(&par->accept_q_lock);
 	list_add_tail(&smc_sk(sk)->accept_q, &par->accept_q);
-	spin_unlock(&par->accept_q_lock);
 	sk_acceptq_added(parent);
+	spin_unlock(&par->accept_q_lock);
 }
 
 /* remove a socket from the accept queue of its parental listening socket */
@@ -1794,9 +1887,14 @@ static void smc_accept_unlink(struct sock *sk)
 
 	spin_lock(&par->accept_q_lock);
 	list_del_init(&smc_sk(sk)->accept_q);
-	spin_unlock(&par->accept_q_lock);
 	sk_acceptq_removed(&smc_sk(sk)->listen_smc->sk);
+	spin_unlock(&par->accept_q_lock);
 	sock_put(sk); /* sock_hold in smc_accept_enqueue */
+}
+
+static inline bool smc_accept_queue_empty(struct sock *sk)
+{
+	return list_empty(&smc_sk(sk)->accept_q);
 }
 
 /* remove a sock from the accept queue to bind it to a new socket created
@@ -1908,8 +2006,11 @@ static void smc_listen_out(struct smc_sock *new_smc)
 	struct smc_sock *lsmc = new_smc->listen_smc;
 	struct sock *newsmcsk = &new_smc->sk;
 
-	if (tcp_sk(new_smc->clcsock->sk)->syn_smc)
+	mutex_lock(&new_smc->clcsock_release_lock);
+	if (new_smc->clcsock && new_smc->clcsock->sk &&
+	    tcp_sk(new_smc->clcsock->sk)->syn_smc)
 		atomic_dec(&lsmc->queued_smc_hs);
+	mutex_unlock(&new_smc->clcsock_release_lock);
 
 	release_sock(newsmcsk); /* lock in smc_listen_work() */
 	if (lsmc->sk.sk_state == SMC_LISTEN) {
@@ -2306,6 +2407,18 @@ static void smc_find_rdma_v2_device_serv(struct smc_sock *new_smc,
 		smc_find_ism_store_rc(rc, ini);
 		goto not_found;
 	}
+	/* make sure SMC_V2 ibdev still available */
+	mutex_lock(&smc_ib_devices.mutex);
+	if (list_empty(&ini->smcrv2.ib_dev_v2->list)) {
+		smc_find_ism_store_rc(SMC_CLC_DECL_NOSMCRDEV, ini);
+		mutex_unlock(&smc_ib_devices.mutex);
+		goto not_found;
+	} else {
+		/* put below or in smc_listen_work */
+		smc_ib_get_pending_device(ini->smcrv2.ib_dev_v2);
+	}
+	mutex_unlock(&smc_ib_devices.mutex);
+
 	if (!ini->smcrv2.uses_gateway)
 		memcpy(ini->smcrv2.nexthop_mac, pclc->lcl.mac, ETH_ALEN);
 
@@ -2321,6 +2434,7 @@ static void smc_find_rdma_v2_device_serv(struct smc_sock *new_smc,
 		return;
 	ini->smcr_version = smcr_version;
 	smc_find_ism_store_rc(rc, ini);
+	smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
 
 not_found:
 	ini->smcr_version &= ~SMC_V2;
@@ -2346,6 +2460,18 @@ static int smc_find_rdma_v1_device_serv(struct smc_sock *new_smc,
 		/* no RDMA device found */
 		return SMC_CLC_DECL_NOSMCDEV;
 	}
+	/* make sure SMC_V1 ibdev still available */
+	mutex_lock(&smc_ib_devices.mutex);
+	if (list_empty(&ini->ib_dev->list)) {
+		ini->ib_dev = NULL;
+		ini->ib_port = 0;
+		mutex_unlock(&smc_ib_devices.mutex);
+		return SMC_CLC_DECL_NOSMCDEV;
+	}
+	/* put in smc_listen_work */
+	smc_ib_get_pending_device(ini->ib_dev);
+	mutex_unlock(&smc_ib_devices.mutex);
+
 	rc = smc_listen_rdma_init(new_smc, ini);
 	if (rc)
 		return rc;
@@ -2548,6 +2674,10 @@ static void smc_listen_work(struct work_struct *work)
 			goto out_unlock;
 		mutex_unlock(&smc_server_lgr_pending);
 	}
+	if (ini->smcrv2.ib_dev_v2)
+		smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
+	if (ini->ib_dev)
+		smc_ib_put_pending_device(ini->ib_dev);
 	smc_conn_save_peer_info(new_smc, cclc);
 
 	if (ini->is_smcd &&
@@ -2562,6 +2692,10 @@ static void smc_listen_work(struct work_struct *work)
 	goto out_free;
 
 out_unlock:
+	if (ini->smcrv2.ib_dev_v2)
+		smc_ib_put_pending_device(ini->smcrv2.ib_dev_v2);
+	if (ini->ib_dev)
+		smc_ib_put_pending_device(ini->ib_dev);
 	mutex_unlock(&smc_server_lgr_pending);
 out_decl:
 	smc_listen_decline(new_smc, rc, ini ? ini->first_contact_local : 0,
@@ -2848,17 +2982,12 @@ out:
 	return rc;
 }
 
-static __poll_t smc_accept_poll(struct sock *parent)
+static inline __poll_t smc_accept_poll(struct sock *parent)
 {
-	struct smc_sock *isk = smc_sk(parent);
-	__poll_t mask = 0;
+	if (!smc_accept_queue_empty(parent))
+		return EPOLLIN | EPOLLRDNORM;
 
-	spin_lock(&isk->accept_q_lock);
-	if (!list_empty(&isk->accept_q))
-		mask = EPOLLIN | EPOLLRDNORM;
-	spin_unlock(&isk->accept_q_lock);
-
-	return mask;
+	return 0;
 }
 
 static __poll_t smc_poll(struct file *file, struct socket *sock,
@@ -3459,20 +3588,71 @@ static struct tcp_ulp_ops smc_ulp_ops __read_mostly = {
 	.clone		= smc_ulp_clone,
 };
 
+static int smc_net_reserve_ports(struct net *net)
+{
+	struct smc_ib_device *smcibdev;
+	struct ib_device *ibdev;
+	int rc = 0;
+
+	if (!reserve_mode)
+		return 0;
+	atomic_set(&net->smc.iwarp_cnt, 0);
+	memset(net->smc.rsvd_sock, 0, sizeof(net->smc.rsvd_sock));
+
+	mutex_lock(&smc_ib_devices.mutex);
+	list_for_each_entry(smcibdev, &smc_ib_devices.list, list) {
+		ibdev = smcibdev->ibdev;
+		if (!smc_ib_is_iwarp(ibdev, 1))
+			continue;
+		if (!rdma_dev_access_netns(ibdev, net))
+			continue;
+		if (atomic_inc_return(&net->smc.iwarp_cnt) > 1)
+			continue;
+		/* first iwarp device */
+		rc = smcr_iw_net_reserve_ports(net);
+		if (rc) {
+			atomic_set(&net->smc.iwarp_cnt, 0);
+			break;
+		}
+	}
+	mutex_unlock(&smc_ib_devices.mutex);
+	return rc;
+}
+
+static void smc_net_release_ports(struct net *net)
+{
+	if (!reserve_mode)
+		return;
+	if (atomic_read(&net->smc.iwarp_cnt) &&
+	    net->smc.rsvd_sock[0])
+		smcr_iw_net_release_ports(net);
+}
+
 unsigned int smc_net_id;
 
 static __net_init int smc_net_init(struct net *net)
 {
 	int rc;
 
-	rc = smc_sysctl_net_init(net);
+	rc = smc_net_reserve_ports(net);
 	if (rc)
 		return rc;
-	return smc_pnet_net_init(net);
+	rc = smc_sysctl_net_init(net);
+	if (rc)
+		goto release_ports;
+	rc = smc_pnet_net_init(net);
+	if (rc)
+		goto release_ports;
+	return 0;
+
+release_ports:
+	smc_net_release_ports(net);
+	return rc;
 }
 
 static void __net_exit smc_net_exit(struct net *net)
 {
+	smc_net_release_ports(net);
 	smc_sysctl_net_exit(net);
 	smc_pnet_net_exit(net);
 }
@@ -3502,6 +3682,16 @@ static struct pernet_operations smc_net_stat_ops = {
 static int __init smc_init(void)
 {
 	int rc;
+
+	if (reserve_mode) {
+		pr_info_ratelimited("smc: load SMC module with reserve_mode\n");
+		if (rsvd_ports_base >
+		    (U16_MAX - SMC_IWARP_RSVD_PORTS_NUM)) {
+			pr_info_ratelimited("smc: reserve_mode with invalid "
+					    "ports base\n");
+			return -EINVAL;
+		}
+	}
 
 	rc = register_pernet_subsys(&smc_net_ops);
 	if (rc)

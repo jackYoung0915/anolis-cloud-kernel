@@ -26,13 +26,14 @@
 #define SMC_RELEASE_1 1
 #define SMC_RELEASE	SMC_RELEASE_1 /* the latest release version */
 
-#define SMCPROTO_SMC		0	/* SMC protocol, IPv4 */
-#define SMCPROTO_SMC6		1	/* SMC protocol, IPv6 */
-
 #define SMC_AUTOCORKING_DEFAULT_SIZE	0x10000	/* 64K by default */
 
 extern struct proto smc_proto;
 extern struct proto smc_proto6;
+
+extern bool reserve_mode;
+extern bool loopback_enable;
+extern u16 rsvd_ports_base;
 
 /* smc sock initialization */
 void smc_sk_init(struct net *net, struct sock *sk, int protocol);
@@ -248,6 +249,9 @@ struct smc_connection {
 	u8			killed : 1;	/* abnormal termination */
 	u8			freed : 1;	/* normal termiation */
 	u8			out_of_sync : 1; /* out of sync with peer */
+	u8			unwrap_remaining : 1; /* have remaining data to
+						       * send when RMB unwrapped
+						       */
 };
 
 struct smc_sock {				/* smc sock container */

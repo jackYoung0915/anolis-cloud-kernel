@@ -44,21 +44,19 @@ smcr_testlink_time - INTEGER
 
 wmem - INTEGER
 	Initial size of send buffer used by SMC sockets.
-	The default value inherits from net.ipv4.tcp_wmem[1].
 
 	The minimum value is 16KiB and there is no hard limit for max value, but
 	only allowed 512KiB for SMC-R and 1MiB for SMC-D.
 
-	Default: 16K
+	Default: 256K
 
 rmem - INTEGER
 	Initial size of receive buffer (RMB) used by SMC sockets.
-	The default value inherits from net.ipv4.tcp_rmem[1].
 
 	The minimum value is 16KiB and there is no hard limit for max value, but
 	only allowed 512KiB for SMC-R and 1MiB for SMC-D.
 
-	Default: 128K
+	Default: 256K
 
 smcr_max_links_per_lgr - INTEGER
 	Controls the max number of links can be added to a SMC-R link group. Notice that
@@ -66,10 +64,24 @@ smcr_max_links_per_lgr - INTEGER
 	of RDMA devices exist in the system. The acceptable value ranges from 1 to 2. Only
 	for SMC-R v2.1 and later.
 
-	Default: 2
+	Default: 1
 
 smcr_max_conns_per_lgr - INTEGER
 	Controls the max number of connections can be added to a SMC-R link group. The
 	acceptable value ranges from 16 to 255. Only for SMC-R v2.1 and later.
 
-	Default: 255
+	Default: 32
+
+experiment_vendor_options - UNSIGNED INTEGER
+	Controls whether to enable experimental vendor options or not. It is a bitmap
+	and each bit indicates an experimental vendor option. Bit value 0 means disable
+	the option and bit value 1 means enable the option. The bits definition is as
+	follows,
+	bit31: enable/disable all experimental vendor options.
+	bit30: enable/disable SMC-R with rdma write with immediate feature.
+	bit29: enable/disable SMC-R with rdma flow control feature.
+	bit0-bit28: Reserved.
+
+	Notice that it is experimental and may be removed in the future.
+
+	Default: 0xFFFFFFFF
