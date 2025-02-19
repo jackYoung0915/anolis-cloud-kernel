@@ -19,7 +19,7 @@ menuconfig VIRTUALIZATION
 if VIRTUALIZATION
 
 menuconfig KVM
-	bool "Kernel-based Virtual Machine (KVM) support"
+	tristate "Kernel-based Virtual Machine (KVM) support"
 	depends on HAVE_KVM
 	select KVM_GENERIC_HARDWARE_ENABLING
 	select MMU_NOTIFIER
@@ -43,6 +43,7 @@ menuconfig KVM
 	select GUEST_PERF_EVENTS if PERF_EVENTS
 	select INTERVAL_TREE
 	select XARRAY_MULTI
+	select KVM_EXPORT_SYMBOL if KVM=m
 	help
 	  Support hosting virtualized guest machines.
 
@@ -50,7 +51,7 @@ menuconfig KVM
 
 config NVHE_EL2_DEBUG
 	bool "Debug mode for non-VHE EL2 object"
-	depends on KVM
+	depends on KVM=y
 	help
 	  Say Y here to enable the debug mode for the non-VHE KVM EL2 object.
 	  Failure reports will BUG() in the hypervisor. This is intended for
@@ -70,5 +71,9 @@ config PROTECTED_NVHE_STACKTRACE
 	  say N.
 
 	  If unsure, or not using protected nVHE (pKVM), say N.
+
+config KVM_ARM_HOST_VHE_ONLY
+	def_bool y
+	depends on KVM=m
 
 endif # VIRTUALIZATION

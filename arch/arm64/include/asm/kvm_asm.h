@@ -117,6 +117,12 @@ enum __kvm_host_smccc_func {
 		base ? (typeof(CHOOSE_NVHE_SYM(sym))*)(base + off) : NULL;	\
 	})
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+#define this_cpu_ptr_wrapper(sym)	this_cpu_ptr(sym)
+#else
+#define this_cpu_ptr_wrapper(sym)	this_cpu_ptr(&sym)
+#endif
+
 #if defined(__KVM_NVHE_HYPERVISOR__)
 
 #define CHOOSE_NVHE_SYM(sym)	sym
@@ -141,6 +147,13 @@ extern void *__vhe_undefined_symbol;
 
 #else
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+#define CHOOSE_HYP_SYM(sym)		CHOOSE_VHE_SYM(sym)
+#define this_cpu_ptr_hyp_sym(sym)	this_cpu_ptr(&sym)
+#define per_cpu_ptr_hyp_sym(sym, cpu)	per_cpu_ptr(&sym, cpu)
+#define CHOOSE_VHE_SYM(sym)		sym
+#define CHOOSE_NVHE_SYM(sym)		kvm_nvhe_sym(sym)
+#else
 /*
  * BIG FAT WARNINGS:
  *
@@ -166,7 +179,7 @@ extern void *__vhe_undefined_symbol;
 
 #define CHOOSE_VHE_SYM(sym)	sym
 #define CHOOSE_NVHE_SYM(sym)	kvm_nvhe_sym(sym)
-
+#endif
 #endif
 
 struct kvm_nvhe_init_params {
@@ -295,8 +308,18 @@ void __noreturn __cold nvhe_hyp_panic_handler(u64 esr, u64 spsr, u64 elr_virt,
 
 #else /* __ASSEMBLY__ */
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+.macro kvm_adr_this_cpu reg, sym, vcpu
+	adr_this_cpu_ptr \reg, \sym, \vcpu
+.endm
+#else
+.macro kvm_adr_this_cpu reg, sym, vcpu
+	adr_this_cpu \reg, \sym, \vcpu
+.endm
+#endif
+
 .macro get_host_ctxt reg, tmp
-	adr_this_cpu \reg, kvm_host_data, \tmp
+	kvm_adr_this_cpu \reg, kvm_host_data, \tmp
 	add	\reg, \reg, #HOST_DATA_CONTEXT
 .endm
 
@@ -306,12 +329,12 @@ void __noreturn __cold nvhe_hyp_panic_handler(u64 esr, u64 spsr, u64 elr_virt,
 .endm
 
 .macro get_loaded_vcpu vcpu, ctxt
-	adr_this_cpu \ctxt, kvm_hyp_ctxt, \vcpu
+	kvm_adr_this_cpu \ctxt, kvm_hyp_ctxt, \vcpu
 	ldr	\vcpu, [\ctxt, #HOST_CONTEXT_VCPU]
 .endm
 
 .macro set_loaded_vcpu vcpu, ctxt, tmp
-	adr_this_cpu \ctxt, kvm_hyp_ctxt, \tmp
+	kvm_adr_this_cpu \ctxt, kvm_hyp_ctxt, \tmp
 	str	\vcpu, [\ctxt, #HOST_CONTEXT_VCPU]
 .endm
 

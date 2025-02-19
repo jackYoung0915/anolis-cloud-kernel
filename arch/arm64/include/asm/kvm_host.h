@@ -66,7 +66,7 @@ enum kvm_mode {
 	KVM_MODE_NV,
 	KVM_MODE_NONE,
 };
-#ifdef CONFIG_KVM
+#if IS_ENABLED(CONFIG_KVM)
 enum kvm_mode kvm_get_mode(void);
 #else
 static inline enum kvm_mode kvm_get_mode(void) { return KVM_MODE_NONE; };
@@ -1024,7 +1024,7 @@ int kvm_arm_pvtime_has_attr(struct kvm_vcpu *vcpu,
 
 extern unsigned int __ro_after_init kvm_arm_vmid_bits;
 int __init kvm_arm_vmid_alloc_init(void);
-void __init kvm_arm_vmid_alloc_free(void);
+void kvm_arm_vmid_alloc_free(void);
 void kvm_arm_vmid_update(struct kvm_vmid *kvm_vmid);
 void kvm_arm_vmid_clear_active(void);
 
@@ -1042,7 +1042,11 @@ void kvm_set_sei_esr(struct kvm_vcpu *vcpu, u64 syndrome);
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+extern struct kvm_host_data __percpu *kvm_host_data;
+#else
 DECLARE_KVM_HYP_PER_CPU(struct kvm_host_data, kvm_host_data);
+#endif
 
 static inline void kvm_init_host_cpu_context(struct kvm_cpu_context *cpu_ctxt)
 {
@@ -1096,7 +1100,7 @@ static inline bool kvm_pmu_counter_deferred(struct perf_event_attr *attr)
 void kvm_arch_vcpu_load_debug_state_flags(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_put_debug_state_flags(struct kvm_vcpu *vcpu);
 
-#ifdef CONFIG_KVM
+#if IS_ENABLED(CONFIG_KVM)
 void kvm_set_pmu_events(u32 set, struct perf_event_attr *attr);
 void kvm_clr_pmu_events(u32 clr);
 bool kvm_set_pmuserenr(u64 val);
@@ -1153,5 +1157,64 @@ static inline void kvm_hyp_reserve(void) { }
 
 void kvm_arm_vcpu_power_off(struct kvm_vcpu *vcpu);
 bool kvm_arm_vcpu_stopped(struct kvm_vcpu *vcpu);
+
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+struct kvm_pmu_ops {
+	void (*set_pmu_events)(u32 set, struct perf_event_attr *attr);
+	void (*clr_pmu_events)(u32 clr);
+	bool (*set_pmuserenr)(u64 val);
+	void (*vcpu_pmu_resync_el0)(void);
+};
+
+extern struct kvm_pmu_ops __rcu *kvm_pmu_ops;
+
+DECLARE_STATIC_CALL(__kvm_set_pmu_events, *kvm_pmu_ops->set_pmu_events);
+DECLARE_STATIC_CALL(__kvm_clr_pmu_events, *kvm_pmu_ops->clr_pmu_events);
+DECLARE_STATIC_CALL(__kvm_set_pmuserenr, *kvm_pmu_ops->set_pmuserenr);
+DECLARE_STATIC_CALL(__kvm_vcpu_pmu_resync_el0, *kvm_pmu_ops->vcpu_pmu_resync_el0);
+
+static inline void host_kvm_set_pmu_events(u32 set, struct perf_event_attr *attr)
+{
+	static_call_cond(__kvm_set_pmu_events)(set, attr);
+}
+
+static inline void host_kvm_clr_pmu_events(u32 clr)
+{
+	static_call_cond(__kvm_clr_pmu_events)(clr);
+}
+
+static inline bool host_kvm_set_pmuserenr(u64 val)
+{
+	return static_call(__kvm_set_pmuserenr)(val);
+}
+
+static inline void host_kvm_vcpu_pmu_resync_el0(void)
+{
+	static_call_cond(__kvm_vcpu_pmu_resync_el0)();
+}
+
+void kvm_register_pmu_handlers(struct kvm_pmu_ops *ops);
+void kvm_unregister_pmu_handlers(struct kvm_pmu_ops *ops);
+#else
+static inline void host_kvm_set_pmu_events(u32 set, struct perf_event_attr *attr)
+{
+	kvm_set_pmu_events(set, attr);
+}
+
+static inline void host_kvm_clr_pmu_events(u32 clr)
+{
+	kvm_clr_pmu_events(clr);
+}
+
+static inline bool host_kvm_set_pmuserenr(u64 val)
+{
+	return kvm_set_pmuserenr(val);
+}
+
+static inline void host_kvm_vcpu_pmu_resync_el0(void)
+{
+	kvm_vcpu_pmu_resync_el0();
+}
+#endif
 
 #endif /* __ARM64_KVM_HOST_H__ */
