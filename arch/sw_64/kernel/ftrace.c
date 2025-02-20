@@ -125,7 +125,7 @@ int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
 		       unsigned long addr)
 {
 	unsigned int insn[1];
-	unsigned long pc = rec->ip + MCOUNT_LDGP_SIZE + 4;
+	unsigned long pc = rec->ip + MCOUNT_LDGP_SIZE;
 	unsigned long offset;
 
 	if (addr == FTRACE_ADDR)
