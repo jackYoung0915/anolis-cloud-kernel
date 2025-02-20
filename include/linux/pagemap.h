@@ -14,6 +14,7 @@
 #include <linux/gfp.h>
 #include <linux/bitops.h>
 #include <linux/hardirq.h> /* for in_interrupt() */
+#include <linux/writeback.h>
 #include <linux/hugetlb_inline.h>
 
 struct folio_batch;
@@ -63,6 +64,14 @@ static inline int filemap_write_and_wait(struct address_space *mapping)
 {
 	return filemap_write_and_wait_range(mapping, 0, LLONG_MAX);
 }
+
+/*
+ * Value passed in to ->write_begin() if IOCB_DONTCACHE is set for the write,
+ * and the ->write_begin() handler on a file system supporting FOP_DONTCACHE
+ * must check for this and pass FGP_DONTCACHE for folio creation.
+ */
+#define pagep_dropbehind		((struct page *) 0xfee1c001)
+#define pagep_is_dropbehind(pagep)	(*(pagep) == pagep_dropbehind)
 
 /**
  * filemap_set_wb_err - set a writeback error on an address_space
@@ -593,6 +602,7 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
  * * %FGP_NOFS - __GFP_FS will get cleared in gfp.
  * * %FGP_NOWAIT - Don't block on the folio lock.
  * * %FGP_STABLE - Wait for the folio to be stable (finished writeback)
+ * * %FGP_DONTCACHE - Uncached buffered IO
  * * %FGP_WRITEBEGIN - The flags to use in a filesystem write_begin()
  *   implementation.
  */
@@ -606,6 +616,7 @@ typedef unsigned int __bitwise fgf_t;
 #define FGP_NOWAIT		((__force fgf_t)0x00000020)
 #define FGP_FOR_MMAP		((__force fgf_t)0x00000040)
 #define FGP_STABLE		((__force fgf_t)0x00000080)
+#define FGP_DONTCACHE		((__force fgf_t)0x00000100)
 #define FGF_GET_ORDER(fgf)	(((__force unsigned)fgf) >> 26)	/* top 6 bits */
 
 #define FGP_WRITEBEGIN		(FGP_LOCK | FGP_WRITE | FGP_CREAT | FGP_STABLE)
@@ -1270,6 +1281,7 @@ struct readahead_control {
 	pgoff_t _index;
 	unsigned int _nr_pages;
 	unsigned int _batch_count;
+	bool dropbehind;
 	bool _workingset;
 	unsigned long _pflags;
 
