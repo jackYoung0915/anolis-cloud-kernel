@@ -2091,7 +2091,10 @@ no_page:
 			if (fgp_flags & FGP_DONTCACHE)
 				__folio_set_dropbehind(folio);
 
-			err = filemap_add_folio(mapping, folio, index, gfp);
+			if (fgp_flags & FGP_NOLRU)
+				err = filemap_add_folio_nolru(mapping, folio, index, gfp);
+			else
+				err = filemap_add_folio(mapping, folio, index, gfp);
 			if (!err)
 				break;
 			folio_put(folio);
