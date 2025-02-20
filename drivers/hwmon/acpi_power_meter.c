@@ -418,10 +418,21 @@ static ssize_t show_val(struct device *dev,
 			val = 0;
 		break;
 	case 6:
-		if (resource->power > resource->cap)
-			val = 1;
-		else
-			val = 0;
+		ret = update_meter(resource);
+		if (ret)
+			return ret;
+		/* need to update cap if not to support the notification. */
+		if (!(resource->caps.flags & POWER_METER_CAN_NOTIFY)) {
+			ret = update_cap(resource);
+			if (ret)
+				return ret;
+			resource->power_alarm = resource->power > resource->cap;
+			val = resource->power_alarm;
+		} else {
+			val = resource->power_alarm ||
+				 resource->power > resource->cap;
+			resource->power_alarm = resource->power > resource->cap;
+		}
 		break;
 	case 7:
 	case 8:
