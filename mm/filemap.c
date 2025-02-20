@@ -1032,6 +1032,20 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 }
 EXPORT_SYMBOL_GPL(filemap_add_folio);
 
+int filemap_add_folio_nolru(struct address_space *mapping, struct folio *folio,
+				pgoff_t index, gfp_t gfp)
+{
+	void *shadow = NULL;
+	int ret;
+
+	__folio_set_locked(folio);
+	ret = __filemap_add_folio(mapping, folio, index, gfp, &shadow);
+	if (unlikely(ret))
+		__folio_clear_locked(folio);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(filemap_add_folio_nolru);
+
 #ifdef CONFIG_NUMA
 struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
 {
@@ -2077,7 +2091,10 @@ no_page:
 			if (fgp_flags & FGP_DONTCACHE)
 				__folio_set_dropbehind(folio);
 
-			err = filemap_add_folio(mapping, folio, index, gfp);
+			if (fgp_flags & FGP_NOLRU)
+				err = filemap_add_folio_nolru(mapping, folio, index, gfp);
+			else
+				err = filemap_add_folio(mapping, folio, index, gfp);
 			if (!err)
 				break;
 			folio_put(folio);
@@ -2679,6 +2696,8 @@ static int filemap_readahead(struct kiocb *iocb, struct file *file,
 		return -EAGAIN;
 	if (iocb->ki_flags & IOCB_DONTCACHE)
 		ractl.dropbehind = 1;
+	if (iocb->ki_flags & IOCB_NOLRU)
+		ractl.nolru = 1;
 	page_cache_async_ra(&ractl, folio, last_index - folio->index);
 	return 0;
 }
@@ -2710,6 +2729,8 @@ retry:
 			flags = memalloc_noio_save();
 		if (iocb->ki_flags & IOCB_DONTCACHE)
 			ractl.dropbehind = 1;
+		if (iocb->ki_flags & IOCB_NOLRU)
+			ractl.nolru = 1;
 		page_cache_sync_ra(&ractl, last_index - index);
 		if (iocb->ki_flags & IOCB_NOWAIT)
 			memalloc_noio_restore(flags);

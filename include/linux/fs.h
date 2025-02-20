@@ -346,6 +346,8 @@ enum rw_hint {
 #define IOCB_DIO_CALLER_COMP	(1 << 22)
 /* kiocb is a read or write operation submitted by fs/aio.c. */
 #define IOCB_AIO_RW		(1 << 23)
+/* no bother to add to LRU */
+#define IOCB_NOLRU		(1 << 31)
 
 /* for use in trace events */
 #define TRACE_IOCB_STRINGS \
@@ -361,7 +363,8 @@ enum rw_hint {
 	{ IOCB_WAITQ,		"WAITQ" }, \
 	{ IOCB_NOIO,		"NOIO" }, \
 	{ IOCB_ALLOC_CACHE,	"ALLOC_CACHE" }, \
-	{ IOCB_DIO_CALLER_COMP,	"CALLER_COMP" }
+	{ IOCB_DIO_CALLER_COMP,	"CALLER_COMP" }, \
+	{ IOCB_NOLRU,		"NOLRU" }
 
 struct kiocb {
 	struct file		*ki_filp;

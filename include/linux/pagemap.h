@@ -605,6 +605,7 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
  * * %FGP_DONTCACHE - Uncached buffered IO
  * * %FGP_WRITEBEGIN - The flags to use in a filesystem write_begin()
  *   implementation.
+ * * %FGP_NOLRU - Don't add to LRU list.
  */
 typedef unsigned int __bitwise fgf_t;
 
@@ -617,6 +618,7 @@ typedef unsigned int __bitwise fgf_t;
 #define FGP_FOR_MMAP		((__force fgf_t)0x00000040)
 #define FGP_STABLE		((__force fgf_t)0x00000080)
 #define FGP_DONTCACHE		((__force fgf_t)0x00000100)
+#define FGP_NOLRU		((__force fgf_t)0x02000000)
 #define FGF_GET_ORDER(fgf)	(((__force unsigned)fgf) >> 26)	/* top 6 bits */
 
 #define FGP_WRITEBEGIN		(FGP_LOCK | FGP_WRITE | FGP_CREAT | FGP_STABLE)
@@ -1211,6 +1213,8 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		pgoff_t index, gfp_t gfp);
 int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 		pgoff_t index, gfp_t gfp);
+int filemap_add_folio_nolru(struct address_space *mapping, struct folio *folio,
+		pgoff_t index, gfp_t gfp);
 void filemap_remove_folio(struct folio *folio);
 void __filemap_remove_folio(struct folio *folio, void *shadow);
 void replace_page_cache_folio(struct folio *old, struct folio *new);
@@ -1282,6 +1286,7 @@ struct readahead_control {
 	unsigned int _nr_pages;
 	unsigned int _batch_count;
 	bool dropbehind;
+	bool nolru;
 	bool _workingset;
 	unsigned long _pflags;
 
