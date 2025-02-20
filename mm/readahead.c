@@ -203,6 +203,13 @@ static struct folio *ractl_alloc_folio(struct readahead_control *ractl,
 	return folio;
 }
 
+static int ractl_add_folio(struct readahead_control *ractl,
+		struct address_space *mapping, struct folio *folio,
+		pgoff_t index, gfp_t gfp)
+{
+	return filemap_add_folio(mapping, folio, index, gfp);
+}
+
 /**
  * page_cache_ra_unbounded - Start unchecked readahead.
  * @ractl: Readahead control.
@@ -262,7 +269,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 		folio = ractl_alloc_folio(ractl, gfp_mask, 0);
 		if (!folio)
 			break;
-		if (filemap_add_folio(mapping, folio, index + i,
+		if (ractl_add_folio(ractl, mapping, folio, index + i,
 					gfp_mask) < 0) {
 			folio_put(folio);
 			read_pages(ractl);
@@ -487,7 +494,7 @@ static inline int ra_alloc_folio(struct readahead_control *ractl, pgoff_t index,
 	mark = round_down(mark, 1UL << order);
 	if (index == mark)
 		folio_set_readahead(folio);
-	err = filemap_add_folio(ractl->mapping, folio, index, gfp);
+	err = ractl_add_folio(ractl, ractl->mapping, folio, index, gfp);
 	if (err) {
 		folio_put(folio);
 		return err;
@@ -841,7 +848,7 @@ void readahead_expand(struct readahead_control *ractl,
 		folio = ractl_alloc_folio(ractl, gfp_mask, 0);
 		if (!folio)
 			return;
-		if (filemap_add_folio(mapping, folio, index, gfp_mask) < 0) {
+		if (ractl_add_folio(ractl, mapping, folio, index, gfp_mask) < 0) {
 			folio_put(folio);
 			return;
 		}
@@ -868,7 +875,7 @@ void readahead_expand(struct readahead_control *ractl,
 		folio = ractl_alloc_folio(ractl, gfp_mask, 0);
 		if (!folio)
 			return;
-		if (filemap_add_folio(mapping, folio, index, gfp_mask) < 0) {
+		if (ractl_add_folio(ractl, mapping, folio, index, gfp_mask) < 0) {
 			folio_put(folio);
 			return;
 		}
