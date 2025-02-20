@@ -2696,6 +2696,8 @@ static int filemap_readahead(struct kiocb *iocb, struct file *file,
 		return -EAGAIN;
 	if (iocb->ki_flags & IOCB_DONTCACHE)
 		ractl.dropbehind = 1;
+	if (iocb->ki_flags & IOCB_NOLRU)
+		ractl.nolru = 1;
 	page_cache_async_ra(&ractl, folio, last_index - folio->index);
 	return 0;
 }
@@ -2727,6 +2729,8 @@ retry:
 			flags = memalloc_noio_save();
 		if (iocb->ki_flags & IOCB_DONTCACHE)
 			ractl.dropbehind = 1;
+		if (iocb->ki_flags & IOCB_NOLRU)
+			ractl.nolru = 1;
 		page_cache_sync_ra(&ractl, last_index - index);
 		if (iocb->ki_flags & IOCB_NOWAIT)
 			memalloc_noio_restore(flags);

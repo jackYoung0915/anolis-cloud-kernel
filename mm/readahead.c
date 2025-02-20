@@ -207,7 +207,10 @@ static int ractl_add_folio(struct readahead_control *ractl,
 		struct address_space *mapping, struct folio *folio,
 		pgoff_t index, gfp_t gfp)
 {
-	return filemap_add_folio(mapping, folio, index, gfp);
+	if (ractl->nolru)
+		return filemap_add_folio_nolru(mapping, folio, index, gfp);
+	else
+		return filemap_add_folio(mapping, folio, index, gfp);
 }
 
 /**

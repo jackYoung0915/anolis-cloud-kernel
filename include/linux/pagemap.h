@@ -1286,6 +1286,7 @@ struct readahead_control {
 	unsigned int _nr_pages;
 	unsigned int _batch_count;
 	bool dropbehind;
+	bool nolru;
 	bool _workingset;
 	unsigned long _pflags;
 
