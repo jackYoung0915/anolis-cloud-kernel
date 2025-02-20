@@ -1032,6 +1032,20 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 }
 EXPORT_SYMBOL_GPL(filemap_add_folio);
 
+int filemap_add_folio_nolru(struct address_space *mapping, struct folio *folio,
+				pgoff_t index, gfp_t gfp)
+{
+	void *shadow = NULL;
+	int ret;
+
+	__folio_set_locked(folio);
+	ret = __filemap_add_folio(mapping, folio, index, gfp, &shadow);
+	if (unlikely(ret))
+		__folio_clear_locked(folio);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(filemap_add_folio_nolru);
+
 #ifdef CONFIG_NUMA
 struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
 {
