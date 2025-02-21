@@ -2368,7 +2368,6 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 	lblock = div_u64(limit + blocksize - 1, blocksize);
 	bh = head;
 	nr = 0;
-	i = 0;
 
 	do {
 		if (buffer_uptodate(bh))
@@ -2387,7 +2386,7 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 				}
 			}
 			if (!buffer_mapped(bh)) {
-				folio_zero_range(folio, i * blocksize,
+				folio_zero_range(folio, bh_offset(bh),
 						blocksize);
 				if (!err)
 					set_buffer_uptodate(bh);
@@ -2401,7 +2400,7 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 				continue;
 		}
 		arr[nr++] = bh;
-	} while (i++, iblock++, (bh = bh->b_this_page) != head);
+	} while (iblock++, (bh = bh->b_this_page) != head);
 
 	if (fully_mapped)
 		folio_set_mappedtodisk(folio);
