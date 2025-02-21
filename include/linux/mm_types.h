@@ -1001,6 +1001,9 @@ struct mm_struct {
 		struct mm_struct *async_fork_mm;
 		unsigned long async_fork_flags;
 #endif
+#ifdef CONFIG_DUPTEXT
+		unsigned long duptext_flags;
+#endif
 	} __randomize_layout;
 
 	CK_KABI_RESERVE(1)
