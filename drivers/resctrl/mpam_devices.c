@@ -1209,6 +1209,9 @@ static void __ris_msmon_read(void *arg)
 		  FIELD_PREP(MSMON_CFG_MON_SEL_RIS, ris->ris_idx);
 	mpam_write_monsel_reg(msc, CFG_MON_SEL, mon_sel);
 
+	/* Selects a monitor instance to configure PARTID. */
+	wmb();
+
 	switch (m->type) {
 	case mpam_feat_msmon_mbwu_31counter:
 	case mpam_feat_msmon_mbwu_44counter:
@@ -1249,6 +1252,12 @@ static void __ris_msmon_read(void *arg)
 				      ~(MSMON_CFG_x_CTL_OFLOW_STATUS |
 					MSMON_CFG_MBWU_CTL_OFLOW_STATUS_L));
 	}
+
+	/*
+	 * Selects the monitor instance associated to the specified PARTID
+	 * to read counter value.
+	 */
+	wmb();
 
 	switch (m->type) {
 	case mpam_feat_msmon_csu:
