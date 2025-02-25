@@ -2435,10 +2435,9 @@ bad_fork_cleanup_namespaces:
 bad_fork_cleanup_mm:
 	if (p->mm) {
 #ifdef CONFIG_ASYNC_FORK
-		if (p->mm->async_fork_mm) {
-			WARN_ON_ONCE(clone_flags & CLONE_VM);
+		if (p->mm->async_fork_mm &&
+		    !WARN_ON_ONCE(clone_flags & CLONE_VM))
 			async_fork_cpr_done(p->mm, true, false);
-		}
 #endif
 		mm_clear_owner(p->mm, p);
 		mmput(p->mm);
