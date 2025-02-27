@@ -1,0 +1,5 @@
+* Thu Feb 27 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [6.6.71-3.64k_rc1%%DIST%%]
+- anolis: configs: disable CONFIG_VIRT_FUSE (Jingbo Xu)
+- anolis: crypto: move digest from sha-224 to sha-256 (Yinan Liu)
+- anolis: spec: bug fix for kernel.spec (Qinyun Tan)
+
