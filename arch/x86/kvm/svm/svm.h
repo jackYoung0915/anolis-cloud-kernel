@@ -43,6 +43,8 @@ static const struct svm_host_save_msrs {
 };
 #define NR_HOST_SAVE_USER_MSRS ARRAY_SIZE(host_save_user_msrs)
 
+#define GUEST_PAT_WB_ATTR	0x0606060606060606
+
 #define MAX_DIRECT_ACCESS_MSRS	18
 #define MSRPM_OFFSETS	16
 extern u32 msrpm_offsets[MSRPM_OFFSETS] __read_mostly;
