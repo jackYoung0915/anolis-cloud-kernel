@@ -731,7 +731,10 @@ struct vm_area_struct {
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
 
 	bool fast_reflink;
-
+#ifdef CONFIG_ASYNC_FORK
+	/* Pairing vma */
+	struct vm_area_struct *async_fork_vma;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -995,6 +998,11 @@ struct mm_struct {
 #endif /* CONFIG_LRU_GEN */
 #ifdef CONFIG_DUPTEXT
 		unsigned long duptext_flags;
+#endif
+#ifdef CONFIG_ASYNC_FORK
+		/* Pairing mm_struct ptr and its flags */
+		struct mm_struct *async_fork_mm;
+		unsigned long async_fork_flags;
 #endif
 	} __randomize_layout;
 
@@ -1466,4 +1474,11 @@ enum cpr_mode {
 	CPR_SLOW,
 	CPR_MAX_MODE,
 };
+
+#ifdef CONFIG_ASYNC_FORK
+#define ASYNC_FORK_PARENT		1
+#define ASYNC_FORK_CHILD		2
+#define VMA_FAST_COPIED		((void *)(1UL))
+#endif
+
 #endif /* _LINUX_MM_TYPES_H */
