@@ -54,8 +54,8 @@ struct erofs_device_info {
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *blobfile;
 #endif
-	u32 blocks;
-	u32 mapped_blkaddr;
+	erofs_blk_t blocks;
+	erofs_blk_t uniaddr;
 };
 
 struct erofs_mount_opts {
@@ -272,7 +272,7 @@ struct erofs_inode {
 	const struct vm_operations_struct *lower_vm_ops;
 
 	union {
-		erofs_blk_t raw_blkaddr;
+		erofs_blk_t startblk;
 		struct {
 			unsigned short	chunkformat;
 			unsigned char	chunkbits;
