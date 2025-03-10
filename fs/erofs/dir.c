@@ -100,6 +100,11 @@ skip_this:
 		ofs = 0;
 	}
 	erofs_put_metabuf(&buf);
+	if (EROFS_I(dir)->dot_omitted && ctx->pos == dir->i_size) {
+		if (!dir_emit_dot(f, ctx))
+			return 0;
+		++ctx->pos;
+	}
 	return err < 0 ? err : 0;
 }
 
