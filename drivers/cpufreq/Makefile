@@ -116,4 +116,4 @@ obj-$(CONFIG_SH_CPU_FREQ)		+= sh-cpufreq.o
 obj-$(CONFIG_SPARC_US2E_CPUFREQ)	+= sparc-us2e-cpufreq.o
 obj-$(CONFIG_SPARC_US3_CPUFREQ)		+= sparc-us3-cpufreq.o
 obj-$(CONFIG_RISV_THEAD_LIGHT_CPUFREQ)	+= light-mpw-cpufreq.o
-obj-$(CONFIG_SW64_CPUFREQ)		+= sw64_cpufreq.o
+obj-$(CONFIG_SW64_CPUFREQ)		+= sunway-cpufreq.o
