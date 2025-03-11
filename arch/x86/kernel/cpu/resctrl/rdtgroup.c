@@ -391,14 +391,13 @@ void resctrl_arch_event_config_set(void *info)
 int resctrl_arch_mbm_config_write_domain(void *rdt_resource, void *dom, u32 evtid, u32 val)
 {
 	struct rdt_resource *r = rdt_resource;
-	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 	struct rdt_domain *d = dom;
 	struct mon_config_info mon_info = {0};
 	u32 config_val;
 	int ret = 0;
 
 	/* Value from user cannot be more than the supported set of events */
-	if ((val & hw_res->mbm_cfg_mask) != val)
+	if ((val & r->mbm_cfg_mask) != val)
 		return -EINVAL;
 
 	/*
