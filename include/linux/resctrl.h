@@ -250,6 +250,8 @@ struct resctrl_mon {
  * @default_ctrl:	Specifies default cache cbm or memory B/W percent.
  * @format_str:		Per resource format string to show domain value
  * @fflags:		flags to choose base and info files
+ * @mbm_cfg_mask:	Bandwidth sources that can be tracked when bandwidth
+ *			monitoring events can be configured.
  * @cdp_capable:	Is the CDP feature available on this resource
  */
 struct rdt_resource {
@@ -266,6 +268,7 @@ struct rdt_resource {
 	u32			default_ctrl;
 	const char		*format_str;
 	unsigned long		fflags;
+	unsigned int		mbm_cfg_mask;
 	bool			cdp_capable;
 };
 
