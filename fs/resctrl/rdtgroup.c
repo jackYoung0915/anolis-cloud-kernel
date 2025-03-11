@@ -2096,7 +2096,8 @@ next:
 		if (d->id == dom_id) {
 			ret = resctrl_arch_mbm_config_write_domain(r, d, evtid, val);
 			if (ret) {
-				rdt_last_cmd_puts("Invalid event configuration\n");
+				rdt_last_cmd_printf("Invalid event configuration: max valid mask is 0x%02x\n",
+					r->mbm_cfg_mask);
 				return -EINVAL;
 			}
 
