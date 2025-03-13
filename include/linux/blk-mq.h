@@ -553,8 +553,24 @@ static inline bool blk_mq_add_to_batch(struct request *req,
 				       struct io_comp_batch *iob, int ioerror,
 				       void (*complete)(struct io_comp_batch *))
 {
-	if (!iob || req->q->elevator || req->end_io || ioerror)
+	/*
+	 * Check various conditions that exclude batch processing:
+	 * 1) No batch container
+	 * 2) Has scheduler data attached
+	 * 3) Not a passthrough request and end_io set
+	 * 4) Not a passthrough request and an ioerror
+	 */
+	if (!iob)
 		return false;
+	if (req->q->elevator)
+		return false;
+	if (!blk_rq_is_passthrough(req)) {
+		if (req->end_io)
+			return false;
+		if (ioerror < 0)
+			return false;
+	}
+
 	if (!iob->complete)
 		iob->complete = complete;
 	else if (iob->complete != complete)
