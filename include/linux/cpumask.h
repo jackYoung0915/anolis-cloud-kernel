@@ -1157,6 +1157,9 @@ static inline void reset_cpu_possible_mask(void)
 #define assign_cpu(cpu, mask, val)	\
 	assign_bit(cpumask_check(cpu), cpumask_bits(mask), (val))
 
+#define __assign_cpu(cpu, mask, val)	\
+	__assign_bit(cpumask_check(cpu), cpumask_bits(mask), (val))
+
 #define set_cpu_possible(cpu, possible)	assign_cpu((cpu), &__cpu_possible_mask, (possible))
 #define set_cpu_present(cpu, present)	assign_cpu((cpu), &__cpu_present_mask, (present))
 #define set_cpu_active(cpu, active)	assign_cpu((cpu), &__cpu_active_mask, (active))
