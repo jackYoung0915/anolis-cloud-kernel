@@ -6733,6 +6733,8 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int highest_zoneidx)
 	 * meet watermarks.
 	 */
 	for (i = 0; i <= highest_zoneidx; i++) {
+		unsigned long free_pages;
+
 		zone = pgdat->node_zones + i;
 
 		if (!managed_zone(zone))
@@ -6742,7 +6744,17 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int highest_zoneidx)
 			mark = wmark_pages(zone, WMARK_PROMO);
 		else
 			mark = high_wmark_pages(zone);
-		if (zone_watermark_ok_safe(zone, order, mark, highest_zoneidx))
+		/*
+		 * In defrag_mode, watermarks must be met in whole
+		 * blocks to avoid polluting allocator fallbacks.
+		 */
+		if (defrag_mode)
+			free_pages = zone_page_state(zone, NR_FREE_PAGES_BLOCKS);
+		else
+			free_pages = zone_page_state(zone, NR_FREE_PAGES);
+
+		if (__zone_watermark_ok(zone, order, mark, highest_zoneidx,
+					0, free_pages))
 			return true;
 	}
 
