@@ -708,6 +708,12 @@ int umc_normaddr_to_sysaddr(u64 norm_addr, u16 nid, u8 umc, u64 *sys_addr)
 
 	intlv_addr_bit = intlv_addr_sel + 8;
 
+	if (hygon_f18h_m4h() && boot_cpu_data.x86_model >= 0x6) {
+		if (amd_df_indirect_read(nid, 0, 0x60, umc, &tmp))
+			goto out_err;
+		intlv_num_dies = tmp & 0x3;
+	}
+
 	/* Re-use intlv_num_chan by setting it equal to log2(#channels) */
 	switch (intlv_num_chan) {
 	case 0:	intlv_num_chan = 0; break;
