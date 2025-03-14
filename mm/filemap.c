@@ -3810,6 +3810,7 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 			folio_unlock(folio);
 			folio_put(folio);
 			folio = d_folio;
+			folio_lock(folio);
 		}
 
 		if (!folio_test_large(folio))
@@ -3820,8 +3821,7 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 					xas.xa_index - folio->index, addr,
 					nr_pages, &rss, &mmap_miss);
 
-		if (!d_folio)
-			folio_unlock(folio);
+		folio_unlock(folio);
 
 		/* Dup slave folio should also put refcnt here */
 		folio_put(folio);
