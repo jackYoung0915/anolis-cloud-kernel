@@ -6363,6 +6363,24 @@ static void snapshot_refaults(struct mem_cgroup *target_memcg, pg_data_t *pgdat)
 	target_lruvec->refaults[1] = refaults;
 }
 
+#ifdef CONFIG_MEMCG
+static bool memcg_can_shrink(struct scan_control *sc)
+{
+	struct mem_cgroup *memcg = sc->target_mem_cgroup;
+	unsigned long file;
+
+	if (cgroup_reclaim(sc) && memcg->min_cache_pages) {
+		file = memcg_page_state(memcg, NR_ACTIVE_FILE) +
+			memcg_page_state(memcg, NR_INACTIVE_FILE);
+		sc->file_is_reserved = file < memcg->min_cache_pages;
+		if (sc->file_is_reserved && !mem_cgroup_swappiness(memcg))
+			return false;
+	}
+
+	return true;
+}
+#endif
+
 /*
  * This is the main entry point to direct page reclaim.
  *
@@ -6403,6 +6421,11 @@ retry:
 		if (current_is_kswapd() && cgroup_reclaim(sc) &&
 		    is_wmark_ok(sc->target_mem_cgroup, false))
 			break;
+
+#ifdef CONFIG_MEMCG
+		if (!memcg_can_shrink(sc))
+			break;
+#endif
 
 		vmpressure_prio(sc->gfp_mask, sc->target_mem_cgroup,
 				sc->priority);

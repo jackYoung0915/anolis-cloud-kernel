@@ -490,7 +490,7 @@ struct mem_cgroup {
 	bool allow_duptext_refresh;
 	nodemask_t duptext_nodes;
 #endif
-
+	unsigned long min_cache_pages;
 #ifdef CONFIG_TEXT_UNEVICTABLE
 	bool allow_unevictable;
 	unsigned int unevictable_percent;
