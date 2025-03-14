@@ -5945,6 +5945,28 @@ static int mem_cgroup_slab_show(struct seq_file *m, void *p)
 
 static int memory_stat_show(struct seq_file *m, void *v);
 
+static u64 mem_cgroup_min_cache_read(struct cgroup_subsys_state *css,
+				     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->min_cache_pages << (PAGE_SHIFT - 10);
+}
+
+static int mem_cgroup_min_cache_write(struct cgroup_subsys_state *css,
+				      struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+	u64 max = READ_ONCE(memcg->memory.max);
+	u64 min_cache_pages = val >> (PAGE_SHIFT - 10);
+
+	if (min_cache_pages > max / 2)
+		return -EINVAL;
+
+	memcg->min_cache_pages = min_cache_pages;
+	return 0;
+}
+
 #ifdef CONFIG_TEXT_UNEVICTABLE
 static u64 mem_cgroup_allow_unevictable_read(struct cgroup_subsys_state *css,
 					     struct cftype *cft)
@@ -6560,6 +6582,11 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.read_u64 = memcg_pre_oom_read,
 	},
 #endif
+	{
+		.name = "min_cache_kbytes",
+		.read_u64 = mem_cgroup_min_cache_read,
+		.write_u64 = mem_cgroup_min_cache_write,
+	},
 	{ },	/* terminate */
 };
 
@@ -6858,6 +6885,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_ASYNC_FORK
 		memcg->async_fork = parent->async_fork;
 #endif
+		memcg->min_cache_pages = parent->min_cache_pages;
 		page_counter_init(&memcg->memory, &parent->memory);
 		page_counter_init(&memcg->swap, &parent->swap);
 		page_counter_init(&memcg->kmem, &parent->kmem);
@@ -8426,6 +8454,11 @@ static struct cftype memory_files[] = {
 		.name = "reap_background",
 		.read_u64 = memcg_reap_background_read,
 		.write_u64 = memcg_reap_background_write,
+	},
+	{
+		.name = "min_cache_kbytes",
+		.read_u64 = mem_cgroup_min_cache_read,
+		.write_u64 = mem_cgroup_min_cache_write,
 	},
 #ifdef CONFIG_PAGECACHE_LIMIT
 	{

@@ -394,6 +394,8 @@ struct mem_cgroup {
 	struct mutex lat_stat_notify_lock;
 #endif
 
+	unsigned long min_cache_pages;
+
 #ifdef CONFIG_TEXT_UNEVICTABLE
 	bool allow_unevictable;
 	unsigned int unevictable_percent;
