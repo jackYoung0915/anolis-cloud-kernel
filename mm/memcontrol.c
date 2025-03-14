@@ -6590,6 +6590,28 @@ static ssize_t mem_cgroup_duptext_nodes_write(struct kernfs_open_file *of,
 
 #endif
 
+static u64 mem_cgroup_min_cache_read(struct cgroup_subsys_state *css,
+				     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->min_cache_pages << (PAGE_SHIFT - 10);
+}
+
+static int mem_cgroup_min_cache_write(struct cgroup_subsys_state *css,
+				      struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+	u64 max = READ_ONCE(memcg->memory.max);
+	u64 min_cache_pages = val >> (PAGE_SHIFT - 10);
+
+	if ((val << 10) > max / 2)
+		return -EINVAL;
+
+	memcg->min_cache_pages = min_cache_pages;
+	return 0;
+}
+
 #ifdef CONFIG_TEXT_UNEVICTABLE
 static u64 mem_cgroup_allow_unevictable_read(struct cgroup_subsys_state *css,
 					     struct cftype *cft)
@@ -7456,6 +7478,11 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.write_u64 = mem_cgroup_unevictable_percent_write,
 	},
 #endif
+	{
+		.name = "min_cache_kbytes",
+		.read_u64 = mem_cgroup_min_cache_read,
+		.write_u64 = mem_cgroup_min_cache_write,
+	},
 #ifdef CONFIG_PAGECACHE_LIMIT
 	{
 		.name = "pagecache_limit.enable",
@@ -7842,6 +7869,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_ASYNC_FORK
 		memcg->async_fork = parent->async_fork;
 #endif
+		memcg->min_cache_pages = parent->min_cache_pages;
 #ifdef CONFIG_TEXT_UNEVICTABLE
 		memcg->allow_unevictable = parent->allow_unevictable;
 #endif
@@ -9248,6 +9276,11 @@ static struct cftype memory_files[] = {
 		.write = mem_cgroup_idle_page_stats_write,
 	},
 #endif
+	{
+		.name = "min_cache_kbytes",
+		.read_u64 = mem_cgroup_min_cache_read,
+		.write_u64 = mem_cgroup_min_cache_write,
+	},
 	{
 		.name = "reap_background",
 		.read_u64 = memcg_reap_background_read,
