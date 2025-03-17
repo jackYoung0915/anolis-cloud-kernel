@@ -383,6 +383,7 @@ struct smc_link_group {
 			u8			credits_en;
 						/* is credits enabled by vendor opts negotiation */
 			u8			use_rwwi; /* use RDMA WRITE with Imm or not */
+			u32			next_token; /* used to generate token for rwwi */
 		};
 		struct { /* SMC-D */
 			u64			peer_gid;

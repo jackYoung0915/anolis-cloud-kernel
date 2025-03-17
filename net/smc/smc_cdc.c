@@ -740,6 +740,9 @@ void smc_cdc_rx_handler_rwwi(struct ib_wc *wc)
 	bh_lock_sock(&smc->sk);
 	diff_prod = wc->byte_len;
 	if (diff_prod) {
+		/* recv data without rmb buffer, the imm must be stale remnant */
+		if (!conn->rmb_desc)
+			goto drop;
 		smc_dump_raw_data(conn, conn->local_rx_ctrl.prod.count,
 				  diff_prod, true);
 		smc_curs_add_safe(conn->rmb_desc->len, &conn->local_rx_ctrl.prod, diff_prod, conn);
@@ -762,6 +765,7 @@ void smc_cdc_rx_handler_rwwi(struct ib_wc *wc)
 		break;
 	}
 
+drop:
 	bh_unlock_sock(&smc->sk);
 	sock_put(&smc->sk); /* sock_hold in smc_lgr_get_sock */
 }

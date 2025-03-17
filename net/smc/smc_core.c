@@ -173,7 +173,7 @@ static int smc_lgr_register_conn(struct smc_connection *conn, bool first)
 {
 	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
 	static atomic_t nexttoken = ATOMIC_INIT(0);
-	int i;
+	int i, idx;
 	int rc;
 
 	if (!conn->lgr->is_smcd) {
@@ -189,8 +189,12 @@ static int smc_lgr_register_conn(struct smc_connection *conn, bool first)
 	sock_hold(&smc->sk); /* sock_put in smc_lgr_unregister_conn() */
 	if (conn->lgr->use_rwwi) {
 		for (i = 1; i <= SMC_MAX_TOKEN_LOCAL; i++) {
-			if (!smc_lgr_find_conn(i, conn->lgr)) {
-				conn->alert_token_local = i;
+			/* do not iter idx from 1 every time, idx between 1
+			 * and SMC_MAX_TOKEN_LOCAL, 0 is not assigned.
+			 */
+			idx = (conn->lgr->next_token++) % SMC_MAX_TOKEN_LOCAL + 1;
+			if (!smc_lgr_find_conn(idx, conn->lgr)) {
+				conn->alert_token_local = idx;
 				break;
 			}
 		}
