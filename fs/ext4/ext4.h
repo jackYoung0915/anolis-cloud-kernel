@@ -1588,6 +1588,8 @@ struct ext4_sb_info {
 	unsigned int s_mb_prefetch;
 	unsigned int s_mb_prefetch_limit;
 	unsigned int s_mb_best_avail_max_trim_order;
+	unsigned int s_sb_update_sec;
+	unsigned int s_sb_update_kb;
 
 	/* where last allocation was done - for stream allocation */
 	ext4_group_t *s_mb_last_groups;
@@ -2269,6 +2271,13 @@ static inline int ext4_forced_shutdown(struct super_block *sb)
  */
 #define EXT4_DEF_MIN_BATCH_TIME	0
 #define EXT4_DEF_MAX_BATCH_TIME	15000 /* 15ms */
+
+/*
+ * Default values for superblock update
+ */
+#define EXT4_DEF_SB_UPDATE_INTERVAL_SEC (3600) /* seconds (1 hour) */
+#define EXT4_DEF_SB_UPDATE_INTERVAL_KB (16384) /* kilobytes (16MB) */
+
 
 /*
  * Minimum number of groups in a flexgroup before we separate out
