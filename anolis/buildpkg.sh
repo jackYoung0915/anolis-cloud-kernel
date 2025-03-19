@@ -10,10 +10,13 @@ function do_rpmbuild() {
 	fi
 
 	# Now we have:
-	#  + variants: default, only-debug, with-debug
+	#  + variants: default, with-debug
 	#  + extras: base, with-debuginfo, full
 	#  + modes: official, nightly, dev
 	#TODO: add with-gcov
+	#
+	# DIST_BUILD_ARM64_64K control whether 64k kernels are built,
+	# set DIST_BUILD_ARM64_64K=y to build 64k kernels.
 	#
 	# Matrix
 	#
@@ -23,26 +26,29 @@ function do_rpmbuild() {
 	# | nightly   | with git sha id | Yes          |
 	# | devel     | with git sha id | No           |
 	#
-	# | Extra\Var | Default  | Only-debug | With-debug |
-	# |-----------|----------|------------|------------|
-	# | Base      | +default | -default   | +default   |
-	# |           | -debug   | +debug     | +debug     |
-	# |           |            +headers                |
-	# |-----------|------------------------------------|
-	# | debuginfo |            +debuginfo              |
-	# |-----------|------------------------------------|
-	# | full      |         +tools +doc +perf          |
+	# | Extra\Var | Default         |  With-debug  |
+	# |-----------|-----------------|--------------|
+	# | Base      |     +default    |   +default   |
+	# |           |      -debug     |   +debug     |
+	# |           |             +headers           |
+	# |-----------|--------------------------------|
+	# | debuginfo |            +debuginfo          |
+	# |-----------|--------------------------------|
+	# | full      |      +tools +doc +perf         |
 	#
-	# Note: pre-release mode will always be "full" and "with-debug" by default
 
-	build_opts="--with headers --without bpftool --without signmodules"
+	build_opts="--with headers --without bpftool"
 
-	if [ "_${DIST_BUILD_VARIANT}" == "_only-debug" ]; then
-		build_opts="$build_opts --without default --with debug"
-	elif [ "_${DIST_BUILD_VARIANT}" == "_with-debug" ]; then
-		build_opts="$build_opts --with default --with debug"
+	if [ "_${DIST_BUILD_VARIANT}" == "_with-debug" ]; then
+		build_opts="$build_opts --with debug"
 	else # assume default
-		build_opts="$build_opts --with default --without debug"
+		build_opts="$build_opts --without debug"
+	fi
+
+	if [ "_${DIST_BUILD_ARM64_64K}" == "_Y" ]; then
+		build_opts="$build_opts --with arm64_64k"
+	else # assume default
+		build_opts="$build_opts --without arm64_64k"
 	fi
 
 	if [ "_${DIST_BUILD_EXTRA}" == "_debuginfo" ]; then
