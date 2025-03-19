@@ -84,7 +84,6 @@ static int erofs_fscache_meta_readpage(struct file *data, struct page *page)
 					 GFP_KERNEL);
 	switch (ret) {
 	case 0: /* page found in fscache, read submitted */
-		erofs_dbg("%s: submitted", __func__);
 		return ret;
 	case -ENOBUFS:	/* page won't be cached */
 	case -ENODATA:	/* page not in cache */
@@ -186,7 +185,6 @@ static int erofs_fscache_readpage(struct file *file, struct page *page)
 					 GFP_KERNEL, pstart);
 	switch (ret) {
 	case 0: /* page found in fscache, read submitted */
-		erofs_dbg("%s: submitted", __func__);
 		return ret;
 	case -ENOBUFS:	/* page won't be cached */
 	case -ENODATA:	/* page not in cache */

@@ -33,10 +33,8 @@ __printf(3, 4) void _erofs_info(struct super_block *sb,
 #define erofs_info(sb, fmt, ...) \
 	_erofs_info(sb, __func__, fmt "\n", ##__VA_ARGS__)
 #ifdef CONFIG_EROFS_FS_DEBUG
-#define erofs_dbg(x, ...)       pr_debug(x "\n", ##__VA_ARGS__)
 #define DBG_BUGON               BUG_ON
 #else
-#define erofs_dbg(x, ...)       ((void)0)
 #define DBG_BUGON(x)            ((void)(x))
 #endif	/* !CONFIG_EROFS_FS_DEBUG */
 
@@ -348,24 +346,14 @@ static inline erofs_off_t erofs_iloc(struct inode *inode)
 		(EROFS_I(inode)->nid << sbi->islotbits);
 }
 
-static inline unsigned int erofs_bitrange(unsigned int value, unsigned int bit,
-					  unsigned int bits)
+static inline unsigned int erofs_inode_version(unsigned int ifmt)
 {
-
-	return (value >> bit) & ((1 << bits) - 1);
+	return (ifmt >> EROFS_I_VERSION_BIT) & EROFS_I_VERSION_MASK;
 }
 
-
-static inline unsigned int erofs_inode_version(unsigned int value)
+static inline unsigned int erofs_inode_datalayout(unsigned int ifmt)
 {
-	return erofs_bitrange(value, EROFS_I_VERSION_BIT,
-			      EROFS_I_VERSION_BITS);
-}
-
-static inline unsigned int erofs_inode_datalayout(unsigned int value)
-{
-	return erofs_bitrange(value, EROFS_I_DATALAYOUT_BIT,
-			      EROFS_I_DATALAYOUT_BITS);
+	return (ifmt >> EROFS_I_DATALAYOUT_BIT) & EROFS_I_DATALAYOUT_MASK;
 }
 
 /*
