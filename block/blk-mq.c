@@ -324,7 +324,14 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 		unsigned int tag, u64 alloc_time_ns)
 {
 	struct blk_mq_tags *tags = blk_mq_tags_from_data(data);
-	struct request *rq = tags->static_rqs[tag];
+	struct request *rq;
+	struct blk_mq_tag_set *set = data->q->tag_set;
+
+	if ((set->flags & BLK_MQ_F_DYN_ALLOC) && (tag >= set->nr_static_rqs))
+		tags->static_rqs[tag] = kmalloc(sizeof(struct request) +
+				set->cmd_size, GFP_KERNEL | __GFP_ZERO);
+
+	rq = tags->static_rqs[tag];
 
 	if (data->q->elevator) {
 		rq->tag = BLK_MQ_NO_TAG;
@@ -553,15 +560,28 @@ void __blk_mq_free_request(struct request *rq)
 	struct request_queue *q = rq->q;
 	struct blk_mq_ctx *ctx = rq->mq_ctx;
 	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
-	const int sched_tag = rq->internal_tag;
+	const int sched_tag = rq->internal_tag, tag = rq->tag;
 
 	blk_crypto_free_request(rq);
 	blk_pm_mark_last_busy(rq);
 	rq->mq_hctx = NULL;
-	if (rq->tag != BLK_MQ_NO_TAG)
-		blk_mq_put_tag(hctx->tags, ctx, rq->tag);
-	if (sched_tag != BLK_MQ_NO_TAG)
+	if (rq->tag != BLK_MQ_NO_TAG) {
+		if ((q->tag_set->flags & BLK_MQ_F_DYN_ALLOC) &&
+			rq->tag >= q->tag_set->nr_static_rqs) {
+			hctx->tags->static_rqs[rq->tag] = NULL;
+			kfree(rq);
+		}
+		blk_mq_put_tag(hctx->tags, ctx, tag);
+	}
+	if (sched_tag != BLK_MQ_NO_TAG) {
+		if ((q->tag_set->flags & BLK_MQ_F_DYN_ALLOC) &&
+			sched_tag >= q->tag_set->nr_static_rqs) {
+			hctx->sched_tags->static_rqs[sched_tag] = NULL;
+			kfree(rq);
+		}
 		blk_mq_put_tag(hctx->sched_tags, ctx, sched_tag);
+	}
+
 	blk_mq_sched_restart(hctx);
 	blk_queue_exit(q);
 }
@@ -2506,6 +2526,9 @@ void blk_mq_free_rqs(struct blk_mq_tag_set *set, struct blk_mq_tags *tags,
 			if (!rq)
 				continue;
 			set->ops->exit_request(set, rq, hctx_idx);
+			if ((set->flags & BLK_MQ_F_DYN_ALLOC) &&
+				(i >= set->nr_static_rqs))
+				kfree(rq);
 			tags->static_rqs[i] = NULL;
 		}
 	}
@@ -2605,6 +2628,14 @@ int blk_mq_alloc_rqs(struct blk_mq_tag_set *set, struct blk_mq_tags *tags,
 	 */
 	rq_size = round_up(sizeof(struct request) + set->cmd_size,
 				cache_line_size());
+
+	if (set->flags & BLK_MQ_F_DYN_ALLOC) {
+		if (!set->nr_static_rqs || (set->nr_static_rqs > depth))
+			set->nr_static_rqs = depth;
+
+		depth = set->nr_static_rqs;
+	}
+
 	left = rq_size * depth;
 
 	for (i = 0; i < depth; ) {
@@ -3304,6 +3335,7 @@ struct request_queue *blk_mq_init_sq_queue(struct blk_mq_tag_set *set,
 	set->queue_depth = queue_depth;
 	set->numa_node = NUMA_NO_NODE;
 	set->flags = set_flags;
+	set->nr_static_rqs = 0;
 
 	ret = blk_mq_alloc_tag_set(set);
 	if (ret)
