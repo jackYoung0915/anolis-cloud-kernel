@@ -124,7 +124,7 @@ static int hclge_send_mbx_msg(struct hclge_vport *vport, u8 *msg, u16 msg_len,
 	return status;
 }
 
-static int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type)
+int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type)
 {
 	__le16 msg_data;
 	u8 dest_vfid;
@@ -811,7 +811,7 @@ static void hclge_handle_ncsi_error(struct hclge_dev *hdev)
 
 	ae_dev->ops->set_default_reset_request(ae_dev, HNAE3_GLOBAL_RESET);
 	dev_warn(&hdev->pdev->dev, "requesting reset due to NCSI error\n");
-	ae_dev->ops->reset_event(hdev->pdev, NULL);
+	hclge_reset_event(hdev->pdev, &hdev->vport[0].nic);
 }
 
 static void hclge_handle_vf_tbl(struct hclge_vport *vport,
