@@ -273,6 +273,9 @@ struct blk_mq_tag_set {
 	struct mutex		tag_list_lock;
 	struct list_head	tag_list;
 
+	/* number of static alloc rqs if dyn_alloc flag is set */
+	unsigned int		nr_static_rqs;
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -427,6 +430,8 @@ enum {
 	BLK_MQ_F_NO_SCHED	= 1 << 6,
 	BLK_MQ_F_ALLOC_POLICY_START_BIT = 8,
 	BLK_MQ_F_ALLOC_POLICY_BITS = 1,
+
+	BLK_MQ_F_DYN_ALLOC	= 1 << 31,
 
 	BLK_MQ_S_STOPPED	= 0,
 	BLK_MQ_S_TAG_ACTIVE	= 1,
