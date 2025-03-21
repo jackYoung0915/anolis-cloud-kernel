@@ -135,13 +135,39 @@ enum VPSP_RB_CHECK_STATUS {
 	RB_CHECKED,
 	RB_CHECK_MAX
 };
-#define VPSP_RB_IS_SUPPORTED(buildid)	(buildid >= 1913)
+
+struct tkm_cmdresp_head {
+	uint32_t buf_size; //including this header
+	uint32_t cmdresp_size; //including this header
+	uint32_t cmdresp_code;
+} __packed;
+
+struct tkm_device_info {
+	uint32_t api_version;
+	uint32_t fw_version;
+	uint32_t kek_sm4_total;
+	uint32_t isk_sm2_sign_total;
+	uint32_t isk_sm2_enc_total;
+	uint8_t chip_id[32];
+} __packed;
+struct tkm_cmdresp_device_info_get {
+	struct tkm_cmdresp_head head;
+	struct tkm_device_info dev_info;
+} __packed;
+
+#define VPSP_RB_IS_SUPPORTED(buildid)		(buildid >= 1913)
 #define VPSP_RB_OC_IS_SUPPORTED(buildid)	(buildid >= 2167)
 #define VPSP_CMD_STATUS_RUNNING		0xffff
 #define VPSP_RB_OVERCOMMIT_SIZE		1024
+#define TKM_DEVICE_INFO_GET		0x1001
 
-extern bool vpsp_in_ringbuffer_mode;
 extern struct kmem_cache *vpsp_cmd_ctx_slab;
+extern int psp_mutex_enabled;
+extern int is_hygon_psp;
+extern struct psp_misc_dev *psp_misc;
+extern struct mutex sev_cmd_mutex;
+extern unsigned int psp_int_rcvd;
+extern bool vpsp_in_ringbuffer_mode;
 
 void vpsp_worker_handler(struct work_struct *unused);
 int vpsp_try_get_result(struct vpsp_cmd_ctx *cmd_ctx, struct vpsp_ret *psp_ret);
@@ -153,5 +179,7 @@ void vpsp_cmd_ctx_obj_put(struct vpsp_cmd_ctx *cmd_ctx, bool force);
 int vpsp_get_dev_ctx(struct vpsp_dev_ctx **ctx, pid_t pid);
 int vpsp_get_default_vid_permission(void);
 int do_vpsp_op_ioctl(struct vpsp_dev_ctrl *ctrl);
+int vpsp_rb_check_and_cmd_prio_parse(uint8_t *prio,
+		struct vpsp_cmd *vcmd);
 
 #endif	/* __CCP_HYGON_VPSP_H__ */

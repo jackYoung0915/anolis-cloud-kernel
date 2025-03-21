@@ -42,6 +42,8 @@
 #define P2C_NOTIFIERS_MAX		16
 #endif
 
+#define PSP_CMD_RING_BUFFER		0x304
+
 #define PSP_MUTEX_TIMEOUT 600000
 struct psp_mutex {
 	uint64_t locked;
@@ -81,6 +83,10 @@ struct psp_device {
 	void *tee_data;
 };
 
+#define PSP_DO_CMD_OP_PHYADDR	BIT(0)   // Input data as physical address
+#define PSP_DO_CMD_OP_NOWAIT	BIT(1)   // No need to wait ioc
+int psp_do_cmd_locked(int cmd, void *data, int *psp_ret, uint32_t op);
+
 void psp_set_sev_irq_handler(struct psp_device *psp, psp_irq_handler_t handler,
 			     void *data);
 void psp_clear_sev_irq_handler(struct psp_device *psp);
@@ -90,5 +96,11 @@ void psp_set_tee_irq_handler(struct psp_device *psp, psp_irq_handler_t handler,
 void psp_clear_tee_irq_handler(struct psp_device *psp);
 
 struct psp_device *psp_get_master_device(void);
+
+int psp_mutex_lock_timeout(struct psp_mutex *mutex, uint64_t ms);
+
+int psp_mutex_trylock(struct psp_mutex *mutex);
+
+int psp_mutex_unlock(struct psp_mutex *mutex);
 
 #endif /* __PSP_DEV_H */

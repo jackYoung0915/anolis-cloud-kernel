@@ -156,7 +156,7 @@ static int psp_wait_cmd_ioc(struct psp_device *psp,
 	return 0;
 }
 
-static int __psp_do_cmd_locked(int cmd, void *data, int *psp_ret)
+int psp_do_cmd_locked(int cmd, void *data, int *psp_ret, uint32_t op)
 {
 	struct psp_device *psp = psp_master;
 	unsigned int phys_lsb, phys_msb;
@@ -168,12 +168,17 @@ static int __psp_do_cmd_locked(int cmd, void *data, int *psp_ret)
 	if (psp_dead)
 		return -EBUSY;
 
-	if (data && WARN_ON_ONCE(!virt_addr_valid(data)))
-		return -EINVAL;
+	if (op & PSP_DO_CMD_OP_PHYADDR) {
+		phys_lsb = data ? lower_32_bits((phys_addr_t)data) : 0;
+		phys_msb = data ? upper_32_bits((phys_addr_t)data) : 0;
+	} else {
+		if (data && WARN_ON_ONCE(!virt_addr_valid(data)))
+			return -EINVAL;
 
-	/* Get the physical address of the command buffer */
-	phys_lsb = data ? lower_32_bits(__psp_pa(data)) : 0;
-	phys_msb = data ? upper_32_bits(__psp_pa(data)) : 0;
+		/* Get the physical address of the command buffer */
+		phys_lsb = data ? lower_32_bits(__psp_pa(data)) : 0;
+		phys_msb = data ? upper_32_bits(__psp_pa(data)) : 0;
+	}
 
 	dev_dbg(psp->dev, "psp command id %#x buffer 0x%08x%08x timeout %us\n",
 		cmd, phys_msb, phys_lsb, psp_cmd_timeout);
@@ -188,25 +193,27 @@ static int __psp_do_cmd_locked(int cmd, void *data, int *psp_ret)
 	reg |= SEV_CMDRESP_IOC;
 	iowrite32(reg, psp->io_regs + psp->vdata->sev->cmdresp_reg);
 
-	/* wait for command completion */
-	ret = psp_wait_cmd_ioc(psp, &reg, psp_cmd_timeout);
-	if (ret) {
+	if (!(op & PSP_DO_CMD_OP_NOWAIT)) {
+		/* wait for command completion */
+		ret = psp_wait_cmd_ioc(psp, &reg, psp_cmd_timeout);
+		if (ret) {
+			if (psp_ret)
+				*psp_ret = 0;
+
+			dev_err(psp->dev, "psp command %#x timed out, disabling PSP\n", cmd);
+			psp_dead = true;
+
+			return ret;
+		}
+
 		if (psp_ret)
-			*psp_ret = 0;
+			*psp_ret = reg & PSP_CMDRESP_ERR_MASK;
 
-		dev_err(psp->dev, "psp command %#x timed out, disabling PSP\n", cmd);
-		psp_dead = true;
-
-		return ret;
-	}
-
-	if (psp_ret)
-		*psp_ret = reg & PSP_CMDRESP_ERR_MASK;
-
-	if (reg & PSP_CMDRESP_ERR_MASK) {
-		dev_dbg(psp->dev, "psp command %#x failed (%#010x)\n",
-			cmd, reg & PSP_CMDRESP_ERR_MASK);
-		ret = -EIO;
+		if (reg & PSP_CMDRESP_ERR_MASK) {
+			dev_dbg(psp->dev, "psp command %#x failed (%#010x)\n",
+				cmd, reg & PSP_CMDRESP_ERR_MASK);
+			ret = -EIO;
+		}
 	}
 
 	return ret;
@@ -225,7 +232,9 @@ int psp_do_cmd(int cmd, void *data, int *psp_ret)
 	} else {
 		mutex_lock(&sev_cmd_mutex);
 	}
-	rc = __psp_do_cmd_locked(cmd, data, psp_ret);
+
+	rc = psp_do_cmd_locked(cmd, data, psp_ret, 0);
+
 	if (is_hygon_psp && mutex_enabled)
 		psp_mutex_unlock(&psp_misc->data_pg_aligned->mb_mutex);
 	else
