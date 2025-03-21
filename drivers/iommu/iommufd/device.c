@@ -384,6 +384,15 @@ iommufd_device_attach_reserved_iova(struct iommufd_device *idev,
 	return 0;
 }
 
+static int iommufd_hwpt_pasid_compat(struct iommufd_hw_pagetable *hwpt,
+				     struct iommufd_device *idev,
+				     ioasid_t pasid)
+{
+	if (pasid != IOMMU_NO_PASID && !hwpt->pasid_compat)
+		return -EINVAL;
+	return 0;
+}
+
 /* The device attach/detach/replace helpers for attach_handle */
 
 static int iommufd_hwpt_attach_device(struct iommufd_hw_pagetable *hwpt,
@@ -394,6 +403,10 @@ static int iommufd_hwpt_attach_device(struct iommufd_hw_pagetable *hwpt,
 	int rc;
 
 	lockdep_assert_held(&idev->igroup->lock);
+
+	rc = iommufd_hwpt_pasid_compat(hwpt, idev, pasid);
+	if (rc)
+		return rc;
 
 	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
 	if (!handle)
@@ -462,6 +475,10 @@ static int iommufd_hwpt_replace_device(struct iommufd_device *idev,
 	int rc;
 
 	WARN_ON(pasid != IOMMU_NO_PASID);
+
+	rc = iommufd_hwpt_pasid_compat(hwpt, idev, pasid);
+	if (rc)
+		return rc;
 
 	old_handle = iommufd_device_get_attach_handle(idev, pasid);
 
