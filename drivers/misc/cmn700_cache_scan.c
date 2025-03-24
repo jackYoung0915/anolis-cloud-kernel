@@ -19,6 +19,7 @@
 #include <linux/parser.h>
 #include <linux/sched/clock.h>
 #include <linux/memory.h>
+#include <linux/sched/cputime.h>
 
 #include <linux/arm-smccc.h>
 
@@ -101,11 +102,17 @@ struct cmn_scan_param {
 #define CCS_STEP_DEFAULT	16
 #define CCS_STEP_MIN		1
 #define CCS_STEP_MAX		128
+#define CCS_CPU_PERCENT_DEFAULT	100
+#define CCS_CPU_PERCENT_MAX	100
+#define CCS_CPU_PERCENT_MIN	1
+
+#define CCS_SLEEP_MIN_MS	10
 
 struct ccs_param {
 	int step;
 	int sf_check_mesi;
 	int sf_mesi;
+	int cpu_percent;
 	int hnf_start;
 	int hnf_end;
 	int max_frequ;
@@ -180,6 +187,11 @@ struct ccs {
 	struct mutex mutex;
 	struct ccs_stats stats;
 	struct ccs_cml_stats cml_stats;
+};
+
+struct ccs_time {
+	u64 wall_time;
+	u64 run_time;
 };
 
 static struct kmem_cache *ccs_anode_cachep __read_mostly;
@@ -707,6 +719,35 @@ static int ccs_flush_paddrs(struct ccs *ccs, int hnf, int round)
 	return 0;
 }
 
+static void ccs_get_time(struct ccs_time *ct)
+{
+	u64 utime, stime;
+
+	ct->wall_time = sched_clock();
+	task_cputime_adjusted(current, &utime, &stime);
+	ct->run_time = utime + stime;
+}
+
+static void ccs_sleep(struct ccs_time *ct_start, int cpu_percent)
+{
+	struct ccs_time ct_now;
+	u64 wtime, rtime, sleep;
+
+	if (cpu_percent >= 100) {
+		cond_resched();
+		return;
+	}
+	ccs_get_time(&ct_now);
+	wtime = ct_now.wall_time - ct_start->wall_time;
+	rtime = ct_now.run_time - ct_start->run_time;
+	sleep = rtime * 100 / cpu_percent - wtime;
+	if ((s64)sleep < CCS_SLEEP_MIN_MS * NSEC_PER_MSEC) {
+		cond_resched();
+		return;
+	}
+	schedule_timeout_interruptible(nsecs_to_jiffies(sleep));
+}
+
 static int ccs_scan_hnf_round(struct ccs *ccs, int hnf, int round)
 {
 	int rc;
@@ -723,7 +764,7 @@ static int ccs_scan_hnf_round(struct ccs *ccs, int hnf, int round)
 	return 0;
 }
 
-static int ccs_scan_hnf(struct ccs *ccs, int hnf)
+static int ccs_scan_hnf(struct ccs *ccs, int hnf, struct ccs_time *ct_start)
 {
 	int round;
 	int rc;
@@ -732,7 +773,7 @@ static int ccs_scan_hnf(struct ccs *ccs, int hnf)
 		rc = ccs_scan_hnf_round(ccs, hnf, round);
 		if (rc)
 			return rc;
-		cond_resched();
+		ccs_sleep(ct_start, ccs->param.cpu_percent);
 	}
 
 	return 0;
@@ -763,14 +804,16 @@ static void ccs_cumulate_stats(struct ccs *ccs)
 static int ccs_scan(struct ccs *ccs)
 {
 	struct ccs_param *param = &ccs->param;
+	struct ccs_time ct_start;
 	int rc = 0, hnf;
 
+	ccs_get_time(&ct_start);
 	rc = ccs_addrs_setup(&ccs->addrs, param);
 	if (rc)
 		goto out;
 	memset(&ccs->stats, 0, sizeof(ccs->stats));
 	for (hnf = param->hnf_start; hnf <= param->hnf_end; hnf++) {
-		rc = ccs_scan_hnf(ccs, hnf);
+		rc = ccs_scan_hnf(ccs, hnf, &ct_start);
 		if (rc)
 			goto out;
 	}
@@ -835,6 +878,7 @@ static void ccs_init_param(struct ccs_param *param)
 		.step		= CCS_STEP_DEFAULT,
 		.sf_check_mesi	= 1,
 		.sf_mesi	= CSP_MESI_S,
+		.cpu_percent	= CCS_CPU_PERCENT_DEFAULT,
 	});
 
 	param->hnf_start = ccs_die_id() * CSP_MAX_NR_HNF_DIE;
@@ -1027,6 +1071,7 @@ enum {
 	CCS_PARAM_SF_CHECK_MESI,
 	CCS_PARAM_HNF,
 	CCS_PARAM_MAX_FREQU,
+	CCS_PARAM_CPU_PERCENT,
 	CCS_PARAM_NULL,
 };
 
@@ -1036,6 +1081,7 @@ static const match_table_t ccs_param_tokens = {
 	{ CCS_PARAM_SF_CHECK_MESI,	"sf_check_mesi=%d" },
 	{ CCS_PARAM_HNF,		"hnf=%d-%d" },
 	{ CCS_PARAM_MAX_FREQU,		"max_frequ=%d" },
+	{ CCS_PARAM_CPU_PERCENT,	"cpu_percent=%d" },
 	{ CCS_PARAM_NULL,		NULL },
 };
 
@@ -1080,6 +1126,17 @@ static int ccs_parse_param(char *buf, struct ccs_param *param)
 			}
 			if (param->sf_check_mesi < 0 ||
 			    param->sf_check_mesi > 1) {
+				rc = -EINVAL;
+				goto out;
+			}
+			break;
+		case CCS_PARAM_CPU_PERCENT:
+			if (match_int(&args[0], &param->cpu_percent)) {
+				rc = -EINVAL;
+				goto out;
+			}
+			if (param->cpu_percent > CCS_CPU_PERCENT_MAX ||
+			    param->cpu_percent < CCS_CPU_PERCENT_MIN) {
 				rc = -EINVAL;
 				goto out;
 			}
