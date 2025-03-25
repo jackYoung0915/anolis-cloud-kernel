@@ -3410,7 +3410,7 @@ static void cpuset_bind(struct cgroup_subsys_state *root_css)
 	} else {
 		cpumask_copy(top_cpuset.cpus_allowed,
 			     top_cpuset.effective_cpus);
-		top_cpuset.mems_allowed = top_cpuset.effective_mems;
+		top_cpuset.mems_allowed = node_possible_map;
 	}
 
 	spin_unlock_irq(&callback_lock);
