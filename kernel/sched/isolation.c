@@ -341,7 +341,8 @@ void update_wilds_cpumask(cpumask_var_t new_allowed, cpumask_var_t old_allowed)
 	css_for_each_descendant_pre(pos, &root_task_group.css) {
 		css_task_iter_start(pos, 0, &it);
 		while ((task = css_task_iter_next(&it))) {
-			if (task->flags & PF_KTHREAD)
+			/* Percpu kthreads are ignored */
+			if ((task->flags & PF_KTHREAD) && kthread_is_per_cpu(task))
 				continue;
 
 			if (!cpumask_equal(task->cpus_ptr, old_allowed))
