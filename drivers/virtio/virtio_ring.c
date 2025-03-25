@@ -530,6 +530,29 @@ static struct vring_desc *alloc_indirect_split(struct virtqueue *_vq,
 	return desc;
 }
 
+struct vring_desc *virtqueue_indir_get_last_desc_split(struct virtqueue *_vq,
+						dma_addr_t *dma_addr, u32 *len)
+{
+	int tmp, idx;
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	/*
+	 * we should ensure this func is called after virtqueue_add_desc_split
+	 * and before virtqueue_kick_prepare.
+	 */
+	if (!vq->indirect)
+		return NULL;
+	idx = (vq->split.avail_idx_shadow - 1) & (vq->split.vring.num - 1);
+	tmp = virtio16_to_cpu(_vq->vdev, vq->split.vring.avail->ring[idx]);
+
+	/* get the last desc's dma_addr and dma_len
+	 */
+	*dma_addr = vq->split.desc_extra[tmp].addr;
+	*len = vq->split.desc_extra[tmp].len;
+
+	return vq->split.desc_state[tmp].indir_desc;
+}
+EXPORT_SYMBOL(virtqueue_indir_get_last_desc_split);
+
 static inline unsigned int virtqueue_add_desc_split(struct virtqueue *vq,
 						    struct vring_desc *desc,
 						    unsigned int i,
@@ -2995,11 +3018,15 @@ int virtqueue_set_dma_premapped(struct virtqueue *_vq)
 
 	if (num != vq->vq.num_free) {
 		END_USE(vq);
+		pr_debug("%s:%d err num is not equal to num_free, num=%u, num_free=%u\n",
+					__func__, __LINE__, num, vq->vq.num_free);
 		return -EINVAL;
 	}
 
 	if (!vq->use_dma_api) {
 		END_USE(vq);
+		pr_debug("%s:%d err vring does not use the dma api\n",
+					__func__, __LINE__);
 		return -EINVAL;
 	}
 

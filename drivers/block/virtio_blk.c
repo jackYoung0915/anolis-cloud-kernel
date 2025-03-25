@@ -63,6 +63,19 @@ enum virtblk_ring_t {
 	VIRTBLK_RING_CQ = 1,
 	VIRTBLK_RING_NUM = 2
 };
+
+struct virtblk_cq_req {
+	struct virtio_blk_outhdr out_hdr;
+	u8 status;
+	struct scatterlist inline_sg[2];
+	struct scatterlist *sgs[2];
+};
+
+struct virtblk_indir_desc {
+	struct vring_desc *desc;
+	dma_addr_t dma_addr;
+	u32 len;
+};
 #endif
 
 struct virtblk_uring_cmd_pdu {
@@ -74,6 +87,10 @@ struct virtio_blk_vq {
 	struct virtqueue *vq;
 	spinlock_t lock;
 	char name[VQ_NAME_LEN];
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	/* prealloced prefill req for CQ */
+	struct virtblk_cq_req *cq_req;
+#endif
 } ____cacheline_aligned_in_smp;
 
 struct virtio_blk {
@@ -114,6 +131,12 @@ struct virtio_blk {
 
 	struct cdev cdev;
 	struct device cdev_device;
+
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	bool ring_pair;
+	/* saved indirect desc pointer, dma_addr and dma_len for SQ */
+	struct virtblk_indir_desc **indir_desc;
+#endif
 };
 
 struct virtblk_req {
@@ -250,6 +273,159 @@ static void virtblk_rq_unmap(struct virtqueue *vq, struct virtblk_req *vbr)
 	}
 }
 
+static inline void virtblk_save_desc(struct virtqueue *vq, struct virtblk_req *vbr,
+					struct vring_desc *desc, dma_addr_t dma_addr,
+					u32 len)
+{
+	struct virtio_blk *vblk = vq->vdev->priv;
+	struct request *req = blk_mq_rq_from_pdu(vbr);
+	int tag = req->tag, qid = vq->index / VIRTBLK_RING_NUM;
+	struct virtblk_indir_desc *indir_desc = &vblk->indir_desc[qid][tag];
+
+	indir_desc->desc = desc;
+	indir_desc->dma_addr = dma_addr;
+	indir_desc->len = len;
+}
+
+static inline void virtblk_unmap_and_clear_desc(struct virtqueue *vq,
+						struct virtblk_req *vbr)
+{
+	struct virtio_blk *vblk = vq->vdev->priv;
+	struct request *req = blk_mq_rq_from_pdu(vbr);
+	int tag = req->tag, qid = vq->index / VIRTBLK_RING_NUM;
+	struct virtblk_indir_desc *indir_desc = &vblk->indir_desc[qid][tag];
+
+	WARN_ON(!indir_desc->desc);
+	virtqueue_dma_unmap_page_attrs(vq, indir_desc->dma_addr,
+				       indir_desc->len, DMA_TO_DEVICE, 0);
+
+	kfree(indir_desc->desc);
+	indir_desc->desc = NULL;
+}
+
+static int virtblk_qid_to_sq_qid(int qid)
+{
+	return qid * VIRTBLK_RING_NUM;
+}
+
+static int virtblk_qid_to_cq_qid(int qid)
+{
+	return qid * VIRTBLK_RING_NUM + 1;
+}
+
+static void virtblk_recycle_buf(struct virtqueue *vq)
+{
+	unsigned int unused;
+
+	while (virtqueue_get_buf(vq, &unused))
+		;
+}
+
+static inline int virtblk_cq_rq_map(struct virtqueue *vq, struct scatterlist *sgs[])
+{
+	int ret;
+
+	ret = virtblk_map_sg(vq, sgs[0], DMA_TO_DEVICE);
+	if (ret < 0)
+		return ret;
+	ret = virtblk_map_sg(vq, sgs[1], DMA_FROM_DEVICE);
+	if (ret < 0)
+		virtblk_unmap_sg(vq, sgs[0], DMA_TO_DEVICE);
+
+	return ret;
+}
+
+static void virtblk_cq_rq_unmap(struct virtqueue *vq, struct scatterlist *sgs[])
+{
+	virtblk_unmap_sg(vq, sgs[0], DMA_TO_DEVICE);
+	virtblk_unmap_sg(vq, sgs[1], DMA_FROM_DEVICE);
+}
+
+static inline void virtblk_kfree_vqs_cq_reqs(struct virtio_blk *vblk)
+{
+	int i;
+
+	if (!vblk->ring_pair)
+		return;
+
+	if (vblk->vqs != NULL) {
+		for (i = 0; i < vblk->num_vqs; i++) {
+			if ((i % VIRTBLK_RING_NUM) == VIRTBLK_RING_CQ)
+				kfree(vblk->vqs[i].cq_req);
+		}
+	}
+}
+
+static inline void virtblk_kfree_vblk_indir_descs(struct virtio_blk *vblk)
+{
+	int i;
+
+	if (!vblk->ring_pair)
+		return;
+
+	if (vblk->indir_desc != NULL) {
+		for (i = 0; i < vblk->num_vqs / VIRTBLK_RING_NUM; i++)
+			kfree(vblk->indir_desc[i]);
+	}
+	kfree(vblk->indir_desc);
+}
+
+static int virtblk_prefill_res(struct virtio_blk *vblk,
+		struct virtqueue **vqs, int num_vqs)
+{
+	int i, j, ret, fail_i, fail_j;
+	unsigned int vring_size;
+	unsigned long flags;
+	struct virtblk_cq_req *vbr_res;
+
+	for (i = 1; i < num_vqs; i += VIRTBLK_RING_NUM) {
+		vring_size = virtqueue_get_vring_size(vqs[i]);
+
+		spin_lock_irqsave(&vblk->vqs[i].lock, flags);
+		for (j = 0; j < vring_size; j++) {
+			vbr_res = &vblk->vqs[i].cq_req[j];
+			sg_init_one(&vbr_res->inline_sg[0], &vbr_res->out_hdr,
+							sizeof(struct virtio_blk_outhdr));
+			sg_init_one(&vbr_res->inline_sg[1], &vbr_res->status, sizeof(u8));
+
+			vbr_res->sgs[0] = &vbr_res->inline_sg[0];
+			vbr_res->sgs[1] = &vbr_res->inline_sg[1];
+
+			ret = virtblk_cq_rq_map(vqs[i], vbr_res->sgs);
+			if (ret < 0) {
+				spin_unlock_irqrestore(&vblk->vqs[i].lock, flags);
+				goto err;
+			}
+
+			ret = virtqueue_add_sgs(vqs[i], vbr_res->sgs, 1, 1, vbr_res, GFP_ATOMIC);
+			if (ret < 0) {
+				virtblk_cq_rq_unmap(vqs[i], vbr_res->sgs);
+				spin_unlock_irqrestore(&vblk->vqs[i].lock, flags);
+				goto err;
+			}
+		}
+		virtqueue_kick(vqs[i]);
+		spin_unlock_irqrestore(&vblk->vqs[i].lock, flags);
+	}
+	return 0;
+
+err:
+	fail_i = i;
+	fail_j = j;
+	for (i = 1; i <= fail_i; i += VIRTBLK_RING_NUM) {
+		if (i == fail_i)
+			vring_size = fail_j;
+		else
+			vring_size = virtqueue_get_vring_size(vqs[i]);
+
+		for (j = 0; j < vring_size; j++) {
+			vbr_res = &vblk->vqs[i].cq_req[j];
+			virtblk_cq_rq_unmap(vqs[i], vbr_res->sgs);
+		}
+	}
+	return -1;
+}
+
 static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 		struct virtblk_req *vbr, struct scatterlist *data_sg,
 		struct scatterlist *data_sg_extra)
@@ -257,7 +433,10 @@ static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 	struct scatterlist *sgs[4];
 	struct scatterlist *hdr = &vbr->inline_sg[0];
 	struct scatterlist *status = &vbr->inline_sg[1];
+	struct vring_desc *desc;
 	unsigned int num_out = 0, num_in = 0;
+	dma_addr_t dma_addr;
+	u32 dma_len;
 	int ret;
 
 	/*
@@ -275,13 +454,19 @@ static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 	sgs[num_out + num_in++] = data_sg_extra;
 	sgs[num_out + num_in++] = status;
 
+	virtblk_recycle_buf(vq);
 	ret = virtblk_rq_map(vq, sgs, num_out, num_in);
 	if (ret < 0)
 		return ret;
 
 	ret = virtqueue_add_sgs_rpair(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
-	if (ret < 0)
+	if (ret < 0) {
 		virtblk_rq_unmap(vq, vbr);
+		return ret;
+	}
+	desc = virtqueue_indir_get_last_desc_split(vq, &dma_addr, &dma_len);
+	virtblk_save_desc(vq, vbr, desc, dma_addr, dma_len);
+
 	return ret;
 }
 
@@ -291,7 +476,10 @@ static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr,
 	struct scatterlist *sgs[3];
 	struct scatterlist *hdr = &vbr->inline_sg[0];
 	struct scatterlist *status = &vbr->inline_sg[1];
+	struct vring_desc *desc;
 	unsigned int num_out = 0, num_in = 0;
+	dma_addr_t dma_addr;
+	u32 dma_len;
 	int ret;
 
 	sg_init_one(hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
@@ -307,14 +495,55 @@ static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr,
 	sg_init_one(status, &vbr->status, sizeof(vbr->status));
 	sgs[num_out + num_in++] = status;
 
+	virtblk_recycle_buf(vq);
 	ret = virtblk_rq_map(vq, sgs, num_out, num_in);
 	if (ret < 0)
 		return ret;
 
 	ret = virtqueue_add_sgs_rpair(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
-	if (ret < 0)
+	if (ret < 0) {
 		virtblk_rq_unmap(vq, vbr);
+		return ret;
+	}
+	desc = virtqueue_indir_get_last_desc_split(vq, &dma_addr, &dma_len);
+	virtblk_save_desc(vq, vbr, desc, dma_addr, dma_len);
+
 	return ret;
+}
+
+static inline void *virtblk_get_buf(struct virtio_blk *vblk, struct virtqueue *vq, u32 *len)
+{
+	struct virtblk_req *vbr;
+	struct virtqueue *sq_vq;
+
+	vbr = virtqueue_get_buf(vq, len);
+	if (vbr) {
+		/* get request from paired req ring in ring_pair mode */
+		int qid = vq->index / VIRTBLK_RING_NUM;
+		int tag = *len;
+		struct request *req = blk_mq_tag_to_rq(vblk->tag_set.tags[qid], tag);
+		struct virtblk_cq_req *vbr_res = (void *)vbr;
+		int ret;
+
+		sq_vq = vblk->vqs[vq->index - 1].vq;
+		if (!req) {
+			pr_err("could not locate request for tag %#x, queue %d\n",
+				tag, qid);
+			return NULL;
+		}
+
+		vbr = blk_mq_rq_to_pdu(req);
+		/* set status to the real response status. */
+		vbr->status = vbr_res->status;
+		virtblk_rq_unmap(sq_vq, vbr);
+		virtblk_unmap_and_clear_desc(sq_vq, vbr);
+
+		ret = virtqueue_add_sgs(vq, vbr_res->sgs, 1, 1, vbr_res, GFP_ATOMIC);
+		if (ret < 0)
+			pr_err("failed to refill res ring %d\n", ret);
+
+	}
+	return vbr;
 }
 #endif
 
@@ -495,6 +724,10 @@ static blk_status_t virtblk_setup_cmd_rpair(struct virtio_device *vdev,
 	bool unmap = false;
 	u32 type;
 	u64 sector = 0;
+	u32 ioprio;
+
+	/* for ring_pair, tag is used and occupied high 16bit of ioprio*/
+	vbr->out_hdr.rpair.tag = cpu_to_virtio16(vdev, req->tag);
 
 	switch (req_op(req)) {
 	case REQ_OP_READ:
@@ -527,9 +760,10 @@ static blk_status_t virtblk_setup_cmd_rpair(struct virtio_device *vdev,
 		return BLK_STS_IOERR;
 	}
 
+	ioprio = req_get_ioprio(req);
 	vbr->out_hdr.type = cpu_to_virtio32(vdev, type);
 	vbr->out_hdr.sector = cpu_to_virtio64(vdev, sector);
-	vbr->out_hdr.ioprio = cpu_to_virtio32(vdev, req_get_ioprio(req));
+	vbr->out_hdr.rpair.ioprio = cpu_to_virtio16(vdev, (u16)ioprio);
 
 	if (type == VIRTIO_BLK_T_DISCARD || type == VIRTIO_BLK_T_WRITE_ZEROES) {
 		if (virtblk_setup_discard_write_zeroes(req, unmap))
@@ -612,11 +846,12 @@ static void virtblk_done_rpair(struct virtqueue *vq)
 	struct virtblk_req *vbr;
 	unsigned long flags;
 	unsigned int len;
+	bool kick = false;
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 	do {
 		virtqueue_disable_cb(vq);
-		while ((vbr = virtqueue_get_buf(vblk->vqs[qid].vq, &len)) != NULL) {
+		while ((vbr = virtblk_get_buf(vblk, vblk->vqs[qid].vq, &len)) != NULL) {
 			struct request *req = blk_mq_rq_from_pdu(vbr);
 
 			if (likely(!blk_should_fake_timeout(req->q)))
@@ -628,9 +863,14 @@ static void virtblk_done_rpair(struct virtqueue *vq)
 	} while (!virtqueue_enable_cb(vq));
 
 	/* In case queue is stopped waiting for more buffers. */
-	if (req_done)
+	if (req_done) {
 		blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
+		kick = virtqueue_kick_prepare(vq);
+	}
 	spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
+
+	if (kick)
+		virtqueue_notify(vq);
 }
 #endif
 
@@ -685,13 +925,13 @@ static blk_status_t virtio_queue_rq_rpair(struct blk_mq_hw_ctx *hctx,
 	struct request *req = bd->rq;
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
 	unsigned long flags;
-	int num;
-	int qid = hctx->queue_num;
+	int num, qid;
 	bool notify = false;
 	blk_status_t status;
 	int err;
 
-	status = virtblk_setup_cmd(vblk->vdev, req, vbr);
+	qid = virtblk_qid_to_sq_qid(hctx->queue_num);
+	status = virtblk_setup_cmd_rpair(vblk->vdev, req, vbr);
 	if (unlikely(status))
 		return status;
 
@@ -709,11 +949,11 @@ static blk_status_t virtio_queue_rq_rpair(struct blk_mq_hw_ctx *hctx,
 
 	spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
 	if (vbr_is_bidirectional(vbr))
-		err = virtblk_add_req_bidirectional(vblk->vqs[qid].vq,
+		err = virtblk_add_req_bidirectional_rpair(vblk->vqs[qid].vq,
 				      vbr, vbr->sg_table.sgl,
 				      vbr->sg_table_extra.sgl);
 	else
-		err = virtblk_add_req(vblk->vqs[qid].vq, vbr,
+		err = virtblk_add_req_rpair(vblk->vqs[qid].vq, vbr,
 				      vbr->sg_table.sgl, num);
 
 	if (err) {
@@ -859,6 +1099,9 @@ static void virtblk_put(struct virtio_blk *vblk)
 	if (refcount_dec_and_test(&vblk->refs)) {
 		ida_simple_remove(&vd_index_ida, vblk->index);
 		mutex_destroy(&vblk->vdev_mutex);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+		virtblk_kfree_vblk_indir_descs(vblk);
+#endif
 		kfree(vblk);
 	}
 }
@@ -1030,7 +1273,7 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 	const char **names;
 	struct virtqueue **vqs;
 	unsigned short num_vqs;
-	unsigned int num_poll_vqs;
+	unsigned int num_poll_vqs, num_queues, num_poll_queues, vring_size;
 	struct virtio_device *vdev = vblk->vdev;
 	struct irq_affinity desc = { 0, };
 
@@ -1045,22 +1288,42 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 		return -EINVAL;
 	}
 
-	num_vqs = min_t(unsigned int,
-			min_not_zero(num_request_queues, nr_cpu_ids),
-			num_vqs);
+	if (num_vqs % VIRTBLK_RING_NUM) {
+		dev_err(&vdev->dev,
+			"RING_PAIR advertised but odd queues reported\n");
+		vblk->ring_pair = false;
+	}
 
-	num_poll_vqs = min_t(unsigned int, poll_queues, num_vqs - 1);
+	/* ring pair only support split virtqueue + indirect enabled */
+	if (virtio_has_feature(vdev, VIRTIO_F_RING_PACKED) ||
+		!virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC)) {
+		dev_err(&vdev->dev, "rpair only support indir+split queue\n");
+		vblk->ring_pair = false;
+	}
 
-	vblk->io_queues[HCTX_TYPE_DEFAULT] = num_vqs - num_poll_vqs;
+	/* If vring pair is not enabled, fall back to orig virtqueue use. */
+	if (!vblk->ring_pair)
+		return 1;
+
+	num_queues = num_vqs / VIRTBLK_RING_NUM;
+	num_queues = min_t(unsigned int,
+		min_not_zero(num_request_queues, nr_cpu_ids),
+		num_queues);
+	num_poll_queues = min_t(unsigned int, poll_queues, num_queues - 1);
+	num_poll_vqs = num_poll_queues * VIRTBLK_RING_NUM;
+	num_vqs = num_queues * VIRTBLK_RING_NUM;
+
+	vblk->io_queues[HCTX_TYPE_DEFAULT] = num_queues - num_poll_queues;
 	vblk->io_queues[HCTX_TYPE_READ] = 0;
-	vblk->io_queues[HCTX_TYPE_POLL] = num_poll_vqs;
+	vblk->io_queues[HCTX_TYPE_POLL] = num_poll_queues;
 
 	dev_info(&vdev->dev, "%d/%d/%d default/read/poll queues\n",
 				vblk->io_queues[HCTX_TYPE_DEFAULT],
 				vblk->io_queues[HCTX_TYPE_READ],
 				vblk->io_queues[HCTX_TYPE_POLL]);
 
-	vblk->vqs = kmalloc_array(num_vqs, sizeof(*vblk->vqs), GFP_KERNEL);
+	vblk->vqs = kmalloc_array(num_vqs, sizeof(*vblk->vqs),
+				  GFP_KERNEL | __GFP_ZERO);
 	if (!vblk->vqs)
 		return -ENOMEM;
 
@@ -1073,14 +1336,28 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 	}
 
 	for (i = 0; i < num_vqs - num_poll_vqs; i++) {
-		callbacks[i] = virtblk_done;
-		snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "req.%d", i);
+		unsigned int index = i / VIRTBLK_RING_NUM;
+		unsigned int role = i % VIRTBLK_RING_NUM;
+
+		if (role == VIRTBLK_RING_SQ) {
+			callbacks[i] = NULL;
+			snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "req.%d", index);
+		} else {
+			callbacks[i] = virtblk_done_rpair;
+			snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "res.%d", index);
+		}
 		names[i] = vblk->vqs[i].name;
 	}
 
 	for (; i < num_vqs; i++) {
+		unsigned int index = i / VIRTBLK_RING_NUM;
+		unsigned int role = i % VIRTBLK_RING_NUM;
+
+		if (role == VIRTBLK_RING_SQ)
+			snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "req-poll.%d", index);
+		else
+			snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "res-poll.%d", index);
 		callbacks[i] = NULL;
-		snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "req_poll.%d", i);
 		names[i] = vblk->vqs[i].name;
 	}
 
@@ -1090,18 +1367,38 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 		goto out;
 
 	for (i = 0; i < num_vqs; i++) {
+		vring_size = virtqueue_get_vring_size(vqs[i]);
+		if ((i % VIRTBLK_RING_NUM) == VIRTBLK_RING_CQ) {
+			vblk->vqs[i].cq_req = kmalloc_array(vring_size,
+					sizeof(struct virtblk_cq_req),
+					GFP_KERNEL | __GFP_ZERO);
+			if (!vblk->vqs[i].cq_req) {
+				err = -ENOMEM;
+				goto out;
+			}
+		} else {
+			virtqueue_set_save_indir(vqs[i]);
+			vblk->vqs[i].cq_req = NULL;
+		}
 		virtqueue_set_dma_premapped(vqs[i]);
 		spin_lock_init(&vblk->vqs[i].lock);
 		vblk->vqs[i].vq = vqs[i];
 	}
+
+	err = virtblk_prefill_res(vblk, vqs, num_vqs);
+	if (err < 0)
+		vdev->config->del_vqs(vdev);
+
 	vblk->num_vqs = num_vqs;
 
 out:
 	kfree(vqs);
 	kfree(callbacks);
 	kfree(names);
-	if (err)
+	if (err < 0) {
+		virtblk_kfree_vqs_cq_reqs(vblk);
 		kfree(vblk->vqs);
+	}
 	return err;
 }
 #endif
@@ -1119,6 +1416,8 @@ static int init_vq(struct virtio_blk *vblk)
 	struct irq_affinity desc = { 0, };
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	vblk->ring_pair = false;
+
 	if (!virtblk_rpair_disable)
 		err = init_vq_rpair(vblk);
 
@@ -1367,15 +1666,17 @@ static void virtblk_complete_batch(struct io_comp_batch *iob)
 static int virtblk_poll_rpair(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *iob)
 {
 	struct virtio_blk *vblk = hctx->queue->queuedata;
-	struct virtio_blk_vq *vq = get_virtio_blk_vq(hctx);
+	struct virtio_blk_vq *vq = &vblk->vqs[virtblk_qid_to_cq_qid(hctx->queue_num)];
 	struct virtblk_req *vbr;
 	unsigned long flags;
 	unsigned int len;
 	int found = 0;
+	bool kick = false;
 
+	/* get buf from paired CQ ring in ring_pair mode */
 	spin_lock_irqsave(&vq->lock, flags);
 
-	while ((vbr = virtqueue_get_buf(vq->vq, &len)) != NULL) {
+	while ((vbr = virtblk_get_buf(vblk, vq->vq, &len)) != NULL) {
 		struct request *req = blk_mq_rq_from_pdu(vbr);
 
 		found++;
@@ -1385,10 +1686,15 @@ static int virtblk_poll_rpair(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *
 			virtblk_request_done(req);
 	}
 
-	if (found)
+	if (found) {
 		blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
+		kick = virtqueue_kick_prepare(vq->vq);
+	}
 
 	spin_unlock_irqrestore(&vq->lock, flags);
+
+	if (kick)
+		virtqueue_notify(vq->vq);
 
 	return found;
 }
@@ -1732,7 +2038,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 {
 	struct virtio_blk *vblk;
 	struct request_queue *q;
-	int err, index;
+	int err, index, i;
 
 	u32 v, blk_size, max_size, sg_elems, opt_io_size;
 	u16 min_io_size;
@@ -1799,7 +2105,15 @@ static int virtblk_probe(struct virtio_device *vdev)
 	}
 
 	memset(&vblk->tag_set, 0, sizeof(vblk->tag_set));
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	vblk->tag_set.ops = vblk->ring_pair ? &virtio_mq_pair_ops :
+					      &virtio_mq_ops;
+	vblk->tag_set.nr_hw_queues = vblk->ring_pair ? vblk->num_vqs / VIRTBLK_RING_NUM :
+						vblk->num_vqs;
+#else
 	vblk->tag_set.ops = &virtio_mq_ops;
+	vblk->tag_set.nr_hw_queues = vblk->num_vqs;
+#endif
 	vblk->tag_set.queue_depth = queue_depth;
 	vblk->tag_set.numa_node = NUMA_NO_NODE;
 	vblk->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
@@ -1813,10 +2127,35 @@ static int virtblk_probe(struct virtio_device *vdev)
 		sizeof(struct virtblk_req) +
 		sizeof(struct scatterlist) * 2 * VIRTIO_BLK_INLINE_SG_CNT;
 	vblk->tag_set.driver_data = vblk;
-	vblk->tag_set.nr_hw_queues = vblk->num_vqs;
 	vblk->tag_set.nr_maps = 1;
 	if (vblk->io_queues[HCTX_TYPE_POLL])
 		vblk->tag_set.nr_maps = 3;
+
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	/* Beginning here, we know queue_depth of tag_set, so we should alloc
+	 * vblk->indir_desc here. If alloc goes -ENOMEM, kfree will be
+	 * executed.
+	 */
+	if (vblk->ring_pair) {
+		vblk->indir_desc = kmalloc_array(vblk->num_vqs / VIRTBLK_RING_NUM,
+						sizeof(struct virtblk_indir_desc *),
+						GFP_KERNEL | __GFP_ZERO);
+		if (!vblk->indir_desc) {
+			err = -ENOMEM;
+			goto out_put_disk;
+		}
+		for (i = 0; i < vblk->num_vqs / VIRTBLK_RING_NUM ; i++) {
+			vblk->indir_desc[i] = kmalloc_array(vblk->tag_set.queue_depth,
+							sizeof(struct virtblk_indir_desc),
+							GFP_KERNEL | __GFP_ZERO);
+			if (!vblk->indir_desc[i]) {
+				err = -ENOMEM;
+				goto out_put_disk;
+			}
+		}
+	}
+
+#endif
 
 	err = blk_mq_alloc_tag_set(&vblk->tag_set);
 	if (err)
@@ -1951,9 +2290,15 @@ static int virtblk_probe(struct virtio_device *vdev)
 out_free_tags:
 	blk_mq_free_tag_set(&vblk->tag_set);
 out_put_disk:
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	virtblk_kfree_vblk_indir_descs(vblk);
+#endif
 	put_disk(vblk->disk);
 out_free_vq:
 	vdev->config->del_vqs(vdev);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	virtblk_kfree_vqs_cq_reqs(vblk);
+#endif
 	kfree(vblk->vqs);
 out_free_vblk:
 	kfree(vblk);
@@ -1987,6 +2332,9 @@ static void virtblk_remove(struct virtio_device *vdev)
 
 	put_disk(vblk->disk);
 	vdev->config->del_vqs(vdev);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	virtblk_kfree_vqs_cq_reqs(vblk);
+#endif
 	kfree(vblk->vqs);
 
 	mutex_unlock(&vblk->vdev_mutex);
@@ -2012,6 +2360,9 @@ static int virtblk_freeze(struct virtio_device *vdev)
 	flush_work(&vblk->config_work);
 
 	vdev->config->del_vqs(vdev);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	virtblk_kfree_vqs_cq_reqs(vblk);
+#endif
 	kfree(vblk->vqs);
 
 	return 0;
