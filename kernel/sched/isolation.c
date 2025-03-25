@@ -281,7 +281,8 @@ void update_wilds_cpumask(cpumask_var_t new_allowed, cpumask_var_t old_allowed)
 
 	rcu_read_lock();
 	for_each_process_thread(g, task) {
-		if (task->flags & PF_KTHREAD)
+		/* Percpu kthreads are ignored */
+		if ((task->flags & PF_KTHREAD) && kthread_is_per_cpu(task))
 			continue;
 
 		if (!cpumask_equal(task->cpus_ptr, old_allowed))
