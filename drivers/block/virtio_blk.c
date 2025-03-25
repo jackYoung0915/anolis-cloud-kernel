@@ -119,6 +119,9 @@ struct virtio_blk {
 struct virtblk_req {
 	struct virtio_blk_outhdr out_hdr;
 	u8 status;
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	struct scatterlist inline_sg[2];
+#endif
 	struct sg_table sg_table;
 	struct sg_table sg_table_extra;
 	struct scatterlist sg[];
@@ -161,12 +164,101 @@ static inline bool vbr_is_bidirectional(struct virtblk_req *vbr)
 }
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+static int virtblk_map_sg(struct virtqueue *vq, struct scatterlist *sglist,
+			  enum dma_data_direction dir)
+{
+	struct scatterlist *sg, *last;
+
+	for (sg = sglist; sg; sg = sg_next(sg)) {
+		sg->dma_address = virtqueue_dma_map_page_attrs(vq, sg_page(sg),
+					sg->offset, sg->length, dir, 0);
+		if (virtqueue_dma_mapping_error(vq, sg->dma_address)) {
+			last = sg;
+			goto out;
+		}
+	}
+	return 0;
+out:
+	for (sg = sglist; sg && sg != last; sg = sg_next(sg))
+		virtqueue_dma_unmap_page_attrs(vq, sg->dma_address,
+					       sg->length, dir, 0);
+	return -ENOMEM;
+}
+
+static void virtblk_unmap_sg(struct virtqueue *vq, struct scatterlist *sglist,
+			     enum dma_data_direction dir)
+{
+	struct scatterlist *sg;
+
+	for (sg = sglist; sg; sg = sg_next(sg))
+		virtqueue_dma_unmap_page_attrs(vq, sg->dma_address,
+					       sg->length, dir, 0);
+}
+
+static int virtblk_rq_map(struct virtqueue *vq, struct scatterlist *sgs[],
+			  unsigned int out_sgs, unsigned int in_sgs)
+{
+	int i, ret, done_out_sgs, done_in_sgs;
+
+	for (i = 0; i < out_sgs; i++) {
+		ret = virtblk_map_sg(vq, sgs[i], DMA_TO_DEVICE);
+		if (ret < 0) {
+			done_out_sgs = i;
+			goto cleanup_out_map;
+		}
+	}
+
+	for (; i < out_sgs + in_sgs; i++) {
+		ret = virtblk_map_sg(vq, sgs[i], DMA_FROM_DEVICE);
+		if (ret < 0) {
+			done_out_sgs = out_sgs;
+			done_in_sgs = i - out_sgs;
+			goto cleanup_in_map;
+		}
+	}
+	return 0;
+
+cleanup_in_map:
+	for (i = out_sgs; i < out_sgs + done_in_sgs; i++)
+		virtblk_unmap_sg(vq, sgs[i], DMA_FROM_DEVICE);
+cleanup_out_map:
+	for (i = 0; i < done_out_sgs; i++)
+		virtblk_unmap_sg(vq, sgs[i], DMA_TO_DEVICE);
+	return -ENOMEM;
+}
+
+static void virtblk_rq_unmap(struct virtqueue *vq, struct virtblk_req *vbr)
+{
+	struct request *req = blk_mq_rq_from_pdu(vbr);
+	int dir;
+
+	virtblk_unmap_sg(vq, &vbr->inline_sg[0], DMA_TO_DEVICE);
+	virtblk_unmap_sg(vq, &vbr->inline_sg[1], DMA_FROM_DEVICE);
+
+	if (!blk_rq_nr_phys_segments(req))
+		return;
+
+	if (vbr_is_bidirectional(vbr)) {
+		virtblk_unmap_sg(vq, vbr->sg_table.sgl, DMA_TO_DEVICE);
+		virtblk_unmap_sg(vq, vbr->sg_table_extra.sgl, DMA_FROM_DEVICE);
+	} else {
+		if (req_op(req) == REQ_OP_WRITE)
+			dir = DMA_TO_DEVICE;
+		else
+			dir = DMA_FROM_DEVICE;
+		virtblk_unmap_sg(vq, vbr->sg_table.sgl, dir);
+	}
+}
+
 static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 		struct virtblk_req *vbr, struct scatterlist *data_sg,
 		struct scatterlist *data_sg_extra)
 {
-	struct scatterlist hdr, status, *sgs[4];
+	struct scatterlist *sgs[4];
+	struct scatterlist *hdr = &vbr->inline_sg[0];
+	struct scatterlist *status = &vbr->inline_sg[1];
 	unsigned int num_out = 0, num_in = 0;
+	int ret;
 
 	/*
 	 * vritblk_add_req use 'bool' have_data, while we use int num to
@@ -176,24 +268,34 @@ static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 	if ((sg_nents(data_sg) == 0) || (sg_nents(data_sg_extra) == 0))
 		return -EINVAL;
 
-	sg_init_one(&hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
-	sg_init_one(&status, &vbr->status, sizeof(vbr->status));
-	sgs[num_out++] = &hdr;
+	sg_init_one(hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
+	sg_init_one(status, &vbr->status, sizeof(vbr->status));
+	sgs[num_out++] = hdr;
 	sgs[num_out++] = data_sg;
 	sgs[num_out + num_in++] = data_sg_extra;
-	sgs[num_out + num_in++] = &status;
+	sgs[num_out + num_in++] = status;
 
-	return virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	ret = virtblk_rq_map(vq, sgs, num_out, num_in);
+	if (ret < 0)
+		return ret;
+
+	ret = virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	if (ret < 0)
+		virtblk_rq_unmap(vq, vbr);
+	return ret;
 }
 
 static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr,
 		struct scatterlist *data_sg, bool have_data)
 {
-	struct scatterlist hdr, status, *sgs[3];
+	struct scatterlist *sgs[3];
+	struct scatterlist *hdr = &vbr->inline_sg[0];
+	struct scatterlist *status = &vbr->inline_sg[1];
 	unsigned int num_out = 0, num_in = 0;
+	int ret;
 
-	sg_init_one(&hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
-	sgs[num_out++] = &hdr;
+	sg_init_one(hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
+	sgs[num_out++] = hdr;
 
 	if (have_data) {
 		if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
@@ -202,12 +304,20 @@ static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr,
 			sgs[num_out + num_in++] = data_sg;
 	}
 
-	sg_init_one(&status, &vbr->status, sizeof(vbr->status));
-	sgs[num_out + num_in++] = &status;
+	sg_init_one(status, &vbr->status, sizeof(vbr->status));
+	sgs[num_out + num_in++] = status;
 
-	return virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	ret = virtblk_rq_map(vq, sgs, num_out, num_in);
+	if (ret < 0)
+		return ret;
+
+	ret = virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	if (ret < 0)
+		virtblk_rq_unmap(vq, vbr);
+	return ret;
 }
 #endif
+
 static int virtblk_add_req_bidirectional(struct virtqueue *vq,
 		struct virtblk_req *vbr, struct scatterlist *data_sg,
 		struct scatterlist *data_sg_extra)
@@ -980,6 +1090,7 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 		goto out;
 
 	for (i = 0; i < num_vqs; i++) {
+		virtqueue_set_dma_premapped(vqs[i]);
 		spin_lock_init(&vblk->vqs[i].lock);
 		vblk->vqs[i].vq = vqs[i];
 	}
