@@ -1303,6 +1303,21 @@ config ASYNC_FORK
 	  unserviceable duration.  Note that it won't speed up child's return
 	  from fork(2).
 
+config ARCH_SUPPORTS_PT_RECLAIM
+	def_bool n
+
+config PT_RECLAIM
+	bool "reclaim empty user page table pages"
+	default y
+	depends on ARCH_SUPPORTS_PT_RECLAIM && MMU && SMP
+	select MMU_GATHER_RCU_TABLE_FREE
+	help
+	  Try to reclaim empty user page table pages in paths other than munmap
+	  and exit_mmap path.
+
+	  Note: now only empty user PTE page table pages will be reclaimed.
+
+
 source "mm/damon/Kconfig"
 
 config TEXT_UNEVICTABLE
