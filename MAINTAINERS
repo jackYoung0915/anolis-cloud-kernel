@@ -143,12 +143,6 @@ Maintainers List
           first. When adding to this list, please keep the entries in
           alphabetical order.
 
-VTOA
-M:	Xuan Zhuo <xuanzhuo@linux.alibaba.com>
-M:	slb_opensource@linux.alibaba.com
-S:	Maintained
-F:	net/vtoa/
-
 TCP RT
 M:	Cambda Zhu <cambda@linux.alibaba.com>
 M:	Xuan Zhuo <xuanzhuo@linux.alibaba.com>

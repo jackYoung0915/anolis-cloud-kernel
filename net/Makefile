@@ -94,4 +94,3 @@ obj-$(CONFIG_NET_NCSI)		+= ncsi/
 obj-$(CONFIG_XDP_SOCKETS)	+= xdp/
 obj-$(CONFIG_HOOKERS)		+= hookers/
 obj-$(CONFIG_MPTCP)		+= mptcp/
-obj-$(CONFIG_VTOA)		+= vtoa/
