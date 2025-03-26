@@ -21,6 +21,7 @@
 #include <linux/task_io_accounting_ops.h>
 #include <linux/shmem_fs.h>
 #include <linux/rmap.h>
+#include <linux/page_dup.h>
 #include "internal.h"
 
 /*
@@ -276,6 +277,9 @@ static long mapping_evict_folio(struct address_space *mapping,
 			folio_nr_pages(folio) + folio_has_private(folio) + 1)
 		return 0;
 	if (!filemap_release_folio(folio, 0))
+		return 0;
+
+	if (dup_folio_mapped(folio))
 		return 0;
 
 	return remove_mapping(mapping, folio);

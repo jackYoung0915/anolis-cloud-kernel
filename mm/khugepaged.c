@@ -21,6 +21,7 @@
 #include <linux/shmem_fs.h>
 #include <linux/ksm.h>
 
+#include <linux/page_dup.h>
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
 #include "internal.h"
@@ -1974,6 +1975,10 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
 		if (folio_mapped(folio))
 			try_to_unmap(folio,
 					TTU_IGNORE_MLOCK | TTU_BATCH_FLUSH);
+
+		if (!dedup_folio(folio, false))
+			pr_warn_once("duptext: dedup folio failed, folio mapcount=%d\n",
+				     folio_mapcount(folio));
 
 		xas_lock_irq(&xas);
 

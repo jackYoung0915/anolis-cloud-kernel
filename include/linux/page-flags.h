@@ -140,6 +140,9 @@ enum pageflags {
 #ifdef CONFIG_KFENCE
 	PG_kfence,		/* Page in kfence pool */
 #endif
+#ifdef CONFIG_DUPTEXT
+	PG_dup,			/* Page has NUMA replicas */
+#endif
 	__NR_PAGEFLAGS,
 
 	PG_readahead = PG_reclaim,
@@ -196,6 +199,10 @@ enum pageflags {
 	PG_has_hwpoisoned = PG_error,
 	PG_large_rmappable = PG_workingset, /* anon or file-backed */
 	PG_partially_mapped = PG_reclaim, /* was identified to be partially mapped */
+#ifdef CONFIG_DUPTEXT
+	/* Reuse PG_dirty to indicate whether the duplicate page is a master or slave */
+	PG_dup_slave = PG_dirty,
+#endif
 };
 
 #define PAGEFLAGS_MASK		((1UL << NR_PAGEFLAGS) - 1)
@@ -659,6 +666,12 @@ PAGEFLAG_FALSE(VmemmapSelfHosted, vmemmap_self_hosted)
 __PAGEFLAG(Kfence, kfence, PF_ANY)
 #endif
 
+#ifdef CONFIG_DUPTEXT
+/* PageDup() is used to track page that has NUMA replicas. */
+PAGEFLAG(Dup, dup, PF_HEAD)
+PAGEFLAG(Dup_Slave, dup_slave, PF_HEAD)
+#endif
+
 /*
  * On an anonymous page mapped into a user virtual memory area,
  * page->mapping points to its anon_vma, not to a struct address_space;
@@ -1114,6 +1127,12 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 #define __PG_KFENCE		0
 #endif
 
+#ifdef CONFIG_DUPTEXT
+#define __PG_DUP		(1UL << PG_dup)
+#else
+#define __PG_DUP		0
+#endif
+
 /*
  * Flags checked when a page is freed.  Pages being freed should not have
  * these flags set.  If they are, there is a problem.
@@ -1123,7 +1142,8 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 	 1UL << PG_private	| 1UL << PG_private_2	|	\
 	 1UL << PG_writeback	| 1UL << PG_reserved	|	\
 	 1UL << PG_slab		| 1UL << PG_active 	|	\
-	 1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK)
+	 1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK | \
+	 __PG_DUP)
 
 /*
  * Flags checked when a page is prepped for return by the page allocator.

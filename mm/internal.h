@@ -14,6 +14,7 @@
 #include <linux/rmap.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/page_dup.h>
 #include <linux/tracepoint-defs.h>
 
 struct folio_batch;

@@ -78,6 +78,7 @@
 #include <linux/vmalloc.h>
 #include <linux/zswap.h>
 #include <linux/sched/sysctl.h>
+#include <linux/page_dup.h>
 
 #include <trace/events/kmem.h>
 
@@ -5121,8 +5122,10 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
 fallback:
 	addr = vmf->address;
 
-	/* Did we COW the page? */
-	if (is_cow)
+	if (IS_ENABLED(CONFIG_DUPTEXT) && !(vmf->flags & FAULT_FLAG_WRITE) && vmf->dup_page)
+		page = vmf->dup_page;
+	else if (is_cow)
+		/* Did we COW the page? */
 		page = vmf->cow_page;
 	else
 		page = vmf->page;
@@ -5320,6 +5323,9 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 {
 	vm_fault_t ret = 0;
 	struct folio *folio;
+#ifdef CONFIG_DUPTEXT
+	struct folio *d_folio;
+#endif
 
 	/*
 	 * Let's call ->map_pages() first and use ->fault() as fallback
@@ -5341,11 +5347,36 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		return ret;
 
-	ret |= finish_fault(vmf);
 	folio = page_folio(vmf->page);
+#ifdef CONFIG_DUPTEXT
+	d_folio = dup_folio(folio, vmf->vma);
+	if (d_folio) {
+		folio_lock(d_folio);
+		vmf->dup_page = folio_page(d_folio, folio_page_idx(folio, vmf->page));
+	}
+#endif
+
+	ret |= finish_fault(vmf);
 	folio_unlock(folio);
-	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
+#ifdef CONFIG_DUPTEXT
+	if (d_folio) {
 		folio_put(folio);
+		folio_unlock(d_folio);
+		/*
+		 * The dup slave folio must decrease the refcount here to
+		 * match the increase from dup_folio.
+		 */
+		folio_put(d_folio);
+	}
+#endif
+	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY))) {
+#ifdef CONFIG_DUPTEXT
+		if (!d_folio)
+			folio_put(folio);
+#else
+		folio_put(folio);
+#endif
+	}
 	return ret;
 }
 

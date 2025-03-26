@@ -23,6 +23,7 @@
 #include <linux/freezer.h>
 #include <linux/page_owner.h>
 #include <linux/psi.h>
+#include <linux/page_dup.h>
 #include "internal.h"
 
 #ifdef CONFIG_COMPACTION
@@ -1129,7 +1130,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 		 * page release code relies on it.
 		 */
 		folio = folio_get_nontail_page(page);
-		if (unlikely(!folio))
+		if (unlikely(!folio) || folio_dup_any(folio))
 			goto isolate_fail;
 
 		/*
@@ -1401,6 +1402,9 @@ static bool suitable_migration_source(struct compact_control *cc,
 	int block_mt;
 
 	if (pageblock_skip_persistent(page))
+		return false;
+
+	if (page_dup_any(page))
 		return false;
 
 	if ((cc->mode != MIGRATE_ASYNC) || !cc->direct_compaction)

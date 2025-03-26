@@ -48,6 +48,7 @@
 #include <linux/sched/mm.h>
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
+#include <linux/page_dup.h>
 #ifdef CONFIG_PAGECACHE_LIMIT
 #include <linux/pagecache_limit.h>
 #endif
@@ -229,14 +230,16 @@ void __filemap_remove_folio(struct folio *folio, void *shadow)
 void filemap_free_folio(struct address_space *mapping, struct folio *folio)
 {
 	void (*free_folio)(struct folio *);
-	int refs = 1;
+	int refs = folio_nr_pages(folio);
 
 	free_folio = mapping->a_ops->free_folio;
 	if (free_folio)
 		free_folio(folio);
 
-	if (folio_test_large(folio))
-		refs = folio_nr_pages(folio);
+	if (!dedup_folio(folio, false))
+		pr_warn_once("duptext: dedup folio failed, folio mapcount=%d\n",
+			     folio_mapcount(folio));
+
 	folio_put_refs(folio, refs);
 }
 
@@ -880,6 +883,11 @@ void replace_page_cache_folio(struct folio *old, struct folio *new)
 	xas_unlock_irq(&xas);
 	if (free_folio)
 		free_folio(old);
+
+	if (!dedup_folio(old, false))
+		pr_warn_once("duptext: dedup folio failed, folio mapcount=%d\n",
+			     folio_mapcount(old));
+
 	folio_put(old);
 }
 EXPORT_SYMBOL_GPL(replace_page_cache_folio);
@@ -3788,6 +3796,7 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 
 	folio_type = mm_counter_file(&folio->page);
 	do {
+		struct folio *d_folio;
 		unsigned long end;
 
 		addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT;
@@ -3795,6 +3804,14 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 		last_pgoff = xas.xa_index;
 		end = folio->index + folio_nr_pages(folio) - 1;
 		nr_pages = min(end, end_pgoff) - xas.xa_index + 1;
+
+		d_folio = dup_folio(folio, vma);
+		if (d_folio) {
+			folio_unlock(folio);
+			folio_put(folio);
+			folio = d_folio;
+			folio_lock(folio);
+		}
 
 		if (!folio_test_large(folio))
 			ret |= filemap_map_order0_folio(vmf,
@@ -3805,6 +3822,8 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 					nr_pages, &rss, &mmap_miss);
 
 		folio_unlock(folio);
+
+		/* Dup slave folio should also put refcnt here */
 		folio_put(folio);
 	} while ((folio = next_uptodate_folio(&xas, mapping, end_pgoff)) != NULL);
 	add_mm_counter(vma->vm_mm, folio_type, rss);

@@ -57,6 +57,7 @@
 #include <linux/khugepaged.h>
 #include <linux/rculist_nulls.h>
 #include <linux/random.h>
+#include <linux/page_dup.h>
 #ifdef CONFIG_PAGECACHE_LIMIT
 #include <linux/pagecache_limit.h>
 #endif
@@ -1521,6 +1522,10 @@ static int __remove_mapping(struct address_space *mapping, struct folio *folio,
 
 		if (free_folio)
 			free_folio(folio);
+
+		if (!dedup_folio(folio, false))
+			pr_warn_once("duptext: dedup folio failed, folio mapcount=%d\n",
+				     folio_mapcount(folio));
 	}
 
 	return 1;
@@ -2019,6 +2024,11 @@ retry:
 					stat->nr_lazyfree_fail += nr_pages;
 				goto activate_locked;
 			}
+		}
+
+		if (unlikely(dup_folio_mapped(folio))) {
+			if (!dedup_folio2(folio, false, false))
+				goto activate_locked;
 		}
 
 		/*
