@@ -15,6 +15,7 @@
 #include <linux/bits.h>
 #include <linux/interrupt.h>
 #include <linux/miscdevice.h>
+#include <linux/pci.h>
 
 #include "sp-dev.h"
 
@@ -51,7 +52,8 @@ struct psp_dev_data {
 struct psp_misc_dev {
 	struct kref refcount;
 	struct psp_dev_data *data_pg_aligned;
-	struct miscdevice misc;
+	struct miscdevice dev_misc;
+	struct miscdevice resource2_misc;
 };
 
 extern struct psp_device *psp_master;
