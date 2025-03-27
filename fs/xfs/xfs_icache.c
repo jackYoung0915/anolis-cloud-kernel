@@ -1983,6 +1983,9 @@ xfs_inodegc_stop(
 	trace_xfs_inodegc_stop(mp, __return_address);
 }
 
+static bool xfs_param_inodegc_off;
+module_param_named(inodegc_off, xfs_param_inodegc_off, bool, 0444);
+
 /*
  * Enable the inode inactivation background workers and schedule deferred inode
  * inactivation work if there is any.  Caller must hold sb->s_umount to
@@ -1992,6 +1995,10 @@ void
 xfs_inodegc_start(
 	struct xfs_mount	*mp)
 {
+	if (unlikely(xfs_param_inodegc_off)) {
+		xfs_warn(mp, "XFS Inode GC is OFF");
+		return;
+	}
 	if (xfs_set_inodegc_enabled(mp))
 		return;
 
@@ -2103,7 +2110,7 @@ xfs_inodegc_queue(
 {
 	struct xfs_mount	*mp = ip->i_mount;
 	struct xfs_inodegc	*gc;
-	int			items;
+	int			items, error;
 	unsigned int		shrinker_hits;
 	unsigned int		cpu_nr;
 	unsigned long		queue_delay = 1;
@@ -2128,6 +2135,16 @@ xfs_inodegc_queue(
 	spin_lock(&ip->i_flags_lock);
 	ip->i_flags |= XFS_NEED_INACTIVE;
 	spin_unlock(&ip->i_flags_lock);
+
+	if (xfs_param_inodegc_off) {
+		xfs_iflags_set(ip, XFS_INACTIVATING);
+		error = xfs_inodegc_inactivate(ip);
+		if (error)
+			xfs_err(mp, "failed to inactive inode agno %u agino %u",
+				XFS_INO_TO_AGNO(mp, ip->i_ino),
+				XFS_INO_TO_AGINO(mp, ip->i_ino));
+		return;
+	}
 
 	cpu_nr = get_cpu();
 	gc = this_cpu_ptr(mp->m_inodegc);
