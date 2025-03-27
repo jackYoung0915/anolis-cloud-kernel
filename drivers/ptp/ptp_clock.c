@@ -186,12 +186,20 @@ static void ptp_clock_release(struct device *dev)
 	kfree(ptp);
 }
 
+static int ptp_enable(struct ptp_clock_info *ptp, struct ptp_clock_request *request, int on)
+{
+	return -EOPNOTSUPP;
+}
+
 static void ptp_aux_kworker(struct kthread_work *work)
 {
 	struct ptp_clock *ptp = container_of(work, struct ptp_clock,
 					     aux_work.work);
 	struct ptp_clock_info *info = ptp->info;
 	long delay;
+
+	if (!ptp->info->enable)
+		ptp->info->enable = ptp_enable;
 
 	delay = info->do_aux_work(info);
 
