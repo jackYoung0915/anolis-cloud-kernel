@@ -242,4 +242,5 @@ void virtqueue_dma_sync_single_range_for_cpu(struct virtqueue *_vq, dma_addr_t a
 void virtqueue_dma_sync_single_range_for_device(struct virtqueue *_vq, dma_addr_t addr,
 						unsigned long offset, size_t size,
 						enum dma_data_direction dir);
+void virtqueue_show_split_message(struct virtqueue *_vq, struct seq_file *s);
 #endif /* _LINUX_VIRTIO_H */
