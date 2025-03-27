@@ -1,0 +1,6 @@
+* Thu Mar 27 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [6.6.71-3%%DIST%%]
+- anolis: LoongArch: KVM: Repair the restart pressure test virtual machine hang dead problem (Xianglai Li)
+- anolis: LoongArch: Revert "LoongArch: Fix cpu hotplug issue" (Xianglai Li)
+- anolis: LoongArch: KVM: Add interrupt checking with Loongson AVEC (Xianglai Li)
+- anolis: LoongArch: KVM: Reload guest CSR registers after S4 (Xianglai Li)
+
