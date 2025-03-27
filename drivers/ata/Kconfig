@@ -495,10 +495,10 @@ config SATA_VITESSE
 	  If unsure, say N.
 
 config SATA_ZHAOXIN
-	tristate "ZhaoXin SATA support"
+	tristate "Zhaoxin SATA support"
 	depends on PCI
 	help
-	  This option enables support for ZhaoXin Serial ATA.
+	  This option enables support for Zhaoxin Serial ATA.
 
 	  If unsure, say N.
 
