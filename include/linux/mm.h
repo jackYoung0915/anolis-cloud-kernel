@@ -2420,6 +2420,17 @@ void free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
 		unsigned long end, unsigned long floor, unsigned long ceiling);
 int
 copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma);
+int
+copy_page_range_fast(struct vm_area_struct *dst_vma,
+		     struct vm_area_struct *src_vma);
+int
+copy_page_range_slow(struct vm_area_struct *dst_vma,
+		     struct vm_area_struct *src_vma);
+int __copy_page_range(struct vm_area_struct *dst_vma,
+		      struct vm_area_struct *src_vma,
+		      unsigned long addr,
+		      unsigned long end,
+		      enum cpr_mode mode);
 int follow_pte(struct mm_struct *mm, unsigned long address,
 	       pte_t **ptepp, spinlock_t **ptlp);
 int follow_pfn(struct vm_area_struct *vma, unsigned long address,
@@ -4139,85 +4150,6 @@ static inline void accept_memory(phys_addr_t start, phys_addr_t end)
 
 #endif
 
-#ifdef CONFIG_ASYNC_FORK
-#define ASYNC_FORK_CANDIDATE	0
-DECLARE_STATIC_KEY_FALSE(async_fork_enabled_key);
-DECLARE_STATIC_KEY_FALSE(async_fork_staging_key);
-static inline bool async_fork_enabled(void)
-{
-	return static_branch_unlikely(&async_fork_enabled_key);
-}
-static inline bool async_fork_staging(void)
-{
-	return static_branch_unlikely(&async_fork_staging_key);
-}
-
-int async_fork_cpr_fast(struct vm_area_struct *vma, struct vm_area_struct *mpnt);
-void async_fork_cpr_bind(struct mm_struct *oldmm, struct mm_struct *mm, int err);
-void async_fork_cpr_rest(void);
-void async_fork_cpr_done(struct mm_struct *mm, bool r, bool l);
-
-bool __is_pmd_async_fork(pmd_t pmd);
-void __async_fork_fixup_pmd(struct vm_area_struct *mpnt, pmd_t *pmd,
-			    unsigned long addr);
-void __async_fork_fixup_vma(struct vm_area_struct *mpnt);
-
-static inline bool is_pmd_async_fork(pmd_t pmd)
-{
-	if (async_fork_staging())
-		return __is_pmd_async_fork(pmd);
-	return false;
-}
-static inline void async_fork_fixup_pmd(struct vm_area_struct *mpnt, pmd_t *pmd,
-					unsigned long addr)
-{
-	if (async_fork_staging())
-		__async_fork_fixup_pmd(mpnt, pmd, addr);
-}
-static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
-{
-	if (async_fork_staging())
-		__async_fork_fixup_vma(mpnt);
-}
-#else
-static inline bool async_fork_enabled(void)
-{
-	return false;
-}
-static inline bool async_fork_staging(void)
-{
-	return false;
-}
-
-static inline int async_fork_cpr_fast(struct vm_area_struct *vma,
-				      struct vm_area_struct *mpnt)
-{
-	return -EOPNOTSUPP;
-}
-static inline void async_fork_cpr_bind(struct mm_struct *oldmm,
-				       struct mm_struct *mm, int err)
-{
-}
-static inline void async_fork_cpr_rest(void)
-{
-}
-static inline void async_fork_cpr_done(struct mm_struct *mm, bool r, bool l)
-{
-}
-
-static inline bool is_pmd_async_fork(pmd_t pmd)
-{
-	return false;
-}
-static inline void async_fork_fixup_pmd(struct vm_area_struct *mpnt,
-					pmd_t *pmd, unsigned long addr)
-{
-}
-static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
-{
-}
-#endif
-
 struct fast_reflink_work {
 	struct work_struct work;
 	struct address_space *mapping;
@@ -4230,24 +4162,90 @@ void fast_reflink_fixup_pmd(struct vm_area_struct *vma, pmd_t *pmd,
 			    unsigned long addr);
 void fast_reflink_fixup_vma(struct vm_area_struct *vma);
 
-static inline bool is_pmd_transient(pmd_t pmd)
+#ifdef CONFIG_ARM64
+#define PMD_SECT_AP_WRPROTECT (_AT(pmdval_t, 2) << 61)	/* APTable[1:0] */
+#endif
+
+static inline void pmdp_set_wp(struct mm_struct *mm, unsigned long addr,
+			       pmd_t *pmdp)
 {
-	if (is_pmd_fast_reflink(pmd))
-		return true;
-	if (is_pmd_async_fork(pmd))
-		return true;
+	BUG_ON(pmd_trans_huge(*pmdp) || pmd_devmap(*pmdp));
+#if defined(CONFIG_ARM64)
+	/*
+	 * pmdp_set_wrprotect() is arch specific, arm64 requires
+	 * CONFIG_TRANSPARENT_HUGEPAGE to be defined, so we directly
+	 * use set_pmd() here.
+	 */
+	set_pmd(pmdp, __pmd(pmd_val(*pmdp) | PMD_SECT_AP_WRPROTECT));
+#elif defined(CONFIG_X86)
+	pmdp_set_wrprotect(mm, addr, pmdp);
+#endif
+}
+
+static inline void pmdp_clear_wp(pmd_t *pmdp, struct vm_area_struct *vma)
+{
+#if defined(CONFIG_ARM64)
+	set_pmd(pmdp, __pmd(pmd_val(*pmdp) & ~PMD_SECT_AP_WRPROTECT));
+#elif defined(CONFIG_X86)
+	set_pmd(pmdp, pmd_mkwrite(*pmdp, vma));
+#endif
+}
+
+static inline bool is_pmd_wp(pmd_t pmd)
+{
+#if defined(CONFIG_ARM64)
+	return (pmd_val(pmd) & PMD_TABLE_BIT) &&
+		(pmd_val(pmd) & PMD_SECT_AP_WRPROTECT);
+#elif defined(CONFIG_X86)
+	/* See comments in pmd_bad() */
+	return (pmd_flags(pmd) & ~(_PAGE_USER | _PAGE_DIRTY_BITS)) ==
+		(_KERNPG_TABLE & ~(_PAGE_RW | _PAGE_DIRTY_BITS));
+#else
 	return false;
+#endif
 }
-static inline void fixup_pmd(struct vm_area_struct *vma,
-				pmd_t *pmd, unsigned long addr)
+
+/* See comments in copy_page_range_slow() */
+static inline bool is_pmd_copied_slow(pmd_t pmd)
 {
-	fast_reflink_fixup_pmd(vma, pmd, addr);
-	async_fork_fixup_pmd(vma, pmd, addr);
+	return !is_swap_pmd(pmd) && !pmd_trans_huge(pmd) &&
+		!pmd_devmap(pmd) && is_pmd_wp(pmd);
 }
-static inline void fixup_vma(struct vm_area_struct *vma)
+
+#ifdef CONFIG_ASYNC_FORK
+void async_fork_fixup_pmd(struct vm_area_struct *mpnt, pmd_t *pmd,
+			  unsigned long addr);
+void async_fork_fixup_vma(struct vm_area_struct *mpnt);
+void async_fork_cpr_bind(struct mm_struct *oldmm, struct mm_struct *mm,
+			 int err);
+int async_fork_cpr_fast(struct vm_area_struct *vma,
+			struct vm_area_struct *mpnt);
+void async_fork_cpr_rest(void);
+void async_fork_cpr_done(struct mm_struct *mm, bool recover,
+			 bool locked);
+#else
+static inline void async_fork_cpr_bind(struct mm_struct *oldmm,
+				       struct mm_struct *mm, int err)
 {
-	fast_reflink_fixup_vma(vma);
-	async_fork_fixup_vma(vma);
 }
+static inline int async_fork_cpr_fast(struct vm_area_struct *vma,
+				      struct vm_area_struct *mpnt)
+{
+	return -EOPNOTSUPP;
+}
+static inline void async_fork_cpr_rest(void)
+{
+}
+static inline void async_fork_cpr_done(struct mm_struct *mm, bool r, bool l)
+{
+}
+static inline void async_fork_fixup_pmd(struct vm_area_struct *mpnt, pmd_t *pmd,
+					unsigned long addr)
+{
+}
+static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
+{
+}
+#endif
 
 #endif /* _LINUX_MM_H */

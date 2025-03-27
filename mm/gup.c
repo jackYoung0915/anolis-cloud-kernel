@@ -550,9 +550,13 @@ static struct page *follow_page_pte(struct vm_area_struct *vma,
 			 (FOLL_PIN | FOLL_GET)))
 		return ERR_PTR(-EINVAL);
 
-	if (is_pmd_transient(*pmd)) {
-		fixup_pmd(vma, pmd, address);
-		if (is_pmd_transient(*pmd))
+	/*
+	 * GUP maybe is getting a reference of page for DMA usage,
+	 * before it get the reference, fixup pmd
+	 */
+	if (is_pmd_copied_slow(*pmd)) {
+		async_fork_fixup_pmd(vma, pmd, address);
+		if (is_pmd_copied_slow(*pmd))
 			return no_page_table(vma, flags);
 	}
 
@@ -2642,7 +2646,12 @@ static int gup_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
 	int nr_start = *nr, ret = 0;
 	pte_t *ptep, *ptem;
 
-	if (is_pmd_transient(pmd))
+	/*
+	 * Though pmd is write-protected but in GUP scenario, CoW fault could
+	 * not be triggered such like DMA. Do not pin the page before async
+	 * fork done.
+	 */
+	if (is_pmd_copied_slow(pmd))
 		return 0;
 
 	ptem = ptep = pte_offset_map(&pmd, addr);

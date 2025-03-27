@@ -499,7 +499,7 @@ int mlock_fixup(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		/* don't set VM_LOCKED or VM_LOCKONFAULT and don't count */
 		goto out;
 
-	fixup_vma(vma);
+	async_fork_fixup_vma(vma);
 
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*prev = vma_merge(vmi, mm, *prev, start, end, newflags,

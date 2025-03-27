@@ -507,7 +507,7 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 {
 	struct vm_area_struct *new = kmem_cache_alloc(vm_area_cachep, GFP_KERNEL);
 
-	fixup_vma(orig);
+	async_fork_fixup_vma(orig);
 
 	if (!new)
 		return NULL;
@@ -662,23 +662,17 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	LIST_HEAD(uf);
 	VMA_ITERATOR(old_vmi, oldmm, 0);
 	VMA_ITERATOR(vmi, mm, 0);
-#ifdef CONFIG_ASYNC_FORK
 	unsigned long async_fork;
-#endif
 
 	uprobe_start_dup_mmap();
 	if (mmap_write_lock_killable(oldmm)) {
 		retval = -EINTR;
 		goto fail_uprobe_end;
 	}
-#ifdef CONFIG_ASYNC_FORK
+
 	/* Get task_async_fork with oldmm's mmap write lock hold. */
-	rcu_read_lock();
 	async_fork = task_async_fork(current);
-	if (async_fork)
-		set_bit(ASYNC_FORK_CANDIDATE, &oldmm->async_fork_flags);
-	rcu_read_unlock();
-#endif
+
 	flush_cache_dup_mm(oldmm);
 	uprobe_dup_mmap(oldmm, mm);
 	/*
@@ -776,14 +770,10 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 
 		mm->map_count++;
 		if (!(tmp->vm_flags & VM_WIPEONFORK)) {
-#ifdef CONFIG_ASYNC_FORK
 			if (async_fork)
 				retval = async_fork_cpr_fast(tmp, mpnt);
 			else
 				retval = copy_page_range(tmp, mpnt);
-#else
-			retval = copy_page_range(tmp, mpnt);
-#endif
 		}
 
 		if (tmp->vm_ops && tmp->vm_ops->open)
@@ -802,6 +792,12 @@ out:
 	mmap_write_unlock(mm);
 	flush_tlb_mm(oldmm);
 #ifdef CONFIG_ASYNC_FORK
+	/*
+	 * If dup_mmap gets failure, async_fork_cpr_bind()
+	 * will reset mm->async_fork_mm and recover parent's
+	 * page table.
+	 * Parent's mmap write lock is hold
+	 */
 	if (async_fork)
 		async_fork_cpr_bind(oldmm, mm, retval);
 #endif
@@ -2813,10 +2809,19 @@ bad_fork_cleanup_namespaces:
 bad_fork_cleanup_mm:
 	if (p->mm) {
 #ifdef CONFIG_ASYNC_FORK
-		if (p->mm->async_fork_mm) {
-			WARN_ON_ONCE(clone_flags & CLONE_VM);
+		/*
+		 * It could be possible if async_fork_cpr_rest() in child of
+		 * first fork(2) has not done while parent is doing a new fork
+		 * with CLONE_VM. Since new fork with CLONE_VM skipped
+		 * dup_mm() (see copy_mm()), fixup vma is skipped as well.
+		 * Hence if reaches here, p->mm->async_fork_mm points to former
+		 * child's mm which could be set NULL when it has done page
+		 * table copy, this is a race which can cause NULL pointer
+		 * panic
+		 */
+		if (p->mm->async_fork_mm &&
+		    !WARN_ON_ONCE(clone_flags & CLONE_VM))
 			async_fork_cpr_done(p->mm, true, false);
-		}
 #endif
 		mm_clear_owner(p->mm, p);
 		mmput(p->mm);

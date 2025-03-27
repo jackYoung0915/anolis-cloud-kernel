@@ -4756,6 +4756,25 @@ void memcg_lat_stat_end(enum mem_lat_stat_item sidx, u64 start)
 }
 #endif /* CONFIG_MEMSLI */
 
+#ifdef CONFIG_ASYNC_FORK
+static u64 mem_cgroup_async_fork_read(struct cgroup_subsys_state *css,
+					struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->async_fork;
+}
+
+static int mem_cgroup_async_fork_write(struct cgroup_subsys_state *css,
+					 struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	memcg->async_fork = val;
+	return 0;
+}
+#endif
+
 static u64 mem_cgroup_priority_read(struct cgroup_subsys_state *css,
 				struct cftype *cft)
 {
@@ -4776,25 +4795,6 @@ static int mem_cgroup_priority_write(struct cgroup_subsys_state *css,
 
 	return 0;
 }
-
-#ifdef CONFIG_ASYNC_FORK
-static u64 mem_cgroup_async_fork_read(struct cgroup_subsys_state *css,
-					struct cftype *cft)
-{
-	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
-
-	return memcg->async_fork;
-}
-
-static int mem_cgroup_async_fork_write(struct cgroup_subsys_state *css,
-					 struct cftype *cft, u64 val)
-{
-	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
-
-	memcg->async_fork = val;
-	return 0;
-}
-#endif
 
 static int memory_wmark_ratio_show(struct seq_file *m, void *v)
 {
@@ -6394,13 +6394,6 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.write = mem_cgroup_reset,
 		.read_u64 = mem_cgroup_read_u64,
 	},
-#ifdef CONFIG_ASYNC_FORK
-	{
-		.name = "async_fork",
-		.read_u64 = mem_cgroup_async_fork_read,
-		.write_u64 = mem_cgroup_async_fork_write,
-	},
-#endif
 	{
 		.name = "reap_background",
 		.read_u64 = memcg_reap_background_read,
@@ -6463,6 +6456,13 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.seq_show = mem_cgroup_duptext_nodes_show,
 		.write = mem_cgroup_duptext_nodes_write,
 		.max_write_len = (100U + 6 * MAX_NUMNODES),
+	},
+#endif
+#ifdef CONFIG_ASYNC_FORK
+	{
+		.name = "async_fork",
+		.read_u64 = mem_cgroup_async_fork_read,
+		.write_u64 = mem_cgroup_async_fork_write,
 	},
 #endif
 	{ },	/* terminate */
@@ -6747,9 +6747,6 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 		/* Default gap is 0.5% max limit */
 		memcg->wmark_scale_factor = parent->wmark_scale_factor ?
 					    : 50;
-#ifdef CONFIG_ASYNC_FORK
-		memcg->async_fork = parent->async_fork;
-#endif
 #ifdef CONFIG_PAGECACHE_LIMIT
 		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
 		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
@@ -6760,6 +6757,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_DUPTEXT
 		memcg->allow_duptext = parent->allow_duptext;
 		memcg->duptext_nodes = parent->duptext_nodes;
+#endif
+#ifdef CONFIG_ASYNC_FORK
+		memcg->async_fork = parent->async_fork;
 #endif
 		page_counter_init(&memcg->memory, &parent->memory);
 		page_counter_init(&memcg->swap, &parent->swap);
@@ -8325,13 +8325,6 @@ static struct cftype memory_files[] = {
 		.flags = CFTYPE_NS_DELEGATABLE,
 		.write = memory_reclaim,
 	},
-#ifdef CONFIG_ASYNC_FORK
-	{
-		.name = "async_fork",
-		.read_u64 = mem_cgroup_async_fork_read,
-		.write_u64 = mem_cgroup_async_fork_write,
-	},
-#endif
 	{
 		.name = "reap_background",
 		.read_u64 = memcg_reap_background_read,
@@ -8364,6 +8357,13 @@ static struct cftype memory_files[] = {
 		.name = "pgtable_misplaced",
 		.write_u64 = memcg_pgtable_misplaced_write,
 		.read_u64 = memcg_pgtable_misplaced_read,
+	},
+#endif
+#ifdef CONFIG_ASYNC_FORK
+	{
+		.name = "async_fork",
+		.read_u64 = mem_cgroup_async_fork_read,
+		.write_u64 = mem_cgroup_async_fork_write,
 	},
 #endif
 	{ }	/* terminate */

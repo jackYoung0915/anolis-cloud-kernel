@@ -730,12 +730,11 @@ struct vm_area_struct {
 #endif
 	struct vm_userfaultfd_ctx vm_userfaultfd_ctx;
 
+	bool fast_reflink;
 #ifdef CONFIG_ASYNC_FORK
+	/* Pairing vma */
 	struct vm_area_struct *async_fork_vma;
 #endif
-
-	bool fast_reflink;
-
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -997,12 +996,14 @@ struct mm_struct {
 #endif
 		} lru_gen;
 #endif /* CONFIG_LRU_GEN */
-#ifdef CONFIG_ASYNC_FORK
-		struct mm_struct *async_fork_mm;
-		unsigned long async_fork_flags;
-#endif
 #ifdef CONFIG_DUPTEXT
 		unsigned long duptext_flags;
+#endif
+#ifdef CONFIG_ASYNC_FORK
+		/* Pairing mm_struct ptr and its flags */
+		struct mm_struct *async_fork_mm;
+		unsigned long async_fork_flags;
+		atomic_t async_fork_refcnt;
 #endif
 	} __randomize_layout;
 
@@ -1467,5 +1468,18 @@ enum {
 
 	/* See also internal only FOLL flags in mm/internal.h */
 };
+
+enum cpr_mode {
+	CPR_NORMAL,
+	CPR_FAST,
+	CPR_SLOW,
+	CPR_MAX_MODE,
+};
+
+#ifdef CONFIG_ASYNC_FORK
+#define ASYNC_FORK_PARENT		1
+#define ASYNC_FORK_CHILD		2
+#define VMA_FAST_COPIED		((void *)(1UL))
+#endif
 
 #endif /* _LINUX_MM_TYPES_H */

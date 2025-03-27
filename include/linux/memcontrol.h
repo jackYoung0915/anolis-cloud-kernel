@@ -430,16 +430,16 @@ struct mem_cgroup {
 	struct lru_gen_mm_list mm_list;
 #endif
 
-#ifdef CONFIG_ASYNC_FORK
-	unsigned long async_fork;
-#endif
-
 	unsigned long offline_jiffies;
 	unsigned long reap_background;
 #ifdef CONFIG_DUPTEXT
 	bool allow_duptext;
 	bool allow_duptext_refresh;
 	nodemask_t duptext_nodes;
+#endif
+
+#ifdef CONFIG_ASYNC_FORK
+	unsigned long async_fork;
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -1799,7 +1799,7 @@ static inline unsigned long task_async_fork(struct task_struct *p)
 	struct mem_cgroup *task_memcg;
 	unsigned long async_fork = 0UL;
 
-	if (!async_fork_enabled() || mem_cgroup_disabled())
+	if (mem_cgroup_disabled())
 		return 0UL;
 
 	rcu_read_lock();

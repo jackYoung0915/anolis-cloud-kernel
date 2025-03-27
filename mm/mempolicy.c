@@ -635,7 +635,7 @@ unsigned long change_prot_numa(struct vm_area_struct *vma,
 	struct mmu_gather tlb;
 	long nr_updated;
 
-	fixup_vma(vma);
+	async_fork_fixup_vma(vma);
 
 	tlb_gather_mmu(&tlb, vma->vm_mm);
 
