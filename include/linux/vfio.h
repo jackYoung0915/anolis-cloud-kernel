@@ -41,6 +41,7 @@ struct vfio_device {
 	struct vfio_device_set *dev_set;
 	struct list_head dev_set_list;
 	unsigned int migration_flags;
+	struct inode *inode;
 
 	/* Members below here are private, not for driver use */
 	struct kref kref;	/* object life cycle */
@@ -177,7 +178,6 @@ struct vfio_device *_vfio_alloc_device(size_t size, struct device *dev,
 
 int vfio_init_device(struct vfio_device *device, struct device *dev,
 		     const struct vfio_device_ops *ops);
-void vfio_free_device(struct vfio_device *device);
 void vfio_device_release(struct kref *kref);
 static inline void vfio_put_device(struct vfio_device *device)
 {
