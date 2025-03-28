@@ -5470,7 +5470,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	 */
 	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp_mask);
 
-	page = kfence_alloc_page(order, preferred_nid, alloc_mask);
+	page = kfence_alloc_page(order, preferred_nid, gfp_mask);
 	if (unlikely(page)) {
 		set_page_private(page, 0);
 		prep_new_page(page, 0, alloc_mask, alloc_flags);
