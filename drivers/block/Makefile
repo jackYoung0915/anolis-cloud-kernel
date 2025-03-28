@@ -29,6 +29,9 @@ obj-$(CONFIG_BLK_DEV_NBD)	+= nbd.o
 obj-$(CONFIG_BLK_DEV_CRYPTOLOOP) += cryptoloop.o
 obj-$(CONFIG_VIRTIO_BLK)	+= virtio_blk.o
 
+virtio_blk-y			:= virtio_blk.o
+virtio_blk-$(CONFIG_VIRTIO_BLK_RING_PAIR)	+= virtio_blk_ext.o
+
 obj-$(CONFIG_BLK_DEV_SX8)	+= sx8.o
 
 obj-$(CONFIG_XEN_BLKDEV_FRONTEND)	+= xen-blkfront.o

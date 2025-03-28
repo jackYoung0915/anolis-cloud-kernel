@@ -14,6 +14,7 @@
 #include <linux/moduleparam.h>
 #include <xen/xen.h>
 #include <linux/cc_platform.h>
+#include <linux/seq_file.h>
 
 static bool vring_force_dma_api;
 
@@ -184,6 +185,11 @@ struct vring_virtqueue {
 	 * use_dma_api is true, this is true.
 	 */
 	bool do_unmap;
+
+	/* If enable vring pair, Virtqueue will save the indirect desc
+	 * pointer and avoid the pre-unmap.
+	 */
+	bool save_indir;
 
 	/* Head of free buffer list. */
 	unsigned int free_head;
@@ -479,7 +485,7 @@ static unsigned int vring_unmap_one_split(const struct vring_virtqueue *vq,
 	flags = extra[i].flags;
 
 	if (flags & VRING_DESC_F_INDIRECT) {
-		if (!vq->use_dma_api)
+		if (!vq->use_dma_api || vq->save_indir)
 			goto out;
 
 		dma_unmap_single(vring_dma_dev(vq),
@@ -524,6 +530,29 @@ static struct vring_desc *alloc_indirect_split(struct virtqueue *_vq,
 		desc[i].next = cpu_to_virtio16(_vq->vdev, i + 1);
 	return desc;
 }
+
+struct vring_desc *virtqueue_indir_get_last_desc_split(struct virtqueue *_vq,
+						dma_addr_t *dma_addr, u32 *len)
+{
+	int tmp, idx;
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	/*
+	 * we should ensure this func is called after virtqueue_add_desc_split
+	 * and before virtqueue_kick_prepare.
+	 */
+	if (!vq->indirect)
+		return NULL;
+	idx = (vq->split.avail_idx_shadow - 1) & (vq->split.vring.num - 1);
+	tmp = virtio16_to_cpu(_vq->vdev, vq->split.vring.avail->ring[idx]);
+
+	/* get the last desc's dma_addr and dma_len
+	 */
+	*dma_addr = vq->split.desc_extra[tmp].addr;
+	*len = vq->split.desc_extra[tmp].len;
+
+	return vq->split.desc_state[tmp].indir_desc;
+}
+EXPORT_SYMBOL(virtqueue_indir_get_last_desc_split);
 
 static inline unsigned int virtqueue_add_desc_split(struct virtqueue *vq,
 						    struct vring_desc *desc,
@@ -744,6 +773,219 @@ free_indirect:
 	return -ENOMEM;
 }
 
+static inline int virtqueue_add_split_rpair(struct virtqueue *_vq,
+				      struct scatterlist *sgs[],
+				      unsigned int total_sg,
+				      unsigned int out_sgs,
+				      unsigned int in_sgs,
+				      void *data,
+				      void *ctx,
+				      gfp_t gfp)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	struct scatterlist *sg;
+	struct vring_desc *desc;
+	unsigned int i, n, avail, descs_used, prev, err_idx;
+	int head;
+	bool indirect;
+	dma_addr_t l1_addr;
+
+	START_USE(vq);
+
+	BUG_ON(data == NULL);
+	BUG_ON(ctx && vq->indirect);
+
+	if (unlikely(vq->broken)) {
+		END_USE(vq);
+		return -EIO;
+	}
+
+	LAST_ADD_TIME_UPDATE(vq);
+
+	BUG_ON(total_sg == 0);
+
+	head = vq->free_head;
+
+	if (virtqueue_use_indirect(_vq, total_sg)) {
+		total_sg += 1;
+		desc = alloc_indirect_split(_vq, total_sg, gfp);
+	} else {
+		desc = NULL;
+		WARN_ON_ONCE(total_sg > vq->split.vring.num && !vq->indirect);
+	}
+
+	if (desc) {
+		/* Use a single buffer which doesn't continue */
+		indirect = true;
+		/* Set up rest to use this indirect table. */
+		i = 0;
+		descs_used = 1;
+	} else {
+		indirect = false;
+		desc = vq->split.vring.desc;
+		i = head;
+		descs_used = total_sg;
+	}
+
+	if (unlikely(vq->vq.num_free < descs_used)) {
+		pr_debug("Can't add buf len %i - avail = %i\n",
+			 descs_used, vq->vq.num_free);
+		/* FIXME: for historical reasons, we force a notify here if
+		 * there are outgoing parts to the buffer.  Presumably the
+		 * host should service the ring ASAP.
+		 */
+		if (out_sgs)
+			vq->notify(&vq->vq);
+		if (indirect)
+			kfree(desc);
+		END_USE(vq);
+		return -ENOSPC;
+	}
+
+	if (indirect && vq->save_indir) {
+		l1_addr = vring_map_single(vq, desc,
+				total_sg * sizeof(struct vring_desc),
+				DMA_TO_DEVICE);
+		if (vring_mapping_error(vq, l1_addr))
+			goto free_indirect;
+	}
+
+	for (n = 0; n < out_sgs; n++) {
+		for (sg = sgs[n]; sg; sg = sg_next(sg)) {
+			dma_addr_t addr;
+
+			if (vring_map_one_sg(vq, sg, DMA_TO_DEVICE, &addr))
+				goto unmap_release;
+
+			prev = i;
+			/* Note that we trust indirect descriptor
+			 * table since it use stream DMA mapping.
+			 */
+			i = virtqueue_add_desc_split(_vq, desc, i, addr, sg->length,
+						     VRING_DESC_F_NEXT,
+						     indirect);
+		}
+		if ((n == 0) && indirect && vq->save_indir) {
+			prev = i;
+			i = virtqueue_add_desc_split(_vq, desc, i, l1_addr,
+							total_sg * sizeof(struct vring_desc),
+							VRING_DESC_F_NEXT,
+							indirect);
+		}
+	}
+	for (; n < (out_sgs + in_sgs); n++) {
+		for (sg = sgs[n]; sg; sg = sg_next(sg)) {
+			dma_addr_t addr;
+
+			if (vring_map_one_sg(vq, sg, DMA_FROM_DEVICE, &addr))
+				goto unmap_release;
+
+			prev = i;
+			/* Note that we trust indirect descriptor
+			 * table since it use stream DMA mapping.
+			 */
+			i = virtqueue_add_desc_split(_vq, desc, i, addr,
+						     sg->length,
+						     VRING_DESC_F_NEXT |
+						     VRING_DESC_F_WRITE,
+						     indirect);
+		}
+	}
+	/* Last one doesn't continue. */
+	desc[prev].flags &= cpu_to_virtio16(_vq->vdev, ~VRING_DESC_F_NEXT);
+	if (!indirect && vq->do_unmap)
+		vq->split.desc_extra[prev & (vq->split.vring.num - 1)].flags &=
+			~VRING_DESC_F_NEXT;
+
+	if (indirect) {
+		if (!vq->save_indir) {
+			/* Now that the indirect table is filled in, map it. */
+			l1_addr = vring_map_single(
+				vq, desc, total_sg * sizeof(struct vring_desc),
+				DMA_TO_DEVICE);
+			if (vring_mapping_error(vq, l1_addr)) {
+				if (vq->premapped)
+					goto free_indirect;
+
+				goto unmap_release;
+			}
+
+		}
+		virtqueue_add_desc_split(_vq, vq->split.vring.desc,
+					 head, l1_addr,
+					 total_sg * sizeof(struct vring_desc),
+					 VRING_DESC_F_INDIRECT,
+					 false);
+	}
+
+	/* We're using some buffers from the free list. */
+	vq->vq.num_free -= descs_used;
+
+	/* Update free pointer */
+	if (indirect)
+		vq->free_head = vq->split.desc_extra[head].next;
+	else
+		vq->free_head = i;
+
+	/* Store token and indirect buffer state. */
+	vq->split.desc_state[head].data = data;
+	if (indirect)
+		vq->split.desc_state[head].indir_desc = desc;
+	else
+		vq->split.desc_state[head].indir_desc = ctx;
+
+	/* Put entry in available array (but don't update avail->idx until they
+	 * do sync).
+	 */
+	avail = vq->split.avail_idx_shadow & (vq->split.vring.num - 1);
+	vq->split.vring.avail->ring[avail] = cpu_to_virtio16(_vq->vdev, head);
+
+	/* Descriptors and available array need to be set before we expose the
+	 * new available array entries.
+	 */
+	virtio_wmb(vq->weak_barriers);
+	vq->split.avail_idx_shadow++;
+	vq->split.vring.avail->idx = cpu_to_virtio16(_vq->vdev,
+						vq->split.avail_idx_shadow);
+	vq->num_added++;
+
+	pr_debug("Added buffer head %i to %p\n", head, vq);
+	END_USE(vq);
+
+	/* This is very unlikely, but theoretically possible.  Kick
+	 * just in case.
+	 */
+	if (unlikely(vq->num_added == (1 << 16) - 1))
+		virtqueue_kick(_vq);
+
+	return 0;
+
+unmap_release:
+	err_idx = i;
+
+	if (indirect)
+		i = 0;
+	else
+		i = head;
+
+	for (n = 0; n < total_sg; n++) {
+		if (i == err_idx)
+			break;
+		if (indirect) {
+			vring_unmap_one_split_indirect(vq, &desc[i]);
+			i = virtio16_to_cpu(_vq->vdev, desc[i].next);
+		} else
+			i = vring_unmap_one_split(vq, i);
+	}
+
+free_indirect:
+	if (indirect)
+		kfree(desc);
+
+	END_USE(vq);
+	return -ENOMEM;
+}
+
 static bool virtqueue_kick_prepare_split(struct virtqueue *_vq)
 {
 	struct vring_virtqueue *vq = to_vvq(_vq);
@@ -820,7 +1062,8 @@ static void detach_buf_split(struct vring_virtqueue *vq, unsigned int head,
 				vring_unmap_one_split_indirect(vq, &indir_desc[j]);
 		}
 
-		kfree(indir_desc);
+		if (!vq->save_indir)
+			kfree(indir_desc);
 		vq->split.desc_state[head].indir_desc = NULL;
 	} else if (ctx) {
 		*ctx = vq->split.desc_state[head].indir_desc;
@@ -2050,6 +2293,7 @@ static struct virtqueue *vring_create_virtqueue_packed(
 	vq->use_dma_api = vring_use_dma_api(vdev);
 	vq->premapped = false;
 	vq->do_unmap = vq->use_dma_api;
+	vq->save_indir = false;
 
 	vq->indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC) &&
 		!context;
@@ -2169,6 +2413,23 @@ static inline int virtqueue_add(struct virtqueue *_vq,
 					out_sgs, in_sgs, data, ctx, gfp);
 }
 
+/*
+ * Generic functions and exported symbols for ringpair mode.
+ */
+
+static inline int virtqueue_add_rpair(struct virtqueue *_vq,
+				struct scatterlist *sgs[],
+				unsigned int total_sg,
+				unsigned int out_sgs,
+				unsigned int in_sgs,
+				void *data,
+				void *ctx,
+				gfp_t gfp)
+{
+	return virtqueue_add_split_rpair(_vq, sgs, total_sg,
+				   out_sgs, in_sgs, data, ctx, gfp);
+}
+
 /**
  * virtqueue_add_sgs - expose buffers to other end
  * @_vq: the struct virtqueue we're talking about.
@@ -2203,6 +2464,49 @@ int virtqueue_add_sgs(struct virtqueue *_vq,
 			     data, NULL, gfp);
 }
 EXPORT_SYMBOL_GPL(virtqueue_add_sgs);
+
+/**
+ * virtqueue_add_sgs_rpair - expose buffers to other end
+ * @_vq: the struct virtqueue we're talking about.
+ * @sgs: array of terminated scatterlists.
+ * @out_sgs: the number of scatterlists readable by other side
+ * @in_sgs: the number of scatterlists which are writable (after readable ones)
+ * @data: the token identifying the buffer.
+ * @gfp: how to do memory allocations (if necessary).
+ *
+ * Caller must ensure we don't call this with other virtqueue operations
+ * at the same time (except where noted).
+ *
+ * Only work for ring pair mode
+ *
+ * Returns zero or a negative error (ie. ENOSPC, ENOMEM, EIO).
+ */
+int virtqueue_add_sgs_rpair(struct virtqueue *_vq,
+		      struct scatterlist *sgs[],
+		      unsigned int out_sgs,
+		      unsigned int in_sgs,
+		      void *data,
+		      gfp_t gfp)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	unsigned int i, total_sg = 0;
+
+	if (!vq->save_indir) {
+		pr_err("virtqueue_add_rpair() only supported for SQ.");
+		return -EINVAL;
+	}
+
+	/* Count them first. */
+	for (i = 0; i < out_sgs + in_sgs; i++) {
+		struct scatterlist *sg;
+
+		for (sg = sgs[i]; sg; sg = sg_next(sg))
+			total_sg++;
+	}
+	return virtqueue_add_rpair(_vq, sgs, total_sg, out_sgs, in_sgs,
+			     data, NULL, gfp);
+}
+EXPORT_SYMBOL_GPL(virtqueue_add_sgs_rpair);
 
 /**
  * virtqueue_add_outbuf - expose output buffers to other end
@@ -2564,6 +2868,7 @@ static struct virtqueue *__vring_new_virtqueue(unsigned int index,
 	vq->use_dma_api = vring_use_dma_api(vdev);
 	vq->premapped = false;
 	vq->do_unmap = vq->use_dma_api;
+	vq->save_indir = false;
 
 	vq->indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC) &&
 		!context;
@@ -2666,6 +2971,23 @@ int virtqueue_resize(struct virtqueue *_vq, u32 num,
 EXPORT_SYMBOL_GPL(virtqueue_resize);
 
 /**
+ * virtqueue_set_save_indir - set the vring save_indir
+ * @_vq: the struct virtqueue we're talking about.
+ *
+ * Enable the save_indir mode of the vq.
+ *
+ */
+void virtqueue_set_save_indir(struct virtqueue *_vq)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	START_USE(vq);
+	vq->save_indir = true;
+	END_USE(vq);
+}
+EXPORT_SYMBOL_GPL(virtqueue_set_save_indir);
+
+/**
  * virtqueue_set_dma_premapped - set the vring premapped mode
  * @_vq: the struct virtqueue we're talking about.
  *
@@ -2697,11 +3019,15 @@ int virtqueue_set_dma_premapped(struct virtqueue *_vq)
 
 	if (num != vq->vq.num_free) {
 		END_USE(vq);
+		pr_debug("%s:%d err num is not equal to num_free, num=%u, num_free=%u\n",
+					__func__, __LINE__, num, vq->vq.num_free);
 		return -EINVAL;
 	}
 
 	if (!vq->use_dma_api) {
 		END_USE(vq);
+		pr_debug("%s:%d err vring does not use the dma api\n",
+					__func__, __LINE__);
 		return -EINVAL;
 	}
 
@@ -2990,6 +3316,59 @@ void virtqueue_dma_unmap_single_attrs(struct virtqueue *_vq, dma_addr_t addr,
 EXPORT_SYMBOL_GPL(virtqueue_dma_unmap_single_attrs);
 
 /**
+ * virtqueue_dma_map_page_attrs - map DMA for _vq
+ * @_vq: the struct virtqueue we're talking about.
+ * @page: the page descriptor of the buffer to do dma
+ * @offset: the offset of the buffer to do dma inside the page
+ * @size: the size of the buffer to do dma
+ * @dir: DMA direction
+ * @attrs: DMA Attrs
+ *
+ * The caller calls this to do dma mapping in advance. The DMA address can be
+ * passed to this _vq when it is in pre-mapped mode.
+ *
+ * return DMA address. Caller should check that by virtqueue_dma_mapping_error().
+ */
+dma_addr_t virtqueue_dma_map_page_attrs(struct virtqueue *_vq, struct page *page,
+					size_t offset, size_t size,
+					enum dma_data_direction dir,
+					unsigned long attrs)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	if (!vq->use_dma_api)
+		return (dma_addr_t)(page_to_phys(page) + offset);
+
+	return dma_map_page_attrs(vring_dma_dev(vq), page, offset,
+				  size, dir, attrs);
+}
+EXPORT_SYMBOL_GPL(virtqueue_dma_map_page_attrs);
+
+/**
+ * virtqueue_dma_unmap_page_attrs - unmap DMA for _vq
+ * @_vq: the struct virtqueue we're talking about.
+ * @addr: the dma address to unmap
+ * @size: the size of the buffer
+ * @dir: DMA direction
+ * @attrs: DMA Attrs
+ *
+ * Unmap the address that is mapped by the virtqueue_dma_map_* APIs.
+ *
+ */
+void virtqueue_dma_unmap_page_attrs(struct virtqueue *_vq, dma_addr_t addr,
+				    size_t size, enum dma_data_direction dir,
+				    unsigned long attrs)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	if (!vq->use_dma_api)
+		return;
+
+	dma_unmap_page_attrs(vring_dma_dev(vq), addr, size, dir, attrs);
+}
+EXPORT_SYMBOL_GPL(virtqueue_dma_unmap_page_attrs);
+
+/**
  * virtqueue_dma_mapping_error - check dma address
  * @_vq: the struct virtqueue we're talking about.
  * @addr: DMA address
@@ -3082,5 +3461,102 @@ void virtqueue_dma_sync_single_range_for_device(struct virtqueue *_vq,
 					 DMA_BIDIRECTIONAL);
 }
 EXPORT_SYMBOL_GPL(virtqueue_dma_sync_single_range_for_device);
+
+/**
+ * virtqueue_show_split_message - print split queue structure
+ * @_vq: the struct virtqueue we're talking about.
+ * @s: the struct seq_file
+ * Before calling this function, get lock to confirm that
+ * the virtqueue is not in use.
+ */
+void virtqueue_show_split_message(struct virtqueue *_vq, struct seq_file *s)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	struct vring_virtqueue_split *split = &vq->split;
+	u16 last_used_idx, used_idx, idx, idx_in_used_ring, flags;
+	struct vring_desc *desc;
+	int len, i;
+
+	last_used_idx = vq->last_used_idx;
+	used_idx = virtio16_to_cpu(vq->vq.vdev, split->vring.used->idx);
+
+	seq_printf(s, "Virtqueue %d (0x%px): num %d\n", _vq->index,
+						vq, split->vring.num);
+	seq_printf(s, "Descriptor Table: num_free %d, free_head %d\n",
+						_vq->num_free, vq->free_head);
+	seq_printf(s, "Available Ring: flags 0x%x, avail_idx %d\n",
+			split->avail_flags_shadow, split->vring.avail->idx);
+	seq_printf(s, "Used Ring: used %d, last_used_index %d\n",
+			used_idx, last_used_idx);
+
+	if (last_used_idx == used_idx)
+		goto out;
+
+	seq_puts(s, "----------  ---------------- -------\n");
+	seq_puts(s, "USED_INDEX  DESC_TABLE_INDEX DRVDATA\n");
+	while (last_used_idx != used_idx) {
+		idx = last_used_idx & (split->vring.num - 1);
+		idx_in_used_ring = virtio32_to_cpu(vq->vq.vdev,
+					split->vring.used->ring[idx].id);
+
+		seq_printf(s, "%10d  %16d 0x%px\n", idx, idx_in_used_ring,
+				split->desc_state[idx_in_used_ring].data);
+		last_used_idx++;
+	}
+	seq_puts(s, "----------  ---------------- -------\n");
+	last_used_idx = vq->last_used_idx;
+	while (last_used_idx != used_idx) {
+		idx = last_used_idx & (split->vring.num - 1);
+		idx_in_used_ring = virtio32_to_cpu(vq->vq.vdev,
+					split->vring.used->ring[idx].id);
+
+		if (!vq->indirect) {
+			seq_printf(s, "Direct desc[%d]\n", idx_in_used_ring);
+			i = idx_in_used_ring;
+			do {
+				desc = &split->vring.desc[i];
+				flags = virtio16_to_cpu(vq->vq.vdev, desc->flags);
+
+				seq_printf(s, "   desc[%d] ", i);
+				seq_printf(s, "dma_addr=0x%-16llx ",
+					virtio64_to_cpu(vq->vq.vdev, desc->addr));
+				seq_printf(s, "flags=0x%-4x ", flags);
+				seq_printf(s, "len=%-8d ",
+					virtio32_to_cpu(vq->vq.vdev, desc->len));
+				seq_printf(s, "next=%-4d\n",
+					virtio16_to_cpu(vq->vq.vdev, desc->next));
+				i = desc->next;
+			} while (flags & VRING_DESC_F_NEXT);
+		} else {
+			desc = &split->vring.desc[idx_in_used_ring];
+			len = split->desc_extra[idx_in_used_ring].len;
+			seq_printf(s, "P{0x%px} desc[%d]", desc, idx_in_used_ring);
+			seq_printf(s, "dma_addr=0x%-16llx len=%-8d\n",
+					virtio64_to_cpu(vq->vq.vdev, desc[i].addr),
+					virtio32_to_cpu(vq->vq.vdev, desc[i].len));
+
+			/* print indir_descs */
+			desc = split->desc_state[idx_in_used_ring].indir_desc;
+			for (i = 0; i < len / sizeof(struct vring_desc); i++) {
+				seq_printf(s, "    indir_desc[%d] ", i);
+				seq_printf(s, "dma_addr=0x%-16llx ",
+					virtio64_to_cpu(vq->vq.vdev, desc[i].addr));
+				seq_printf(s, "flags=0x%-4x ",
+					virtio16_to_cpu(vq->vq.vdev, desc[i].flags));
+				seq_printf(s, "len=%-8d ",
+					virtio32_to_cpu(vq->vq.vdev, desc[i].len));
+				seq_printf(s, "next=%-4d\n",
+					virtio16_to_cpu(vq->vq.vdev, desc[i].next));
+			}
+		}
+		last_used_idx++;
+	}
+
+out:
+	seq_puts(s, "=======================================\n");
+	return;
+
+}
+EXPORT_SYMBOL_GPL(virtqueue_show_split_message);
 
 MODULE_LICENSE("GPL");
