@@ -1,0 +1,1117 @@
+* Fri Mar 28 2025 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-19_rc1%%DIST%%]
+- anolis: virtio-blk: add debugfs interface for ring_pair (Ferry Meng)
+- anolis: virtio_ring: add split queue seq_printf interface (Ferry Meng)
+- anolis: virtio-blk: add trace events (Ferry Meng)
+- anolis: virtio-blk: dyn request alloc when enabled vring pair (Ferry Meng)
+- anolis: blk-mq: support dynamic request alloc (Ferry Meng)
+- anolis: virtio-blk: enable CONFIG_VIRTIO_BLK_RING_PAIR default (Ferry Meng)
+- anolis: virtio-blk: add hide_bdev extra feature bit (Ferry Meng)
+- anolis: virtio-blk: add no_align extra feature bit (Ferry Meng)
+- anolis: virtio-blk: add ext_feature negotiation method and ring-pair feature bit (Ferry Meng)
+- anolis: virtio_blk: reuse CQ ioprio to locate error position (Ferry Meng)
+- anolis: virtio-blk: add ring pair support (Ferry Meng)
+- anolis: virtio-blk/virtio_ring: vring_pair pass indirect descriptor (Ferry Meng)
+- anolis: virtio-blk/virtio_ring: separate ring_pair add_sgs functions. (Ferry Meng)
+- anolis: virtio-blk: premap DMA buf (Ferry Meng)
+- anolis: virtio-blk: duplicate functions to cleanup for ring pair (Ferry Meng)
+- anolis: virtio-blk: add VIRTIO_BLK_RING_PAIR kconfig (Ferry Meng)
+- anolis: virtio_ring: introduce dma map page api for virtqueue (Ferry Meng)
+- misc: fastrpc: Fix copy buffer page size (Ekansh Gupta) {CVE-2025-21734}
+- misc: fastrpc: Add dma handle implementation (Vamsi Krishna Gattupalli) {CVE-2025-21734}
+- misc: fastrpc: Add helper function to get list and page (Vamsi Krishna Gattupalli) {CVE-2025-21734}
+- misc: fastrpc: Add fdlist implementation (Vamsi Krishna Gattupalli) {CVE-2025-21734}
+- misc: fastrpc: copy to user only for non-DMA-BUF heap buffers (Jeya R) {CVE-2025-21734}
+- erofs: enable 48-bit layout support (Gao Xiang)
+- erofs: implement encoded extent metadata (Gao Xiang)
+- erofs: add encoded extent on-disk definition (Gao Xiang)
+- erofs: support dot-omitted directories (Gao Xiang)
+- erofs: implement 48-bit block addressing for unencoded inodes (Gao Xiang)
+- erofs: add 48-bit block addressing on-disk support (Gao Xiang)
+- erofs: simplify erofs_{read,fill}_inode() (Gao Xiang)
+- erofs: get rid of erofs_map_blocks_flatmode() (Gao Xiang)
+- erofs: clean up header parsing for ztailpacking and fragments (Gao Xiang)
+- erofs: simplify tail inline pcluster handling (Gao Xiang)
+- erofs: allow 16-byte volume name again (Gao Xiang)
+- erofs: use Z_EROFS_LCLUSTER_TYPE_MAX to simplify switches (Hongzhen Luo)
+- erofs: refine z_erofs_get_extent_compressedlen() (Gao Xiang)
+- erofs: restrict pcluster size limitations (Gao Xiang)
+- erofs: get rid of z_erofs_map_blocks_iter_* tracepoints (Hongzhen Luo)
+- erofs: handle overlapped pclusters out of crafted images properly (Gao Xiang)
+- erofs: ensure m_llen is reset to 0 if metadata is invalid (Gao Xiang)
+- erofs: clean up erofs_show_options() (Hongzhen Luo)
+- erofs: clean up z_erofs_load_full_lcluster() (Gao Xiang)
+- erofs: get rid of `justfound` debugging tag (Gao Xiang)
+- erofs: fix uninitialized page cache reported by KMSAN (Gao Xiang)
+- erofs: fix infinite loop due to a race of filling compressed_bvecs (Gao Xiang)
+- erofs: allow partially filled compressed bvecs (Yue Hu)
+- erofs: enable sub-page compressed block support (Gao Xiang)
+- erofs: refine z_erofs_transform_plain() for sub-page block support (Gao Xiang)
+- erofs: fix up compacted indexes for block size < 4096 (Gao Xiang)
+- erofs: record `pclustersize` in bytes instead of pages (Gao Xiang)
+- erofs: support I/O submission for sub-page compressed blocks (Gao Xiang)
+- anolis: Revert "erofs: handle overlapped pclusters out of crafted images properly" (Gao Xiang)
+- erofs: drop z_erofs_page_mark_eio() (Gao Xiang)
+- erofs: tidy up z_erofs_do_read_page() (Gao Xiang)
+- erofs: move preparation logic into z_erofs_pcluster_begin() (Gao Xiang)
+- erofs: avoid obsolete {collector,collection} terms (Gao Xiang)
+- erofs: simplify z_erofs_read_fragment() (Gao Xiang)
+- erofs: release ztailpacking pclusters properly (Jingbo Xu)
+- erofs: use struct lockref to replace handcrafted approach (Gao Xiang)
+- padata: avoid UAF for reorder_work (Chen Ridong) {CVE-2025-21726}
+- padata: add pd get/put refcnt helper (Chen Ridong) {CVE-2025-21726}
+- ipvlan: Fix out-of-bound bugs caused by unset skb->mac_header (Lu Wei) {CVE-2022-48651}
+- vfio/pci: Lock external INTx masking ops (Alex Williamson) {CVE-2024-26810}
+- pinctrl: mcp23s08: Fix sleeping in atomic context due to regmap locking (Evgenii Shatokhin) {CVE-2024-57889}
+- USB: serial: quatech2: fix null-ptr-deref in qt2_process_read_urb() (Qasim Ijaz) {CVE-2025-21689}
+- usb: cdc-acm: Check control transfer buffer size before access (Jann Horn) {CVE-2025-21704}
+- PCI: rcar-ep: Fix incorrect variable used when calling devm_request_mem_region() (King Dix) {CVE-2025-21804}
+- USB: core: Fix deadlock in usb_deauthorize_interface() (Alan Stern) {CVE-2024-26934}
+- clk: qcom: gcc-ipq6018: fix terminating of frequency table arrays (Gabor Juhos) {CVE-2024-26970}
+- fbcon: Use kzalloc() in fbcon_prepare_logo() (Tetsuo Handa) {CVE-2022-48993}
+- nvdimm: Fix devs leaks in scan_labels() (Li Zhijian) {CVE-2024-47755}
+- usb: cdns3: fixed memory use after free at cdns3_gadget_ep_disable() (Frank Li) {CVE-2024-26749}
+- static_call: Replace pointless WARN_ON() in static_call_module_notify() (Thomas Gleixner) {CVE-2024-49954}
+- padata: use integer wrap around to prevent deadlock on seq_nr overflow (VanGiang Nguyen) {CVE-2024-47739}
+- bpf: avoid holding freeze_mutex during mmap operation (Andrii Nakryiko) {CVE-2025-21853}
+- bpf: unify VM_WRITE vs VM_MAYWRITE use in BPF map mmaping logic (Andrii Nakryiko) {CVE-2025-21853}
+- padata: fix UAF in padata_reorder (Chen Ridong) {CVE-2025-21727}
+- arm64: stacktrace: Relax frame record alignment requirement to 8 bytes (Peter Collingbourne)
+- arm64: Change the on_*stack functions to take a size argument (Peter Collingbourne)
+- arm64: Implement stack trace termination record (Madhavan T. Venkataraman)
+- fbdev: savage: Error out if pixclock equals zero (Fullway Wang) {CVE-2024-26778}
+- security/keys: fix slab-out-of-bounds in key_task_permission (Chen Ridong) {CVE-2024-50301}
+- x86/extable: Prefer local labels in .set directives (Nick Desaulniers) {CVE-2022-49562}
+- fbdev: sisfb: Fix strbuf array overflow (Andrey Shumilin) {CVE-2024-50180}
+- clk: imx: Remove CLK_SET_PARENT_GATE for DRAM mux for i.MX7D (Peng Fan) {CVE-2024-50181}
+- USB: serial: io_edgeport: fix use after free in debug printk (Dan Carpenter) {CVE-2024-50267}
+- KVM: x86: Use __try_cmpxchg_user() to update guest PTE A/D bits (Sean Christopherson) {CVE-2022-49562}
+- x86/futex: Remove .fixup usage (Peter Zijlstra) {CVE-2022-49562}
+- x86/extable: Extend extable functionality (Peter Zijlstra) {CVE-2022-49562}
+- i2c: dev: check return value when calling dev_set_name() (Andy Shevchenko) {CVE-2022-49046}
+- RDMA/rtrs: Ensure 'ib_sge list' is accessible (Li Zhijian) {CVE-2024-36476}
+- bus: fsl-mc-bus: fix KASAN use-after-free in fsl_mc_bus_remove() (Shin'ichiro Kawasaki) {CVE-2022-49711}
+- usb: xhci: Fix NULL pointer dereference on certain command aborts (Michal Pecio) {CVE-2024-57981}
+- usb: gadget: f_fs: Remove WARN_ON in functionfs_bind (Akash M) {CVE-2024-57913}
+- ptp: Ensure info->enable callback is always set (Thomas Weißschuh) {CVE-2025-21814}
+- topology: Keep the cpumask unchanged when printing cpumap (Li Huafei) {CVE-2024-57917}
+- kcsan: Turn report_filterlist_lock into a raw_spinlock (Marco Elver) {CVE-2024-56610}
+- static_call: Handle module init failure correctly in static_call_del_module() (Thomas Gleixner) {CVE-2024-50002}
+- padata: Fix possible divide-by-0 panic in padata_mt_helper() (Waiman Long) {CVE-2024-43889}
+- module: fix [e_shstrndx].sh_size=0 OOB access (Alexey Dobriyan) {CVE-2022-49444}
+- kernel/resource: fix kfree() of bootmem memory again (Miaohe Lin) {CVE-2022-49190}
+- drm: Don't unref the same fb many times by mistake due to deadlock handling (Ville Syrjälä) {CVE-2023-52486}
+- hwmon: (drivetemp) Fix driver producing garbage data when SCSI errors occur (Daniil Stas) {CVE-2025-21656}
+- team: better TEAM_OPTION_TYPE_STRING validation (Eric Dumazet) {CVE-2025-21787}
+- iommufd/iova_bitmap: Fix shift-out-of-bounds in iova_bitmap_offset_to_index() (Qasim Ijaz) {CVE-2025-21724}
+- usb: dwc3: gadget: Replace list_for_each_entry_safe() if using giveback (Wesley Cheng) {CVE-2022-49398}
+- usb: dwc3: add cancelled reasons for dwc3 requests (Ray Chi) {CVE-2022-49398}
+- vfio/pci: fix memory leak during D3hot to D0 transition (Abhishek Sahu) {CVE-2022-49219}
+- list: fix a data-race around ep->rdllist (Kuniyuki Iwashima) {CVE-2022-49443}
+- list: introduce list_is_head() helper and re-use it in list.h (Andy Shevchenko) {CVE-2022-49443}
+- sched: act_ct: take care of padding in struct zones_ht_key (Eric Dumazet)
+- sched: act_ct: add netns into the key of tcf_ct_flow_table (Xin Long)
+- net/sched: act_ct: set 'net' pointer when creating new nf_flow_table (Vlad Buslov)
+- net: sched: act_ct: fix possible refcount leak in tcf_ct_init() (Hangyu Hua)
+- bcache: revert replacing IS_ERR_OR_NULL with IS_ERR again (Liequan Che) {CVE-2024-48881}
+- vfio/pci: Create persistent INTx handler (Alex Williamson) {CVE-2024-26812}
+- vfio: Introduce interface to flush virqfd inject workqueue (Alex Williamson) {CVE-2024-26812}
+- vfio/pci: Properly hide first-in-list PCIe extended capability (Avihai Horon) {CVE-2024-53214}
+- geneve: do not assume mac header is set in geneve_xmit_skb() (Eric Dumazet) {CVE-2024-56636}
+- sched: remove redundant on_rq status change (Wang Hui)
+- anolis: Remove vtoa.ko (Philo Lu)
+- anolis: sched/isolation: Only skip percpu kthread when updating wilds (Tianchen Ding)
+- kthread: unpark only parked kthread (Frederic Weisbecker)
+- workqueue: Tag bound workers with KTHREAD_IS_PER_CPU (Peter Zijlstra)
+- workqueue: Use cpu_possible_mask instead of cpu_active_mask to break affinity (Lai Jiangshan)
+- workqueue: Manually break affinity on hotplug (Peter Zijlstra)
+- anolis: net/smc: fix for crash when received stale rwwi imm (Guangguan Wang)
+- net/smc: use the correct ndev to find pnetid by pnetid table (Guangguan Wang)
+- net/smc: fix data error when recvmsg with MSG_PEEK flag (Guangguan Wang)
+- anolis: net/smc: count Tx transmitted data in smc_sendpage() (Wen Gu)
+- anolis: net/smc: fix gid attribute reference leak (Wen Gu)
+- ubi: fastmap: Fix duplicate slab cache names while attaching (Zhihao Cheng) {CVE-2024-53172}
+- scsi: qedi: Fix a possible memory leak in qedi_alloc_and_init_sb() (Zhen Lei) {CVE-2024-56747}
+- firmware: arm_scpi: Check the DVFS OPP count returned by the firmware (Luo Qiu) {CVE-2024-53157}
+- tty: n_gsm: require CAP_NET_ADMIN to attach N_GSM0710 ldisc (Thadeu Lima de Souza Cascardo) {CVE-2023-52880}
+- i3c: Use i3cdev->desc->info instead of calling i3c_device_get_info() to avoid deadlock (Defa Li) {CVE-2024-43098}
+- nvme-rdma: unquiesce admin_q before destroy it (Chunguang.xu) {CVE-2024-49569}
+- xhci: Fix null pointer dereference when host dies (Mathias Nyman) {CVE-2023-52898}
+- scsi: megaraid_sas: Fix for a potential deadlock (Tomas Henzl) {CVE-2024-57807}
+- tty: vcc: Add check for kstrdup() in vcc_probe() (Yi Yang) {CVE-2023-52789}
+- EDAC/bluefield: Fix potential integer overflow (David Thompson) {CVE-2024-53161}
+- PCI: Fix use-after-free of slot->bus on hot remove (Lukas Wunner) {CVE-2024-53194}
+- anolis: sw64: kexec: add support for crashkernel=size[KMG] (Gu Zitao)
+- x86: KVM: Advertise CPUIDs for new instructions in Clearwater Forest (Tao Su)
+- x86/cpu: Add model number for Intel Clearwater Forest processor (Tony Luck)
+- netfilter: nf_tables: clean up hook list when offload flags check fails (Pablo Neira Ayuso)
+- mm: shmem: fix UAF bug in shmem_show_options() (Tu Jinjiang)
+- shmem: use raw_spinlock_t for ->stat_lock (Sebastian Andrzej Siewior)
+- pfifo_tail_enqueue: Drop new packet when sch->limit == 0 (Quang Le)
+- net: sched: Disallow replacing of child qdisc from one parent to another (Jamal Hadi Salim)
+- netem: Update sch->q.qlen before qdisc_tree_reduce_backlog() (Cong Wang)
+- usb: dwc3: gadget: Fix looping of queued SG entries (Thinh Nguyen) {CVE-2024-56698}
+- rtc: check if __rtc_read_time was successful in rtc_timer_do_work() (Yongliang Gao) {CVE-2024-56739}
+- nvme-pci: fix freeing of the HMB descriptor table (Christoph Hellwig) {CVE-2024-56756}
+- bonding: fix null pointer deref in bond_ipsec_offload_ok (Nikolay Aleksandrov) {CVE-2024-44990}
+- xhci: Fix Panther point NULL pointer deref at full-speed re-enumeration (Mathias Nyman) {CVE-2024-45006}
+- drm/client: fix null pointer dereference in drm_client_modeset_probe (Ma Ke) {CVE-2024-43894}
+- usb: vhci-hcd: Do not drop references before new references are gained (Oliver Neukum) {CVE-2024-43883}
+- scsi: target: core: Fix null-ptr-deref in target_alloc_device() (Wang Hai) {CVE-2024-50153}
+- usb: typec: altmode should keep reference to parent (Thadeu Lima de Souza Cascardo) {CVE-2024-50150}
+- drm/shmem-helper: Remove errant put in error path (Rob Clark) {CVE-2022-48981}
+- RDMA/rtrs-clt: Reset cid to con_num - 1 to stay in bounds (Md Haris Iqbal) {CVE-2024-47695}
+- bonding: fix xfrm real_dev null pointer dereference (Nikolay Aleksandrov) {CVE-2024-44989}
+- usb: musb: sunxi: Fix accessing an released usb phy (Zijun Hu) {CVE-2024-50269}
+- serial: core: check uartclk for zero to avoid divide by zero (George Kennedy) {CVE-2024-43893}
+- md/raid5: avoid BUG_ON() while continue reshape after reassembling (Yu Kuai) {CVE-2024-43914}
+- tpm: Clean up TPM space after command failure (Jonathan McDowell) {CVE-2024-49851}
+- firmware_loader: Block path traversal (Jann Horn) {CVE-2024-47742}
+- usb: typec: ucsi: Fix null pointer dereference in trace (Abhishek Pandit-Subedi) {CVE-2024-46719}
+- usb: dwc3: core: Prevent USB core invalid event buffer address access (Selvarasu Ganesan) {CVE-2024-46675}
+- usb: dwc3: core: Skip setting event buffers for host only controllers (Krishna Kurapati) {CVE-2024-46675}
+- PCI: keystone: Fix if-statement expression in ks_pcie_quirk() (Dan Carpenter) {CVE-2024-47667}
+- PCI: keystone: Add workaround for Errata #i2037 (AM65x SR 1.0) (Kishon Vijay Abraham I) {CVE-2024-47667}
+- usb: hub: Guard against accesses to uninitialized BOS descriptors (Ricardo Cañuelo) {CVE-2023-52477}
+- efistub/tpm: Use ACPI reclaim memory for event log to avoid corruption (Ard Biesheuvel) {CVE-2024-49858}
+- ntb: intel: Fix the NULL vs IS_ERR() bug for debugfs_create_dir() (Jinjie Ruan) {CVE-2023-52917}
+- ntb: ntb_hw_switchtec: Fix use after free vulnerability in switchtec_ntb_remove due to race condition (Kaixin Wang) {CVE-2024-50059}
+- fbdev: pxafb: Fix possible use after free in pxafb_task() (Kaixin Wang) {CVE-2024-49924}
+- mailbox: bcm2835: Fix timeout during suspend mode (Stefan Wahren) {CVE-2024-49963}
+- erofs: simplify erofs_map_blocks_flatmode() (Hongzhen Luo)
+- erofs: refactor read_inode calling convention (Yiyang Wu)
+- erofs: use kmemdup_nul in erofs_fill_symlink (Yiyang Wu)
+- erofs: simplify erofs_read_inode() (Ferry Meng)
+- erofs: add necessary kmem_cache_create flags for erofs inode cache (Ferry Meng)
+- erofs: clean up redundant comment and adjust code alignment (Ferry Meng)
+- erofs: refine warning messages for zdata I/Os (Ferry Meng)
+- erofs: clean up zmap.c (Gao Xiang)
+- erofs: remove unnecessary goto (Yangtao Li)
+- erofs: cleanup i_format-related stuffs (Gao Xiang)
+- erofs: sunset erofs_dbg() (Gao Xiang)
+- erofs: simplify erofs_xattr_generic_get() (Jingbo Xu)
+- erofs: rename init_inode_xattrs with erofs_ prefix (Jingbo Xu)
+- erofs: move several xattr helpers into xattr.c (Jingbo Xu)
+- erofs: get rid of debug_one_dentry() (Gao Xiang)
+- EDAC/thunderx: Fix possible out-of-bounds string access (Arnd Bergmann) {CVE-2023-52464}
+- USB: usbtmc: prevent kernel-usb-infoleak (Edward Adam Davis) {CVE-2024-47671}
+- tee: amdtee: fix use-after-free vulnerability in amdtee_close_session (Rijo Thomas) {CVE-2023-52503}
+- PCI: Add missing bridge lock to pci_bus_lock() (Dan Williams) {CVE-2024-46750}
+- EDAC/{skx_common,i10nm}: Fix incorrect far-memory error source indicator (Qiuxu Zhuo)
+- EDAC/skx_common: Differentiate memory error sources (Qiuxu Zhuo)
+- EDAC/{skx_common,skx,i10nm}: Move the common debug code to skx_common (Qiuxu Zhuo)
+- EDAC, i10nm: make skx_common.o a separate module (Arnd Bergmann)
+- smb: client: Add check for next_buffer in receive_encrypted_standard() (Haoxiang Li) {CVE-2025-21844}
+- hv_sock: Initializing vsk->trans to NULL to prevent a dangling pointer (Hyunwoo Kim) {CVE-2024-53103}
+- net: openvswitch: fix possible memory leak in ovs_meter_cmd_set() (Hangyu Hua) {CVE-2023-52702}
+- netfilter: nf_tables: Fix potential data-race in __nft_expr_type_get() (Ziyang Xuan) {CVE-2024-27020}
+- netfilter: nf_tables: prevent nf_skb_duplicated corruption (Eric Dumazet) {CVE-2024-49952}
+- netfilter: ipset: add missing range check in bitmap_ip_uadt (Jeongjun Park) {CVE-2024-53141}
+- net: avoid potential underflow in qdisc_pkt_len_init() with UFO (Eric Dumazet) {CVE-2024-49949}
+- net: sched: fix possible refcount leak in tc_new_tfilter() (Hangyu Hua) {CVE-2022-48639}
+- net/sched: taprio: avoid disabling offload when it was never enabled (Vladimir Oltean) {CVE-2022-48644}
+- netfilter: nf_tables: disallow anonymous set with timeout flag (Pablo Neira Ayuso) {CVE-2024-26642}
+- tcp: Fix shift-out-of-bounds in dctcp_update_alpha(). (Kuniyuki Iwashima) {CVE-2024-37356}
+- tls: fix missing memory barrier in tls_init (Dae R. Jeong) {CVE-2024-36489}
+- net: nexthop: Initialize all fields in dumped nexthops (Petr Machata) {CVE-2024-42283}
+- net, sunrpc: Remap EPERM in case of connection failure in xs_tcp_setup_socket (Daniel Borkmann) {CVE-2024-42246}
+- sched/deadline: Fix warning in migrate_enable for boosted tasks (Wander Lairson Costa) {CVE-2024-56583}
+- KVM: VMX: Also clear SGX EDECCSSA in KVM CPU caps when SGX is disabled (Kai Huang)
+- x86/sgx: Add overflow check in sgx_validate_offset_length() (Borys Popławski)
+- KVM/VMX: Allow exposing EDECCSSA user leaf function to KVM guest (Kai Huang)
+- x86/sgx: Allow enclaves to use Asynchrounous Exit Notification (Dave Hansen)
+- x86/sgx: Reduce delay and interference of enclave release (Reinette Chatre)
+- x86/sgx: Improve comments for sgx_encl_lookup/alloc_backing() (Kristen Carlson Accardi)
+- x86/sgx: Handle VA page allocation failure for EAUG on PF. (Haitao Huang)
+- x86/sgx: Do not fail on incomplete sanitization on premature stop of ksgxd (Jarkko Sakkinen)
+- selftests/sgx: Ignore OpenSSL 3.0 deprecated functions warning (Kristen Carlson Accardi)
+- block: cleanup and fix batch completion adding conditions (Jens Axboe)
+- block: call rq_qos_done() before ref check in batch completions (Jens Axboe)
+- block: fix parameter not described warning (Yang Guang)
+- blk-mq: update hctx->nr_active in blk_mq_end_request_batch() (Ming Lei)
+- anolis: scsi: target: tcm_loop: fix wrong abort tag (Guixin Liu)
+- hrtimers: Handle CPU state correctly on hotplug (Koichiro Den) {CVE-2024-57951}
+- workqueue: Do not warn when cancelling WQ_MEM_RECLAIM work from !WQ_MEM_RECLAIM worker (Tvrtko Ursulin) {CVE-2024-57888}
+- anolis: ipvs: make ip_vs_svc_table and ip_vs_svc_fwm_table per netns (Philo Lu)
+- virtio_ring: introduce dma sync api for virtqueue (Xuan Zhuo)
+- virtio_ring: introduce dma map api for virtqueue (Xuan Zhuo)
+- virtio_ring: introduce virtqueue_reset() (Xuan Zhuo)
+- virtio_ring: separate the logic of reset/enable from virtqueue_resize (Xuan Zhuo)
+- virtio_ring: correct the expression of the description of virtqueue_resize() (Xuan Zhuo)
+- virtio_ring: skip unmap for premapped (Xuan Zhuo)
+- virtio_ring: introduce virtqueue_dma_dev() (Xuan Zhuo)
+- virtio_ring: support add premapped buf (Xuan Zhuo)
+- virtio_ring: introduce virtqueue_set_dma_premapped() (Xuan Zhuo)
+- virtio_ring: put mapping error check in vring_map_one_sg (Xuan Zhuo)
+- virtio_ring: check use_dma_api before unmap desc for indirect (Xuan Zhuo)
+- anolis: intel_th: replaces spin_lock with mutex_lock (wangkaiyuan)
+- anolis: file: re-add ksys_close (Joseph Qi)
+- anolis: sw64: ftrace: fix MCOUNT_INSN_SIZE (Gao Chen)
+- anolis: arch/x86/lib: Open the default configuration (Zhiteng Qiu)
+- anolis: pinctrl: Add device HID for Hygon GPIO controller (Liao Xuan)
+- anolis: EDAC/amd64: Get instance id for Hygon family 18h model 10h (Liao Xuan)
+- anolis: EDAC/amd64: Fix the calculation of instance id for Hygon family 18h model 6h (Liao Xuan)
+- anolis: EDAC/amd64: Adjust address translation for Hygon family 18h model 10h (Liao Xuan)
+- anolis: EDAC/amd64: Get intlv_num_dies from F0x60 for Hygon family 18h model 6h (Liao Xuan)
+- anolis: EDAC/amd64: Use u16 for some umc variables for Hygon family 18h model 4h (Liao Xuan)
+- anolis: EDAC/amd64: Fix the calculation of cs id for Hygon family 18h model 4h (Liao Xuan)
+- nvme: add support for TP4084 - Time-to-Ready Enhancements (Christoph Hellwig)
+- anolis: perf/x86/amd/core: Fix performance monitor for Hygon family 18h processor (Liao Xuan)
+- anolis: EDAC/mce_amd: Add LS and IF mce types for Hygon family 18h model 7h (Liao Xuan)
+- anolis: x86/cpu/hygon: Refactor the CPU topology deriving method for Hygon (Liao Xuan)
+- anolis: EDAC/amd64: Add support for Hygon family 18h model 8h (Liao Xuan)
+- anolis: x86/amd_nb: Add support for Hygon family 18h model 8h (Liao Xuan)
+- anolis: x86/amd_nb: Get DF ID from F5 device for Hygon family 18h model 7h (Liao Xuan)
+- anolis: iommu/hygon: Add support for Hygon family 18h model 10h IOAPIC (Liao Xuan)
+- anolis: EDAC/amd64: Get correct memory type for Hygon family 18h model 10h (Liao Xuan)
+- anolis: EDAC/amd64: Check if umc channel is enabled for Hygon family 18h model 10h (Liao Xuan)
+- anolis: x86/amd_nb: Add helper function to identify Hygon family 18h model 10h (Liao Xuan)
+- anolis: x86/amd_nb: Fix northbridge init warning in guest for Hygon family 18h model 4h (Liao Xuan)
+- anolis: KVM: x86/svm: Add set_guest_pat_wb parameter for non-passthrough application scenarios (Liao Xuan)
+- gfs2: Truncate address space when flipping GFS2_DIF_JDATA flag (Andreas Gruenbacher) {CVE-2025-21699}
+- binfmt_flat: Fix integer overflow bug on 32 bit systems (Dan Carpenter) {CVE-2024-58010}
+- nbd: don't allow reconnect after disconnect (Yu Kuai) {CVE-2025-21731}
+- blk-cgroup: Fix class @block_class's subsystem refcount leakage (Zijun Hu) {CVE-2025-21745}
+- ipvs: Always clear ipvs_property flag in skb_scrub_packet() (Philo Lu)
+- dm thin: make get_first_thin use rcu-safe list first function (Krister Johansen) {CVE-2025-21664}
+- anolis: mm: enhance sbrk/brk to support THP alignment (Weilin Tong)
+- bpf: Fix bpf_sk_select_reuseport() memory leak (Michal Luczaj) {CVE-2025-21683}
+- bpf: Send signals asynchronously if !preemptible (Puranjay Mohan) {CVE-2025-21728}
+- anolis: x86/cpufeatures: Rename X86_FEATURE_SM{3,4} to X86_FEATURE_HYGON_CIS_SM{3,4} (hanliyang)
+- anolis: mm: async fork: Do not clean up async fork for CLONE_VM (Zelin Deng)
+- anolis: sw64: fix ftrace_make_call & ftrace_make_nop (Gao Chen)
+- anolis: sw64: fix ftrace_modify_call (Gao Chen)
+- PCI: Distribute available resources for root buses too (Mika Westerberg)
+- PCI: Take other bus devices into account when distributing resources (Mika Westerberg)
+- PCI: Align extra resources for hotplug bridges properly (Mika Westerberg)
+- Revert "PCI: Distribute available resources for root buses, too" (Bjorn Helgaas)
+- PCI: Fix typo in pci_scan_child_bus_extend() (Mika Westerberg)
+- PCI: Fix whitespace and indentation (Mika Westerberg)
+- PCI: Distribute available resources for root buses too (Mika Westerberg)
+- PCI: Move pci_assign_unassigned_root_bus_resources() (Mika Westerberg)
+- PCI: Pass available buses also when the bridge is already configured (Mika Westerberg)
+- PCI: Fix used_buses calculation in pci_scan_child_bus_extend() (Mika Westerberg)
+- firmware: arm_scmi: Fix slab-use-after-free in scmi_bus_notifier() (Xinqi Zhang) {CVE-2024-53068}
+- anolis: sw_64: update kconfig for sw arch (gumi@linux.alibaba.com)
+- anolis: Revert "nvme: wire up completion batching for the IRQ path" (Hongzhen Luo)
+- ipv4: ip_tunnel: Fix suspicious RCU usage warning in ip_tunnel_find() (Ido Schimmel) {CVE-2024-50304}
+- anolis: sw64: Remove SYSCALL_NUM_RET_SHARE_REG in favor of SYSCALL_RET_SET (Gu Zitao)
+- anolis: crypto: ccp: Fix mutex lock nesting in CSV DOWNLOAD_FIRMWARE ioctl handler (hanliyang)
+- ipv6: release nexthop on device removal (Paolo Abeni) {CVE-2024-56751}
+- bpf: fix recursive lock when verdict program return SK_PASS (Jiayuan Chen) {CVE-2024-56694}
+- sunrpc: clear XPRT_SOCK_UPD_TIMEOUT when reset transport (Liu Jian) {CVE-2024-56688}
+- bpf, sockmap: Fix race between element replace and close() (Michal Luczaj) {CVE-2024-56664}
+- xsk: fix OOB map writes when deleting elements (Maciej Fijalkowski) {CVE-2024-56614}
+- net: missing check virtio (Denis Arefev) {CVE-2024-43817}
+- net: fix data-races around sk->sk_forward_alloc (Wang Liang) {CVE-2024-53124}
+- mptcp: cope racing subflow creation in mptcp_rcv_space_adjust (Paolo Abeni) {CVE-2024-53122}
+- net: fix crash when config small gso_max_size/gso_ipv4_max_size (Wang Liang) {CVE-2024-50258}
+- netfilter: nf_reject_ipv6: fix potential crash in nf_send_reset6() (Eric Dumazet) {CVE-2024-50256}
+- gso: fix udp gso fraglist segmentation after pull from frag_list (Willem de Bruijn) {CVE-2024-49978}
+- gso: fix dodgy bit handling for GSO_UDP_L4 (Yan Zhai) {CVE-2024-49978}
+- fou: Fix null-ptr-deref in GRO. (Kuniyuki Iwashima) {CVE-2024-46763}
+- ip6_tunnel: make sure to pull inner header in __ip6_tnl_rcv() (Eric Dumazet) {CVE-2024-26641}
+- anolis: sw64: ftrace: implement ftrace_modify_call (Gao Chen)
+- media: uvcvideo: Skip parsing frames of type UVC_VS_UNDEFINED in uvc_parse_format (Benoit Sevens) {CVE-2024-53104}
+- anolis: toa: Add a new type support (Philo Lu)
+- net/ipv6: release expired exception dst cached in socket (Jiri Wiesner) {CVE-2024-56644}
+- tipc: Fix use-after-free of kernel socket in cleanup_bearer(). (Kuniyuki Iwashima) {CVE-2024-56642}
+- netfilter: ipset: Hold module reference while requesting a module (Phil Sutter) {CVE-2024-56637}
+- af_packet: avoid erroring out after sock_init_data() in packet_create() (Ignat Korchagin) {CVE-2024-56606}
+- Bluetooth: L2CAP: do not leave dangling sk pointer on error in l2cap_sock_create() (Ignat Korchagin) {CVE-2024-56605}
+- net: ieee802154: do not leave a dangling sk pointer in ieee802154_create() (Ignat Korchagin) {CVE-2024-56602}
+- net: inet6: do not leave a dangling sk pointer in inet6_create() (Ignat Korchagin) {CVE-2024-56600}
+- SUNRPC: make sure cache entry active before cache_show (Yang Erkun) {CVE-2024-53174}
+- netlink: terminate outstanding dump on socket close (Jakub Kicinski) {CVE-2024-53140}
+- vsock/virtio: Initialization of the dangling pointer occurring in vsk->trans (Hyunwoo Kim) {CVE-2024-50264}
+- virtio/vsock: Fix accept_queue memory leak (Michal Luczaj) {CVE-2024-53119}
+- anolis: PCI/portdrv: Change the 100ms wait to 1000 ms wait to comply with PCIE spec (Feng Tang)
+- anolis: configs: set CONFIG_CMA_SIZE_MBYTES=0 for arm64 (Qinyun Tan)
+- anolis: configs: refresh configs (Qinyun Tan)
+- anolis: crypto: update Mont-TSSE driver (Carrie.Cai)
+- VSOCK: handle VIRTIO_VSOCK_OP_CREDIT_REQUEST (Harshavardhan Unnibhavi)
+- netfilter: nft_payload: sanitize offset and length before calling skb_checksum() (Pablo Neira Ayuso) {CVE-2024-50251}
+- netfilter: br_netfilter: fix panic with metadata_dst skb (Andy Roulin) {CVE-2024-50045}
+- tcp: fix mptcp DSS corruption due to large pmtu xmit (Paolo Abeni) {CVE-2024-50083}
+- net: do not delay dst_entries_add() in dst_release() (Eric Dumazet) {CVE-2024-50036}
+- net_sched: cls_flow: validate TCA_FLOW_RSHIFT attribute (Eric Dumazet)
+- net: sched: fix ets qdisc OOB Indexing (Jamal Hadi Salim)
+- anolis: mm/hugetlb: Do not drop mmap_read_unlock when userfault handle with page fault (zhongjiang-ali)
+- anolis: sw64: iommu: implement resv_region APIs (Xu Yiwei)
+- anolis: sw64: fix no CONFIG_DYNAMIC_FTRACE_WITH_REGS error (Wu Liliu)
+- anolis: sw64: fix kprobe function (Wu Liliu)
+- anolis: sw64: ftrace: fix a bug (Gao Chen)
+- anolis: sw64: fix an error when running no main() program (Gu Zitao)
+- anolis: sw64: redefine No_SYSCALL to avoid conflicts with syscall(-1) (Gu Zitao)
+- anolis: sw64: tools: fix testing failure for openat2 test (Gu Zitao)
+- anolis: sw64: bpf: optimize some instructions (Gao Chen)
+- anolis: sw64: bpf: fix XADD32 and XADD64 (Gao Chen)
+- anolis: sw64: iommu: fix iova upper limit (Xu Yiwei)
+- anolis: sw_64: disable kconfig MEMORY_FAILURE as without support (gumi@linux.alibaba.com)
+- anolis: Revert "kernfs: switch kernfs to use an rwsem" (Ferry Meng)
+- anolis: Revert "kernfs: use i_lock to protect concurrent inode updates" (Ferry Meng)
+- anolis: kfence: Recover PUD page table correctly (Tianchen Ding)
+- uprobes: fix kernel info leak via "[uprobes]" vma (Oleg Nesterov) {CVE-2024-49975}
+- anolis: selftests/sched: Make cs_prctl_test runnable (Tianchen Ding)
+- anolis: configs: force to use bash to execute scripts (Qiao Ma)
+- anolis: bugfix: crypto: ccp: remove repeated sm4-hs mode (yangdepei)
+- anolis: hct: remove the unused variables from hct shared structure. (Xiangyu Xu)
+- anolis: hct: add write operation support to the node file use of MDEV devices. (Yabin Li)
+- anolis: hct: fix wrong page map in hct_cdev_vma_fault (Yabin Li)
+- anolis: hct: update hct_shr_pg_cfg sync with SDK (Yabin Li)
+- anolis: hct: sharing CCP resources between host and virtual machines. (Yabin Li)
+- anolis: hct: adding a file node to mark used MDEV device (Yabin Li)
+- anolis: crypto: ccp: optimize the performance of CCP SM4 multiprocessing. (Xiangyu Xu)
+- fs/proc: fix softlockup in __read_vmcore (part 2) (Rik van Riel)
+- fs/proc: fix softlockup in __read_vmcore (Rik van Riel)
+- zram: refuse to use zero sized block device as backing device (Kairui Song)
+- virtio-blk: don't keep queue frozen during system suspend (Ming Lei)
+- bpf: sync_linked_regs() must preserve subreg_def (Eduard Zingerman) {CVE-2024-53125}
+- cgroup/bpf: use a dedicated workqueue for cgroup bpf destruction (Chen Ridong) {CVE-2024-53054}
+- bpf: Fix re-attachment branch in bpf_tracing_prog_attach (Jiri Olsa) {CVE-2024-26591}
+- bpf: Remove hard-coded btf_vmlinux assumption from BPF verifier (Andrii Nakryiko) {CVE-2024-26591}
+- ftrace: Fix regression with module command in stack_trace_filter (guoweikang) {CVE-2024-56569}
+- ring-buffer: Fix a race between readers and resize checks (Petr Pavlu) {CVE-2024-38601}
+- tracing: Consider the NULL character when validating the event length (Leo Yan) {CVE-2024-50131}
+- dyndbg: fix old BUG_ON in >control parser (Jim Cromie) {CVE-2024-35947}
+- anolis: virtio-blk: add bidirectional request support (Ferry Meng)
+- anolis: virtio-blk: add blk_rq_map_sg_bidirectional helper (Ferry Meng)
+- anolis: virtio-blk: add uring_cmd iopoll support (Ferry Meng)
+- anolis: virtio-blk: add uring-cmd support for I/O passthru on chardev (Ferry Meng)
+- anolis: virtio-blk: add virtio-blk chardev support (Ferry Meng)
+- anolis: virtio-blk: move VIRTIO_BLK_T_GET_ID into virtblk_get_id (Ferry Meng)
+- anolis: mm/hugetlb: fix a missing mmap_read_unlock (zhongjiang-ali)
+- anolis: configs: clean up old configs directory (Qiao Ma)
+- anolis: sw_64: fix bpf compilation error (gumi@linux.alibaba.com)
+- anolis: sw_64: libbpf: add sw64 support (Mao Minkai)
+- bpf: Defer work in bpf_timer_cancel_and_free (Kumar Kartikeya Dwivedi) {CVE-2024-41045}
+- selftests/bpf: Add timer lockup selftest (Kumar Kartikeya Dwivedi) {CVE-2024-42239}
+- bpf: Fail bpf_timer_cancel when callback is being cancelled (Kumar Kartikeya Dwivedi) {CVE-2024-42239}
+- anolis: drivers: support for xsc drivers from Yunsilicon Technology (Liqiang)
+- anolis: sched: Fix crash issue about setting task identity when GI disabled (Tianchen Ding)
+- dm array: fix releasing a faulty array block twice in dm_array_cursor_end (Ming-Hung Tsai) {CVE-2024-57929}
+- nvme: use helpers to access io_uring cmd space (Pavel Begunkov)
+- io_uring/cmd: give inline space in request to cmds (Pavel Begunkov)
+- anolis: set prof_cpu_mask to NULL after free when cpumask offstack (Xingrui Yi)
+- blk-iocost: Avoid using clamp() on inuse in __propagate_weights() (Nathan Chancellor)
+- block: fix ordering between checking BLK_MQ_S_STOPPED request adding (Muchun Song)
+- block, bfq: fix procress reference leakage for bfqq in merge chain (Yu Kuai)
+- block, bfq: don't break merge chain in bfq_split_bfqq() (Yu Kuai)
+- block, bfq: choose the last bfqq from merge chain in bfq_setup_cooperator() (Yu Kuai)
+- ipv6: avoid possible NULL deref in rt6_uncached_list_flush_dev() (Xuan Zhuo)
+- ila: call nf_unregister_net_hooks() sooner (Eric Dumazet) {CVE-2024-46782}
+- netfilter: nf_reject_ipv6: fix nf_reject_ip6_tcphdr_put() (Eric Dumazet) {CVE-2024-47685}
+- net: add more sanity checks to qdisc_pkt_len_init() (Eric Dumazet) {CVE-2024-49948}
+- net: restrict SO_REUSEPORT to inet sockets (Eric Dumazet) {CVE-2024-57903}
+- bpf: Avoid uninitialized value in BPF_CORE_READ_BITFIELD (Jose E. Marchesi) {CVE-2024-42161}
+- sched: Fix race between yield_to() and try_to_wake_up() (Tianchen Ding)
+- anolis: mm: Fix invalidate_inode_pages2_range() with THP refcounting (Weilin Tong)
+- anolis: sched: fix the update freq of async_calc_cgroup_load (Cruz Zhao)
+- sched: psi: fix bogus pressure spikes from aggregation race (Johannes Weiner)
+- sched/psi: Use task->psi_flags to clear in CPU migration (Chengming Zhou)
+- psi: Fix PSI_MEM_FULL state when tasks are in memstall and doing reclaim (Brian Chen)
+- sched: Rename sched_info_{queued,dequeued} (Peter Zijlstra)
+- sched/psi: Fix periodic aggregation shut off (Chengming Zhou)
+- psi: Reduce calls to sched_clock() in psi (Shakeel Butt)
+- psi: Fix psi state corruption when schedule() races with cgroup move (Johannes Weiner)
+- sched/psi: report zeroes for CPU full at the system level (Chengming Zhou)
+- psi: Optimize task switch inside shared cgroups (Chengming Zhou)
+- psi: Pressure states are unlikely (Johannes Weiner)
+- psi: Use ONCPU state tracking machinery to detect reclaim (Chengming Zhou)
+- psi: Add PSI_CPU_FULL state (Chengming Zhou)
+- netfilter: ctnetlink: use helper function to calculate expect ID (Pablo Neira Ayuso) {CVE-2024-44944}
+- net: tun: Fix use-after-free in tun_detach() (Shigeru Yoshida) {CVE-2022-49014}
+- anolis: intel_th: Fixing occasional device number duplication issue with intel_th driver. (daichx)
+- usb: hub: avoid warm port reset during USB3 disconnect (Mathias Nyman)
+- anolis: drm/inspur/inspur-drm: fix when txt mod remove inspur_drm and support nomodset control (wangkaiyuan)
+- anolis: sched: skip dying or leaked task group when set quota (Cruz Zhao)
+- rbd: don't assume RBD_LOCK_STATE_LOCKED for exclusive mappings (Ilya Dryomov)
+- rbd: rename RBD_LOCK_STATE_RELEASING and releasing_wait (Ilya Dryomov)
+- ceph: fix incorrect kmalloc size of pagevec mempool (ethanwu)
+- mm/damon/dbgfs: check if rm_contexts input is for a real context (SeongJae Park)
+- mm/damon/dbgfs: fix memory leak when using debugfs_lookup() (Greg Kroah-Hartman)
+- selftests/timens: added selftest for /proc/stat btime (Michael Weiß)
+- fs/proc: apply the time namespace offset to /proc/stat btime (Michael Weiß)
+- timens: additional helper functions for boottime offset handling (Michael Weiß)
+- anolis: txgbe: fix ipv6 with extension header bug (Duanqiang Wen)
+- anolis: txgbe: support to pcie bus reset (Duanqiang Wen)
+- anolis: crypto: command co-processor: Add psp interrupt x86 register on hygon C86-4G platform (chench246)
+- nfsd: fix nfs4_openowner leak when concurrent nfsd4_open occur (Yang Erkun) {CVE-2024-56779}
+- quota: flush quota_release_work upon quota writeback (Ojaswin Mujoo) {CVE-2024-56780}
+- dm-crypt, dm-verity: disable tasklets (Mikulas Patocka) {CVE-2024-26718}
+- sysctl: always initialize i_uid/i_gid (Thomas Weißschuh) {CVE-2024-42312}
+- efivarfs: force RO when remounting if SetVariable is not supported (Ilias Apalodimas) {CVE-2023-52463}
+- anolis: drivers/crypto/ccp: fix the increase in page references caused by gfn_to_pfn (niuyongwen)
+- anolis: drivers/crypto/ccp: memmove is used instead of memcpy in overlapped memmory for tkm (niuyongwen)
+- anolis: drivers/crypto/ccp: add ioctl API to pin TKM hugepage (xiongmengbiao)
+- anolis: driver/crypto/ccp: fix vtkm without C-bit when host SME deactivate (xiongmengbiao)
+- anolis: crypto: ccp: support TKM run on CSV (xiongmengbiao)
+- anolis: crypto: ccp: remove multi-level pointers processing for vpsp (xiongmengbiao)
+- anolis: mm: wait page lock to be released without mapping lock held (zhongjiang-ali)
+- anolis: sw_64: enable NUMA_BALANCING for sw_648a (gumi@linux.alibaba.com)
+- rtmutex: Drop rt_mutex::wait_lock before scheduling (Roland Xu) {CVE-2024-46829}
+- locking/ww_mutex/test: Fix potential workqueue corruption (John Stultz) {CVE-2023-52836}
+- IB/core: Fix a nested dead lock as part of ODP flow (Yishai Hadas) {CVE-2022-48675}
+- sched/deadline: Fix task_struct reference leak (Wander Lairson Costa) {CVE-2024-41023}
+- rcu-tasks: Fix show_rcu_tasks_trace_gp_kthread buffer overflow (Nikita Kiryushin) {CVE-2024-38577}
+- memcg: fix soft lockup in the OOM process (Chen Ridong)
+- blk-cgroup: Fix UAF in blkcg_unpin_online() (Tejun Heo) {CVE-2024-56672}
+- blk-cgroup: move blkcg_{pin,unpin}_online out of line (Christoph Hellwig) {CVE-2024-56672}
+- ext4: fix FS_IOC_GETFSMAP handling (Theodore Ts'o)
+- ext4: supress data-race warnings in ext4_free_inodes_{count,set}() (Jeongjun Park)
+- erofs: handle overlapped pclusters out of crafted images properly (Gao Xiang) {CVE-2024-47736}
+- erofs: handle NONHEAD !delta[1] lclusters gracefully (Gao Xiang) {CVE-2024-53234}
+- ublk_drv: fix NULL pointer dereference in ublk_ctrl_start_recovery() (Li Nan) {CVE-2024-46735}
+- xfs: fix scrub tracepoints when inode-rooted btrees are involved (Darrick J. Wong)
+- xfs: don't drop errno values when we fail to ficlone the entire range (Darrick J. Wong)
+- arm64: Fix conflict for capability when cpu hotplug (Weilong Chen)
+- sdei_watchdog: Avoid exception during sdei handler (Zheng Zengkai)
+- ext4: fix race in buffer_head read fault injection (Long Li) {CVE-2024-56686}
+- anolis: virt/csv-guest: Provide interface for request of CSV3 attestation report (hanliyang)
+- anolis: x86/csv: Add support for CSV3 ATTESTATION secure call (hanliyang)
+- anolis: x86/csv: Define ATTESTATION secure call command (hanliyang)
+- anolis: KVM: SVM: CSV: Support inject secret to Hygon CSV3 guest (hanliyang)
+- anolis: KVM: SVM: CSV: Support issue non-4K aligned CSV3_CMD_LAUNCH_ENCRYPT_DATA and more than once (hanliyang)
+- anolis: KVM: SVM: CSV: Provide KVM_CSV3_SET_GUEST_PRIVATE_MEMORY ioctl interface (hanliyang)
+- anolis: KVM: SVM: CSV: Provide KVM_CAP_HYGON_COCO_EXT interface (hanliyang)
+- anolis: crypto: ccp: Provide csv_get_extension_info() to present extensions of newer CSV firmware (hanliyang)
+- anolis: KVM: SVM: CSV: Ensure all the GPRs and some non-GPRs are synced before LAUNCH_ENCRYPT_VMCB (hanliyang)
+- anolis: crypto: ccp: Get api version again when update Hygon CSV firmware at runtime (hanliyang)
+- anolis: KVM: SVM: CSV: Fix the vm_size even if CSV3 feature is unsupported on Hygon CPUs (hanliyang)
+- mm/hugetlb: move swap entry handling into mapping lock when faulted (Peter Xu)
+- ovl: Filter invalid inodes with missing lookup function (Vasiliy Kovalev) {CVE-2024-56570}
+- sched: sch_cake: fix bulk flow accounting logic for host fairness (Toke Høiland-Jørgensen)
+- mm: respect mmap hint address when aligning for THP (Kalesh Singh)
+- mm, mmap: limit THP alignment of anonymous mappings to PMD-aligned sizes (Vlastimil Babka)
+- mm: huge_memory: use !CONFIG_64BIT to relax huge page alignment on 32 bit machines (Yang Shi)
+- mm: thp_get_unmapped_area must honour topdown preference (Ryan Roberts)
+- mm: huge_memory: don't force huge page alignment on 32 bit (Yang Shi)
+- mm: mmap: map MAP_STACK to VM_NOHUGEPAGE (Yang Shi)
+- mm: align larger anonymous mappings on THP boundaries (Rik van Riel)
+- mm/readahead: Align file mappings for non-DAX (William Kucharski)
+- ACPI: APEI: Better fix to avoid spamming the console with old error logs (Hunter.He)
+- anolis: perf/ftrace: fix perf ftrace subcmd and tests (Zelin Deng)
+- perf ftrace: Make system wide the default target for latency subcommand (Yang Jihong)
+- perf ftrace: Add 'latency' subcommand (Namhyung Kim)
+- resource: fix region_intersects() vs add_memory_driver_managed() (Huang Ying) {CVE-2024-49878}
+- pci_iounmap(): Fix MMIO mapping leak (Philipp Stanner) {CVE-2024-26977}
+- ALSA: core: Fix NULL module pointer assignment at card init (Takashi Iwai) {CVE-2024-38605}
+- nfsd: make sure exp active before svc_export_show (Yang Erkun) {CVE-2024-56558}
+- KVM: arm64: vgic-v2: Check for non-NULL vCPU in vgic_v2_parse_attr() (Oliver Upton) {CVE-2024-36953}
+- KVM: arm64: vgic-v2: Use cpuid from userspace as vcpu_id (Marc Zyngier) {CVE-2024-36953}
+- KVM: nSVM: Ignore nCR3[4:0] when loading PDPTEs from memory (Sean Christopherson) {CVE-2024-50115}
+- KVM: SVM: Flush pages under kvm->lock to fix UAF in svm_register_enc_region() (Sean Christopherson) {CVE-2024-35791}
+- anolis: Align some perf shell test to upstream (Namhyung Kim)
+- perf tools: Add aux-action config term (Adrian Hunter)
+- perf ftrace: Add 'trace' subcommand (Namhyung Kim)
+- perf test: Add 'datasym' test workload (Namhyung Kim)
+- perf test: Add 'brstack' test workload (Namhyung Kim)
+- perf test: Add 'sqrtloop' test workload (Namhyung Kim)
+- perf test: Add 'leafloop' test workload (Namhyung Kim)
+- perf test: Add 'thloop' test workload (Namhyung Kim)
+- perf test: Add -w/--workload option (Namhyung Kim)
+- NFSv4: Prevent NULL-pointer dereference in nfs42_complete_copies() (Yanjun Zhang) {CVE-2024-50046}
+- anolis: mm/hugetlb: prevent a possible deadlock when hugetlb migration (zhongjiang-ali)
+- block: fix potential invalid pointer dereference in blk_add_partition (Riyan Dhiman) {CVE-2024-47705}
+- block: print symbolic error name instead of error code (Christian Heusel) {CVE-2024-47705}
+- NFSD: Fix ia_size underflow (Chuck Lever) {CVE-2022-48828}
+- smb: client: fix OOBs when building SMB2_IOCTL request (Paulo Alcantara) {CVE-2024-50151}
+- gfs2: ignore negated quota changes (Bob Peterson) {CVE-2023-52759}
+- init/main.c: Fix potential static_command_line memory overflow (Yuntao Wang) {CVE-2024-26988}
+- lib: objagg: Fix general protection fault (Ido Schimmel) {CVE-2024-43846}
+- kdb: Fix buffer overflow during tab-complete (Daniel Thompson) {CVE-2024-39480}
+- pwm: Fix double shift bug (Dan Carpenter) {CVE-2023-52756}
+- lib/generic-radix-tree.c: Fix rare race in __genradix_ptr_alloc() (Kent Overstreet) {CVE-2024-47668}
+- anolis: x86: fix rapl_cpu_offline with correct dieid on AMD/Hygon (Xingrui Yi)
+- smb: client: fix deadlock in smb2_find_smb_tcon() (Enzo Matsumiya) {CVE-2024-39468}
+- cifs: missed ref-counting smb session in find (Shyam Prasad N) {CVE-2024-39468}
+- anolis: sched/fair: fix a compilation error on sw_64 arch (gumi@linux.alibaba.com)
+- KVM: arm64: vgic-its: Avoid potential UAF in LPI translation cache (Oliver Upton) {CVE-2024-26598}
+- fs/file.c: add fast path in find_next_fd() (Yu Ma)
+- fs/file.c: conditionally clear full_fds (Yu Ma)
+- fs/file.c: remove sanity_check and add likely/unlikely in alloc_fd() (Yu Ma)
+- vfio/pci: Disable auto-enable of exclusive INTx IRQ (Alex Williamson) {CVE-2024-27437}
+- genirq: Add IRQF_NO_AUTOEN for request_irq/nmi() (Barry Song) {CVE-2024-27437}
+- mm/hugetlb: fix cow where page writtable in child (Peter Xu)
+- hugetlb: do early cow when page pinned on src mm (Peter Xu)
+- mm: use is_cow_mapping() across tree where proper (Peter Xu)
+- mm: introduce page_needs_cow_for_dma() for deciding whether cow (Peter Xu)
+- nfsd: fix RELEASE_LOCKOWNER (NeilBrown) {CVE-2024-26629}
+- NFSD: Add documenting comment for nfsd4_release_lockowner() (Chuck Lever) {CVE-2024-26629}
+- NFSD: Modernize nfsd4_release_lockowner() (Chuck Lever) {CVE-2024-26629}
+- NFSD: Prevent a potential integer overflow (Chuck Lever) {CVE-2024-53146}
+- nfsd: return -EINVAL when namelen is 0 (Li Lingfeng) {CVE-2024-47692}
+- ACPI: sysfs: Enable ACPI sysfs support for CCEL records (Kuppuswamy Sathyanarayanan)
+- ACPICA: iASL: Add CCEL table to both compiler/disassembler (ruogui.ygr)
+- anolis: mm: hugetext: add macro definition for hugetext flags (Simon Guo)
+- virtio-blk: support per-device queue depth (Joseph Qi)
+- anolis: virtio-mem: Make struct page can be offlined in normal zone (zhongjiang-ali)
+- anolis: virtio-mem: restrict offline memmap on movable in x86_64 (zhongjiang-ali)
+- anolis: virtio-mem: make memmap on movable memory can be offlined (zhongjiang-ali)
+- anolis: oom: notify the victim's memcg's oom event when system OOM occur (Fupan Li)
+- anolis: make vtoa module can be built-in (zhongjiang-ali)
+- anolis: hookers: fix an warning when hooker was built-in (zhongjiang-ali)
+- anolis: mm: downgrade memory hotplug logging to debug (hr567)
+- anolis: mm: skip set_zone_contiguous when online/offline pages (zhongjiang-ali)
+- anolis: mem: add devmem.enable_readonly parameter (hr567)
+- nfsd: call cache_put if xdr_reserve_space returns NULL (Guoqing Jiang) {CVE-2024-47737}
+- pstore: inode: Only d_invalidate() is needed (Kees Cook) {CVE-2024-27389}
+- net/sched: netem: account for backlog updates from child qdisc (Martin Ottens)
+- net/sched: tbf: correct backlog statistic for GSO packets (Martin Ottens)
+- bpf, sockmap: Fix update element with same (Michal Luczaj)
+- net: sched: fix erspan_opt settings in cls_flower (Xin Long)
+- netfilter: nft_chain_filter: handle NETDEV_UNREGISTER for inet/ingress basechain (Pablo Neira Ayuso) {CVE-2024-26808}
+- anolis: kvm: fix compilation error when kvm is compiled as m (Min Li)
+- cgroup/cpuset: Make cpuset_attach_task() skip subpartitions CPUs for top_cpuset (Yi Tao)
+- fsdax: Fix infinite loop in dax_iomap_rw() (Li Jinlin) {CVE-2022-48635}
+- block/rnbd-srv: Check for unlikely string overflow (Kees Cook) {CVE-2023-52618}
+- blk-rq-qos: fix crash on rq_qos_wait vs. rq_qos_wake_function race (Omar Sandoval) {CVE-2024-50082}
+- blk_iocost: fix more out of bound shifts (Konstantin Ovsepian) {CVE-2024-49933}
+- nfs: Fix KMSAN warning in decode_getfattr_attrs() (Roberto Sassu) {CVE-2024-53066}
+- ftruncate: pass a signed offset (Arnd Bergmann) {CVE-2024-42084}
+- iommu/vt-d: Use correctly sized arguments for bit field (Kees Cook)
+- block, bfq: fix possible UAF for bfqq->bic with merge chain (Yu Kuai) {CVE-2024-47706}
+- udf: Fix preallocation discarding at indirect extent boundary (Jan Kara) {CVE-2022-48946}
+- gfs2: Fix kernel NULL pointer dereference in gfs2_rgrp_dump (Osama Muhammad) {CVE-2023-52448}
+- vfs: fix race between evice_inodes() and find_inode()&iput() (Julian Sun) {CVE-2024-47679}
+- orangefs: fix out-of-bounds fsid access (Mike Marshall) {CVE-2024-42143}
+- ceph: remove the incorrect Fw reference check when dirtying pages (Xiubo Li) {CVE-2024-50179}
+- anolis: sched: introduce dynamical load balance for group balancer (Cruz Zhao)
+- anolis: sched: add helper to find a matching group balancer sched domain (Cruz Zhao)
+- anolis: sched: add helpers to get load for group balancer (Cruz Zhao)
+- anolis: sched: modify the interface of attach/detach_tg_to/from_group_balancer_sched_domain (Cruz Zhao)
+- anolis: sched: check whether the task group leaps level when it attaches to gb_sd (Cruz Zhao)
+- anolis: kvm: fix a compilation error of cvm (gumi@linux.alibaba.com)
+- tracing: Build event generation tests only as modules (Masami Hiramatsu (Google)) {CVE-2024-41004}
+- KVM: arm64: Delete redundant code line about Hisi ncsnp (Pan Deng)
+- kvm: add cvm host feature (Jingxian He)
+- spi: hisi-kunpeng: Delete the dump interface of data registers in debugfs (Devyn Liu)
+- spi: hisi-kunpeng: Fix the debugfs directory name incorrect (oujiefeng)
+- spi: hisi-kunpeng: Add debugfs support (Jay Fang)
+- spi: dw: Add support for 32-bits max xfer size (Damien Le Moal)
+- spi: hisi-kunpeng: Fix Woverflow warning on conversion (Jay Fang)
+- spi: Add HiSilicon SPI Controller Driver for Kunpeng SoCs (Jay Fang)
+- scsi: hisi_sas: Update v3 hw STP_LINK_TIMER setting (Xingui Yang)
+- scsi: hisi_sas: Add time interval between two H2D FIS following soft reset spec (Xingui Yang)
+- scsi: hisi_sas: Update disk locked timeout to 7 seconds (Xingui Yang)
+- scsi: hisi_sas: Default enable interrupt coalescing (Yihang Li)
+- scsi: hisi_sas: Reset PHY again if phyup timeout (Yihang Li)
+- scsi: hisi_sas: Enable all PHYs that are not disabled by user during controller reset (Yihang Li)
+- scsi: hisi_sas: Create trigger_dump at the end of the debugfs initialization (Yihang Li)
+- scsi: hisi_sas: Add firmware information check (Yihang Li)
+- scsi: hisi_sas: Adjust priority of registering and exiting debugfs for security (Yihang Li)
+- scsi: libsas: Set port when ex_phy is added or deleted (Xingui Yang)
+- scsi: libsas: Move sas_add_parent_port() to sas_expander.c (Xingui Yang)
+- scsi: libsas: Add helper for port add ex_phy (Xingui Yang)
+- anolis: KVM: arm64: support kvm compiled as moudle for kunpeng920b (Min Li)
+- PM: runtime: Have devm_pm_runtime_enable() handle pm_runtime_dont_use_autosuspend() (Douglas Anderson)
+- PM: runtime: add devm_pm_runtime_enable helper (Dmitry Baryshkov)
+- PM / wakeirq: support enabling wake-up irq after runtime_suspend called (Chunfeng Yun)
+- PM: runtime: Do not call __rpm_callback() from rpm_idle() (Rafael J. Wysocki)
+- PM: runtime: Improve path in rpm_idle() when no callback (Ulf Hansson)
+- scsi: hisi_sas: Check whether debugfs is enabled before removing or releasing it (Yihang Li)
+- scsi: hisi_sas: Fix the deadlock issue that occurs during automatic dump (Yihang Li)
+- scsi: hisi_sas: Change the debugfs parameters dump count default value (Wangming Shao)
+- anolis: arm64: add extra protective code for kunpeng mpam (Min Li)
+- anolis: arm64: refactor kunpeng mpam frame (Min Li)
+- anolis: arm64: replendish configs for kunpeng920b (Min Li)
+- iommu/arm-smmu-v3: Maintain a SID->device structure (Jean-Philippe Brucker)
+- arm64: Add handling of CNTVCTSS traps (Marc Zyngier)
+- arm64: Add CNT{P,V}CTSS_EL0 alternatives to cnt{p,v}ct_el0 (Marc Zyngier)
+- arm64: Add a capability for FEAT_ECV (Marc Zyngier)
+- clocksource/drivers/arch_arm_timer: Move workaround synchronisation around (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Fix masking for high freq counters (Oliver Upton)
+- clocksource/drivers/arm_arch_timer: Drop unnecessary ISB on CVAL programming (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Remove any trace of the TVAL programming interface (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Work around broken CVAL implementations (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Advertise 56bit timer to the core code (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Move MMIO timer programming over to CVAL (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Fix MMIO base address vs callback ordering issue (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Move system register timer programming over to CVAL (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Move drop _tval from erratum function names (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Extend write side of timer register accessors to u64 (Marc Zyngier)
+- clocksource/drivers/arm_arch_timer: Drop CNT*_TVAL read accessors (Marc Zyngier)
+- clocksource/arm_arch_timer: Add build-time guards for unhandled register accesses (Marc Zyngier)
+- tracing: Fix overflow in get_free_elt() (Tze-nan Wu) {CVE-2024-43890}
+- sched/fair: Take the scheduling domain into account in select_idle_core() (Keisuke Nishimura)
+- sched/fair: Fix clearing of has_idle_cores flag in select_idle_cpu() (Gautham R. Shenoy)
+- sched/fair: Use candidate prev/recent_used CPU if scanning failed for cluster wakeup (Yicong Yang)
+- sched/fair: Scan cluster before scanning LLC in wake-up path (Barry Song)
+- sched/fair: Avoid a second scan of target in select_idle_cpu (Mel Gorman)
+- sched/fair: Bring back select_idle_smt(), but differently (Rik van Riel)
+- sched/fair: Optimize test_idle_cores() for !SMT (Barry Song)
+- sched/fair: Remove select_idle_smt() (Mel Gorman)
+- sched/fair: Merge select_idle_core/cpu() (Mel Gorman)
+- sched/fair: Move avg_scan_cost calculations under SIS_PROP (Mel Gorman)
+- sched/fair: Remove SIS_AVG_CPU (Mel Gorman)
+- sched/topology: Align group flags when removing degenerate domain (Chen Yu)
+- sched/topology: Propagate SMT flags when removing degenerate domain (Tim C Chen)
+- scheduler: Disable cluster scheduling by default (Yicong Yang)
+- scheduler: Add boot time enabling/disabling of cluster scheduling (Tim Chen)
+- scheduler: Add runtime knob sysctl_sched_cluster (Tim Chen)
+- sysctl: add a new register_sysctl_init() interface (Xiaoming Ni)
+- scheduler: Create SDTL_SKIP flag to skip topology level (Tim Chen)
+- sched/topology: Introduce sched_group::flags (Ricardo Neri)
+- sched: Add cpus_share_resources API (Barry Song)
+- arch_topology: Make cluster topology span at least SMT CPUs (Yicong Yang)
+- arch_topology: Limit span of cpu_clustergroup_mask() (Ionela Voinescu)
+- arch_topology: Fix missing clear cluster_cpumask in remove_cpu_topology() (Wang ShaoBo)
+- sched/topology: fix the issue groups don't span domain->span for NUMA diameter > 2 (Barry Song)
+- sched/topology: Warn when NUMA diameter > 2 (Valentin Schneider)
+- tools include UAPI: Update linux/mount.h copy (Arnaldo Carvalho de Melo)
+- tests: add move_mount(MOVE_MOUNT_SET_GROUP) selftest (Pavel Tikhomirov)
+- move_mount: allow to add a mount into an existing group (Pavel Tikhomirov)
+- rseq, ptrace: Add PTRACE_GET_RSEQ_CONFIGURATION request (Piotr Figiel)
+- sched/fair: Move update_nohz_stats() to the CONFIG_NO_HZ_COMMON block to simplify the code & fix an unused function warning (YueHaibing)
+- sched/core: Prevent wakeup of ksoftirqd during idle load balance (K Prateek Nayak)
+- sched/fair: Check idle_cpu() before need_resched() to detect ilb CPU turning busy (K Prateek Nayak)
+- sched/fair: Add NOHZ balancer flag for nohz.next_balance updates (Valentin Schneider)
+- sched/fair: Trigger the update of blocked load on newly idle cpu (Vincent Guittot)
+- sched/fair: Merge for each idle cpu loop of ILB (Vincent Guittot)
+- sched/fair: Remove unused parameter of update_nohz_stats (Vincent Guittot)
+- sched/fair: Remove update of blocked load from newidle_balance (Vincent Guittot)
+- sched/core: Remove the unnecessary need_resched() check in nohz_csd_func() (K Prateek Nayak)
+- perf jevents: Add support for HiSilicon CPA PMU aliasing (Qi Liu)
+- drivers/perf: hisi: Add description for HNS3 PMU driver (Guangbin Huang)
+- drivers/perf: Add support for ARMv8.3-SPE (Wei Li)
+- perf/smmuv3: Enable HiSilicon Erratum quirk (Yicong Yang)
+- drivers/perf: hisi_pcie: Export supported Root Ports [bdf_min, bdf_max] (Yicong Yang)
+- drivers/perf: hisi_pcie: Fix TLP headers bandwidth counting (Yicong Yang)
+- drivers/perf: hisi_pcie: Record hardware counts correctly (Yicong Yang)
+- drivers/perf: hisi_pcie: Fix out-of-bound access when valid event group (Junhao He)
+- drivers/perf: hisi: hns3: Actually use devm_add_action_or_reset() (Hao Chen)
+- drivers/perf: hisi: hns3: Fix out-of-bound access when valid event group (Junhao He)
+- drivers/perf: hisi_pcie: Merge find_related_event() and get_event_idx() (Junhao He)
+- drivers/perf: hisi_pcie: Relax the check on related events (Junhao He)
+- drivers/perf: hisi_pcie: Check the target filter properly (Junhao He)
+- drivers/perf: hisi_pcie: Add more events for counting TLP bandwidth (Yicong Yang)
+- drivers/perf: hisi_pcie: Fix incorrect counting under metric mode (Yicong Yang)
+- drivers/perf: hisi_pcie: Introduce hisi_pcie_pmu_get_event_ctrl_val() (Yicong Yang)
+- drivers/perf: hisi_pcie: Rename hisi_pcie_pmu_{config,clear}_filter() (Yicong Yang)
+- drivers/perf: hisi: UC PMU support statistics in power saving mode (Junhao He)
+- drivers/perf: hisi: Fix some event id for HiSilicon UC pmu (Junhao He)
+- drivers/perf: hisi: use cpuhp_state_remove_instance_nocalls() for hisi_hns3_pmu uninit process (Hao Chen)
+- perf: hisi: Fix use-after-free when register pmu fails (Junhao He)
+- drivers/perf: hisi_pcie: Initialize event->cpu only on success (Yicong Yang)
+- drivers/perf: hisi_pcie: Check the type first in pmu::event_init() (Yicong Yang)
+- drivers/perf: hisi: Add support for HiSilicon UC PMU driver (Min Li)
+- drivers/perf: hisi: Add support for HiSilicon H60PA and PAv3 PMU driver (Junhao He)
+- drivers/perf: hisi: Don't migrate perf to the CPU going to teardown (Junhao He)
+- perf: hns3: add event suppport for ROH (Jian Shen)
+- drivers/perf: hisi: add NULL check for name (Junhao He)
+- drivers/perf: hisi: Remove redundant initialized of pmu->name (Junhao He)
+- drivers/perf: hisi: Extract initialization of "cpa_pmu->pmu" (Junhao He)
+- drivers/perf: hisi: Simplify the parameters of hisi_pmu_init() (Junhao He)
+- drivers/perf: hisi: Advertise the PERF_PMU_CAP_NO_EXCLUDE capability (Junhao He)
+- perf: hisi: Extract hisi_pmu_init (Chen Jun)
+- perf: hisi: Add configs for PMU isolation (Zhang Zekun)
+- perf: hisi: Fix read sccl_id and ccl_id error in TSV200 (Junhao He)
+- drivers/perf: hisi: add driver for HNS3 PMU (Guangbin Huang)
+- drivers/perf: fixed the issue that the kabi value changed (Junhao He)
+- drivers/perf: hisi: Add TLP filter support (Yicong Yang)
+- drivers/perf: hisi: Fix some event id for hisi-pcie-pmu (Yicong Yang)
+- drivers/perf: hisi: Add Support for CPA PMU (Qi Liu)
+- drivers/perf: hisi: Associate PMUs in SICL with CPUs online (Qi Liu)
+- drivers/perf: hisi: Add driver for HiSilicon PCIe PMU (Qi Liu)
+- perf: hisi: Fix unexpected modifications in hisi_uncore_l3c_pmu.c (Chen Jun)
+- perf: hisi: Add support for HiSilicon SoC LPDDRC PMU (Chen Jun)
+- perf: hisi: Add support for HiSilicon SoC L3T PMU (Chen Jun)
+- perf: hisi: Fix read sccl_id and ccl_id error in some platform (Chen Jun)
+- perf: hisi: Make irq shared (Chen Jun)
+- drivers/perf: hisi: Fix data source control (Shaokun Zhang)
+- perf/hisi: Use irq_set_affinity() (Thomas Gleixner)
+- drivers/perf: hisi: Add support for HiSilicon PA PMU driver (Shaokun Zhang)
+- drivers/perf: hisi: Add support for HiSilicon SLLC PMU driver (Shaokun Zhang)
+- drivers/perf: hisi: Update DDRC PMU for programmable counter (Shaokun Zhang)
+- drivers/perf: hisi: Add new functions for HHA PMU (Shaokun Zhang)
+- drivers/perf: hisi: Add new functions for L3C PMU (Shaokun Zhang)
+- drivers/perf: hisi: Add PMU version for uncore PMU drivers. (Shaokun Zhang)
+- drivers/perf: hisi: Refactor code for more uncore PMUs (Shaokun Zhang)
+- drivers/perf: hisi: Remove unnecessary check of counter index (Shaokun Zhang)
+- drivers/perf: hisi: Add identifier sysfs file (John Garry)
+- acpi/arm64: Do not add CPU to node_to_cpumask_map in acpi_map_cpu() (Xiongfeng Wang)
+- KVM: arm64: Translate logic cluster id to physical cluster id when updating lsudvmbm (Xiang Chen)
+- KVM: arm64: Implement the capability of DVMBM (Quan Zhou)
+- KVM: arm64: Add kvm_arch::dvm_cpumask and dvm_lock (Quan Zhou)
+- KVM: arm64: Add kvm_vcpu_arch::cpus_ptr and pre_cpus_ptr (Quan Zhou)
+- KVM: arm64: Probe and configure DVMBM capability on HiSi CPUs (Quan Zhou)
+- KVM: arm64: Support a new HiSi CPU type (Quan Zhou)
+- KVM: arm64: Only probe Hisi ncsnp feature on Hisi CPUs (gumi@linux.alibaba.com)
+- KVM: arm64: GICv4.1: Give a chance to save VLPI state (Shenming Lu)
+- KVM: arm64: GICv4.1: Restore VLPI pending state to physical side (Zenghui Yu)
+- KVM: arm64: GICv4.1: Try to save VLPI state in save_pending_tables (Shenming Lu)
+- KVM: arm64: GICv4.1: Add function to get VLPI state (Shenming Lu)
+- KVM: arm64: Make use of TWED feature (Jingyi Wang)
+- arm64: cpufeature: TWED support detection (Zengruan Ye)
+- anolis: soc: kunpeng_hccs: add driver for kunpeng hccs (Slim6882)
+- mm: /proc/sys/vm/stat_refresh skip checking known negative stats (Hugh Dickins)
+- anolis: mm: fix khugepaged collapse memcg count (Kaihao Bai)
+- scripts/spelling.txt: remove 'thead' as a typo (Drew Fustini)
+- anolis: adjust some useless Kconfig level. (Qinyun Tan)
+- anolis: configs: refresh configs (Qinyun Tan)
+- dm thin: Add missing destroy_work_on_stack() (Yuan Can)
+- scsi: hisi_sas: Remove hisi_hba->timer for v3 hw (gumi@linux.alibaba.com)
+- scsi: hisi_sas: Add cond_resched() to cq_thread_v3_hw() (Yihang Li)
+- scsi: hisi_sas: Default enable interrupt coalescing (Yihang Li)
+- scsi: hisi_sas: Correct the number of global debugfs registers (Yihang Li)
+- scsi: hisi_sas: Rollback some operations if FLR failed (Yihang Li)
+- scsi: hisi_sas: Check before using pointer variables (Yihang Li)
+- scsi: hisi_sas: Replace with standard error code return value (Yihang Li)
+- scsi: hisi_sas: Set .phy_attached before notifing phyup event HISI_PHYE_PHY_UP_PM (Yihang Li)
+- scsi: hisi_sas: Handle the NCQ error returned by D2H frame (Xingui Yang)
+- scsi: hisi_sas: Remove redundant checks for automatic debugfs dump (Yihang Li)
+- scsi: hisi_sas: Remove unused variable and check in hisi_sas_send_ata_reset_each_phy() (Xiang Chen)
+- scsi: hisi_sas: Allocate DFX memory during dump trigger (Yihang Li)
+- scsi: hisi_sas: Directly call register snapshot instead of using workqueue (Yihang Li)
+- scsi: hisi_sas: Set debugfs_dir pointer to NULL after removing debugfs (Yihang Li)
+- scsi: hisi_sas: Fix normally completed I/O analysed as failed (Xingui Yang)
+- scsi: hisi_sas: Fix warnings detected by sparse (Xingui Yang)
+- scsi: libsas: Introduce more SAM status code aliases in enum exec_status (Bart Van Assche)
+- scsi: hisi_sas: Check devm_add_action() return value (Kang Chen)
+- scsi: hisi_sas: Check usage count only when the runtime PM status is RPM_SUSPENDING (Yihang Li)
+- scsi: sd: try more retries of START_STOP when resuming scsi device (Xiang Chen)
+- scsi: hisi_sas: Work around build failure in suspend function (Arnd Bergmann)
+- scsi: hisi_sas: Block requests before take debugfs snapshot (Yihang Li)
+- scsi: hisi_sas: Add slave_destroy interface for v3 hw (Qi Liu)
+- scsi: hisi_sas: Modify v3 HW SATA disk error state completion processing (Xingui Yang)
+- scsi: hisi_sas: Change DMA setup lock timeout to 2.5s (Xingui Yang)
+- scsi: hisi_sas: Configure the initialization registers according to HBA model (Yihang Li)
+- scsi: hisi_sas: Ensure all enabled PHYs up during controller reset (Yihang Li)
+- scsi: hisi_sas: Exit suspending state when usage count is greater than 0 (Yihang Li)
+- scsi: sd: Update DIX config every time sd_revalidate_disk() is called (Xingui Yang)
+- scsi: sd: Reorganize DIF/DIX code to avoid calling revalidate twice (Martin K. Petersen)
+- scsi: remove unused kobj map for sd devie to avoid memleak (Yufen Yu)
+- scsi: hisi_sas: Set a port invalid only if there are no devices attached when refreshing port id (Yihang Li)
+- scsi: hisi_sas: Fix SATA devices missing issue during I_T nexus reset (gumi@linux.alibaba.com)
+- scsi: libsas: Grab the ATA port lock in sas_ata_device_link_abort() (Xingui Yang)
+- scsi: libsas: Update SATA dev FIS in sas_ata_task_done() (John Garry)
+- scsi: hisi_sas: Grab sas_dev lock when traversing the members of sas_dev.list (Xingui Yang)
+- scsi: hisi_sas: Handle NCQ error when IPTT is valid (Xingui Yang)
+- scsi: hisi_sas: Use abort task set to reset SAS disks when discovered (Xingui Yang)
+- scsi: hisi_sas: Add SATA_DISK_ERR bit handling for v3 hw (Xingui Yang)
+- scsi: libsas: Add sas_ata_device_link_abort() (gumi@linux.alibaba.com)
+- scsi: hisi_sas: Move slot variable definition in hisi_sas_abort_task() (Xingui Yang)
+- scsi: hisi_sas: Revert "scsi: hisi_sas: Limit max hw sectors for v3 HW" (Yu Kuai)
+- irqchip/gic-v3: Always trust the managed affinity provided by the core code (Marc Zyngier)
+- scsi: libsas: Resume SAS host for phy reset or enable via sysfs (Xiang Chen)
+- scsi: hisi_sas: Modify v3 HW SATA completion error processing (Xingui Yang)
+- scsi: hisi_sas: Fix rescan after deleting a disk (John Garry)
+- scsi: hisi_sas: Use sas_ata_wait_after_reset() in IT nexus reset (gumi@linux.alibaba.com)
+- scsi: libsas: Add smp_ata_check_ready_type() (gumi@linux.alibaba.com)
+- scsi: libsas: Do not export sas_ata_wait_after_reset() (gumi@linux.alibaba.com)
+- scsi: hisi_sas: Undo RPM resume for failed notify phy event for v3 HW (Xiang Chen)
+- scsi: hisi_sas: Modify v3 HW SSP underflow error processing (Xingui Yang)
+- scsi: hisi_sas: Change hisi_sas_control_phy() phyup timeout (Xiang Chen)
+- scsi: hisi_sas: Fix phyup timeout on FPGA (Qi Liu)
+- scsi: hisi_sas: Prevent parallel FLR and controller reset (Qi Liu)
+- scsi: hisi_sas: Prevent parallel controller reset and control phy command (Qi Liu)
+- scsi: hisi_sas: Limit users changing debugfs BIST count value (Xiang Chen)
+- scsi: hisi_sas: Use autosuspend for the host controller (Xiang Chen)
+- scsi: hisi_sas: Keep controller active between ISR of phyup and the event being processed (Xiang Chen)
+- scsi: mvsas: Add spin_lock/unlock() to protect asd_sas_port->phy_list (Xiang Chen)
+- scsi: libsas: Keep host active while processing events (gumi@linux.alibaba.com)
+- scsi: libsas: Defer works of new phys during suspend (Xiang Chen)
+- scsi: libsas: Refactor sas_queue_deferred_work() (Xiang Chen)
+- scsi: libsas: Add flag SAS_HA_RESUMING (Xiang Chen)
+- scsi: libsas: Resume host while sending SMP I/Os (Xiang Chen)
+- scsi: libsas: Add spin_lock/unlock() to protect asd_sas_port->phy_list (Xiang Chen)
+- scsi: libsas: Don't always drain event workqueue for HA resume (gumi@linux.alibaba.com)
+- scsi: hisi_sas: Add more logs for runtime suspend/resume (Xiang Chen)
+- scsi: hisi_sas: Fix some issues related to asd_sas_port->phy_list (Xiang Chen)
+- Export-sas_phy_enable (nifujia)
+- scsi: hisi_sas: Wait for phyup in hisi_sas_control_phy() (Xiang Chen)
+- scsi: hisi_sas: Initialise devices in .slave_alloc callback (Xiang Chen)
+- scsi: hisi_sas: Increase debugfs_dump_index after dump is completed (Luo Jiaxing)
+- scsi: hisi_sas: Speed up error handling when internal abort timeout occurs (Luo Jiaxing)
+- scsi: hisi_sas: Reset controller for internal abort timeout (Luo Jiaxing)
+- scsi: hisi_sas: Include HZ in timer macros (Luo Jiaxing)
+- scsi: hisi_sas: Run I_T nexus resets in parallel for clear nexus reset (Luo Jiaxing)
+- scsi: hisi_sas: Put a limit of link reset retries (Luo Jiaxing)
+- blk-mq: set default elevator as deadline in case of hctx shared tagset (gumi@linux.alibaba.com)
+- scsi: hisi_sas: Print SATA device SAS address for soft reset failure (Luo Jiaxing)
+- scsi: hisi_sas: Warn in v3 hw channel interrupt handler when status reg cleared (Luo Jiaxing)
+- scsi: hisi_sas: Directly snapshot registers when executing a reset (Jianqin Xie)
+- scsi: hisi_sas: Call sas_unregister_ha() to roll back if .hw_init() fails (Xiang Chen)
+- scsi: hisi_sas: Print SAS address for v3 hw erroneous completion print (Luo Jiaxing)
+- scsi: hisi_sas: Delete some unused callbacks (Luo Jiaxing)
+- scsi: hisi_sas: Add trace FIFO debugfs support (Luo Jiaxing)
+- scsi: hisi_sas: Flush workqueue in hisi_sas_v3_remove() (Luo Jiaxing)
+- scsi: hisi_sas: Don't check .nr_hw_queues in hisi_sas_task_prep() (John Garry)
+- scsi: hisi_sas: Remove deferred probe check in hisi_sas_v2_probe() (John Garry)
+- scsi: hisi_sas: Switch back to original libsas event notifiers (gumi@linux.alibaba.com)
+- scsi: hisi_sas: Pass gfp_t flags to libsas event notifiers (Ahmed S. Darwish)
+- scsi: hisi_sas: Remove auto_affine_msi_experimental module_param (John Garry)
+- scsi: hisi_sas: Enable debugfs support by default (Luo Jiaxing)
+- scsi: hisi_sas: Remove preemptible() (Ahmed S. Darwish)
+- scsi: hisi_sas: Move debugfs code to v3 hw driver (Luo Jiaxing)
+- scsi: hisi_sas: Fix up probe error handling for v3 hw (Xiang Chen)
+- scsi: hisi_sas: Reduce some indirection in v3 hw driver (John Garry)
+- scsi: hisi_sas: Expose HW queues for v2 hw (John Garry)
+- driver core: platform: Add devm_platform_get_irqs_affinity() (John Garry)
+- genirq/affinity: Add irq_update_affinity_desc() (John Garry)
+- resource: Add irqresource_disabled() (John Garry)
+- scsi: hisi_sas: Select a suitable queue for internal I/Os (Xiang Chen)
+- scsi: hisi_sas_v3_hw: Remove extra function calls for runtime pm (Vaibhav Gupta)
+- scsi: hisi_sas_v3_hw: Don't use PCI helper functions (Vaibhav Gupta)
+- scsi: hisi_sas_v3_hw: Drop PCI Wakeup calls from .resume (Vaibhav Gupta)
+- arm64: Add MIDR encoding for HiSilicon Taishan CPUs (Weilong Chen)
+- soc: kunpeng_hccs: fix some sparse warnings about incorrect type (Huisong Li)
+- soc: kunpeng_hccs: add MAILBOX dependency (Arnd Bergmann)
+- soc: kunpeng_hccs: fix size_t format string (Arnd Bergmann)
+- doc: soc: hisilicon: Add Kunpeng HCCS driver documentation (Huisong Li)
+- soc: hisilicon: add sysfs entry to query information of HCCS (Huisong Li)
+- soc: hisilicon: Support HCCS driver on Kunpeng SoC (Huisong Li)
+- iommu/arm-smmu-v3: Enable iotlb_sync_map according to SMMU_IIDR (Zhang Zekun)
+- arm64: kernel: disable CNP on LINXICORE9100 (gumi@linux.alibaba.com)
+- cache: Workaround HiSilicon Taishan DC CVAU (Weilong Chen)
+- vhost: Add smp_rmb() in vhost_enable_notify() (Gavin Shan)
+- vhost: Add smp_rmb() in vhost_vq_avail_empty() (Gavin Shan)
+- irqchip/gic-v4: Wait for GICR_VPENDBASER.Dirty to clear before descheduling (Marc Zyngier)
+- irqchip/gic-v3-its: Fix VSYNC referencing an unmapped VPE on GIC v4.1 (Nianyao Tang)
+- irqchip/gic-v3-its: Fix GICv4.1 VPE affinity update (Marc Zyngier)
+- irqchip/gic-v4.1: Properly lock VPEs when doing a directLPI invalidation (Marc Zyngier)
+- ext4: delete redundant uptodate check for buffer (Yang Guo)
+- genirq: Increase the number of IRQ descriptors (Kunkun Jiang)
+- irqchip/gicv3-its: Add workaround for hip09 ITS erratum 162100801 (Xiang Chen)
+- irqchip: gic-v3: Collection table support muti pages (wangwudi)
+- Revert "softirq: Let ksoftirqd do its job" (Paolo Abeni)
+- anolis: sched: optimize push_expellee() (Cruz Zhao)
+- ext4: nested locking for xattr inode (Wojciech Gładysz)
+- ext4: fix inode tree inconsistency caused by ENOMEM (zhanchengbin)
+- ext4: dax: fix overflowing extents beyond inode size when partially writing (Zhihao Cheng)
+- jbd2: correctly compare tids with tid_geq function in jbd2_fc_begin_commit (Kemeng Shi)
+- jbd2: stop waiting for space when jbd2_cleanup_journal_tail() returns error (Baokun Li)
+- ext4: fix incorrect tid assumption in ext4_wait_for_tail_page_commit() (Luis Henriques (SUSE))
+- ext4: update orig_path in ext4_find_extent() (Baokun Li)
+- ext4: fix double brelse() the buffer of the extents path (Baokun Li)
+- ext4: aovid use-after-free in ext4_ext_insert_extent() (Baokun Li)
+- ext4: drop ppath from ext4_ext_replay_update_ex() to avoid double-free (Baokun Li)
+- ext4: fix incorrect tid assumption in __jbd2_log_wait_for_space() (Luis Henriques (SUSE))
+- ext4: propagate errors from ext4_find_extent() in ext4_insert_range() (Baokun Li)
+- ext4: fix slab-use-after-free in ext4_split_extent_at() (Baokun Li)
+- ext4: no need to continue when the number of entries is 1 (Edward Adam Davis)
+- ext4: fix i_data_sem unlock order in ext4_ind_migrate() (Artem Sadovnikov)
+- ext4: avoid use-after-free in ext4_ext_show_leaf() (Baokun Li)
+- ext4: ext4_search_dir should return a proper error (Thadeu Lima de Souza Cascardo)
+- ext4: avoid OOB when system.data xattr changes underneath the filesystem (Thadeu Lima de Souza Cascardo)
+- ext4: return error on ext4_find_inline_entry (Thadeu Lima de Souza Cascardo)
+- ext4: avoid negative min_clusters in find_group_orlov() (Kemeng Shi)
+- ext4: avoid potential buffer_head leak in __ext4_new_inode() (Kemeng Shi)
+- ext4: avoid buffer_head leak in ext4_mark_inode_used() (Kemeng Shi)
+- bpf: fix OOB devmap writes when deleting elements (Maciej Fijalkowski)
+- bpf: Fix exact match conditions in trie_get_next_key() (Hou Tao)
+- bpf: Handle BPF_EXIST and BPF_NOEXIST for LPM trie (Hou Tao)
+- tcp_bpf: Fix the sk_mem_uncharge logic in tcp_bpf_sendmsg (Zijian Zhang)
+- bpf, sockmap: Fix sk_msg_reset_curr (Zijian Zhang)
+- bpf, sockmap: Several fixes to bpf_msg_pop_data (Zijian Zhang)
+- bpf, sockmap: Several fixes to bpf_msg_push_data (Zijian Zhang)
+- bpf: use kvzmalloc to allocate BPF verifier environment (Rik van Riel)
+- bpf: Fix out-of-bounds write in trie_get_next_key() (Byeonguk Jeong)
+- bpf: Check percpu map value size first (Tao Chen)
+- bpf: Fix bpf_strtol and bpf_strtoul helpers for 32bit (Daniel Borkmann)
+- bpf: Eliminate remaining "make W=1" warnings in kernel/bpf/btf.o (Alan Maguire)
+- bpf: annotate BTF show functions with __printf (Alan Maguire)
+- bpf: Allow reads from uninit stack (Eduard Zingerman)
+- selftests/bpf: Verify copy_register_state() preserves parent/live fields (Eduard Zingerman)
+- selftests/bpf: Add verifier test for PTR_TO_MEM spill (Gilad Reti)
+- anolis: sched: Allow writing to bvt and identity when GI disabled (Tianchen Ding)
+- anolis: sched: Introduce cookie flags (Tianchen Ding)
+- anolis: selftests/sched: Add test for task identity (Tianchen Ding)
+- anolis: sched: Introduce per task identity (Tianchen Ding)
+- perf/dwc_pcie: Fix typos in event names (Ilkka Koskinen)
+- perf/dwc_pcie: Add support for Ampere SoCs (Ilkka Koskinen)
+- perf/dwc_pcie: Convert the events with mixed case to lowercase (Ilkka Koskinen)
+- block: add blk_rq_map_user_io (Anuj Gupta)
+- virtio-blk: set req->state to MQ_RQ_COMPLETE after polling I/O is finished (Suwan Kim)
+- virtio-blk: Avoid use-after-free on suspend/resume (Shigeru Yoshida)
+- virtio-blk: support polling I/O (Suwan Kim)
+- virtio_blk: allow 0 as num_request_queues (Michael S. Tsirkin)
+- virtio_blk: Fix spelling mistake: "advertisted" -> "advertised" (Colin Ian King)
+- virtio-blk: validate num_queues during probe (Jason Wang)
+- virtio-blk: add num_request_queues module parameter (Max Gurtovoy)
+- params: lift param_set_uint_minmax to common code (Sagi Grimberg)
+- cpupower: fix TSC MHz calculation for Mperf monitor (He Rongguang)
+- net: geneve: add missing netlink policy and size for IFLA_GENEVE_INNER_PROTO_INHERIT (Eyal Birger)
+- net: geneve: support IPv4/IPv6 as inner protocol (Eyal Birger)
+- dm cache: fix potential out-of-bounds access on the first resume (Ming-Hung Tsai)
+- dm cache: optimize dirty bit checking with find_next_bit when resizing (Ming-Hung Tsai)
+- dm cache: fix out-of-bounds access to the dirty bitset when resizing (Ming-Hung Tsai)
+- dm cache: correct the number of origin blocks to match the target length (Ming-Hung Tsai)
+- Revert "dm: requeue IO if mapping table not yet available" (Mikulas Patocka)
+- dm suspend: return -ERESTARTSYS instead of -EINTR (Mikulas Patocka)
+- md: clean up invalid BUG_ON in md_ioctl (Li Nan)
+- dm persistent data: fix memory allocation failure (Mikulas Patocka)
+- dm resume: don't return EINVAL when signalled (Khazhismel Kumykov)
+- md: do not delete safemode_timer in mddev_suspend (Li Nan)
+- platform/x86: ISST: Fix the KASAN report slab-out-of-bounds bug (Zach Wade)
+- platform/x86: ISST: Simplify isst_misc_reg() and isst_misc_unreg() (Srinivas Pandruvada)
+- platform/x86: ISST: Fix return value on last invalid resource (Srinivas Pandruvada)
+- platform/x86: ISST: Use only TPMI interface when present (Srinivas Pandruvada)
+- platform/x86: ISST: Avoid some SkyLake server models (Srinivas Pandruvada)
+- platform/x86: ISST: Add model specific loading for common module (Srinivas Pandruvada)
+- platform/x86: ISST: fix use-after-free in tpmi_sst_dev_remove() (Harshit Mogalapalli)
+- anolis: nvme: simultaneously change blkcg when set new bio bi_disk (Guixin Liu)
+- fuse: don't bump attr_version in cached write (Miklos Szeredi)
+- net/smc: fix LGR and link use-after-free issue (Wen Gu)
+- net/smc: initialize close_work early to avoid warning (Wen Gu)
+- KVM: arm64: Make ICC_*SGI*_EL1 undef in the absence of a vGICv3 (Marc Zyngier) {CVE-2024-46707}
+- usb: dwc3: st: fix probed platform device ref count on probe error path (Krzysztof Kozlowski) {CVE-2024-46674}
+- fs: add batch and poll flags to the uring_cmd_iopoll() handler (Jens Axboe)
+- block: ignore RWF_HIPRI hint for sync dio (Ming Lei)
+- nvme: wire up completion batching for the IRQ path (Jens Axboe)
+- io_uring: utilize the io batching infrastructure for more efficient polled IO (Jens Axboe)
+- nvme: add support for batched completion of polled IO (Jens Axboe)
+- block: add support for blk_mq_end_request_batch() (Jens Axboe)
+- io_uring: inform block layer of how many requests we are submitting (Jens Axboe)
+- sbitmap: add helper to clear a batch of tags (Jens Axboe)
+- block: add a struct io_comp_batch argument to fops->iopoll() (Jens Axboe)
+- block: provide helpers for rq_list manipulation (Jens Axboe)
+- block: pre-allocate requests if plug is started and is a batch (Jens Axboe)
+- of/irq: Prevent device address out-of-bounds read in interrupt map walk (Stefan Wiehler) {CVE-2024-46743}
+- anolis: cmdline: x86: update crashkernel to adapt more scenarios (Yuanhe Shu)
+- bpf: Add schedule point in htab_init_buckets() (Eric Dumazet)
+- bpf: Fix error path in htab_map_alloc() (Eric Dumazet)
+- anolis: sw_64: fixed an issue where RTC time could not be updated on sw_64-6b platform (Min Li)
+- net: Remove WARN_ON_ONCE(sk->sk_forward_alloc) from sk_stream_kill_queues(). (Kuniyuki Iwashima)
+- mm: pgtable_share: Handle MAP_SHARED_PT properly along with MAP_FIXED | MAP_HUGETLB (Zelin Deng)
+- anolis: configs: set CONFIG_DWC_PCIE_PMU=y (Jing Zhang)
+- perf/dwc_pcie: Add support for QCOM vendor devices (Krishna chaitanya chundru)
+- perf/dwc_pcie: Always register for PCIe bus notifier (Krishna chaitanya chundru)
+- perf/dwc_pcie: Fix registration issue in multi PCIe controller instances (Krishna chaitanya chundru)
+- MAINTAINERS: add maintainers for DesignWare PCIe PMU driver (Shuai Xue)
+- drivers/perf: add DesignWare PCIe PMU driver (Shuai Xue)
+- PCI: Move pci_clear_and_set_dword() helper to PCI header (Shuai Xue)
+- PCI: Add Alibaba Vendor ID to linux/pci_ids.h (Shuai Xue)
+- docs: perf: Add description for Synopsys DesignWare PCIe PMU driver (Shuai Xue)
+- perf: Allow a PMU to have a parent (Jonathan Cameron)
+- PCI: Add pci_find_vsec_capability() to find a specific VSEC (Gustavo Pimentel)
+- anolis: arm64: drivers/perf: remove dwc uncore pcie pmu driver (Jing Zhang)
+- fuse: enable dynamic configuration of fuse max pages limit (FUSE_MAX_MAX_PAGES) (Joanne Koong)
+- fuse: remove useless IOCB_DIRECT in fuse_direct_read/write_iter (yangyun)
+- platform/x86/intel/ifs: release cpus_read_lock() (Jithu Joseph)
+- platform/x86/intel/ifs: Annotate work queue on stack so object debug does not complain (David Arcari)
+- tools arch x86: Sync the msr-index.h copy with the kernel sources (Yanteng Si)
+- io_uring/rw: fix missing NOWAIT check for O_DIRECT start write (Jens Axboe)
+- io_uring: use kiocb_{start,end}_write() helpers (Amir Goldstein)
+- fs: create kiocb_{start,end}_write() helpers (Amir Goldstein)
+- io_uring: rename kiocb_end_write() local helper (Amir Goldstein)
+- io_uring/sqpoll: close race on waiting for sqring entries (Jens Axboe)
+- io_uring/sqpoll: do not put cpumask on stack (Felix Moessbauer)
+- io_uring/sqpoll: retain test for whether the CPU is valid (Jens Axboe)
+- io_uring/sqpoll: do not allow pinning outside of cpuset (Felix Moessbauer)
+- io_uring/io-wq: limit retrying worker initialisation (Pavel Begunkov)
+- platform/x86/intel/ifs: Initialize union ifs_status to zero (Kuppuswamy Sathyanarayanan)
+- trace: platform/x86/intel/ifs: Add SBAF trace support (Jithu Joseph)
+- platform/x86/intel/ifs: Add SBAF test support (Jithu Joseph)
+- platform/x86/intel/ifs: Fix SBAF title underline length (Kuppuswamy Sathyanarayanan)
+- platform/x86/intel/ifs: Add SBAF test image loading support (Jithu Joseph)
+- platform/x86/intel/ifs: Refactor MSR usage in IFS test code (Kuppuswamy Sathyanarayanan)
+- selftests: ifs: verify IFS ARRAY BIST functionality (Pengfei Xu)
+- selftests: ifs: verify IFS scan test functionality (Pengfei Xu)
+- selftests: ifs: verify test image loading functionality (Pengfei Xu)
+- selftests: ifs: verify test interfaces are created by the driver (Pengfei Xu)
+- platform/x86/intel/ifs: Disable irq during one load stage (Jithu Joseph)
+- platform/x86/intel/ifs: trace: display batch num in hex (Jithu Joseph)
+- platform/x86/intel/ifs: Classify error scenarios correctly (Jithu Joseph)
+- platform/x86/intel/ifs: Remove unnecessary initialization of 'ret' (Ilpo Järvinen)
+- platform/x86/intel/ifs: Add an entry rendezvous for SAF (Ashok Raj)
+- platform/x86/intel/ifs: Replace the exit rendezvous with an entry rendezvous for ARRAY_BIST (Ashok Raj)
+- platform/x86/intel/ifs: Add current batch number to trace output (Ashok Raj)
+- platform/x86/intel/ifs: Trace on all HT threads when executing a test (Ashok Raj)
+- platform/x86/intel/ifs: Call release_firmware() when handling errors. (Jithu Joseph)
+- platform/x86/intel/ifs: ARRAY BIST for Sierra Forest (Jithu Joseph)
+- platform/x86/intel/ifs: Add new error code (Jithu Joseph)
+- platform/x86/intel/ifs: Add new CPU support (Jithu Joseph)
+- platform/x86/intel/ifs: Metadata validation for start_chunk (Jithu Joseph)
+- platform/x86/intel/ifs: Validate image size (Jithu Joseph)
+- platform/x86/intel/ifs: Gen2 Scan test support (Jithu Joseph)
+- platform/x86/intel/ifs: Gen2 scan image loading (Jithu Joseph)
+- platform/x86/intel/ifs: Refactor image loading code (Jithu Joseph)
+- platform/x86/intel/ifs: Store IFS generation number (Jithu Joseph)
+- anolis: sw_64: fixed an issue where RTC time could not be updated on sw platform (Min Li)
+- anolis: Revert "block: call submit_bio_checks under q_usage_counter" (Joseph Qi)
+- anolis: mm: modify default CONFIG_DEBUG_KMEMLEAK_MEM_POOL_SIZE (Weilin Tong)
+- net: more strict VIRTIO_NET_HDR_GSO_UDP_L4 validation (Willem de Bruijn)
+- rbd: don't assume rbd_is_lock_owner() for exclusive mappings (Ilya Dryomov)
+- libceph: use kernel_connect() (Jordan Rife)
+- libceph: fix potential hang in ceph_osdc_notify() (Ilya Dryomov)
+- block: drop removed argument from kernel-doc of blk_execute_rq() (Lukas Bulwahn)
+- io_uring: fix uninitialized field in rw io_kiocb (Joseph Ravichandran)
+- block: use bio_queue_enter instead of blk_queue_enter in bio_poll (Christoph Hellwig)
+- block: define bvec_iter as __packed __aligned(4) (Ming Lei)
+- block: don't allow writing to the poll queue attribute (Christoph Hellwig)
+- block: switch polling to be bio based (Christoph Hellwig)
+- block: call submit_bio_checks under q_usage_counter (Christoph Hellwig)
+- block: define 'struct bvec_iter' as packed (Ming Lei)
+- block: use SLAB_TYPESAFE_BY_RCU for the bio slab (Christoph Hellwig)
+- block: rename REQ_HIPRI to REQ_POLLED (Christoph Hellwig)
+- io_uring: don't sleep when polling for I/O (Christoph Hellwig)
+- block: replace the spin argument to blk_iopoll with a flags argument (Christoph Hellwig)
+- blk-mq: remove blk_qc_t_valid (Christoph Hellwig)
+- blk-mq: remove blk_qc_t_to_tag and blk_qc_t_is_internal (Christoph Hellwig)
+- blk-mq: factor out a "classic" poll helper (Christoph Hellwig)
+- blk-mq: factor out a blk_qc_to_hctx helper (Christoph Hellwig)
+- io_uring: fix a layering violation in io_iopoll_req_issued (Christoph Hellwig)
+- iomap: don't try to poll multi-bio I/Os in __iomap_dio_rw (Christoph Hellwig)
+- block: don't try to poll multi-bio I/Os in __blkdev_direct_IO (Christoph Hellwig)
+- direct-io: remove blk_poll support (Christoph Hellwig)
+- nvme: use return value from blk_execute_rq() (Keith Busch)
+- block: return errors from blk_execute_rq() (Keith Busch)
+- nvme: use blk_execute_rq() for passthrough commands (Keith Busch)
+- block: support polling through blk_execute_rq (Keith Busch)
+- block: remove unnecessary argument from blk_execute_rq (Guoqing Jiang)
+- block: remove unnecessary argument from blk_execute_rq_nowait (Guoqing Jiang)
+- nvmet: fix ns enable/disable possible hang (Sagi Grimberg)
+- cpufreq: intel_pstate: Update Balance-performance EPP for Granite Rapids (Srinivas Pandruvada)
+- cpufreq: intel_pstate: Support Granite Rapids and Sierra Forest OOB mode (Srinivas Pandruvada)
+- cpufreq: intel_pstate: Support Emerald Rapids OOB mode (Srinivas Pandruvada)
+- locking/osq_lock: Avoid false sharing in optimistic_spin_node (Zeng Heng)
+- anolis: vfio-pci: expose the vfio_device->open_count to user. (Qinyun Tan)
+- memcg: protect concurrent access to mem_cgroup_idr (Shakeel Butt) {CVE-2024-43892}
+- memcontrol: ensure memcg acquired by id is properly set up (Johannes Weiner) {CVE-2024-43892}
+- userfaultfd: fix checks for huge PMDs (Jann Horn) {CVE-2024-46787}
+- x86/fpu: Prevent FPU state corruption (Thomas Gleixner)
+- anolis: configs: ensure CONFIG_RETPOLINE is enabled (Qiao Ma)
+- anolis: sw64: change definition of TIF_NOTIFY_SIGNAL to clear up the warning (Gu Zitao)
+- anolis: Revert "anolis: sw64: fix function ret_to_user()" (Gu Zitao)
+- anolis: sw64: kvm: remove unused argument 'addr' of apt_dissolve_pud/pmd() (Min Fanlei)
+- anolis: sw64: cache: fix shared_cpu_map when PPTT is valid (Jing Li)
+- anolis: sw64: kvm: fix tlb flush implementation of dirty page tracking (Min Fanlei)
+- anolis: sw64: kvm: declare KVM_CAP_SET_GUEST_DEBUG (Deng Xiaoyun)
+- anolis: sw64: pci: remove function fix_jm585_reset() (Jing Li)
+- anolis: sw64: irqchip: remove fallback after kzalloc_node() (Xu Yiwei)
+- anolis: sw64: irqchip: improve intx implementation (Xu Yiwei)
+- anolis: sw64: kvm: add KVM_CAP_READONLY_MEM support (Chen Wang)
+- anolis: sw64: pci: fix incorrect pointer of struct pci_controller (Jing Li)
+- anolis: sw64: fix mmap protection_map (Mao Minkai)
+- anolis: sw64: show CPU feature UNA in /proc/cpuinfo (Mao Minkai)
+- anolis: sw64: fix the error of cpufreq update (Zhi Tongze)
+- anolis: sw64: mm: support fdt memory reservation (Jing Li)
+- anolis: sw64: remove deprecated annotation in irq.h (Xu Yiwei)
+- anolis: sw64: introduce a fine-grained intx mask/unmask system (Xu Yiwei)
+- anolis: sw64: move handle_intx() into pci-intx handle (Xu Yiwei)
+- anolis: sw64: perf: fix system hang problem when using perf callchain sampling (Wang Yicheng)
+- anolis: sw64: fix compilation issues on match.c (Gu Yuchen)
+- anolis: sw64: iommu: fix NULL hose check (Xu Yiwei)
+- anolis: Update Zhaoxin AHCI SGPIO driver (LeoLiu-oc)
+- anolis: sw64: mm: fix PFN of PMDs for 512M hugepage (Wang Yuanheng)
+- anolis: sw64: kvm: fix an error when unmapping 512M hugepages (Lei Yilong)
+- anolis: sw64: modify sys_pfh_ops (Mao Minkai)
+- anolis: sw64: pci: fix legacy PCI not initialized for XueLang platform (Jing Li)
+- anolis: sw64: fix set_huge_pte_at for C4 (Mao Minkai)
+- anolis: sw64: fix compilation issues (Wang Yicheng)
+- anolis: sw64: add arch_hugetlb_valid_size for C4 (Mao Minkai)
+- anolis: sw64: pci: remove legacy io reservation (Zhou Xuemei)
+- anolis: sw64: cache: give preference to cache information from PPTT table (Jing Li)
+- anolis: sw64: cpu: refactor cpuinfo related code (Jing Li)
+- anolis: sw64: cache: refactor cacheinfo related code (Jing Li)
+- anolis: sw64: cpu: move cpu related code to the newly created cpu.c (Jing Li)
+- anolis: sw64: topology: support initializing topology via DT or ACPI (Jing Li)
+- anolis: sw64: irqchip: add version 3 for PINTC (Jing Li)
+- anolis: sw64: fix null pointer issue when CONFIG_BUILTIN_DTB=y (Jing Li)
+- anolis: sw64: acpi: suppress log of function acpi_numa_x2apic_affinity_init() (Jing Li)
+- anolis: sw64: clk: further fix the clock frequency of SPI and I2C (Jing Li)
+- anolis: sw64: smp: fix function fdt_setup_smp() (Jing Li)
+- anolis: Revert "anolis: sw64: fdt: map physical node ID to logical node ID" (Jing Li)
+- anolis: sw64: kvm: adjust interrupt priority for guest (Xu Linqin)
+- anolis: sw64: fix judgements about legacy pci support (Deng Xiaoyun)
+
