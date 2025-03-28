@@ -28,29 +28,27 @@ static int erofs_fill_symlink(struct inode *inode, void *kaddr,
 static int erofs_read_inode(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
-	struct erofs_sb_info *sbi = EROFS_SB(sb);
-	struct erofs_inode *vi = EROFS_I(inode);
-	const erofs_off_t inode_loc = erofs_iloc(inode);
-	erofs_blk_t blkaddr, nblks = 0;
-	void *kaddr;
-	struct erofs_inode_compact *dic;
-	struct erofs_inode_extended *die, *copied = NULL;
-	union erofs_inode_i_u iu;
+	erofs_blk_t blkaddr = erofs_blknr(sb, erofs_iloc(inode));
+	unsigned int ofs = erofs_blkoff(sb, erofs_iloc(inode));
 	struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
-	unsigned int ifmt, ofs;
+	struct erofs_sb_info *sbi = EROFS_SB(sb);
+	erofs_blk_t addrmask = BIT_ULL(48) - 1;
+	struct erofs_inode *vi = EROFS_I(inode);
+	struct erofs_inode_extended *die, copied;
+	struct erofs_inode_compact *dic;
+	unsigned int ifmt;
+	void *ptr;
 	int err = 0;
 
-	blkaddr = erofs_blknr(sb, inode_loc);
-	ofs = erofs_blkoff(sb, inode_loc);
-
-	kaddr = erofs_read_metabuf(&buf, sb, blkaddr, EROFS_KMAP);
-	if (IS_ERR(kaddr)) {
-		erofs_err(sb, "failed to get inode (nid: %llu) page, err %ld",
-			  vi->nid, PTR_ERR(kaddr));
-		return PTR_ERR(kaddr);
+	ptr = erofs_read_metabuf(&buf, sb, blkaddr, EROFS_KMAP);
+	if (IS_ERR(ptr)) {
+		err = PTR_ERR(ptr);
+		erofs_err(sb, "failed to get inode (nid: %llu) page, err %d",
+			  vi->nid, err);
+		goto err_out;
 	}
 
-	dic = kaddr + ofs;
+	dic = ptr + ofs;
 	ifmt = le16_to_cpu(dic->i_format);
 	if (ifmt & ~EROFS_I_ALL) {
 		erofs_err(sb, "unsupported i_format %u of nid %llu",
@@ -74,31 +72,27 @@ static int erofs_read_inode(struct inode *inode)
 		if (ofs + vi->inode_isize <= sb->s_blocksize) {
 			ofs += vi->inode_isize;
 			die = (struct erofs_inode_extended *)dic;
+			copied.i_u = die->i_u;
+			copied.i_nb = die->i_nb;
 		} else {
 			const unsigned int gotten = sb->s_blocksize - ofs;
 
-			copied = kmalloc(vi->inode_isize, GFP_KERNEL);
-			if (!copied) {
-				err = -ENOMEM;
+			memcpy(&copied, dic, gotten);
+			ptr = erofs_read_metabuf(&buf, sb, blkaddr + 1,
+						 EROFS_KMAP);
+			if (IS_ERR(ptr)) {
+				err = PTR_ERR(ptr);
+				erofs_err(sb, "failed to get inode payload block (nid: %llu), err %d",
+					  vi->nid, err);
 				goto err_out;
 			}
-			memcpy(copied, dic, gotten);
-			kaddr = erofs_read_metabuf(&buf, sb, blkaddr + 1,
-						   EROFS_KMAP);
-			if (IS_ERR(kaddr)) {
-				erofs_err(sb, "failed to get inode payload block (nid: %llu), err %ld",
-					  vi->nid, PTR_ERR(kaddr));
-				kfree(copied);
-				return PTR_ERR(kaddr);
-			}
 			ofs = vi->inode_isize - gotten;
-			memcpy((u8 *)copied + gotten, kaddr, ofs);
-			die = copied;
+			memcpy((u8 *)&copied + gotten, ptr, ofs);
+			die = &copied;
 		}
 		vi->xattr_isize = erofs_xattr_ibody_size(die->i_xattr_icount);
 
 		inode->i_mode = le16_to_cpu(die->i_mode);
-		iu = die->i_u;
 		i_uid_write(inode, le32_to_cpu(die->i_uid));
 		i_gid_write(inode, le32_to_cpu(die->i_gid));
 		set_nlink(inode, le32_to_cpu(die->i_nlink));
@@ -108,7 +102,6 @@ static int erofs_read_inode(struct inode *inode)
 		inode->i_ctime.tv_nsec = le32_to_cpu(die->i_mtime_nsec);
 
 		inode->i_size = le64_to_cpu(die->i_size);
-		kfree(copied);
 		break;
 	case EROFS_INODE_LAYOUT_COMPACT:
 		vi->inode_isize = sizeof(struct erofs_inode_compact);
@@ -116,13 +109,20 @@ static int erofs_read_inode(struct inode *inode)
 		vi->xattr_isize = erofs_xattr_ibody_size(dic->i_xattr_icount);
 
 		inode->i_mode = le16_to_cpu(dic->i_mode);
-		iu = dic->i_u;
+		copied.i_u = dic->i_u;
 		i_uid_write(inode, le16_to_cpu(dic->i_uid));
 		i_gid_write(inode, le16_to_cpu(dic->i_gid));
-		set_nlink(inode, le16_to_cpu(dic->i_nlink));
-		/* use build time for compact inodes */
-		inode->i_ctime.tv_sec = sbi->build_time;
-		inode->i_ctime.tv_nsec = sbi->build_time_nsec;
+		if (!S_ISDIR(inode->i_mode) &&
+		    ((ifmt >> EROFS_I_NLINK_1_BIT) & 1)) {
+			set_nlink(inode, 1);
+			copied.i_nb = dic->i_nb;
+		} else {
+			set_nlink(inode, le16_to_cpu(dic->i_nb.nlink));
+			copied.i_nb.startblk_hi = 0;
+			addrmask = BIT_ULL(32) - 1;
+		}
+		inode->i_ctime.tv_sec = sbi->epoch + le32_to_cpu(dic->i_mtime);
+		inode->i_ctime.tv_nsec = sbi->fixed_nsec;
 
 		inode->i_size = le32_to_cpu(dic->i_size);
 		break;
@@ -134,19 +134,26 @@ static int erofs_read_inode(struct inode *inode)
 	}
 
 	switch (inode->i_mode & S_IFMT) {
-	case S_IFREG:
 	case S_IFDIR:
+		vi->dot_omitted = (ifmt >> EROFS_I_DOT_OMITTED_BIT) & 1;
+		fallthrough;
+	case S_IFREG:
 	case S_IFLNK:
-		vi->raw_blkaddr = le32_to_cpu(iu.raw_blkaddr);
+		vi->startblk = le32_to_cpu(copied.i_u.startblk_lo) |
+			((u64)le16_to_cpu(copied.i_nb.startblk_hi) << 32);
+		if (vi->datalayout == EROFS_INODE_FLAT_PLAIN &&
+		    !((vi->startblk ^ EROFS_NULL_ADDR) & addrmask))
+			vi->startblk = EROFS_NULL_ADDR;
+
 		if(S_ISLNK(inode->i_mode)) {
-			err = erofs_fill_symlink(inode, kaddr, ofs);
+			err = erofs_fill_symlink(inode, ptr, ofs);
 			if (err)
 				goto err_out;
 		}
 		break;
 	case S_IFCHR:
 	case S_IFBLK:
-		inode->i_rdev = new_decode_dev(le32_to_cpu(iu.rdev));
+		inode->i_rdev = new_decode_dev(le32_to_cpu(copied.i_u.rdev));
 		break;
 	case S_IFIFO:
 	case S_IFSOCK:
@@ -159,12 +166,15 @@ static int erofs_read_inode(struct inode *inode)
 		goto err_out;
 	}
 
-	/* total blocks for compressed files */
-	if (erofs_inode_is_data_compressed(vi->datalayout)) {
-		nblks = le32_to_cpu(iu.compressed_blocks);
-	} else if (vi->datalayout == EROFS_INODE_CHUNK_BASED) {
+	if (erofs_inode_is_data_compressed(vi->datalayout))
+		inode->i_blocks = le32_to_cpu(copied.i_u.blocks_lo) <<
+					(sb->s_blocksize_bits - 9);
+	else
+		inode->i_blocks = round_up(inode->i_size, sb->s_blocksize) >> 9;
+
+	if (vi->datalayout == EROFS_INODE_CHUNK_BASED) {
 		/* fill chunked inode summary info */
-		vi->chunkformat = le16_to_cpu(iu.c.format);
+		vi->chunkformat = le16_to_cpu(copied.i_u.c.format);
 		if (vi->chunkformat & ~EROFS_CHUNK_FORMAT_ALL) {
 			erofs_err(sb, "unsupported chunk format %x of nid %llu",
 				  vi->chunkformat, vi->nid);
@@ -184,14 +194,7 @@ static int erofs_read_inode(struct inode *inode)
 	    (vi->datalayout == EROFS_INODE_FLAT_PLAIN ||
 	     vi->datalayout == EROFS_INODE_CHUNK_BASED))
 		inode->i_flags |= S_DAX;
-	if (!nblks)
-		/* measure inode.i_blocks as generic filesystems */
-		inode->i_blocks = round_up(inode->i_size, sb->s_blocksize) >> 9;
-	else
-		inode->i_blocks = nblks << (sb->s_blocksize_bits - 9);
-
 err_out:
-	DBG_BUGON(err);
 	erofs_put_metabuf(&buf);
 	return err;
 }
@@ -202,13 +205,10 @@ static int erofs_fill_inode(struct inode *inode)
 	int err;
 
 	trace_erofs_fill_inode(inode);
-
-	/* read inode base data from disk */
 	err = erofs_read_inode(inode);
 	if (err)
 		return err;
 
-	/* setup the new inode */
 	switch (inode->i_mode & S_IFMT) {
 	case S_IFREG:
 		inode->i_op = &erofs_generic_iops;
@@ -230,22 +230,16 @@ static int erofs_fill_inode(struct inode *inode)
 			inode->i_op = &erofs_symlink_iops;
 		inode_nohighmem(inode);
 		break;
-	case S_IFCHR:
-	case S_IFBLK:
-	case S_IFIFO:
-	case S_IFSOCK:
+	default:
 		inode->i_op = &erofs_generic_iops;
 		init_special_inode(inode, inode->i_mode, inode->i_rdev);
 		return 0;
-	default:
-		return -EFSCORRUPTED;
 	}
 
 	if (erofs_inode_is_data_compressed(vi->datalayout)) {
 		err = -EOPNOTSUPP;
 #ifdef CONFIG_EROFS_FS_ZIP
-		if (!erofs_is_fscache_mode(inode->i_sb) &&
-		    inode->i_sb->s_blocksize_bits == PAGE_SHIFT) {
+		if (!erofs_is_fscache_mode(inode->i_sb)) {
 			inode->i_mapping->a_ops = &z_erofs_aops;
 			err = 0;
 		}

@@ -43,8 +43,7 @@ __printf(3, 4) void _erofs_info(struct super_block *sb,
 
 typedef u64 erofs_nid_t;
 typedef u64 erofs_off_t;
-/* data type for filesystem-wide blocks number */
-typedef u32 erofs_blk_t;
+typedef u64 erofs_blk_t;
 
 struct erofs_device_info {
 	char *path;
@@ -54,18 +53,15 @@ struct erofs_device_info {
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *blobfile;
 #endif
-	u32 blocks;
-	u32 mapped_blkaddr;
+	erofs_blk_t blocks;
+	erofs_blk_t uniaddr;
 };
 
 struct erofs_mount_opts {
-#ifdef CONFIG_EROFS_FS_ZIP
 	/* current strategy of how to use managed cache */
 	unsigned char cache_strategy;
-
 	/* threshold for decompression synchronously */
 	unsigned int max_sync_decompress_pages;
-#endif
 	unsigned int mount_opt;
 };
 
@@ -139,7 +135,7 @@ struct erofs_sb_info {
 	struct erofs_dev_context *devs;
 	struct dax_device *dax_dev;
 	u64 total_blocks;
-	u32 primarydevice_blocks;
+	erofs_blk_t primarydevice_blocks;
 
 	u32 meta_blkaddr;
 #ifdef CONFIG_EROFS_FS_XATTR
@@ -151,8 +147,8 @@ struct erofs_sb_info {
 	unsigned char blkszbits;	/* filesystem block size in bit shift */
 
 	u32 sb_size;			/* total superblock size */
-	u32 build_time_nsec;
-	u64 build_time;
+	u32 fixed_nsec;
+	s64 epoch;
 
 	/* what we really care is nid, rather than ino.. */
 	erofs_nid_t root_nid;
@@ -160,8 +156,6 @@ struct erofs_sb_info {
 	/* used for statfs, f_files - f_favail */
 	u64 inos;
 
-	u8 uuid[16];                    /* 128-bit uuid for volume */
-	u8 volume_name[16];             /* volume name */
 	u32 feature_compat;
 	u32 feature_incompat;
 
@@ -210,45 +204,11 @@ enum {
 	EROFS_ZIP_CACHE_READAROUND
 };
 
-#define EROFS_LOCKED_MAGIC     (INT_MIN | 0xE0F510CCL)
-
 /* basic unit of the workstation of a super_block */
 struct erofs_workgroup {
-	/* the workgroup index in the workstation */
 	pgoff_t index;
-
-	/* overall workgroup reference count */
-	atomic_t refcount;
+	struct lockref lockref;
 };
-
-static inline bool erofs_workgroup_try_to_freeze(struct erofs_workgroup *grp,
-						 int val)
-{
-	preempt_disable();
-	if (val != atomic_cmpxchg(&grp->refcount, val, EROFS_LOCKED_MAGIC)) {
-		preempt_enable();
-		return false;
-	}
-	return true;
-}
-
-static inline void erofs_workgroup_unfreeze(struct erofs_workgroup *grp,
-					    int orig_val)
-{
-	/*
-	 * other observers should notice all modifications
-	 * in the freezing period.
-	 */
-	smp_mb();
-	atomic_set(&grp->refcount, orig_val);
-	preempt_enable();
-}
-
-static inline int erofs_wait_on_workgroup_freezed(struct erofs_workgroup *grp)
-{
-	return atomic_cond_read_relaxed(&grp->refcount,
-					VAL != EROFS_LOCKED_MAGIC);
-}
 
 enum erofs_kmap_type {
 	EROFS_NO_KMAP,		/* don't map the buffer */
@@ -267,8 +227,8 @@ struct erofs_buf {
 
 #define ROOT_NID(sb)		((sb)->root_nid)
 
-#define erofs_blknr(sb, addr)	((addr) >> (sb)->s_blocksize_bits)
-#define erofs_blkoff(sb, addr)	((addr) & ((sb)->s_blocksize - 1))
+#define erofs_blknr(sb, pos)	((erofs_blk_t)((pos) >> (sb)->s_blocksize_bits))
+#define erofs_blkoff(sb, pos)	((pos) & ((sb)->s_blocksize - 1))
 #define erofs_pos(sb, blk)	((erofs_off_t)(blk) << (sb)->s_blocksize_bits)
 #define erofs_iblks(i)	(round_up((i)->i_size, i_blocksize(i)) >> (i)->i_blkbits)
 
@@ -286,6 +246,7 @@ EROFS_FEATURE_FUNCS(compr_head2, incompat, INCOMPAT_COMPR_HEAD2)
 EROFS_FEATURE_FUNCS(ztailpacking, incompat, INCOMPAT_ZTAILPACKING)
 EROFS_FEATURE_FUNCS(fragments, incompat, INCOMPAT_FRAGMENTS)
 EROFS_FEATURE_FUNCS(dedupe, incompat, INCOMPAT_DEDUPE)
+EROFS_FEATURE_FUNCS(48bit, incompat, INCOMPAT_48BIT)
 EROFS_FEATURE_FUNCS(sb_chksum, compat, COMPAT_SB_CHKSUM)
 
 /* atomic flag definitions */
@@ -304,6 +265,7 @@ struct erofs_inode {
 
 	unsigned char datalayout;
 	unsigned char inode_isize;
+	bool dot_omitted;
 	unsigned int xattr_isize;
 
 	unsigned int xattr_shared_count;
@@ -311,7 +273,7 @@ struct erofs_inode {
 	const struct vm_operations_struct *lower_vm_ops;
 
 	union {
-		erofs_blk_t raw_blkaddr;
+		erofs_blk_t startblk;
 		struct {
 			unsigned short	chunkformat;
 			unsigned char	chunkbits;
@@ -320,15 +282,13 @@ struct erofs_inode {
 		struct {
 			unsigned short z_advise;
 			unsigned char  z_algorithmtype[2];
-			unsigned char  z_logical_clusterbits;
-			unsigned long  z_tailextent_headlcn;
+			unsigned char  z_lclusterbits;
 			union {
-				struct {
-					erofs_off_t    z_idataoff;
-					unsigned short z_idata_size;
-				};
-				erofs_off_t z_fragmentoff;
+				u64    z_tailextent_headlcn;
+				u64    z_extents;
 			};
+			erofs_off_t    z_fragmentoff;
+			unsigned short z_idata_size;
 		};
 #endif	/* CONFIG_EROFS_FS_ZIP */
 	};
@@ -512,7 +472,7 @@ static inline void erofs_pagepool_add(struct page **pagepool,
 void erofs_release_pages(struct page **pagepool);
 
 #ifdef CONFIG_EROFS_FS_ZIP
-int erofs_workgroup_put(struct erofs_workgroup *grp);
+void erofs_workgroup_put(struct erofs_workgroup *grp);
 struct erofs_workgroup *erofs_find_workgroup(struct super_block *sb,
 					     pgoff_t index);
 struct erofs_workgroup *erofs_insert_workgroup(struct super_block *sb,

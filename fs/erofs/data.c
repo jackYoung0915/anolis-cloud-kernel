@@ -121,57 +121,41 @@ void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
 	return erofs_bread(buf, sb->s_bdev->bd_inode, blkaddr, type);
 }
 
-int erofs_map_blocks_flatmode(struct inode *inode, struct erofs_map_blocks *map)
-{
-	struct erofs_inode *vi = EROFS_I(inode);
-	struct super_block *sb = inode->i_sb;
-	bool tailendpacking = (vi->datalayout == EROFS_INODE_FLAT_INLINE);
-	erofs_blk_t lastblk = erofs_iblks(inode) - tailendpacking;
-
-	map->m_flags = EROFS_MAP_MAPPED;	/* no hole in flat inodes */
-	if (map->m_la < erofs_pos(sb, lastblk)) {
-		map->m_pa = erofs_pos(sb, vi->raw_blkaddr) + map->m_la;
-		map->m_plen = erofs_pos(sb, lastblk) - map->m_la;
-	} else {
-		DBG_BUGON(!tailendpacking);
-		map->m_pa = erofs_iloc(inode) + vi->inode_isize +
-			vi->xattr_isize + erofs_blkoff(sb, map->m_la);
-		map->m_plen = inode->i_size - map->m_la;
-
-		/* inline data should be located in the same meta block */
-		if (erofs_blkoff(sb, map->m_pa) + map->m_plen > sb->s_blocksize) {
-			erofs_err(sb, "inline data across blocks @ nid %llu", vi->nid);
-			DBG_BUGON(1);
-			return -EFSCORRUPTED;
-		}
-		map->m_flags |= EROFS_MAP_META;
-	}
-	return 0;
-}
-
 int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 {
+	struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
 	struct super_block *sb = inode->i_sb;
+	unsigned int unit, blksz = sb->s_blocksize;
 	struct erofs_inode *vi = EROFS_I(inode);
 	struct erofs_inode_chunk_index *idx;
-	struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
-	u64 chunknr;
-	unsigned int unit;
+	erofs_blk_t startblk, addrmask;
+	bool tailpacking;
 	erofs_off_t pos;
+	u64 chunknr;
 	void *kaddr;
 	int err = 0;
 
 	trace_erofs_map_blocks_enter(inode, map, 0);
 	map->m_deviceid = 0;
-	if (map->m_la >= inode->i_size) {
-		/* leave out-of-bound access unmapped */
-		map->m_flags = 0;
-		map->m_plen = 0;
+	if (map->m_la >= inode->i_size)
 		goto out;
-	}
 
 	if (vi->datalayout != EROFS_INODE_CHUNK_BASED) {
-		err = erofs_map_blocks_flatmode(inode, map);
+		tailpacking = (vi->datalayout == EROFS_INODE_FLAT_INLINE);
+		if (!tailpacking && vi->startblk == EROFS_NULL_ADDR)
+			goto out;
+		pos = erofs_pos(sb, erofs_iblks(inode) - tailpacking);
+
+		map->m_flags = EROFS_MAP_MAPPED;
+		if (map->m_la < pos) {
+			map->m_pa = erofs_pos(sb, vi->startblk) + map->m_la;
+			map->m_llen = pos - map->m_la;
+		} else {
+			map->m_pa = erofs_iloc(inode) + vi->inode_isize +
+				vi->xattr_isize + erofs_blkoff(sb, map->m_la);
+			map->m_llen = inode->i_size - map->m_la;
+			map->m_flags |= EROFS_MAP_META;
+		}
 		goto out;
 	}
 
@@ -189,40 +173,41 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 		err = PTR_ERR(kaddr);
 		goto out;
 	}
+
+	idx = kaddr + erofs_blkoff(sb, pos);
 	map->m_la = chunknr << vi->chunkbits;
-	map->m_plen = min_t(erofs_off_t, 1UL << vi->chunkbits,
-			round_up(inode->i_size - map->m_la, sb->s_blocksize));
-
-	/* handle block map */
-	if (!(vi->chunkformat & EROFS_CHUNK_FORMAT_INDEXES)) {
-		__le32 *blkaddr = kaddr + erofs_blkoff(sb, pos);
-
-		if (le32_to_cpu(*blkaddr) == EROFS_NULL_ADDR) {
-			map->m_flags = 0;
-		} else {
-			map->m_pa = erofs_pos(sb, le32_to_cpu(*blkaddr));
+	map->m_llen = min_t(erofs_off_t, 1UL << vi->chunkbits,
+			    round_up(inode->i_size - map->m_la, blksz));
+	if (vi->chunkformat & EROFS_CHUNK_FORMAT_INDEXES) {
+		addrmask = (vi->chunkformat & EROFS_CHUNK_FORMAT_48BIT) ?
+			BIT_ULL(48) - 1 : BIT_ULL(32) - 1;
+		startblk = (((u64)le16_to_cpu(idx->startblk_hi) << 32) |
+			    le32_to_cpu(idx->startblk_lo)) & addrmask;
+		if ((startblk ^ EROFS_NULL_ADDR) & addrmask) {
+			map->m_deviceid = le16_to_cpu(idx->device_id) &
+				EROFS_SB(sb)->device_id_mask;
+			map->m_pa = erofs_pos(sb, startblk);
 			map->m_flags = EROFS_MAP_MAPPED;
 		}
-		goto out_unlock;
+	} else {
+		startblk = le32_to_cpu(*(__le32 *)idx);
+		if (startblk != (u32)EROFS_NULL_ADDR) {
+			map->m_pa = erofs_pos(sb, startblk);
+			map->m_flags = EROFS_MAP_MAPPED;
+		}
 	}
-	/* parse chunk indexes */
-	idx = kaddr + erofs_blkoff(sb, pos);
-	switch (le32_to_cpu(idx->blkaddr)) {
-	case EROFS_NULL_ADDR:
-		map->m_flags = 0;
-		break;
-	default:
-		map->m_deviceid = le16_to_cpu(idx->device_id) &
-			EROFS_SB(sb)->device_id_mask;
-		map->m_pa = erofs_pos(sb, le32_to_cpu(idx->blkaddr));
-		map->m_flags = EROFS_MAP_MAPPED;
-		break;
-	}
-out_unlock:
 	erofs_put_metabuf(&buf);
 out:
-	if (!err)
-		map->m_llen = map->m_plen;
+	if (!err) {
+		map->m_plen = map->m_llen;
+		/* inline data should be located in the same meta block */
+		if ((map->m_flags & EROFS_MAP_META) &&
+		    erofs_blkoff(sb, map->m_pa) + map->m_plen > blksz) {
+			erofs_err(sb, "inline data across blocks @ nid %llu", vi->nid);
+			DBG_BUGON(1);
+			return -EFSCORRUPTED;
+		}
+	}
 	trace_erofs_map_blocks_exit(inode, map, 0, err);
 	return err;
 }
@@ -248,7 +233,7 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 			return -ENODEV;
 		}
 		if (devs->flatdev) {
-			map->m_pa += erofs_pos(sb, dif->mapped_blkaddr);
+			map->m_pa += erofs_pos(sb, dif->uniaddr);
 			up_read(&devs->rwsem);
 			return 0;
 		}
@@ -264,13 +249,13 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 		idr_for_each_entry(&devs->tree, dif, id) {
 			erofs_off_t startoff, length;
 
-			if (!dif->mapped_blkaddr)
+			if (!dif->uniaddr)
 				continue;
-			startoff = erofs_pos(sb, dif->mapped_blkaddr);
+			startoff = erofs_pos(sb, dif->uniaddr);
 			length = erofs_pos(sb, dif->blocks);
 
 			if (map->m_pa >= startoff &&
-			    map->m_pa < startoff + length) {
+			    map->m_pa < startoff + erofs_pos(sb, dif->blocks)) {
 				map->m_pa -= startoff;
 				map->m_bdev = dif->bdev;
 				map->m_daxdev = dif->dax_dev;
