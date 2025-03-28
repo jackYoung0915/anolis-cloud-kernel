@@ -92,9 +92,20 @@ struct fastrpc_invoke_buf {
 	u32 pgidx;		/* index to start of contiguous region */
 };
 
-struct fastrpc_remote_arg {
-	u64 pv;
-	u64 len;
+struct fastrpc_remote_dmahandle {
+	s32 fd;		/* dma handle fd */
+	u32 offset;	/* dma handle offset */
+	u32 len;	/* dma handle length */
+};
+
+struct fastrpc_remote_buf {
+	u64 pv;		/* buffer pointer */
+	u64 len;	/* length of buffer */
+};
+
+union fastrpc_remote_arg {
+	struct fastrpc_remote_buf buf;
+	struct fastrpc_remote_dmahandle dma;
 };
 
 struct fastrpc_mmap_rsp_msg {
@@ -189,7 +200,7 @@ struct fastrpc_invoke_ctx {
 	struct work_struct put_work;
 	struct fastrpc_msg msg;
 	struct fastrpc_user *fl;
-	struct fastrpc_remote_arg *rpra;
+	union fastrpc_remote_arg *rpra;
 	struct fastrpc_map **maps;
 	struct fastrpc_buf *buf;
 	struct fastrpc_invoke_args *args;
@@ -262,7 +273,8 @@ static void fastrpc_map_get(struct fastrpc_map *map)
 		kref_get(&map->refcount);
 }
 
-static int fastrpc_map_find(struct fastrpc_user *fl, int fd,
+
+static int fastrpc_map_lookup(struct fastrpc_user *fl, int fd,
 			    struct fastrpc_map **ppmap)
 {
 	struct fastrpc_map *map = NULL;
@@ -270,7 +282,6 @@ static int fastrpc_map_find(struct fastrpc_user *fl, int fd,
 	mutex_lock(&fl->mutex);
 	list_for_each_entry(map, &fl->maps, node) {
 		if (map->fd == fd) {
-			fastrpc_map_get(map);
 			*ppmap = map;
 			mutex_unlock(&fl->mutex);
 			return 0;
@@ -279,6 +290,17 @@ static int fastrpc_map_find(struct fastrpc_user *fl, int fd,
 	mutex_unlock(&fl->mutex);
 
 	return -ENOENT;
+}
+
+static int fastrpc_map_find(struct fastrpc_user *fl, int fd,
+			    struct fastrpc_map **ppmap)
+{
+	int ret = fastrpc_map_lookup(fl, fd, ppmap);
+
+	if (!ret)
+		fastrpc_map_get(*ppmap);
+
+	return ret;
 }
 
 static void fastrpc_buf_free(struct fastrpc_buf *buf)
@@ -353,7 +375,7 @@ static void fastrpc_context_free(struct kref *ref)
 	ctx = container_of(ref, struct fastrpc_invoke_ctx, refcount);
 	cctx = ctx->cctx;
 
-	for (i = 0; i < ctx->nscalars; i++)
+	for (i = 0; i < ctx->nbufs; i++)
 		fastrpc_map_put(ctx->maps[i]);
 
 	if (ctx->buf)
@@ -680,7 +702,7 @@ get_err:
  * >>>>>>  START of METADATA <<<<<<<<<
  * +---------------------------------+
  * |           Arguments             |
- * | type:(struct fastrpc_remote_arg)|
+ * | type:(union fastrpc_remote_arg)|
  * |             (0 - N)             |
  * +---------------------------------+
  * |         Invoke Buffer list      |
@@ -705,7 +727,7 @@ static int fastrpc_get_meta_size(struct fastrpc_invoke_ctx *ctx)
 {
 	int size = 0;
 
-	size = (sizeof(struct fastrpc_remote_arg) +
+	size = (sizeof(struct fastrpc_remote_buf) +
 		sizeof(struct fastrpc_invoke_buf) +
 		sizeof(struct fastrpc_phy_page)) * ctx->nscalars +
 		sizeof(u64) * FASTRPC_MAX_FDLIST +
@@ -760,10 +782,20 @@ static int fastrpc_create_maps(struct fastrpc_invoke_ctx *ctx)
 	return 0;
 }
 
+static struct fastrpc_invoke_buf *fastrpc_invoke_buf_start(union fastrpc_remote_arg *pra, int len)
+{
+	return (struct fastrpc_invoke_buf *)(&pra[len]);
+}
+
+static struct fastrpc_phy_page *fastrpc_phy_page_start(struct fastrpc_invoke_buf *buf, int len)
+{
+	return (struct fastrpc_phy_page *)(&buf[len]);
+}
+
 static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 {
 	struct device *dev = ctx->fl->sctx->dev;
-	struct fastrpc_remote_arg *rpra;
+	union fastrpc_remote_arg *rpra;
 	struct fastrpc_invoke_buf *list;
 	struct fastrpc_phy_page *pages;
 	int inbufs, i, oix, err = 0;
@@ -787,9 +819,8 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 		return err;
 
 	rpra = ctx->buf->virt;
-	list = ctx->buf->virt + ctx->nscalars * sizeof(*rpra);
-	pages = ctx->buf->virt + ctx->nscalars * (sizeof(*list) +
-		sizeof(*rpra));
+	list = fastrpc_invoke_buf_start(rpra, ctx->nscalars);
+	pages = fastrpc_phy_page_start(list, ctx->nscalars);
 	args = (uintptr_t)ctx->buf->virt + metalen;
 	rlen = pkt_size - metalen;
 	ctx->rpra = rpra;
@@ -800,8 +831,8 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 		i = ctx->olaps[oix].raix;
 		len = ctx->args[i].length;
 
-		rpra[i].pv = 0;
-		rpra[i].len = len;
+		rpra[i].buf.pv = 0;
+		rpra[i].buf.len = len;
 		list[i].num = len ? 1 : 0;
 		list[i].pgidx = i;
 
@@ -811,7 +842,7 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 		if (ctx->maps[i]) {
 			struct vm_area_struct *vma = NULL;
 
-			rpra[i].pv = (u64) ctx->args[i].ptr;
+			rpra[i].buf.pv = (u64) ctx->args[i].ptr;
 			pages[i].addr = ctx->maps[i]->phys;
 
 			mmap_read_lock(current->mm);
@@ -838,21 +869,21 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 			if (rlen < mlen)
 				goto bail;
 
-			rpra[i].pv = args - ctx->olaps[oix].offset;
+			rpra[i].buf.pv = args - ctx->olaps[oix].offset;
 			pages[i].addr = ctx->buf->phys -
 					ctx->olaps[oix].offset +
 					(pkt_size - rlen);
 			pages[i].addr = pages[i].addr &	PAGE_MASK;
 
-			pg_start = (args & PAGE_MASK) >> PAGE_SHIFT;
-			pg_end = ((args + len - 1) & PAGE_MASK) >> PAGE_SHIFT;
+			pg_start = (rpra[i].buf.pv & PAGE_MASK) >> PAGE_SHIFT;
+			pg_end = ((rpra[i].buf.pv + len - 1) & PAGE_MASK) >> PAGE_SHIFT;
 			pages[i].size = (pg_end - pg_start + 1) * PAGE_SIZE;
 			args = args + mlen;
 			rlen -= mlen;
 		}
 
 		if (i < inbufs && !ctx->maps[i]) {
-			void *dst = (void *)(uintptr_t)rpra[i].pv;
+			void *dst = (void *)(uintptr_t)rpra[i].buf.pv;
 			void *src = (void *)(uintptr_t)ctx->args[i].ptr;
 
 			if (!kernel) {
@@ -868,12 +899,15 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 	}
 
 	for (i = ctx->nbufs; i < ctx->nscalars; ++i) {
-		rpra[i].pv = (u64) ctx->args[i].ptr;
-		rpra[i].len = ctx->args[i].length;
 		list[i].num = ctx->args[i].length ? 1 : 0;
 		list[i].pgidx = i;
-		pages[i].addr = ctx->maps[i]->phys;
-		pages[i].size = ctx->maps[i]->size;
+		if (ctx->maps[i]) {
+			pages[i].addr = ctx->maps[i]->phys;
+			pages[i].size = ctx->maps[i]->size;
+		}
+		rpra[i].dma.fd = ctx->args[i].fd;
+		rpra[i].dma.len = ctx->args[i].length;
+		rpra[i].dma.offset = (u64) ctx->args[i].ptr;
 	}
 
 bail:
@@ -886,22 +920,41 @@ bail:
 static int fastrpc_put_args(struct fastrpc_invoke_ctx *ctx,
 			    u32 kernel)
 {
-	struct fastrpc_remote_arg *rpra = ctx->rpra;
-	int i, inbufs;
+	union fastrpc_remote_arg *rpra = ctx->rpra;
+	struct fastrpc_user *fl = ctx->fl;
+	struct fastrpc_map *mmap = NULL;
+	struct fastrpc_invoke_buf *list;
+	struct fastrpc_phy_page *pages;
+	u64 *fdlist;
+	int i, inbufs, outbufs, handles;
 
 	inbufs = REMOTE_SCALARS_INBUFS(ctx->sc);
+	outbufs = REMOTE_SCALARS_OUTBUFS(ctx->sc);
+	handles = REMOTE_SCALARS_INHANDLES(ctx->sc) + REMOTE_SCALARS_OUTHANDLES(ctx->sc);
+	list = fastrpc_invoke_buf_start(rpra, ctx->nscalars);
+	pages = fastrpc_phy_page_start(list, ctx->nscalars);
+	fdlist = (uint64_t *)(pages + inbufs + outbufs + handles);
 
 	for (i = inbufs; i < ctx->nbufs; ++i) {
-		void *src = (void *)(uintptr_t)rpra[i].pv;
-		void *dst = (void *)(uintptr_t)ctx->args[i].ptr;
-		u64 len = rpra[i].len;
+		if (!ctx->maps[i]) {
+			void *src = (void *)(uintptr_t)rpra[i].buf.pv;
+			void *dst = (void *)(uintptr_t)ctx->args[i].ptr;
+			u64 len = rpra[i].buf.len;
 
-		if (!kernel) {
-			if (copy_to_user((void __user *)dst, src, len))
-				return -EFAULT;
-		} else {
-			memcpy(dst, src, len);
+			if (!kernel) {
+				if (copy_to_user((void __user *)dst, src, len))
+					return -EFAULT;
+			} else {
+				memcpy(dst, src, len);
+			}
 		}
+	}
+
+	for (i = 0; i < FASTRPC_MAX_FDLIST; i++) {
+		if (!fdlist[i])
+			break;
+		if (!fastrpc_map_lookup(fl, (int)fdlist[i], &mmap))
+			fastrpc_map_put(mmap);
 	}
 
 	return 0;
