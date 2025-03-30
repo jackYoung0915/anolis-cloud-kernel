@@ -2205,8 +2205,6 @@ static void nft_pipapo_destroy(const struct nft_set *set)
 	if (m) {
 		rcu_barrier();
 
-		nft_set_pipapo_match_destroy(set, m);
-
 #ifdef NFT_PIPAPO_ALIGN
 		free_percpu(m->scratch_aligned);
 #endif
@@ -2221,8 +2219,7 @@ static void nft_pipapo_destroy(const struct nft_set *set)
 	if (priv->clone) {
 		m = priv->clone;
 
-		if (priv->dirty)
-			nft_set_pipapo_match_destroy(set, m);
+		nft_set_pipapo_match_destroy(set, m);
 
 #ifdef NFT_PIPAPO_ALIGN
 		free_percpu(priv->clone->scratch_aligned);
