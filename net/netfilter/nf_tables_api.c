@@ -8494,10 +8494,11 @@ static int __nf_tables_abort(struct net *net, enum nfnl_abort_action action)
 	struct nft_trans *trans, *next;
 	LIST_HEAD(set_update_list);
 	struct nft_trans_elem *te;
+	int err = 0;
 
 	if (action == NFNL_ABORT_VALIDATE &&
 	    nf_tables_validate(net) < 0)
-		return -EAGAIN;
+		err = -EAGAIN;
 
 	list_for_each_entry_safe_reverse(trans, next, &net->nft.commit_list,
 					 list) {
@@ -8653,7 +8654,7 @@ static int __nf_tables_abort(struct net *net, enum nfnl_abort_action action)
 	else
 		nf_tables_module_autoload_cleanup(net);
 
-	return 0;
+	return err;
 }
 
 static void nf_tables_cleanup(struct net *net)
@@ -8670,6 +8671,8 @@ static int nf_tables_abort(struct net *net, struct sk_buff *skb,
 	gc_seq = nft_gc_seq_begin(&net->nft);
 	ret = __nf_tables_abort(net, action);
 	nft_gc_seq_end(&net->nft, gc_seq);
+
+	WARN_ON_ONCE(!list_empty(&net->nft.commit_list));
 
 	mutex_unlock(&net->nft.commit_mutex);
 
@@ -9339,8 +9342,11 @@ static void __net_exit nf_tables_exit_net(struct net *net)
 
 	gc_seq = nft_gc_seq_begin(&net->nft);
 
-	if (!list_empty(&net->nft.commit_list))
-		__nf_tables_abort(net, NFNL_ABORT_NONE);
+	WARN_ON_ONCE(!list_empty(&net->nft.commit_list));
+
+	if (!list_empty(&net->nft.module_list))
+		nf_tables_module_autoload_cleanup(net);
+
 	__nft_release_tables(net);
 
 	nft_gc_seq_end(&net->nft, gc_seq);
