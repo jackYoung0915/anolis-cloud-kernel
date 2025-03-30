@@ -8656,7 +8656,12 @@ static void nf_tables_cleanup(struct net *net)
 static int nf_tables_abort(struct net *net, struct sk_buff *skb,
 			   enum nfnl_abort_action action)
 {
-	int ret = __nf_tables_abort(net, action);
+	unsigned int gc_seq;
+	int ret;
+
+	gc_seq = nft_gc_seq_begin(&net->nft);
+	ret = __nf_tables_abort(net, action);
+	nft_gc_seq_end(&net->nft, gc_seq);
 
 	mutex_unlock(&net->nft.commit_mutex);
 
