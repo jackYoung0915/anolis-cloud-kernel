@@ -2480,9 +2480,6 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 	pcp->alloc_factor >>= 1;
 	__count_vm_events(PGFREE, 1 << order);
 
-	if (unlikely(!order && kfence_free_page(page)))
-		return;
-
 	pindex = order_to_pindex(migratetype, order);
 	list_add(&page->pcp_list, &pcp->lists[pindex]);
 	pcp->count += 1 << order;
@@ -2528,6 +2525,9 @@ void free_unref_page(struct page *page, unsigned int order)
 	int migratetype, pcpmigratetype;
 
 	if (!free_unref_page_prepare(page, pfn, order))
+		return;
+
+	if (unlikely(!order && kfence_free_page(page)))
 		return;
 
 	/*
@@ -2577,6 +2577,14 @@ void free_unref_page_list(struct list_head *list)
 			list_del(&page->lru);
 			continue;
 		}
+
+#ifdef CONFIG_KFENCE
+		if (unlikely(PageKfence(page))) {
+			list_del(&page->lru);
+			__kfence_free_page(page, page_to_virt(page));
+			continue;
+		}
+#endif
 
 		/*
 		 * Free isolated pages directly to the allocator, see
@@ -4475,7 +4483,7 @@ unsigned long __alloc_pages_bulk(gfp_t gfp, int preferred_nid,
 	struct per_cpu_pages *pcp;
 	struct list_head *pcp_list;
 	struct alloc_context ac;
-	gfp_t alloc_gfp;
+	gfp_t alloc_gfp, kfence_gfp;
 	unsigned int alloc_flags = ALLOC_WMARK_LOW;
 	int nr_populated = 0, nr_account = 0;
 
@@ -4516,7 +4524,7 @@ unsigned long __alloc_pages_bulk(gfp_t gfp, int preferred_nid,
 
 	/* May set ALLOC_NOFRAGMENT, fragmentation will return 1 page. */
 	gfp &= gfp_allowed_mask;
-	alloc_gfp = gfp;
+	alloc_gfp = kfence_gfp = gfp;
 	if (!prepare_alloc_pages(gfp, 0, preferred_nid, nodemask, &ac, &alloc_gfp, &alloc_flags))
 		goto out;
 	gfp = alloc_gfp;
@@ -4567,7 +4575,7 @@ unsigned long __alloc_pages_bulk(gfp_t gfp, int preferred_nid,
 			continue;
 		}
 
-		page = kfence_alloc_page(0, preferred_nid, gfp);
+		page = kfence_alloc_page(0, preferred_nid, kfence_gfp);
 		if (likely(!page))
 			page = __rmqueue_pcplist(zone, 0, ac.migratetype, alloc_flags,
 								pcp, pcp_list);
@@ -4653,7 +4661,7 @@ struct page *__alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid,
 	 */
 	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp);
 
-	page = kfence_alloc_page(order, preferred_nid, alloc_gfp);
+	page = kfence_alloc_page(order, preferred_nid, gfp);
 	if (unlikely(page)) {
 		prep_new_page(page, 0, alloc_gfp, alloc_flags);
 		goto out;
