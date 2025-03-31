@@ -220,7 +220,6 @@ struct gsm_mux {
 	int encoding;
 	u8 control;
 	u8 fcs;
-	u8 received_fcs;
 	u8 *txframe;			/* TX framing buffer */
 
 	/* Method for the receiver side */
@@ -273,6 +272,10 @@ static spinlock_t gsm_mux_lock;
 
 static struct tty_driver *gsm_tty_driver;
 
+/* Save dlci open address */
+static int addr_open[256] = { 0 };
+/* Save dlci open count */
+static int addr_cnt;
 /*
  *	This section of the driver logic implements the GSM encodings
  *	both the basic and the 'advanced'. Reliable transport is not
@@ -1179,6 +1182,7 @@ static void gsm_control_rls(struct gsm_mux *gsm, const u8 *data, int clen)
 }
 
 static void gsm_dlci_begin_close(struct gsm_dlci *dlci);
+static void gsm_dlci_close(struct gsm_dlci *dlci);
 
 /**
  *	gsm_control_message	-	DLCI 0 control processing
@@ -1197,15 +1201,28 @@ static void gsm_control_message(struct gsm_mux *gsm, unsigned int command,
 {
 	u8 buf[1];
 	unsigned long flags;
+	struct gsm_dlci *dlci;
+	int i;
+	int address;
 
 	switch (command) {
 	case CMD_CLD: {
-		struct gsm_dlci *dlci = gsm->dlci[0];
+		if (addr_cnt > 0) {
+			for (i = 0; i < addr_cnt; i++) {
+				address = addr_open[i];
+				dlci = gsm->dlci[address];
+				gsm_dlci_close(dlci);
+				addr_open[i] = 0;
+			}
+		}
 		/* Modem wishes to close down */
+		dlci = gsm->dlci[0];
 		if (dlci) {
 			dlci->dead = true;
 			gsm->dead = true;
-			gsm_dlci_begin_close(dlci);
+			gsm_dlci_close(dlci);
+			addr_cnt = 0;
+			gsm_response(gsm, 0, UA|PF);
 		}
 		}
 		break;
@@ -1763,18 +1780,8 @@ static void gsm_queue(struct gsm_mux *gsm)
 	struct gsm_dlci *dlci;
 	u8 cr;
 	int address;
-	/* We have to sneak a look at the packet body to do the FCS.
-	   A somewhat layering violation in the spec */
+	int i, j, k, address_tmp;
 
-	if ((gsm->control & ~PF) == UI)
-		gsm->fcs = gsm_fcs_add_block(gsm->fcs, gsm->buf, gsm->len);
-	if (gsm->encoding == 0) {
-		/* WARNING: gsm->received_fcs is used for
-		gsm->encoding = 0 only.
-		In this case it contain the last piece of data
-		required to generate final CRC */
-		gsm->fcs = gsm_fcs_add(gsm->fcs, gsm->received_fcs);
-	}
 	if (gsm->fcs != GOOD_FCS) {
 		gsm->bad_fcs++;
 		if (debug & 4)
@@ -1805,6 +1812,11 @@ static void gsm_queue(struct gsm_mux *gsm)
 		else {
 			gsm_response(gsm, address, UA);
 			gsm_dlci_open(dlci);
+			/* Save dlci open address */
+			if (address) {
+				addr_open[addr_cnt] = address;
+				addr_cnt++;
+			}
 		}
 		break;
 	case DISC|PF:
@@ -1815,8 +1827,33 @@ static void gsm_queue(struct gsm_mux *gsm)
 			return;
 		}
 		/* Real close complete */
-		gsm_response(gsm, address, UA);
-		gsm_dlci_close(dlci);
+		if (!address) {
+			if (addr_cnt > 0) {
+				for (i = 0; i < addr_cnt; i++) {
+					address = addr_open[i];
+					dlci = gsm->dlci[address];
+					gsm_dlci_close(dlci);
+					addr_open[i] = 0;
+				}
+			}
+			dlci = gsm->dlci[0];
+			gsm_dlci_close(dlci);
+			addr_cnt = 0;
+			gsm_response(gsm, 0, UA|PF);
+		} else {
+			gsm_response(gsm, address, UA|PF);
+			gsm_dlci_close(dlci);
+			/* clear dlci address */
+			for (j = 0; j < addr_cnt; j++) {
+				address_tmp = addr_open[j];
+				if (address_tmp == address) {
+					for (k = j; k < addr_cnt; k++)
+						addr_open[k] = addr_open[k+1];
+				addr_cnt--;
+				break;
+				}
+			}
+		}
 		break;
 	case UA|PF:
 		if (cr == 0 || dlci == NULL)
@@ -1931,19 +1968,28 @@ static void gsm0_receive(struct gsm_mux *gsm, unsigned char c)
 		break;
 	case GSM_DATA:		/* Data */
 		gsm->buf[gsm->count++] = c;
-		if (gsm->count == gsm->len)
+		if (gsm->count >= MAX_MRU) {
+			gsm->bad_size++;
+			gsm->state = GSM_SEARCH;
+		} else if (gsm->count >= gsm->len) {
+			/* Calculate final FCS for UI frames over all data */
+			if ((gsm->control & ~PF) != UIH) {
+				gsm->fcs = gsm_fcs_add_block(gsm->fcs, gsm->buf,
+							     gsm->count);
+			}
 			gsm->state = GSM_FCS;
+		}
 		break;
 	case GSM_FCS:		/* FCS follows the packet */
-		gsm->received_fcs = c;
-		gsm_queue(gsm);
+		gsm->fcs = gsm_fcs_add(gsm->fcs, c);
 		gsm->state = GSM_SSOF;
 		break;
 	case GSM_SSOF:
-		if (c == GSM0_SOF) {
-			gsm->state = GSM_SEARCH;
-			break;
-		}
+		gsm->state = GSM_SEARCH;
+		if (c == GSM0_SOF)
+			gsm_queue(gsm);
+		else
+			gsm->bad_size++;
 		break;
 	default:
 		pr_debug("%s: unhandled state: %d\n", __func__, gsm->state);
@@ -1972,11 +2018,24 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
 		return;
 	}
 	if (c == GSM1_SOF) {
-		/* EOF is only valid in frame if we have got to the data state
-		   and received at least one byte (the FCS) */
-		if (gsm->state == GSM_DATA && gsm->count) {
-			/* Extract the FCS */
+		/* EOF is only valid in frame if we have got to the data state */
+		if (gsm->state == GSM_DATA) {
+			if (gsm->count < 1) {
+				/* Missing FSC */
+				gsm->malformed++;
+				gsm->state = GSM_START;
+				return;
+			}
+			/* Remove the FCS from data */
 			gsm->count--;
+			if ((gsm->control & ~PF) != UIH) {
+				/* Calculate final FCS for UI frames over all
+				 * data but FCS
+				 */
+				gsm->fcs = gsm_fcs_add_block(gsm->fcs, gsm->buf,
+							     gsm->count);
+			}
+			/* Add the FCS itself to test against GOOD_FCS */
 			gsm->fcs = gsm_fcs_add(gsm->fcs, gsm->buf[gsm->count]);
 			gsm->len = gsm->count;
 			gsm_queue(gsm);
@@ -2025,7 +2084,7 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
 		gsm->state = GSM_DATA;
 		break;
 	case GSM_DATA:		/* Data */
-		if (gsm->count > gsm->mru) {	/* Allow one for the FCS */
+		if (gsm->count > gsm->mru || gsm->count > MAX_MRU) {	/* Allow one for the FCS */
 			gsm->state = GSM_OVERRUN;
 			gsm->bad_size++;
 		} else
