@@ -3506,9 +3506,6 @@ static void free_unref_page_commit(struct page *page, unsigned long pfn,
 
 	__count_vm_events(PGFREE, 1 << order);
 
-	if (kfence_free_page(page))
-		return;
-
 	pcp = &this_cpu_ptr(zone->pageset)->pcp;
 	pindex = order_to_pindex(migratetype, order);
 	list_add(&page->lru, &pcp->lists[pindex]);
@@ -3529,6 +3526,9 @@ void free_unref_page(struct page *page, unsigned int order)
 	int migratetype;
 
 	if (!free_unref_page_prepare(page, pfn, order))
+		return;
+
+	if (unlikely(!order && kfence_free_page(page)))
 		return;
 
 	/*
@@ -3568,6 +3568,14 @@ void free_unref_page_list(struct list_head *list)
 		pfn = page_to_pfn(page);
 		if (!free_unref_page_prepare(page, pfn, 0))
 			list_del(&page->lru);
+
+#ifdef CONFIG_KFENCE
+		if (unlikely(PageKfence(page))) {
+			list_del(&page->lru);
+			__kfence_free_page(page, page_to_virt(page));
+			continue;
+		}
+#endif
 
 		/*
 		 * Free isolated pages directly to the allocator, see
@@ -5462,7 +5470,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	 */
 	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp_mask);
 
-	page = kfence_alloc_page(order, preferred_nid, alloc_mask);
+	page = kfence_alloc_page(order, preferred_nid, gfp_mask);
 	if (unlikely(page)) {
 		set_page_private(page, 0);
 		prep_new_page(page, 0, alloc_mask, alloc_flags);
