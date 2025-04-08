@@ -493,6 +493,7 @@
 
 /* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000006, word 23 */
 #define X86_FEATURE_ZXPAUSE		(23*32 + 0) /* ZHAOXIN ZXPAUSE */
+#define X86_FEATURE_PREFETCHI		(20*32+20) /* Prefetch Data/Instruction to Cache Level */
 
 /*
  * Extended auxiliary flags: Linux defined - for features scattered in various
