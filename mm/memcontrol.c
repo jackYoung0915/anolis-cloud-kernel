@@ -6689,6 +6689,50 @@ static int mem_cgroup_allow_pgcache_sync_write(struct cgroup_subsys_state *css,
 
 	return 0;
 }
+
+static u64
+mem_cgroup_pgcache_reclaim_interval_read(struct cgroup_subsys_state *css,
+					 struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return jiffies_to_msecs(memcg->pgcache_limit_reclaim_interval);
+}
+
+static ssize_t
+mem_cgroup_pgcache_reclaim_interval_write(struct kernfs_open_file *of,
+					  char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned long long interval;
+
+	if (kstrtou64(strstrip(buf), 0, &interval))
+		return -EINVAL;
+	memcg->pgcache_limit_reclaim_interval = msecs_to_jiffies(interval);
+
+	return nbytes;
+}
+
+static u64
+mem_cgroup_pgcache_reclaim_bytes_read(struct cgroup_subsys_state *css,
+				      struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return READ_ONCE(memcg->pgcache_limit_reclaim_bytes);
+}
+
+static ssize_t
+mem_cgroup_pgcache_reclaim_bytes_write(struct kernfs_open_file *of, char *buf,
+				       size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+
+	memcg->pgcache_limit_reclaim_bytes =
+		(unsigned long)memparse(strstrip(buf), NULL);
+
+	return nbytes;
+}
 #endif /* CONFIG_PAGECACHE_LIMIT */
 
 #ifdef CONFIG_PGTABLE_BIND
@@ -7397,6 +7441,16 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
 		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
 	},
+	{
+		.name = "pagecache_limit.reclaim_interval_ms",
+		.read_u64 = mem_cgroup_pgcache_reclaim_interval_read,
+		.write = mem_cgroup_pgcache_reclaim_interval_write,
+	},
+	{
+		.name = "pagecache_limit.reclaim_bytes",
+		.read_u64 = mem_cgroup_pgcache_reclaim_bytes_read,
+		.write = mem_cgroup_pgcache_reclaim_bytes_write,
+	},
 #endif
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	{
@@ -7674,7 +7728,7 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	INIT_WORK(&memcg->high_work, high_work_func);
 	INIT_WORK(&memcg->wmark_work, wmark_work_func);
 #ifdef CONFIG_PAGECACHE_LIMIT
-	INIT_WORK(&memcg->pgcache_limit_work, memcg_pgcache_limit_work_func);
+	INIT_DELAYED_WORK(&memcg->pgcache_limit_work, memcg_pgcache_limit_work_func);
 #endif
 	INIT_LIST_HEAD(&memcg->oom_notify);
 	mutex_init(&memcg->thresholds_lock);
@@ -7762,6 +7816,8 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_PAGECACHE_LIMIT
 		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
 		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
+		memcg->pgcache_limit_reclaim_interval = parent->pgcache_limit_reclaim_interval;
+		memcg->pgcache_limit_reclaim_bytes = parent->pgcache_limit_reclaim_bytes;
 #endif
 	}
 	if (!parent) {
@@ -7910,7 +7966,7 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
 	cancel_work_sync(&memcg->high_work);
 	cancel_work_sync(&memcg->wmark_work);
 #ifdef CONFIG_PAGECACHE_LIMIT
-	cancel_work_sync(&memcg->pgcache_limit_work);
+	cancel_delayed_work_sync(&memcg->pgcache_limit_work);
 #endif
 	mem_cgroup_remove_from_trees(memcg);
 	memcg_free_shrinker_maps(memcg);
