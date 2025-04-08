@@ -106,16 +106,14 @@ enum scx_ent_dsq_flags {
  * mechanism. See scx_kf_allow().
  */
 enum scx_kf_mask {
-	SCX_KF_UNLOCKED		= 0,	  /* not sleepable, not rq locked */
-	/* all non-sleepables may be nested inside SLEEPABLE */
-	SCX_KF_SLEEPABLE	= 1 << 0, /* sleepable init operations */
+	SCX_KF_UNLOCKED		= 0,	  /* sleepable and not rq locked */
 	/* ENQUEUE and DISPATCH may be nested inside CPU_RELEASE */
-	SCX_KF_CPU_RELEASE	= 1 << 1, /* ops.cpu_release() */
+	SCX_KF_CPU_RELEASE	= 1 << 0, /* ops.cpu_release() */
 	/* ops.dequeue (in REST) may be nested inside DISPATCH */
-	SCX_KF_DISPATCH		= 1 << 2, /* ops.dispatch() */
-	SCX_KF_ENQUEUE		= 1 << 3, /* ops.enqueue() and ops.select_cpu() */
-	SCX_KF_SELECT_CPU	= 1 << 4, /* ops.select_cpu() */
-	SCX_KF_REST		= 1 << 5, /* other rq-locked operations */
+	SCX_KF_DISPATCH		= 1 << 1, /* ops.dispatch() */
+	SCX_KF_ENQUEUE		= 1 << 2, /* ops.enqueue() and ops.select_cpu() */
+	SCX_KF_SELECT_CPU	= 1 << 3, /* ops.select_cpu() */
+	SCX_KF_REST		= 1 << 4, /* other rq-locked operations */
 
 	__SCX_KF_RQ_LOCKED	= SCX_KF_CPU_RELEASE | SCX_KF_DISPATCH |
 				  SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
@@ -181,11 +179,12 @@ struct sched_ext_entity {
 	 * If set, reject future sched_setscheduler(2) calls updating the policy
 	 * to %SCHED_EXT with -%EACCES.
 	 *
-	 * If set from ops.init_task() and the task's policy is already
-	 * %SCHED_EXT, which can happen while the BPF scheduler is being loaded
-	 * or by inhering the parent's policy during fork, the task's policy is
-	 * rejected and forcefully reverted to %SCHED_NORMAL. The number of
-	 * such events are reported through /sys/kernel/debug/sched_ext::nr_rejected.
+	 * Can be set from ops.init_task() while the BPF scheduler is being
+	 * loaded (!scx_init_task_args->fork). If set and the task's policy is
+	 * already %SCHED_EXT, the task's policy is rejected and forcefully
+	 * reverted to %SCHED_NORMAL. The number of such events are reported
+	 * through /sys/kernel/debug/sched_ext::nr_rejected. Setting this flag
+	 * during fork is not allowed.
 	 */
 	bool			disallow;	/* reject switching into SCX */
 

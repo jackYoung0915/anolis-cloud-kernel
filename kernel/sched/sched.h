@@ -69,6 +69,7 @@
 #include <linux/wait_bit.h>
 #include <linux/workqueue_api.h>
 #include <linux/delayacct.h>
+#include <linux/mmu_context.h>
 
 #include <trace/events/power.h>
 #include <trace/events/sched.h>
@@ -669,6 +670,11 @@ do {									\
 # define u64_u32_load(var)      u64_u32_load_copy(var, var##_copy)
 # define u64_u32_store(var, val) u64_u32_store_copy(var, var##_copy, val)
 
+struct balance_callback {
+	struct balance_callback *next;
+	void (*func)(struct rq *rq);
+};
+
 /* CFS-related fields in a runqueue */
 struct cfs_rq {
 	struct load_weight	load;
@@ -789,13 +795,16 @@ enum scx_rq_flags {
 	 * only while the BPF scheduler considers the CPU to be online.
 	 */
 	SCX_RQ_ONLINE		= 1 << 0,
-	SCX_RQ_BALANCING	= 1 << 1,
-	SCX_RQ_CAN_STOP_TICK	= 1 << 2,
+	SCX_RQ_CAN_STOP_TICK	= 1 << 1,
+
+	SCX_RQ_IN_WAKEUP	= 1 << 16,
+	SCX_RQ_IN_BALANCE	= 1 << 17,
 };
 
 struct scx_rq {
 	struct scx_dispatch_q	local_dsq;
 	struct list_head	runnable_list;		/* runnable tasks on this rq */
+	struct list_head	ddsp_deferred_locals;	/* deferred ddsps from enq */
 	unsigned long		ops_qseq;
 	u64			extra_enq_flags;	/* see move_task_to_local_dsq() */
 	u32			nr_running;
@@ -807,6 +816,8 @@ struct scx_rq {
 	cpumask_var_t		cpus_to_preempt;
 	cpumask_var_t		cpus_to_wait;
 	unsigned long		pnt_seq;
+	struct balance_callback	deferred_bal_cb;
+	struct irq_work		deferred_irq_work;
 	struct irq_work		kick_cpus_irq_work;
 };
 #endif /* CONFIG_SCHED_CLASS_EXT */
@@ -1130,11 +1141,6 @@ DECLARE_STATIC_KEY_FALSE(sched_uclamp_used);
 #endif /* CONFIG_UCLAMP_TASK */
 
 struct rq;
-struct balance_callback {
-	struct balance_callback *next;
-	void (*func)(struct rq *rq);
-};
-
 /*
  * This is the main, per-CPU runqueue data structure.
  *
@@ -2514,6 +2520,7 @@ struct sched_class {
 
 	void (*wakeup_preempt)(struct rq *rq, struct task_struct *p, int flags);
 
+	int (*balance)(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
 	struct task_struct *(*pick_next_task)(struct rq *rq);
 
 	void (*put_prev_task)(struct rq *rq, struct task_struct *p);
@@ -2522,7 +2529,6 @@ struct sched_class {
 	void (*switch_class)(struct rq *rq, struct task_struct *next);
 
 #ifdef CONFIG_SMP
-	int (*balance)(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
 	int  (*select_task_rq)(struct task_struct *p, int task_cpu, int flags);
 
 	struct task_struct * (*pick_task)(struct rq *rq);
@@ -2699,6 +2705,19 @@ extern void trigger_load_balance(struct rq *rq);
 extern int __set_cpus_allowed_ptr(struct task_struct *p, struct affinity_context *ctx);
 extern void set_cpus_allowed_common(struct task_struct *p, struct affinity_context *ctx);
 
+static inline bool task_allowed_on_cpu(struct task_struct *p, int cpu)
+{
+	/* When not in the task's cpumask, no point in looking further. */
+	if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+		return false;
+
+	/* Can @cpu run a user thread? */
+	if (!(p->flags & PF_KTHREAD) && !task_cpu_possible(cpu, p))
+		return false;
+
+	return true;
+}
+
 static inline cpumask_t *alloc_user_cpus_ptr(int node)
 {
 	/*
@@ -2731,6 +2750,11 @@ static inline struct task_struct *get_push_task(struct rq *rq)
 extern int push_cpu_stop(void *arg);
 
 #else
+
+static inline bool task_allowed_on_cpu(struct task_struct *p, int cpu)
+{
+	return true;
+}
 
 static inline int __set_cpus_allowed_ptr(struct task_struct *p,
 					 struct affinity_context *ctx)
