@@ -7391,7 +7391,7 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	/* enforce forwards compatibility on users */
 	if (unlikely(sqe_flags & ~SQE_VALID_FLAGS))
 		return -EINVAL;
-	if (unlikely(io_op_defs[req->opcode].not_supported || req->opcode >= IORING_OP_LAST))
+	if (unlikely(req->opcode >= IORING_OP_LAST || io_op_defs[req->opcode].not_supported))
 		return -EINVAL;
 	if (!io_check_restriction(ctx, req, sqe_flags))
 		return -EACCES;
