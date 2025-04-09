@@ -5108,6 +5108,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	unsigned int zonelist_iter_cookie;
 	int reserve_flags;
 	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
+	bool alloc_reclaimed = false;
 	bool can_pre_oom;
 
 	/*
@@ -5268,6 +5269,7 @@ retry:
 	/* Try direct reclaim and then allocating */
 	page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,
 							&did_some_progress);
+	alloc_reclaimed = true;
 	if (page)
 		goto got_pg;
 
@@ -5385,7 +5387,7 @@ fail:
 			"page allocation failure: order:%u", order);
 got_pg:
 
-	if (ac->migratetype == MIGRATE_MOVABLE)
+	if (alloc_reclaimed && ac->migratetype == MIGRATE_MOVABLE)
 		memcg_check_wmark_min_adj(current, ac);
 
 	return page;
