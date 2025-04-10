@@ -72,6 +72,11 @@
 
 #define __printf(a, b)	__attribute__((format(printf, a, b)))
 
+static bool str_is_empty(const char *s)
+{
+	return !s || !s[0];
+}
+
 static struct bpf_map *bpf_object__add_map(struct bpf_object *obj);
 static const struct btf_type *
 skip_mods_and_typedefs(const struct btf *btf, __u32 id, __u32 *res_id);
@@ -273,7 +278,7 @@ struct bpf_program {
 	void *priv;
 	bpf_program_clear_priv_t clear_priv;
 
-	bool load;
+	bool autoload;
 	enum bpf_prog_type type;
 	enum bpf_attach_type expected_attach_type;
 	int prog_ifindex;
@@ -588,7 +593,18 @@ bpf_object__init_prog(struct bpf_object *obj, struct bpf_program *prog,
 	prog->insns_cnt = prog->sec_insn_cnt;
 
 	prog->type = BPF_PROG_TYPE_UNSPEC;
-	prog->load = true;
+
+	/* libbpf's convention for SEC("?abc...") is that it's just like
+	 * SEC("abc...") but the corresponding bpf_program starts out with
+	 * autoload set to false.
+	 */
+	if (sec_name[0] == '?') {
+		prog->autoload = false;
+		/* from now on forget there was ? in section name */
+		sec_name++;
+	} else {
+		prog->autoload = true;
+	}
 
 	prog->instances.fds = NULL;
 	prog->instances.nr = -1;
@@ -2483,6 +2499,9 @@ static int bpf_object__init_btf(struct bpf_object *obj,
 		err = 0;
 	}
 	if (btf_ext_data) {
+		struct btf_ext_info *ext_segs[3];
+		int seg_num, sec_num;
+
 		if (!obj->btf) {
 			pr_debug("Ignore ELF section %s because its depending ELF section %s is not found.\n",
 				 BTF_EXT_ELF_SEC, BTF_ELF_SEC);
@@ -2495,6 +2514,43 @@ static int bpf_object__init_btf(struct bpf_object *obj,
 				BTF_EXT_ELF_SEC, PTR_ERR(obj->btf_ext));
 			obj->btf_ext = NULL;
 			goto out;
+		}
+
+		/* setup .BTF.ext to ELF section mapping */
+		ext_segs[0] = &obj->btf_ext->func_info;
+		ext_segs[1] = &obj->btf_ext->line_info;
+		ext_segs[2] = &obj->btf_ext->core_relo_info;
+		for (seg_num = 0; seg_num < ARRAY_SIZE(ext_segs); seg_num++) {
+			struct btf_ext_info *seg = ext_segs[seg_num];
+			const struct btf_ext_info_sec *sec;
+			const char *sec_name;
+			Elf_Scn *scn;
+
+			if (seg->sec_cnt == 0)
+				continue;
+
+			seg->sec_idxs = calloc(seg->sec_cnt, sizeof(*seg->sec_idxs));
+			if (!seg->sec_idxs) {
+				err = -ENOMEM;
+				goto out;
+			}
+
+			sec_num = 0;
+			for_each_btf_ext_sec(seg, sec) {
+				/* preventively increment index to avoid doing
+				 * this before every continue below
+				 */
+				sec_num++;
+
+				sec_name = btf__name_by_offset(obj->btf, sec->sec_name_off);
+				if (str_is_empty(sec_name))
+					continue;
+				scn = elf_sec_by_name(obj, sec_name);
+				if (!scn)
+					continue;
+
+				seg->sec_idxs[sec_num - 1] = elf_ndxscn(scn);
+			}
 		}
 	}
 out:
@@ -2558,7 +2614,7 @@ static int bpf_object__load_vmlinux_btf(struct bpf_object *obj)
 	}
 
 	bpf_object__for_each_program(prog, obj) {
-		if (!prog->load)
+		if (!prog->autoload)
 			continue;
 		if (libbpf_prog_needs_vmlinux_btf(prog)) {
 			need_vmlinux_btf = true;
@@ -4447,11 +4503,6 @@ struct bpf_core_spec {
 	__u32 bit_offset;
 };
 
-static bool str_is_empty(const char *s)
-{
-	return !s || !s[0];
-}
-
 static bool is_flex_arr(const struct btf *btf,
 			const struct bpf_core_accessor *acc,
 			const struct btf_array *arr)
@@ -5948,7 +5999,7 @@ bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
 	struct bpf_program *prog;
 	struct btf *targ_btf;
 	const char *sec_name;
-	int i, err = 0, insn_idx, sec_idx;
+	int i, err = 0, insn_idx, sec_idx, sec_num;
 
 	if (obj->btf_ext->core_relo_info.len == 0)
 		return 0;
@@ -5969,33 +6020,18 @@ bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
 	}
 
 	seg = &obj->btf_ext->core_relo_info;
+	sec_num = 0;
 	for_each_btf_ext_sec(seg, sec) {
+		sec_idx = seg->sec_idxs[sec_num];
+		sec_num++;
+
 		sec_name = btf__name_by_offset(obj->btf, sec->sec_name_off);
 		if (str_is_empty(sec_name)) {
 			err = -EINVAL;
 			goto out;
 		}
-		/* bpf_object's ELF is gone by now so it's not easy to find
-		 * section index by section name, but we can find *any*
-		 * bpf_program within desired section name and use it's
-		 * prog->sec_idx to do a proper search by section index and
-		 * instruction offset
-		 */
-		prog = NULL;
-		for (i = 0; i < obj->nr_programs; i++) {
-			if (strcmp(obj->programs[i].sec_name, sec_name) == 0) {
-				prog = &obj->programs[i];
-				break;
-			}
-		}
-		if (!prog) {
-			pr_warn("sec '%s': failed to find a BPF program\n", sec_name);
-			return -ENOENT;
-		}
-		sec_idx = prog->sec_idx;
 
-		pr_debug("sec '%s': found %d CO-RE relocations\n",
-			 sec_name, sec->num_info);
+		pr_debug("sec '%s': found %d CO-RE relocations\n", sec_name, sec->num_info);
 
 		for_each_btf_ext_rec(seg, sec, i, rec) {
 			insn_idx = rec->insn_off / BPF_INSN_SZ;
@@ -6016,7 +6052,7 @@ bpf_object__relocate_core(struct bpf_object *obj, const char *targ_btf_path)
 			/* no need to apply CO-RE relocation if the program is
 			 * not going to be loaded
 			 */
-			if (!prog->load)
+			if (!prog->autoload)
 				continue;
 
 			err = bpf_core_apply_relo(prog, rec, i, obj->btf,
@@ -6113,14 +6149,13 @@ static int adjust_prog_btf_ext_info(const struct bpf_object *obj,
 	void *rec, *rec_end, *new_prog_info;
 	const struct btf_ext_info_sec *sec;
 	size_t old_sz, new_sz;
-	const char *sec_name;
-	int i, off_adj;
+	int i, sec_num, sec_idx, off_adj;
 
+	sec_num = 0;
 	for_each_btf_ext_sec(ext_info, sec) {
-		sec_name = btf__name_by_offset(obj->btf, sec->sec_name_off);
-		if (!sec_name)
-			return -EINVAL;
-		if (strcmp(sec_name, prog->sec_name) != 0)
+		sec_idx = ext_info->sec_idxs[sec_num];
+		sec_num++;
+		if (prog->sec_idx != sec_idx)
 			continue;
 
 		for_each_btf_ext_rec(ext_info, sec, i, rec) {
@@ -6989,7 +7024,7 @@ bpf_object__load_progs(struct bpf_object *obj, int log_level)
 		prog = &obj->programs[i];
 		if (prog_is_subprog(obj, prog))
 			continue;
-		if (!prog->load) {
+		if (!prog->autoload) {
 			pr_debug("prog '%s': skipped loading\n", prog->name);
 			continue;
 		}
@@ -8203,7 +8238,7 @@ const char *bpf_program__title(const struct bpf_program *prog, bool needs_copy)
 
 bool bpf_program__autoload(const struct bpf_program *prog)
 {
-	return prog->load;
+	return prog->autoload;
 }
 
 int bpf_program__set_autoload(struct bpf_program *prog, bool autoload)
@@ -8211,7 +8246,7 @@ int bpf_program__set_autoload(struct bpf_program *prog, bool autoload)
 	if (prog->obj->loaded)
 		return -EINVAL;
 
-	prog->load = autoload;
+	prog->autoload = autoload;
 	return 0;
 }
 
@@ -10990,7 +11025,7 @@ int bpf_object__attach_skeleton(struct bpf_object_skeleton *s)
 		struct bpf_link **link = s->progs[i].link;
 		const struct bpf_sec_def *sec_def;
 
-		if (!prog->load)
+		if (!prog->autoload)
 			continue;
 
 		sec_def = find_sec_def(prog->sec_name);
