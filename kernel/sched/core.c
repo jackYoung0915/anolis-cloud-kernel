@@ -6006,8 +6006,8 @@ static inline void schedule_debug(struct task_struct *prev, bool preempt)
 	schedstat_inc(this_rq()->sched_count);
 }
 
-static void put_prev_task_balance(struct rq *rq, struct task_struct *prev,
-				  struct rq_flags *rf)
+static void prev_balance(struct rq *rq, struct task_struct *prev,
+			 struct rq_flags *rf)
 {
 	const struct sched_class *start_class = prev->sched_class;
 	const struct sched_class *class;
@@ -6034,8 +6034,6 @@ static void put_prev_task_balance(struct rq *rq, struct task_struct *prev,
 		if (class->balance && class->balance(rq, prev, rf))
 			break;
 	}
-
-	put_prev_task(rq, prev);
 }
 
 /*
@@ -6065,24 +6063,27 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 		/* Assume the next prioritized class is idle_sched_class */
 		if (!p) {
-			put_prev_task(rq, prev);
-			p = pick_next_task_idle(rq);
+			p = pick_task_idle(rq);
+			put_prev_set_next_task(rq, prev, p);
 		}
 
 		return p;
 	}
 
 restart:
-	put_prev_task_balance(rq, prev, rf);
+	prev_balance(rq, prev, rf);
 
 	for_each_active_class(class) {
-		p = class->pick_next_task(rq);
-		if (p) {
-			const struct sched_class *prev_class = prev->sched_class;
-
-			if (class != prev_class && prev_class->switch_class)
-				prev_class->switch_class(rq, p);
-			return p;
+		if (class->pick_next_task) {
+			p = class->pick_next_task(rq, prev);
+			if (p)
+				return p;
+		} else {
+			p = class->pick_task(rq);
+			if (p) {
+				put_prev_set_next_task(rq, prev, p);
+				return p;
+			}
 		}
 	}
 
@@ -6169,16 +6170,11 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		WRITE_ONCE(rq->core_sched_seq, rq->core->core_pick_seq);
 
 		next = rq->core_pick;
-		if (next != prev) {
-			put_prev_task(rq, prev);
-			set_next_task(rq, next);
-		}
-
 		rq->core_pick = NULL;
-		goto out;
+		goto out_set_next;
 	}
 
-	put_prev_task_balance(rq, prev, rf);
+	prev_balance(rq, prev, rf);
 
 	core_allow_unset = sched_cookie_match_unset(rq->core->core_cookie);
 	smt_mask = cpu_smt_mask(cpu);
@@ -6364,8 +6360,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	}
 
 out_set_next:
-	set_next_task(rq, next);
-out:
+	put_prev_set_next_task(rq, prev, next);
 	if (rq->core->core_forceidle_count && next == rq->idle)
 		queue_core_balance(rq);
 
@@ -8463,6 +8458,9 @@ void __init sched_init(void)
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
 		init_cfs_bandwidth(&root_task_group.cfs_bandwidth, NULL);
 #endif /* CONFIG_FAIR_GROUP_SCHED */
+#ifdef CONFIG_EXT_GROUP_SCHED
+		root_task_group.scx_weight = CGROUP_WEIGHT_DFL;
+#endif /* CONFIG_EXT_GROUP_SCHED */
 #ifdef CONFIG_RT_GROUP_SCHED
 		root_task_group.rt_se = (struct sched_rt_entity **)ptr;
 		ptr += nr_cpu_ids * sizeof(void **);
@@ -8944,6 +8942,7 @@ struct task_group *sched_create_group(struct task_group *parent)
 		goto err;
 #endif
 
+	scx_group_set_weight(tg, CGROUP_WEIGHT_DFL);
 	alloc_uclamp_sched_group(tg, parent);
 
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
@@ -9080,6 +9079,7 @@ void sched_move_task(struct task_struct *tsk)
 		update_nr_uninterruptible(tsk, -1);
 
 	sched_change_group(tsk, group);
+	scx_move_task(tsk);
 
 	/* increase new group after change */
 	if ((!queued && task_contributes_to_load(tsk)) ||
@@ -9098,11 +9098,6 @@ void sched_move_task(struct task_struct *tsk)
 		 */
 		resched_curr(rq);
 	}
-}
-
-static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
-{
-	return css ? container_of(css, struct task_group, css) : NULL;
 }
 
 static struct cgroup_subsys_state *
@@ -9128,6 +9123,11 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 {
 	struct task_group *tg = css_tg(css);
 	struct task_group *parent = css_tg(css->parent);
+	int ret;
+
+	ret = scx_tg_online(tg);
+	if (ret)
+		return ret;
 
 	if (parent)
 		sched_online_group(tg, parent);
@@ -9140,6 +9140,13 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 #endif
 
 	return 0;
+}
+
+static void cpu_cgroup_css_offline(struct cgroup_subsys_state *css)
+{
+	struct task_group *tg = css_tg(css);
+
+	scx_tg_offline(tg);
 }
 
 static void cpu_cgroup_css_released(struct cgroup_subsys_state *css)
@@ -9159,9 +9166,9 @@ static void cpu_cgroup_css_free(struct cgroup_subsys_state *css)
 	sched_unregister_group(tg);
 }
 
-#ifdef CONFIG_RT_GROUP_SCHED
 static int cpu_cgroup_can_attach(struct cgroup_taskset *tset)
 {
+#ifdef CONFIG_RT_GROUP_SCHED
 	struct task_struct *task;
 	struct cgroup_subsys_state *css;
 
@@ -9169,9 +9176,9 @@ static int cpu_cgroup_can_attach(struct cgroup_taskset *tset)
 		if (!sched_rt_can_attach(css_tg(css), task))
 			return -EINVAL;
 	}
-	return 0;
-}
 #endif
+	return scx_cgroup_can_attach(tset);
+}
 
 static void cpu_cgroup_attach(struct cgroup_taskset *tset)
 {
@@ -9180,6 +9187,13 @@ static void cpu_cgroup_attach(struct cgroup_taskset *tset)
 
 	cgroup_taskset_for_each(task, css, tset)
 		sched_move_task(task);
+
+	scx_cgroup_finish_attach();
+}
+
+static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)
+{
+	scx_cgroup_cancel_attach(tset);
 }
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
@@ -9356,22 +9370,36 @@ static int cpu_uclamp_max_show(struct seq_file *sf, void *v)
 }
 #endif /* CONFIG_UCLAMP_TASK_GROUP */
 
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
+static unsigned long tg_weight(struct task_group *tg)
+{
 #ifdef CONFIG_FAIR_GROUP_SCHED
+	return scale_load_down(tg->shares);
+#else
+	return sched_weight_from_cgroup(tg->scx_weight);
+#endif
+}
+
 static int cpu_shares_write_u64(struct cgroup_subsys_state *css,
 				struct cftype *cftype, u64 shareval)
 {
+	int ret;
+
 	if (shareval > scale_load_down(ULONG_MAX))
 		shareval = MAX_SHARES;
-	return sched_group_set_shares(css_tg(css), scale_load(shareval));
+	ret = sched_group_set_shares(css_tg(css), scale_load(shareval));
+	if (!ret)
+		scx_group_set_weight(css_tg(css),
+				     sched_weight_to_cgroup(shareval));
+	return ret;
 }
 
 static u64 cpu_shares_read_u64(struct cgroup_subsys_state *css,
 			       struct cftype *cft)
 {
-	struct task_group *tg = css_tg(css);
-
-	return (u64) scale_load_down(tg->shares);
+	return tg_weight(css_tg(css));
 }
+#endif /* CONFIG_GROUP_SCHED_WEIGHT */
 
 #ifdef CONFIG_CFS_BANDWIDTH
 static DEFINE_MUTEX(cfs_constraints_mutex);
@@ -9791,7 +9819,6 @@ static int cpu_cfs_local_stat_show(struct seq_file *sf, void *v)
 	return 0;
 }
 #endif /* CONFIG_CFS_BANDWIDTH */
-#endif /* CONFIG_FAIR_GROUP_SCHED */
 
 #ifdef CONFIG_RT_GROUP_SCHED
 static int cpu_rt_runtime_write(struct cgroup_subsys_state *css,
@@ -9819,7 +9846,7 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
 static s64 cpu_idle_read_s64(struct cgroup_subsys_state *css,
 			       struct cftype *cft)
 {
@@ -9829,7 +9856,12 @@ static s64 cpu_idle_read_s64(struct cgroup_subsys_state *css,
 static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 				struct cftype *cft, s64 idle)
 {
-	return sched_group_set_idle(css_tg(css), idle);
+	int ret;
+
+	ret = sched_group_set_idle(css_tg(css), idle);
+	if (!ret)
+		scx_group_set_idle(css_tg(css), idle);
+	return ret;
 }
 #endif
 
@@ -9884,7 +9916,7 @@ static u64 cpu_ht_ratio_read(struct cgroup_subsys_state *css,
 #endif
 
 static struct cftype cpu_legacy_files[] = {
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
 	{
 		.name = "shares",
 		.read_u64 = cpu_shares_read_u64,
@@ -10016,12 +10048,7 @@ static int cpu_local_stat_show(struct seq_file *sf,
 	return 0;
 }
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
-
-static unsigned long tg_weight(struct task_group *tg)
-{
-	return scale_load_down(tg->shares);
-}
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
 
 static u64 cpu_weight_read_u64(struct cgroup_subsys_state *css,
 			       struct cftype *cft)
@@ -10033,13 +10060,17 @@ static int cpu_weight_write_u64(struct cgroup_subsys_state *css,
 				struct cftype *cft, u64 cgrp_weight)
 {
 	unsigned long weight;
+	int ret;
 
 	if (cgrp_weight < CGROUP_WEIGHT_MIN || cgrp_weight > CGROUP_WEIGHT_MAX)
 		return -ERANGE;
 
 	weight = sched_weight_from_cgroup(cgrp_weight);
 
-	return sched_group_set_shares(css_tg(css), scale_load(weight));
+	ret = sched_group_set_shares(css_tg(css), scale_load(weight));
+	if (!ret)
+		scx_group_set_weight(css_tg(css), cgrp_weight);
+	return ret;
 }
 
 static s64 cpu_weight_nice_read_s64(struct cgroup_subsys_state *css,
@@ -10064,7 +10095,7 @@ static int cpu_weight_nice_write_s64(struct cgroup_subsys_state *css,
 				     struct cftype *cft, s64 nice)
 {
 	unsigned long weight;
-	int idx;
+	int idx, ret;
 
 	if (nice < MIN_NICE || nice > MAX_NICE)
 		return -ERANGE;
@@ -10073,9 +10104,13 @@ static int cpu_weight_nice_write_s64(struct cgroup_subsys_state *css,
 	idx = array_index_nospec(idx, 40);
 	weight = sched_prio_to_weight[idx];
 
-	return sched_group_set_shares(css_tg(css), scale_load(weight));
+	ret = sched_group_set_shares(css_tg(css), scale_load(weight));
+	if (!ret)
+		scx_group_set_weight(css_tg(css),
+				     sched_weight_to_cgroup(weight));
+	return ret;
 }
-#endif
+#endif /* CONFIG_GROUP_SCHED_WEIGHT */
 
 static void __maybe_unused cpu_period_quota_print(struct seq_file *sf,
 						  long period, long quota)
@@ -10429,7 +10464,7 @@ out_show:
 #endif
 
 static struct cftype cpu_files[] = {
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
 	{
 		.name = "weight",
 		.flags = CFTYPE_NOT_ON_ROOT,
@@ -10532,14 +10567,14 @@ static struct cftype cpu_files[] = {
 struct cgroup_subsys cpu_cgrp_subsys = {
 	.css_alloc	= cpu_cgroup_css_alloc,
 	.css_online	= cpu_cgroup_css_online,
+	.css_offline	= cpu_cgroup_css_offline,
 	.css_released	= cpu_cgroup_css_released,
 	.css_free	= cpu_cgroup_css_free,
 	.css_extra_stat_show = cpu_extra_stat_show,
 	.css_local_stat_show = cpu_local_stat_show,
-#ifdef CONFIG_RT_GROUP_SCHED
 	.can_attach	= cpu_cgroup_can_attach,
-#endif
 	.attach		= cpu_cgroup_attach,
+	.cancel_attach	= cpu_cgroup_cancel_attach,
 	.legacy_cftypes	= cpu_legacy_files,
 	.dfl_cftypes	= cpu_files,
 	.early_init	= true,

@@ -502,6 +502,11 @@ struct task_group {
 	struct rt_bandwidth	rt_bandwidth;
 #endif
 
+#ifdef CONFIG_EXT_GROUP_SCHED
+	u32			scx_flags;	/* SCX_TG_* */
+	u32			scx_weight;
+#endif
+
 	struct rcu_head		rcu;
 	struct list_head	list;
 
@@ -541,7 +546,7 @@ struct task_group {
 	CK_KABI_RESERVE(8)
 };
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
 #define ROOT_TASK_GROUP_LOAD	NICE_0_LOAD
 
 /*
@@ -570,6 +575,11 @@ extern int walk_tg_tree_from(struct task_group *from,
 static inline int walk_tg_tree(tg_visitor down, tg_visitor up, void *data)
 {
 	return walk_tg_tree_from(&root_task_group, down, up, data);
+}
+
+static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
+{
+	return css ? container_of(css, struct task_group, css) : NULL;
 }
 
 extern int tg_nop(struct task_group *tg, void *data);
@@ -618,6 +628,8 @@ extern void set_task_rq_fair(struct sched_entity *se,
 static inline void set_task_rq_fair(struct sched_entity *se,
 			     struct cfs_rq *prev, struct cfs_rq *next) { }
 #endif /* CONFIG_SMP */
+#else /* !CONFIG_FAIR_GROUP_SCHED */
+static inline int sched_group_set_shares(struct task_group *tg, unsigned long shares) { return 0; }
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 #else /* CONFIG_CGROUP_SCHED */
@@ -796,6 +808,7 @@ enum scx_rq_flags {
 	 */
 	SCX_RQ_ONLINE		= 1 << 0,
 	SCX_RQ_CAN_STOP_TICK	= 1 << 1,
+	SCX_RQ_BAL_KEEP		= 1 << 2, /* balance decided to keep current */
 
 	SCX_RQ_IN_WAKEUP	= 1 << 16,
 	SCX_RQ_IN_BALANCE	= 1 << 17,
@@ -2521,17 +2534,23 @@ struct sched_class {
 	void (*wakeup_preempt)(struct rq *rq, struct task_struct *p, int flags);
 
 	int (*balance)(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
-	struct task_struct *(*pick_next_task)(struct rq *rq);
+	struct task_struct *(*pick_task)(struct rq *rq);
+	/*
+	 * Optional! When implemented pick_next_task() should be equivalent to:
+	 *
+	 *   next = pick_task();
+	 *   if (next) {
+	 *       put_prev_task(prev);
+	 *       set_next_task_first(next);
+	 *   }
+	 */
+	struct task_struct *(*pick_next_task)(struct rq *rq, struct task_struct *prev);
 
-	void (*put_prev_task)(struct rq *rq, struct task_struct *p);
+	void (*put_prev_task)(struct rq *rq, struct task_struct *p, struct task_struct *next);
 	void (*set_next_task)(struct rq *rq, struct task_struct *p, bool first);
-
-	void (*switch_class)(struct rq *rq, struct task_struct *next);
 
 #ifdef CONFIG_SMP
 	int  (*select_task_rq)(struct task_struct *p, int task_cpu, int flags);
-
-	struct task_struct * (*pick_task)(struct rq *rq);
 
 	void (*migrate_task_rq)(struct task_struct *p, int new_cpu);
 
@@ -2586,7 +2605,7 @@ struct sched_class {
 static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 {
 	WARN_ON_ONCE(rq->curr != prev);
-	prev->sched_class->put_prev_task(rq, prev);
+	prev->sched_class->put_prev_task(rq, prev, NULL);
 }
 
 static inline void set_next_task(struct rq *rq, struct task_struct *next)
@@ -2598,6 +2617,19 @@ static inline void update_nr_iowait(struct task_struct *p, long inc)
 {
 	if (p->sched_class->update_nr_iowait)
 		p->sched_class->update_nr_iowait(p, inc);
+}
+
+static inline void put_prev_set_next_task(struct rq *rq,
+					  struct task_struct *prev,
+					  struct task_struct *next)
+{
+	WARN_ON_ONCE(rq->curr != prev);
+
+	if (next == prev)
+		return;
+
+	prev->sched_class->put_prev_task(rq, prev, next);
+	next->sched_class->set_next_task(rq, next, true);
 }
 
 /*
@@ -2689,7 +2721,7 @@ static inline bool sched_fair_runnable(struct rq *rq)
 }
 
 extern struct task_struct *pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
-extern struct task_struct *pick_next_task_idle(struct rq *rq);
+extern struct task_struct *pick_task_idle(struct rq *rq);
 
 #define SCA_CHECK		0x01
 #define SCA_MIGRATE_DISABLE	0x02
