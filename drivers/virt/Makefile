@@ -7,6 +7,4 @@ obj-$(CONFIG_FSL_HV_MANAGER)	+= fsl_hypervisor.o
 obj-y				+= vboxguest/
 
 obj-$(CONFIG_NITRO_ENCLAVES)	+= nitro_enclaves/
-obj-$(CONFIG_EFI_SECRET)	+= coco/efi_secret/
-obj-$(CONFIG_INTEL_TDX_GUEST)	+= coco/tdx-guest/
-obj-$(CONFIG_CSV_GUEST)		+= coco/csv-guest/
+obj-y				+= coco/
