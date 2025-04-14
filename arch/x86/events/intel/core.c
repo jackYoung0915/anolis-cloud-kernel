@@ -2206,19 +2206,19 @@ static __initconst const u64 knl_hw_cache_extra_regs
  * However, there are some cases which may change PEBS status, e.g. PMI
  * throttle. The PEBS_ENABLE should be updated where the status changes.
  */
-static void __intel_pmu_disable_all(void)
+static __always_inline void __intel_pmu_disable_all(bool bts)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
 	wrmsrl(MSR_CORE_PERF_GLOBAL_CTRL, 0);
 
-	if (test_bit(INTEL_PMC_IDX_FIXED_BTS, cpuc->active_mask))
+	if (bts && test_bit(INTEL_PMC_IDX_FIXED_BTS, cpuc->active_mask))
 		intel_pmu_disable_bts();
 }
 
-static void intel_pmu_disable_all(void)
+static __always_inline void intel_pmu_disable_all(void)
 {
-	__intel_pmu_disable_all();
+	__intel_pmu_disable_all(true);
 	intel_pmu_pebs_disable_all();
 	intel_pmu_lbr_disable_all();
 }
@@ -2247,6 +2247,49 @@ static void intel_pmu_enable_all(int added)
 {
 	intel_pmu_pebs_enable_all();
 	__intel_pmu_enable_all(added, false);
+}
+
+static noinline int
+__intel_pmu_snapshot_branch_stack(struct perf_branch_entry *entries,
+				  unsigned int cnt, unsigned long flags)
+{
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
+
+	intel_pmu_lbr_read();
+	cnt = min_t(unsigned int, cnt, x86_pmu.lbr_nr);
+
+	memcpy(entries, cpuc->lbr_entries, sizeof(struct perf_branch_entry) * cnt);
+	intel_pmu_enable_all(0);
+	local_irq_restore(flags);
+	return cnt;
+}
+
+static int
+intel_pmu_snapshot_branch_stack(struct perf_branch_entry *entries, unsigned int cnt)
+{
+	unsigned long flags;
+
+	/* must not have branches... */
+	local_irq_save(flags);
+	__intel_pmu_disable_all(false); /* we don't care about BTS */
+	__intel_pmu_pebs_disable_all();
+	__intel_pmu_lbr_disable();
+	/*            ... until here */
+	return __intel_pmu_snapshot_branch_stack(entries, cnt, flags);
+}
+
+static int
+intel_pmu_snapshot_arch_branch_stack(struct perf_branch_entry *entries, unsigned int cnt)
+{
+	unsigned long flags;
+
+	/* must not have branches... */
+	local_irq_save(flags);
+	__intel_pmu_disable_all(false); /* we don't care about BTS */
+	__intel_pmu_pebs_disable_all();
+	__intel_pmu_arch_lbr_disable();
+	/*            ... until here */
+	return __intel_pmu_snapshot_branch_stack(entries, cnt, flags);
 }
 
 /*
@@ -2870,11 +2913,9 @@ static void x86_pmu_handle_guest_pebs(struct pt_regs *regs,
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	u64 guest_pebs_idxs = cpuc->pebs_enabled & ~cpuc->intel_ctrl_host_mask;
 	struct perf_event *event = NULL;
-	struct perf_guest_info_callbacks *guest_cbs;
 	int bit;
 
-	guest_cbs = perf_get_guest_cbs();
-	if (!unlikely(guest_cbs && guest_cbs->is_in_guest()))
+	if (!unlikely(perf_guest_state()))
 		return;
 
 	if (!x86_pmu.pebs_ept || !x86_pmu.pebs_active ||
@@ -2900,7 +2941,6 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 {
 	struct perf_sample_data data;
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
-	struct perf_guest_info_callbacks *guest_cbs;
 	int bit;
 	int handled = 0;
 	u64 intel_ctrl = hybrid(cpuc->pmu, intel_ctrl);
@@ -2965,12 +3005,7 @@ static int handle_pmi_common(struct pt_regs *regs, u64 status)
 	 */
 	if (__test_and_clear_bit(GLOBAL_STATUS_TRACE_TOPAPMI_BIT, (unsigned long *)&status)) {
 		handled++;
-
-		guest_cbs = perf_get_guest_cbs();
-		if (unlikely(guest_cbs && guest_cbs->is_in_guest() &&
-			     guest_cbs->handle_intel_pt_intr))
-			guest_cbs->handle_intel_pt_intr();
-		else
+		if (!perf_guest_handle_intel_pt_intr())
 			intel_pt_interrupt();
 	}
 
@@ -3046,7 +3081,7 @@ static int intel_pmu_handle_irq(struct pt_regs *regs)
 		apic_write(APIC_LVTPC, APIC_DM_NMI);
 	intel_bts_disable_local();
 	cpuc->enabled = 0;
-	__intel_pmu_disable_all();
+	__intel_pmu_disable_all(true);
 	handled = intel_pmu_drain_bts_buffer();
 	handled += intel_bts_interrupt();
 	status = intel_pmu_get_status();
@@ -4578,28 +4613,25 @@ static u8 adl_get_hybrid_cpu_type(void)
  * Therefore the effective (average) period matches the requested period,
  * despite coarser hardware granularity.
  */
-static u64 bdw_limit_period(struct perf_event *event, u64 left)
+static void bdw_limit_period(struct perf_event *event, s64 *left)
 {
 	if ((event->hw.config & INTEL_ARCH_EVENT_MASK) ==
 			X86_CONFIG(.event=0xc0, .umask=0x01)) {
-		if (left < 128)
-			left = 128;
-		left &= ~0x3fULL;
+		if (*left < 128)
+			*left = 128;
+		*left &= ~0x3fULL;
 	}
-	return left;
 }
 
-static u64 nhm_limit_period(struct perf_event *event, u64 left)
+static void nhm_limit_period(struct perf_event *event, s64 *left)
 {
-	return max(left, 32ULL);
+	*left = max(*left, 32LL);
 }
 
-static u64 spr_limit_period(struct perf_event *event, u64 left)
+static void spr_limit_period(struct perf_event *event, s64 *left)
 {
 	if (event->attr.precise_ip == 3)
-		return max(left, 128ULL);
-
-	return left;
+		*left = max(*left, 128LL);
 }
 
 PMU_FORMAT_ATTR(event,	"config:0-7"	);
@@ -4784,8 +4816,6 @@ end:
 	cpumask_set_cpu(cpu, &pmu->supported_cpus);
 	cpuc->pmu = &pmu->pmu;
 
-	x86_pmu_update_cpu_context(&pmu->pmu, cpu);
-
 	return true;
 }
 
@@ -4919,17 +4949,17 @@ static void intel_pmu_cpu_dead(int cpu)
 		cpumask_clear_cpu(cpu, &hybrid_pmu(cpuc->pmu)->supported_cpus);
 }
 
-static void intel_pmu_sched_task(struct perf_event_context *ctx,
+static void intel_pmu_sched_task(struct perf_event_pmu_context *pmu_ctx,
 				 bool sched_in)
 {
-	intel_pmu_pebs_sched_task(ctx, sched_in);
-	intel_pmu_lbr_sched_task(ctx, sched_in);
+	intel_pmu_pebs_sched_task(pmu_ctx, sched_in);
+	intel_pmu_lbr_sched_task(pmu_ctx, sched_in);
 }
 
-static void intel_pmu_swap_task_ctx(struct perf_event_context *prev,
-				    struct perf_event_context *next)
+static void intel_pmu_swap_task_ctx(struct perf_event_pmu_context *prev_epc,
+				    struct perf_event_pmu_context *next_epc)
 {
-	intel_pmu_lbr_swap_task_ctx(prev, next);
+	intel_pmu_lbr_swap_task_ctx(prev_epc, next_epc);
 }
 
 static int intel_pmu_check_period(struct perf_event *event, u64 value)
@@ -4945,12 +4975,11 @@ static int intel_pmu_aux_output_match(struct perf_event *event)
 	return is_intel_pt_event(event);
 }
 
-static int intel_pmu_filter_match(struct perf_event *event)
+static void intel_pmu_filter(struct pmu *pmu, int cpu, bool *ret)
 {
-	struct x86_hybrid_pmu *pmu = hybrid_pmu(event->pmu);
-	unsigned int cpu = smp_processor_id();
+	struct x86_hybrid_pmu *hpmu = hybrid_pmu(pmu);
 
-	return cpumask_test_cpu(cpu, &pmu->supported_cpus);
+	*ret = !cpumask_test_cpu(cpu, &hpmu->supported_cpus);
 }
 
 PMU_FORMAT_ATTR(offcore_rsp, "config1:0-63");
@@ -6669,6 +6698,7 @@ __init int intel_pmu_init(void)
 	case INTEL_FAM6_ICELAKE:
 	case INTEL_FAM6_TIGERLAKE_L:
 	case INTEL_FAM6_TIGERLAKE:
+	case INTEL_FAM6_ROCKETLAKE:
 		x86_pmu.late_ack = true;
 		memcpy(hw_cache_event_ids, skl_hw_cache_event_ids, sizeof(hw_cache_event_ids));
 		memcpy(hw_cache_extra_regs, skl_hw_cache_extra_regs, sizeof(hw_cache_extra_regs));
@@ -6783,7 +6813,7 @@ __init int intel_pmu_init(void)
 		x86_pmu.update_topdown_event = adl_update_topdown_event;
 		x86_pmu.set_topdown_event_period = adl_set_topdown_event_period;
 
-		x86_pmu.filter_match = intel_pmu_filter_match;
+		x86_pmu.filter = intel_pmu_filter;
 		x86_pmu.get_event_constraints = adl_get_event_constraints;
 		x86_pmu.hw_config = adl_hw_config;
 		x86_pmu.limit_period = spr_limit_period;
@@ -6961,8 +6991,20 @@ __init int intel_pmu_init(void)
 			x86_pmu.lbr_nr = 0;
 	}
 
-	if (x86_pmu.lbr_nr)
+	if (x86_pmu.lbr_nr) {
 		pr_cont("%d-deep LBR, ", x86_pmu.lbr_nr);
+
+		/* only support branch_stack snapshot for perfmon >= v2 */
+		if (x86_pmu.disable_all == intel_pmu_disable_all) {
+			if (boot_cpu_has(X86_FEATURE_ARCH_LBR)) {
+				static_call_update(perf_snapshot_branch_stack,
+						   intel_pmu_snapshot_arch_branch_stack);
+			} else {
+				static_call_update(perf_snapshot_branch_stack,
+						   intel_pmu_snapshot_branch_stack);
+			}
+		}
+	}
 
 	intel_pmu_check_extra_regs(x86_pmu.extra_regs);
 

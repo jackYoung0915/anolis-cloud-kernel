@@ -43,6 +43,7 @@ enum siginfo_layout {
 	SIL_FAULT_MCEERR,
 	SIL_FAULT_BNDERR,
 	SIL_FAULT_PKUERR,
+	SIL_PERF_EVENT,
 	SIL_CHLD,
 	SIL_RT,
 	SIL_SYS,
@@ -473,6 +474,20 @@ static inline bool sigaltstack_size_valid(size_t size) { return true; }
 #ifdef CONFIG_PROC_FS
 struct seq_file;
 extern void render_sigset_t(struct seq_file *, const char *, sigset_t *);
+#endif
+
+#ifndef arch_untagged_si_addr
+/*
+ * Given a fault address and a signal and si_code which correspond to the
+ * _sigfault union member, returns the address that must appear in si_addr if
+ * the signal handler does not have SA_EXPOSE_TAGBITS enabled in sa_flags.
+ */
+static inline void __user *arch_untagged_si_addr(void __user *addr,
+						 unsigned long sig,
+						 unsigned long si_code)
+{
+	return addr;
+}
 #endif
 
 #endif /* _LINUX_SIGNAL_H */

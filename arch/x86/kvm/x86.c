@@ -127,6 +127,15 @@ static void kvm_put_guest_fpu(struct kvm_vcpu *vcpu);
 struct kvm_x86_ops kvm_x86_ops __read_mostly;
 EXPORT_SYMBOL_GPL(kvm_x86_ops);
 
+#define KVM_X86_OP(func)					     \
+	DEFINE_STATIC_CALL_NULL(kvm_x86_##func,			     \
+				*(((struct kvm_x86_ops *)0)->func));
+#define KVM_X86_OP_NULL KVM_X86_OP
+#include <asm/kvm-x86-ops.h>
+EXPORT_STATIC_CALL_GPL(kvm_x86_get_cs_db_l_bits);
+EXPORT_STATIC_CALL_GPL(kvm_x86_cache_reg);
+EXPORT_STATIC_CALL_GPL(kvm_x86_tlb_flush_current);
+
 static bool __read_mostly ignore_msrs = 0;
 module_param(ignore_msrs, bool, S_IRUGO | S_IWUSR);
 
@@ -1029,6 +1038,9 @@ int kvm_valid_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 	if (cr4 & vcpu->arch.cr4_guest_rsvd_bits)
 		return -EINVAL;
 
+	if (!kvm_x86_ops.is_valid_cr4(vcpu, cr4))
+		return -EINVAL;
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(kvm_valid_cr4);
@@ -1073,8 +1085,7 @@ int kvm_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 			return 1;
 	}
 
-	if (kvm_x86_ops.set_cr4(vcpu, cr4))
-		return 1;
+	kvm_x86_ops.set_cr4(vcpu, cr4);
 
 	kvm_post_set_cr4(vcpu, old_cr4, cr4);
 
@@ -8284,44 +8295,48 @@ static void kvm_timer_init(void)
 DEFINE_PER_CPU(struct kvm_vcpu *, current_vcpu);
 EXPORT_PER_CPU_SYMBOL_GPL(current_vcpu);
 
-int kvm_is_in_guest(void)
-{
-	return __this_cpu_read(current_vcpu) != NULL;
-}
-
-static int kvm_is_user_mode(void)
-{
-	int user_mode = 3;
-
-	if (__this_cpu_read(current_vcpu))
-		user_mode = kvm_x86_ops.get_cpl(__this_cpu_read(current_vcpu));
-
-	return user_mode != 0;
-}
-
-static unsigned long kvm_get_guest_ip(void)
-{
-	unsigned long ip = 0;
-
-	if (__this_cpu_read(current_vcpu))
-		ip = kvm_rip_read(__this_cpu_read(current_vcpu));
-
-	return ip;
-}
-
-static void kvm_handle_intel_pt_intr(void)
+unsigned int kvm_guest_state(void)
 {
 	struct kvm_vcpu *vcpu = __this_cpu_read(current_vcpu);
+	unsigned int state;
+
+	if (!vcpu)
+		return 0;
+
+	state = PERF_GUEST_ACTIVE;
+	if (static_call(kvm_x86_get_cpl)(vcpu))
+		state |= PERF_GUEST_USER;
+
+	return state;
+}
+
+static unsigned long kvm_guest_get_ip(void)
+{
+	struct kvm_vcpu *vcpu = __this_cpu_read(current_vcpu);
+
+	if (WARN_ON_ONCE(!vcpu))
+		return 0;
+
+	return kvm_rip_read(vcpu);
+}
+
+static unsigned int kvm_handle_intel_pt_intr(void)
+{
+	struct kvm_vcpu *vcpu = __this_cpu_read(current_vcpu);
+
+	/* '0' on failure so that the !PT case can use a RET0 static call. */
+	if (!vcpu)
+		return 0;
 
 	kvm_make_request(KVM_REQ_PMI, vcpu);
 	__set_bit(MSR_CORE_PERF_GLOBAL_OVF_CTRL_TRACE_TOPA_PMI_BIT,
 			(unsigned long *)&vcpu->arch.pmu.global_status);
+	return 1;
 }
 
 static struct perf_guest_info_callbacks kvm_guest_cbs = {
-	.is_in_guest		= kvm_is_in_guest,
-	.is_user_mode		= kvm_is_user_mode,
-	.get_guest_ip		= kvm_get_guest_ip,
+	.state			= kvm_guest_state,
+	.get_ip			= kvm_guest_get_ip,
 	.handle_intel_pt_intr	= NULL,
 };
 
@@ -8438,10 +8453,6 @@ int kvm_arch_init(void *opaque)
 			PT_PRESENT_MASK, 0, sme_me_mask);
 	kvm_timer_init();
 
-	if (ops->intel_pt_intr_in_guest && ops->intel_pt_intr_in_guest())
-		kvm_guest_cbs.handle_intel_pt_intr = kvm_handle_intel_pt_intr;
-	perf_register_guest_info_callbacks(&kvm_guest_cbs);
-
 	if (boot_cpu_has(X86_FEATURE_XSAVE)) {
 		host_xcr0 = xgetbv(XCR_XFEATURE_ENABLED_MASK);
 		supported_xcr0 = host_xcr0 & KVM_SUPPORTED_XCR0;
@@ -8474,8 +8485,6 @@ void kvm_arch_exit(void)
 		clear_hv_tscchange_cb();
 #endif
 	kvm_lapic_exit();
-	perf_unregister_guest_info_callbacks(&kvm_guest_cbs);
-	kvm_guest_cbs.handle_intel_pt_intr = NULL;
 
 	if (!boot_cpu_has(X86_FEATURE_CONSTANT_TSC))
 		cpufreq_unregister_notifier(&kvmclock_cpufreq_notifier_block,
@@ -10848,6 +10857,8 @@ int kvm_arch_hardware_setup(void *opaque)
 
 	memcpy(&kvm_x86_ops, ops->runtime_ops, sizeof(kvm_x86_ops));
 
+	perf_register_guest_info_callbacks(&kvm_guest_cbs);
+
 	if (!kvm_cpu_cap_has(X86_FEATURE_XSAVES))
 		supported_xss = 0;
 	else
@@ -10880,7 +10891,9 @@ int kvm_arch_hardware_setup(void *opaque)
 
 void kvm_arch_hardware_unsetup(void)
 {
-	kvm_x86_ops.hardware_unsetup();
+	perf_unregister_guest_info_callbacks(&kvm_guest_cbs);
+
+	static_call(kvm_x86_hardware_unsetup)();
 }
 
 int kvm_arch_check_processor_compat(void *opaque)

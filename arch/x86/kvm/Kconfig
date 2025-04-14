@@ -39,6 +39,7 @@ config KVM
 	select TASKSTATS
 	select TASK_DELAY_ACCT
 	select PERF_EVENTS
+	select GUEST_PERF_EVENTS
 	select HAVE_KVM_MSI
 	select HAVE_KVM_CPU_RELAX_INTERCEPT
 	select HAVE_KVM_NO_POLL
