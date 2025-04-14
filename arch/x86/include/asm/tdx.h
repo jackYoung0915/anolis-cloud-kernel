@@ -67,6 +67,8 @@ long tdx_get_quote(void __user *argp);
 
 int tdx_attest_init(void *data);
 
+void tdx_attest_exit(void *data);
+
 extern int tdx_notify_irq;
 
 #else
