@@ -968,6 +968,8 @@ static blk_status_t virtio_queue_rq_rpair(struct blk_mq_hw_ctx *hctx,
 	else
 		num = virtblk_map_data(hctx, req, vbr);
 
+	trace_virtio_queue_rq_rpair(req, vbr_is_bidirectional(vbr), num);
+
 	if (unlikely(num < 0)) {
 		virtblk_cleanup_cmd(req);
 		return BLK_STS_RESOURCE;
