@@ -7,6 +7,7 @@
 */
 
 #include "fuse_i.h"
+#include "fuse_dev_i.h"
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -28,22 +29,7 @@
 MODULE_ALIAS_MISCDEV(FUSE_MINOR);
 MODULE_ALIAS("devname:fuse");
 
-/* Ordinary requests have even IDs, while interrupts IDs are odd */
-#define FUSE_INT_REQ_BIT (1ULL << 0)
-#define FUSE_REQ_ID_STEP (1ULL << 1)
-
 static struct kmem_cache *fuse_req_cachep;
-
-static void end_requests(struct list_head *head);
-
-static struct fuse_dev *fuse_get_dev(struct file *file)
-{
-	/*
-	 * Lockless access is OK, because file->private data is set
-	 * once during mount and is valid until the file is released.
-	 */
-	return READ_ONCE(file->private_data);
-}
 
 static inline uint64_t get_time_now_us(void)
 {
@@ -2005,7 +1991,7 @@ static int fuse_retrieve(struct fuse_mount *fm, struct inode *inode,
 	args = &ap->args;
 	args->nodeid = outarg->nodeid;
 	args->opcode = FUSE_NOTIFY_REPLY;
-	args->in_numargs = 2;
+	args->in_numargs = 3;
 	args->in_pages = true;
 	args->end = fuse_retrieve_end;
 
@@ -2032,9 +2018,10 @@ static int fuse_retrieve(struct fuse_mount *fm, struct inode *inode,
 	}
 	ra->inarg.offset = outarg->offset;
 	ra->inarg.size = total_len;
-	args->in_args[0].size = sizeof(ra->inarg);
-	args->in_args[0].value = &ra->inarg;
-	args->in_args[1].size = total_len;
+	fuse_set_zero_arg0(args);
+	args->in_args[1].size = sizeof(ra->inarg);
+	args->in_args[1].value = &ra->inarg;
+	args->in_args[2].size = total_len;
 
 	err = fuse_simple_notify_reply(fm, args, outarg->notify_unique);
 	if (err)
@@ -2098,7 +2085,7 @@ static void fuse_requeue_requests(struct fuse_conn *fc,
 		spin_unlock(&fiq->lock);
 		list_for_each_entry(req, to_queue, list)
 			clear_bit(FR_PENDING, &req->flags);
-		end_requests(to_queue);
+		fuse_dev_end_requests(to_queue);
 		return;
 	}
 	/* iq and pq requests are both oldest to newest */
@@ -2455,7 +2442,7 @@ static __poll_t fuse_dev_poll(struct file *file, poll_table *wait)
 }
 
 /* Abort all requests on the given list (pending or processing) */
-static void end_requests(struct list_head *head)
+void fuse_dev_end_requests(struct list_head *head)
 {
 	while (!list_empty(head)) {
 		struct fuse_req *req;
@@ -2562,7 +2549,7 @@ void fuse_abort_conn(struct fuse_conn *fc)
 		wake_up_all(&fc->blocked_waitq);
 		spin_unlock(&fc->lock);
 
-		end_requests(&to_end);
+		fuse_dev_end_requests(&to_end);
 	} else {
 		spin_unlock(&fc->lock);
 	}
@@ -2593,7 +2580,7 @@ int fuse_dev_release(struct inode *inode, struct file *file)
 		spin_unlock(&fpq->lock);
 
 		if (!fc->recovery)
-			end_requests(&to_end);
+			fuse_dev_end_requests(&to_end);
 		else
 			fuse_requeue_requests(fc, &to_end);
 
@@ -2642,7 +2629,7 @@ void fuse_flush_pq(struct fuse_conn *fc)
 	}
 	spin_unlock(&fc->lock);
 
-	end_requests(&to_end);
+	fuse_dev_end_requests(&to_end);
 }
 
 /**
@@ -2708,7 +2695,7 @@ void fuse_resend_pqueue(struct fuse_conn *fc)
 		spin_unlock(&fiq->lock);
 		list_for_each_entry(req, &to_queue, list)
 			clear_bit(FR_PENDING, &req->flags);
-		end_requests(&to_queue);
+		fuse_dev_end_requests(&to_queue);
 		return;
 	}
 	/* iq and pq requests are both oldest to newest */
