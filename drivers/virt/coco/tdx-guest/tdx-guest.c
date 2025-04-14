@@ -67,6 +67,9 @@ static DEFINE_MUTEX(quote_lock);
  */
 static u32 getquote_timeout = 30;
 
+static bool tsm_api;
+module_param(tsm_api, bool, 0444);
+
 static long tdx_get_report0(struct tdx_report_req __user *req)
 {
 	u8 *reportdata, *tdreport;
@@ -302,6 +305,10 @@ static long tdx_guest_ioctl(struct file *file, unsigned int cmd,
 	case TDX_CMD_EXTEND_RTMR:
 		return tdx_extend_rtmr((struct tdx_extend_rtmr_req __user *)arg);
 	case TDX_CMD_GET_QUOTE:
+		if (tsm_api) {
+			pr_err("tsm API is used, ioctl is not allowed\n");
+			return -ENOTTY;
+		}
 		return tdx_get_quote((void __user *)arg);
 	default:
 		return -ENOTTY;
@@ -344,26 +351,28 @@ static int __init tdx_guest_init(void)
 		return ret;
 	}
 
-	quote_data = alloc_quote_buf();
-	if (!quote_data) {
-		pr_err("Failed to allocate Quote buffer\n");
-		ret = -ENOMEM;
-		goto free_misc;
-	}
+	if (tsm_api) {
+		quote_data = alloc_quote_buf();
+		if (!quote_data) {
+			pr_err("Failed to allocate Quote buffer\n");
+			ret = -ENOMEM;
+			goto free_misc;
+		}
 
-	ret = tsm_register(&tdx_tsm_ops, NULL, NULL);
-	if (ret)
-		goto free_quote;
+		ret = tsm_register(&tdx_tsm_ops, NULL, NULL);
+		if (ret)
+			goto free_quote;
 
-	ret = tdx_attest_init(&tdx_misc_dev);
-	if (ret) {
-		pr_err("tdx_attest_init failed\n");
-		goto free_tsm;
+	} else {
+		ret = tdx_attest_init(&tdx_misc_dev);
+		if (ret) {
+			pr_err("tdx_attest_init failed\n");
+			goto free_misc;
+		}
 	}
 
 	return 0;
-free_tsm:
-	tsm_unregister(&tdx_tsm_ops);
+
 free_quote:
 	free_quote_buf(quote_data);
 free_misc:
@@ -375,8 +384,11 @@ module_init(tdx_guest_init);
 
 static void __exit tdx_guest_exit(void)
 {
-	tsm_unregister(&tdx_tsm_ops);
-	free_quote_buf(quote_data);
+	if (tsm_api) {
+		tsm_unregister(&tdx_tsm_ops);
+		free_quote_buf(quote_data);
+	} else
+		tdx_attest_exit(&tdx_misc_dev);
 	misc_deregister(&tdx_misc_dev);
 }
 module_exit(tdx_guest_exit);
