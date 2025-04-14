@@ -216,6 +216,7 @@ enum mapping_flags {
 	AS_STABLE_WRITES,	/* must wait for writeback before modifying
 				   folio contents */
 	AS_UNMOVABLE,		/* The mapping cannot be moved, ever */
+	AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM,
 
 	AS_FSDAX_NORMAP = 30,
 };
@@ -332,6 +333,16 @@ static inline void mapping_set_unmovable(struct address_space *mapping)
 static inline bool mapping_unmovable(struct address_space *mapping)
 {
 	return test_bit(AS_UNMOVABLE, &mapping->flags);
+}
+
+static inline void mapping_set_writeback_may_deadlock_on_reclaim(struct address_space *mapping)
+{
+	set_bit(AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM, &mapping->flags);
+}
+
+static inline bool mapping_writeback_may_deadlock_on_reclaim(struct address_space *mapping)
+{
+	return test_bit(AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM, &mapping->flags);
 }
 
 static inline gfp_t mapping_gfp_mask(struct address_space * mapping)
