@@ -919,6 +919,10 @@ config DUPTEXT
 config SECRETMEM
 	def_bool ARCH_HAS_SET_DIRECT_MAP && !EMBEDDED
 
+config LOCK_MM_AND_FIND_VMA
+	bool
+	depends on !STACK_GROWSUP
+
 source "mm/damon/Kconfig"
 
 config RECLAIM_COLDPGS
