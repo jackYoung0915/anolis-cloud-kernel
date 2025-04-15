@@ -474,6 +474,11 @@ struct cfs_bandwidth {
 struct task_group {
 	struct cgroup_subsys_state css;
 
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
+	/* A positive value indicates that this is a SCHED_IDLE group. */
+	int			idle;
+#endif
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* schedulable entities of this group on each CPU */
 	struct sched_entity	**se;
@@ -481,9 +486,6 @@ struct task_group {
 	struct cfs_rq		**cfs_rq;
 	unsigned long		shares;
 	u64			slice;
-
-	/* A positive value indicates that this is a SCHED_IDLE group. */
-	int			idle;
 
 #ifdef	CONFIG_SMP
 	/*
@@ -630,6 +632,7 @@ static inline void set_task_rq_fair(struct sched_entity *se,
 #endif /* CONFIG_SMP */
 #else /* !CONFIG_FAIR_GROUP_SCHED */
 static inline int sched_group_set_shares(struct task_group *tg, unsigned long shares) { return 0; }
+static inline int sched_group_set_idle(struct task_group *tg, long idle) { return 0; }
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 #else /* CONFIG_CGROUP_SCHED */
@@ -809,6 +812,7 @@ enum scx_rq_flags {
 	SCX_RQ_ONLINE		= 1 << 0,
 	SCX_RQ_CAN_STOP_TICK	= 1 << 1,
 	SCX_RQ_BAL_KEEP		= 1 << 2, /* balance decided to keep current */
+	SCX_RQ_BYPASSING	= 1 << 3,
 
 	SCX_RQ_IN_WAKEUP	= 1 << 16,
 	SCX_RQ_IN_BALANCE	= 1 << 17,
