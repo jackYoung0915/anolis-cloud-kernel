@@ -39,8 +39,12 @@
 /** Bias for fi->writectr, meaning new writepages must not be sent */
 #define FUSE_NOWRITE INT_MIN
 
-/** It could be as large as PATH_MAX, but would that have any uses? */
-#define FUSE_NAME_MAX 1024
+/** Maximum length of a filename, not including terminating null */
+
+/* maximum, small enough for FUSE_MIN_READ_BUFFER*/
+#define FUSE_NAME_LOW_MAX 1024
+/* maximum, but needs a request buffer > FUSE_MIN_READ_BUFFER */
+#define FUSE_NAME_MAX (PATH_MAX - 1)
 
 /** Number of dentries for each connection in the control filesystem */
 #define FUSE_CTL_NUM_DENTRIES 5
@@ -828,6 +832,9 @@ struct fuse_conn {
 	/* Use pages instead of pointer for kernel I/O */
 	unsigned int use_pages_for_kvec_io:1;
 
+	/* Is link not implemented by fs? */
+	unsigned int no_link:1;
+
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;
 
@@ -851,6 +858,9 @@ struct fuse_conn {
 
 	/** Version counter for attribute changes */
 	atomic64_t attr_version;
+
+	/* maximum file name length */
+	u32 name_max;
 
 	/** Called on final put */
 	void (*release)(struct fuse_conn *);
