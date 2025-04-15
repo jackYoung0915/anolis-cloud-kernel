@@ -1194,7 +1194,8 @@ static int
 xfs_buffered_write_delalloc_punch(
 	struct inode		*inode,
 	loff_t			offset,
-	loff_t			length)
+	loff_t			length,
+	struct iomap            *iomap)
 {
 	return xfs_bmap_punch_delalloc_range(XFS_I(inode), offset,
 			offset + length);
