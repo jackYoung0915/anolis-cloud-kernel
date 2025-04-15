@@ -2486,6 +2486,7 @@ int cmd_stat(int argc, const char **argv)
 	unsigned int interval, timeout;
 	const char * const stat_subcommands[] = { "record", "report" };
 	char errbuf[BUFSIZ];
+	struct evsel *evsel;
 
 	setlocale(LC_ALL, "");
 
@@ -2832,7 +2833,9 @@ int cmd_stat(int argc, const char **argv)
 		goto out;
 
 	/* Enable ignoring missing threads when -p option is defined. */
-	evlist__first(evsel_list)->ignore_missing_thread = target.pid;
+	evlist__for_each_entry(evsel_list, evsel) {
+		evsel->ignore_missing_thread = target.pid;
+	}
 	status = 0;
 	for (run_idx = 0; forever || run_idx < stat_config.run_count; run_idx++) {
 		if (stat_config.run_count != 1 && verbose > 0)
