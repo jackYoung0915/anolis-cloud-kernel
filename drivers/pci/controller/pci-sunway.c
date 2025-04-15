@@ -377,6 +377,7 @@ struct pci_controller *bus_num_to_pci_controller(unsigned long bus_num)
 
 	return NULL;
 }
+EXPORT_SYMBOL(bus_num_to_pci_controller);
 
 struct pci_controller *pci_bus_to_pci_controller(const struct pci_bus *bus)
 {
@@ -391,6 +392,7 @@ struct pci_controller *pci_bus_to_pci_controller(const struct pci_bus *bus)
 	cfg = (struct pci_config_window *)bus->sysdata;
 	return (struct pci_controller *)(cfg->priv);
 }
+EXPORT_SYMBOL(pci_bus_to_pci_controller);
 
 /**
  *  PCIe Root Complex read config space operations
@@ -596,12 +598,12 @@ static void __iomem *sw64_pcie_map_bus(struct pci_bus *bus,
 	return cfg_iobase;
 }
 
-#ifdef CONFIG_ACPI
 int sw64_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	return map_irq(dev, slot, pin);
 }
 
+#ifdef CONFIG_ACPI
 static void setup_intx_irqs(struct pci_controller *hose)
 {
 	unsigned long int_conf, node, val_node;
