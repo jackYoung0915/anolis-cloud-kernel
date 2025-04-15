@@ -59,11 +59,15 @@ bool tdx_early_handle_ve(struct pt_regs *regs);
 
 int tdx_mcall_get_report0(u8 *reportdata, u8 *tdreport);
 
+u64 tdx_hcall_get_quote(u8 *buf, size_t size);
+
 int tdx_mcall_extend_rtmr(u8 *data, u8 index);
 
 long tdx_get_quote(void __user *argp);
 
 int tdx_attest_init(void *data);
+
+void tdx_attest_exit(void *data);
 
 extern int tdx_notify_irq;
 

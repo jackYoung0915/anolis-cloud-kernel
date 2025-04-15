@@ -293,9 +293,19 @@ int tdx_attest_init(void *data)
 			"tdx_quote_irq", data)) {
 		pr_err("notify IRQ request failed\n");
 		destroy_workqueue(quote_wq);
+		quote_wq = NULL;
 		return -EIO;
 	}
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tdx_attest_init);
+
+void tdx_attest_exit(void *data)
+{
+	if (quote_wq) {
+		free_irq(tdx_notify_irq, data);
+		destroy_workqueue(quote_wq);
+	}
+}
+EXPORT_SYMBOL_GPL(tdx_attest_exit);

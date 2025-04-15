@@ -224,4 +224,7 @@ enum mutex_trylock_recursive_enum {
 extern /* __deprecated */ __must_check enum mutex_trylock_recursive_enum
 mutex_trylock_recursive(struct mutex *lock);
 
+DEFINE_GUARD(mutex, struct mutex *, mutex_lock(_T), mutex_unlock(_T))
+DEFINE_FREE(mutex, struct mutex *, if (_T) mutex_unlock(_T))
+
 #endif /* __LINUX_MUTEX_H */
