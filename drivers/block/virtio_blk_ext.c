@@ -24,7 +24,7 @@
 /* xdragon vsec */
 #define PCI_EXT_CAP_ID_VNDR                     0x0B
 #define PCI_EXP_XDRAGON_VSEC_CFGTYPE            0xff
-#define XDRAGON_VSEC_VERSION                    1
+#define XDRAGON_VSEC_VERSION                    2
 
 #define XDRAGON_XVCS_MAGIC                      0x53435658
 #define XDRAGON_XVCS_VSF_KEY                    "xvcs-vsf"
