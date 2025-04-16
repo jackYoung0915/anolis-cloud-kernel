@@ -674,7 +674,7 @@ static void __init setup_cpu_info(void)
 
 static void __init setup_run_mode(void)
 {
-	if (*(unsigned long *)MMSIZE) {
+	if (rvpcr() >> VPCR_SHIFT) {
 		static_branch_disable(&run_mode_host_key);
 		if (*(unsigned long *)MMSIZE & EMUL_FLAG) {
 			pr_info("run mode: emul\n");
@@ -839,11 +839,13 @@ setup_arch(char **cmdline_p)
 	/* Parse the ACPI tables for possible boot-time configuration */
 	acpi_boot_table_init();
 
+	if (acpi_disabled) {
 #ifdef CONFIG_SMP
-	setup_smp();
+		setup_smp();
 #else
-	store_cpu_data(0);
+		store_cpu_data(0);
 #endif
+	}
 
 	sw64_numa_init();
 
