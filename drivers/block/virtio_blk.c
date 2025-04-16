@@ -145,7 +145,7 @@ struct virtio_blk {
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 	bool ring_pair;
-	bool no_algin;
+	bool no_align;
 	bool hide_bdev;
 	/* saved indirect desc pointer, dma_addr and dma_len for SQ */
 	struct virtblk_indir_desc **indir_desc;
@@ -968,6 +968,8 @@ static blk_status_t virtio_queue_rq_rpair(struct blk_mq_hw_ctx *hctx,
 	else
 		num = virtblk_map_data(hctx, req, vbr);
 
+	trace_virtio_queue_rq_rpair(req, vbr_is_bidirectional(vbr), num);
+
 	if (unlikely(num < 0)) {
 		virtblk_cleanup_cmd(req);
 		return BLK_STS_RESOURCE;
@@ -1306,8 +1308,8 @@ int check_ext_feature(struct virtio_blk *vblk, void __iomem *ioaddr,
 	vblk->ring_pair = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_PAIR);
 	if (vblk->ring_pair)
 		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_PAIR);
-	vblk->no_algin = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
-	if (vblk->no_algin)
+	vblk->no_align = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
+	if (vblk->no_align)
 		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
 	vblk->hide_bdev = !!(*host_ext_features & VIRTIO_BLK_EXT_F_HIDE_BLOCK);
 	if (vblk->hide_bdev)
@@ -1500,7 +1502,7 @@ static int init_vq(struct virtio_blk *vblk)
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 	vblk->ring_pair = false;
-	vblk->no_algin = false;
+	vblk->no_align = false;
 	vblk->hide_bdev = false;
 
 	if (!virtblk_rpair_disable)
@@ -2407,7 +2409,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	blk_queue_max_segment_size(q, max_size);
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
-	if (vblk->no_algin)
+	if (vblk->no_align)
 		blk_queue_dma_alignment(q, 0);
 #endif
 
