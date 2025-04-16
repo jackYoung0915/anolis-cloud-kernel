@@ -91,12 +91,23 @@ extern void __init setup_chip_pci_ops(void);
 #define setup_chip_pci_ops()	do { } while (0)
 #endif
 
-extern struct pci_controller *pci_bus_to_pci_controller(const struct pci_bus *bus);
+extern struct pci_controller *
+pci_bus_to_pci_controller(const struct pci_bus *bus);
 extern struct pci_controller *bus_num_to_pci_controller(unsigned long bus_num);
 
 extern void sw64_pci_root_bridge_prepare(struct pci_host_bridge *bridge);
 extern void sw64_pci_root_bridge_scan_finish_up(struct pci_host_bridge *bridge);
 extern int sw64_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin);
+
+extern void __iomem *sw64_pcie_map_bus(struct pci_bus *bus,
+		unsigned int devfn, int where);
+extern int sw64_pcie_config_write(struct pci_bus *bus, unsigned int devfn,
+		int where, int size, u32 val);
+extern int sw64_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
+		int where, int size, u32 *val);
+
+extern void pci_mark_rc_linkup(unsigned long node, unsigned long index);
+extern int pci_get_rc_linkup(unsigned long node, unsigned long index);
 
 #ifdef CONFIG_PCI_DOMAINS
 static inline int pci_proc_domain(struct pci_bus *bus)
