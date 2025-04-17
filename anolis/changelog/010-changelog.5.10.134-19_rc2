@@ -1,0 +1,13 @@
+* Thu Apr 17 2025 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-19_rc2%%DIST%%]
+- anolis: blk-mq: bump max tag depth to 64K (Ferry Meng)
+- net/af_packet: check len when min_header_len equals to 0 (Zhengchao Shao)
+- anolis: virtio-blk: modify XDRAGON_VSEC_VERSION num (Ferry Meng)
+- anolis: virtio-blk: fix typo of no_align (Ferry Meng)
+- anolis: virtio-blk: fix and refactoring virtio-blk trace events (Ferry Meng)
+- bpf: Fix prog_array_map_poke_run map poke update (Jiri Olsa)
+- profiling: fix shift too large makes kernel panic (Chen Zhongjin)
+- anolis: io_uring: fix out-of-bound io_op_defs access in io_init_req (Ferry Meng)
+- anolis: kfence: Record original gfp when alloc orfer-0 page (Tianchen Ding)
+- anolis: kfence: Handle freeing kfence pages properly (Tianchen Ding)
+- ovl: fix UAF in ovl_dentry_update_reval by moving dput() in ovl_link_up (Vasiliy Kovalev) {CVE-2025-21887}
+
