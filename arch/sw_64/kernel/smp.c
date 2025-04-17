@@ -21,7 +21,6 @@ struct smp_rcb_struct *smp_rcb;
 
 extern struct cpuinfo_sw64 cpu_data[NR_CPUS];
 
-int smp_booted;
 
 void *idle_task_pointer[NR_CPUS];
 
@@ -61,28 +60,32 @@ void smp_callin(void)
 {
 	int cpuid = smp_processor_id();
 
+#ifdef CONFIG_SUBARCH_C4
+	/* LV2 select PLL1 */
+	int i, cpu_num;
+
+	cpu_num = sw64_chip->get_cpu_num();
+
+	for (i = 0; i < cpu_num; i++) {
+		sw64_io_write(i, CLU_LV2_SELH, -1UL);
+		sw64_io_write(i, CLU_LV2_SELL, -1UL);
+		udelay(1000);
+	}
+#endif
+
 	local_irq_disable();
 
 	if (cpu_online(cpuid)) {
 		pr_err("??, cpu 0x%x already present??\n", cpuid);
 		BUG();
 	}
-	set_cpu_online(cpuid, true);
 
-	/* clear ksp, usp  */
-	wrksp(0);
-	wrusp(0);
+	set_cpu_online(cpuid, true);
 
 	/* Set trap vectors.  */
 	trap_init();
 
 	/* Set interrupt vector.  */
-	if (is_in_host()) {
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI0_INTEN);
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI1_INTEN);
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI2_INTEN);
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI3_INTEN);
-	}
 	wrent(entInt, 0);
 
 	/* Get our local ticker going. */
@@ -99,6 +102,8 @@ void smp_callin(void)
 
 	per_cpu(cpu_state, cpuid) = CPU_ONLINE;
 	per_cpu(hard_node_id, cpuid) = rcid_to_domain_id(cpu_to_rcid(cpuid));
+	store_cpu_topology(cpuid);
+	numa_add_cpu(cpuid);
 
 	/* Must have completely accurate bogos.  */
 	local_irq_enable();
@@ -134,6 +139,9 @@ static int secondary_cpu_start(int cpuid, struct task_struct *idle)
 
 	set_secondary_ready(cpuid);
 
+	/* send reset signal */
+	reset_cpu(cpuid);
+
 	/* Wait 10 seconds for secondary cpu.  */
 	timeout = jiffies + 10*HZ;
 	while (time_before(jiffies, timeout)) {
@@ -146,8 +154,6 @@ static int secondary_cpu_start(int cpuid, struct task_struct *idle)
 	return -1;
 
 started:
-	store_cpu_topology(cpuid);
-	numa_add_cpu(cpuid);
 	return 0;
 }
 
@@ -314,10 +320,7 @@ int vt_cpu_up(unsigned int cpu, struct task_struct *tidle)
 
 	wmb();
 	smp_rcb->ready = 0;
-	if (smp_booted) {
-		/* irq must be disabled before reset vCPU */
-		reset_cpu(cpu);
-	}
+	/* irq must be disabled before reset vCPU */
 	smp_boot_one_cpu(cpu, tidle);
 
 	return cpu_online(cpu) ? 0 : -EIO;
@@ -335,26 +338,17 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	wmb();
 	smp_rcb->ready = 0;
 
+#ifdef CONFIG_SUBARCH_C3B
 	/* send wake up signal */
 	send_wakeup_interrupt(cpu);
-	/* send reset signal */
-	if (smp_booted) {
-		if (is_in_host()) {
-			reset_cpu(cpu);
-		} else {
-			while (1)
-				cpu_relax();
-		}
-	}
+#endif
 	smp_boot_one_cpu(cpu, tidle);
 
 #ifdef CONFIG_SUBARCH_C3B
 	if (static_branch_likely(&use_tc_as_sched_clock)) {
-		if (smp_booted) {
-			tc_sync_clear();
-			smp_call_function_single(cpu, tc_sync_ready, NULL, 0);
-			tc_sync_set();
-		}
+		tc_sync_clear();
+		smp_call_function_single(cpu, tc_sync_ready, NULL, 0);
+		tc_sync_set();
 	}
 #endif
 
@@ -363,7 +357,6 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 
 void __init smp_cpus_done(unsigned int max_cpus)
 {
-	smp_booted = 1;
 	pr_info("SMP: Total of %d processors activated.\n", num_online_cpus());
 }
 
@@ -620,6 +613,22 @@ void __cpu_die(unsigned int cpu)
 
 void arch_cpu_idle_dead(void)
 {
+#ifdef CONFIG_SUBARCH_C4
+	/* LV2 select PLL0 */
+	int cpuid = smp_processor_id();
+	int core_id = rcid_to_core_id(cpu_to_rcid(cpuid));
+	int node_id = rcid_to_domain_id(cpu_to_rcid(cpuid));
+	unsigned long value;
+
+	if (core_id > 31) {
+		value = 1UL << (2 * (core_id - 32));
+		sw64_io_write(node_id, CLU_LV2_SELH, value);
+	} else {
+		value = 1UL << (2 * core_id);
+		sw64_io_write(node_id, CLU_LV2_SELL, value);
+	}
+#endif
+
 	idle_task_exit();
 	mb();
 	__this_cpu_write(cpu_state, CPU_DEAD);
@@ -634,10 +643,18 @@ void arch_cpu_idle_dead(void)
 	}
 
 #ifdef CONFIG_SUSPEND
+
+#ifdef CONFIG_SUBARCH_C3B
 	sleepen();
 	send_sleep_interrupt(smp_processor_id());
 	while (1)
 		asm("nop");
+#else
+	asm volatile("halt");
+	while (1)
+		asm("nop");
+#endif
+
 #else
 	asm volatile("memb");
 	asm volatile("halt");

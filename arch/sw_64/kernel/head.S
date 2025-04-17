@@ -10,6 +10,15 @@
 #include <asm/asm-offsets.h>
 #include <asm/hmcall.h>
 #include <asm/setup.h>
+#include <asm/csr.h>
+
+	.macro SAVE_KTP
+#ifdef CONFIG_SUBARCH_C3B
+	sys_call HMC_wrktp
+#else
+	csrw	$8, CSR_KTP
+#endif
+	.endm
 
 __HEAD
 	.globl _stext
@@ -23,9 +32,20 @@ __start:
 1:	ldgp	$29, 0($27)
 	/* We need to get current_task_info loaded up...  */
 	ldi	$8, init_task
+	SAVE_KTP
 	ldl	$30, TASK_STACK($8)
 	/* ... and find our stack ... */
 	ldi	$30, ASM_THREAD_SIZE($30)
+
+	/**
+	 * Starting from Core4, Grub uses $16 to pass magic num
+	 * and use $17 to pass DTB base address.
+	 *
+	 * So, we need to save $16 and $17 before clearing bss.
+	 */
+	ldi     $30, -16($30)
+	stl     $16, 8($30)
+	stl     $17, 0($30)
 
 	/* ... and then we can clear bss data.  */
 	ldi	$16, __bss_start
@@ -33,6 +53,19 @@ __start:
 	subl	$18, $16, $18
 	mov	$31, $17
 	call	$26, __constant_c_memset
+	ldgp	$29, 0($26)
+
+	/* Get magic num and DTB base address. */
+	ldl     $16, 8($30)
+	ldl     $17, 0($30)
+	ldi     $30, 16($30)
+	/* sunway_boot_magic = $16 */
+	ldi     $7, sunway_boot_magic
+	stl     $16, 0($7)
+	/* sunway_dtb_address = $17 */
+	ldi     $7, sunway_dtb_address
+	stl     $17, 0($7)
+
 #ifdef CONFIG_RELOCATABLE
 	ldi	$30, -8($30)
 	stl	$29, 0($30)
@@ -45,6 +78,7 @@ __start:
 	/* Repoint the sp into the new kernel image */
 	addl	$30, $0, $30
 #endif
+
 	/* ... and then we can start the kernel.  */
 	call	$26, sw64_start_kernel
 	sys_call HMC_halt
@@ -87,7 +121,7 @@ __smp_callin:
 	ldi	$2, idle_task_pointer
 	s8addl	$0, $2, $2
 	ldl	$8, 0($2)	# Get ksp of idle thread
-	sys_call HMC_wrktp
+	SAVE_KTP
 
 	ldl	$30, TASK_STACK($8)
 	ldi	$30, ASM_THREAD_SIZE($30)

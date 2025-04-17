@@ -133,6 +133,7 @@ static void handle_nmi_int(void)
 	pr_info("enter nmi int\n");
 }
 
+#ifdef CONFIG_SW64_PINTC
 static void handle_dev_int(struct pt_regs *regs)
 {
 	unsigned long config_val, val, stat;
@@ -152,12 +153,34 @@ static void handle_dev_int(struct pt_regs *regs)
 
 	sw64_io_write(node, DEV_INT_CONFIG, config_val);
 }
+#else
+static void handle_dev_int(struct pt_regs *regs)
+{
+	pr_crit(PREFIX "the child controller PINTC is not configured!\n");
+}
+#endif
+
+int pme_state;
 
 asmlinkage void do_entInt(unsigned long type, unsigned long vector,
 			  unsigned long irq_arg, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs;
 	extern char __idle_start[], __idle_end[];
+
+#ifdef CONFIG_SUBARCH_C4
+	if (pme_state == PME_WFW) {
+		pme_state = PME_PENDING;
+		return;
+	}
+
+	if (pme_state == PME_PENDING) {
+		old_regs = set_irq_regs(regs);
+		handle_device_interrupt(vector);
+		set_irq_regs(old_regs);
+		pme_state = PME_CLEAR;
+	}
+#endif
 
 	if (is_guest_or_emul()) {
 		if ((type & 0xffff) > 15) {
@@ -395,18 +418,6 @@ static __init int cintc_acpi_init(union acpi_subtable_headers *header,
 	acpi_table_parse_madt(ACPI_MADT_TYPE_SW_MSIC,
 			msic_parse_madt, 0);
 #endif
-
-	/**
-	 * After initializing MSIC, it's time to enable MSI interrupts
-	 * for boot core. For other SMP cores, if present, this
-	 * initialization is performed during SMP startup.
-	 */
-	if (!virtual) {
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI0_INTEN);
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI1_INTEN);
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI2_INTEN);
-		sw64_write_csr(0xffffffffffffffffUL, CSR_PCIE_MSI3_INTEN);
-	}
 
 	return 0;
 }
