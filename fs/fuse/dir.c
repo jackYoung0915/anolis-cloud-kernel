@@ -464,7 +464,7 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, const struct qstr *name
 
 	*inode = NULL;
 	err = -ENAMETOOLONG;
-	if (name->len > FUSE_NAME_MAX)
+	if (name->len > fm->fc->name_max)
 		goto out;
 
 
@@ -1036,6 +1036,9 @@ static int fuse_link(struct dentry *entry, struct inode *newdir,
 	struct fuse_mount *fm = get_fuse_mount(inode);
 	FUSE_ARGS(args);
 
+	if (fm->fc->no_link)
+		goto out;
+
 	memset(&inarg, 0, sizeof(inarg));
 	inarg.oldnodeid = get_node_id(inode);
 	args.opcode = FUSE_LINK;
@@ -1063,6 +1066,13 @@ static int fuse_link(struct dentry *entry, struct inode *newdir,
 	} else if (err == -EINTR) {
 		fuse_invalidate_attr(inode);
 	}
+
+	if (err == -ENOSYS)
+		fm->fc->no_link = 1;
+out:
+	if (fm->fc->no_link)
+		return -EPERM;
+
 	return err;
 }
 
@@ -1451,7 +1461,7 @@ static const char *fuse_get_link(struct dentry *dentry, struct inode *inode,
 		goto out_err;
 
 	if (fc->cache_symlinks)
-		return page_get_link(dentry, inode, callback);
+		return page_get_link_raw(dentry, inode, callback);
 
 	err = -ECHILD;
 	if (!dentry)
@@ -1718,7 +1728,7 @@ int fuse_do_setattr(struct dentry *dentry, struct iattr *attr,
 	if (FUSE_IS_DAX(inode) && is_truncate) {
 		down_write(&fi->i_mmap_sem);
 		fault_blocked = true;
-		err = fuse_dax_break_layouts(inode, 0, 0);
+		err = fuse_dax_break_layouts(inode, 0, -1);
 		if (err) {
 			up_write(&fi->i_mmap_sem);
 			return err;
