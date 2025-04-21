@@ -268,6 +268,10 @@ The following keys are defined:
        defined in the RISC-V ISA manual starting from commit 4dc23d6229de
        ("Added Chapter title to BF16").
 
+  * :c:macro:`RISCV_HWPROBE_EXT_ZABHA`: The Zabha extension is supported as
+       ratified in commit 49f49c842ff9 ("Update to Rafified state") of
+       riscv-zabha.
+
 * :c:macro:`RISCV_HWPROBE_KEY_CPUPERF_0`: A bitmask that contains performance
   information about the selected set of processors.
 
