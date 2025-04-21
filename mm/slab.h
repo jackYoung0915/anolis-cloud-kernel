@@ -657,18 +657,6 @@ static inline void free_slab_obj_exts(struct slab *slab)
 	slab->obj_exts = 0;
 }
 
-static inline bool need_slab_obj_ext(void)
-{
-	if (mem_alloc_profiling_enabled())
-		return true;
-
-	/*
-	 * CONFIG_MEMCG_KMEM creates vector of obj_cgroup objects conditionally
-	 * inside memcg_slab_post_alloc_hook. No other users for now.
-	 */
-	return false;
-}
-
 static inline struct slabobj_ext *
 prepare_slab_obj_exts_hook(struct kmem_cache *s, gfp_t flags, void *p)
 {
@@ -745,11 +733,6 @@ static int alloc_slab_obj_exts(struct slab *slab, struct kmem_cache *s,
 
 static inline void free_slab_obj_exts(struct slab *slab)
 {
-}
-
-static inline bool need_slab_obj_ext(void)
-{
-	return false;
 }
 
 static inline struct slabobj_ext *
@@ -948,7 +931,12 @@ static __always_inline void unaccount_slab(struct slab *slab, int order,
 	 */
 	if (page_has_slab_age(slab))
 		kidled_free_slab_age(slab);
-	else if (need_slab_obj_ext() || kidled_kmem_enabled())
+	else
+		/*
+		 * The slab object extensions should now be freed regardless of
+		 * whether mem_alloc_profiling_enabled() or not because profiling
+		 * might have been disabled after slab->obj_exts got allocated.
+		 */
 		free_slab_obj_exts(slab);
 
 	mod_node_page_state(slab_pgdat(slab), cache_vmstat_idx(s),
@@ -1072,7 +1060,7 @@ static inline void slab_post_alloc_hook(struct kmem_cache *s,
 					 s->flags, flags);
 		kmsan_slab_alloc(s, p[i], flags);
 #ifdef CONFIG_MEM_ALLOC_PROFILING
-		if (need_slab_obj_ext()) {
+		if (mem_alloc_profiling_enabled()) {
 			struct slabobj_ext *obj_exts;
 			obj_exts = prepare_slab_obj_exts_hook(s, flags, p[i]);
 			/*
