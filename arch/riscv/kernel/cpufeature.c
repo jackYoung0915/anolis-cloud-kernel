@@ -29,6 +29,7 @@
 #define NUM_ALPHA_EXTS ('z' - 'a' + 1)
 
 static bool any_cpu_has_zicboz;
+static bool any_cpu_has_zicbop;
 static bool any_cpu_has_zicbom;
 
 #define MISALIGNED_ACCESS_JIFFIES_LG2 1
@@ -120,6 +121,21 @@ static int riscv_ext_zicboz_validate(const struct riscv_isa_ext_data *data,
 		return -EINVAL;
 	}
 	any_cpu_has_zicboz = true;
+	return 0;
+}
+
+static int riscv_ext_zicbop_validate(const struct riscv_isa_ext_data *data,
+				     const unsigned long *isa_bitmap)
+{
+	if (!riscv_cbop_block_size) {
+		pr_err("Zicbop detected in ISA string, disabling as no cbop-block-size found\n");
+		return -EINVAL;
+	}
+	if (!is_power_of_2(riscv_cbop_block_size)) {
+		pr_err("Zicbop disabled as cbop-block-size present, but is not a power-of-2\n");
+		return -EINVAL;
+	}
+	any_cpu_has_zicbop = true;
 	return 0;
 }
 
@@ -395,6 +411,7 @@ const struct riscv_isa_ext_data riscv_isa_ext[] = {
 	__RISCV_ISA_EXT_DATA(h, RISCV_ISA_EXT_h),
 	__RISCV_ISA_EXT_SUPERSET_VALIDATE(zicbom, RISCV_ISA_EXT_ZICBOM, riscv_xlinuxenvcfg_exts,
 					  riscv_ext_zicbom_validate),
+	__RISCV_ISA_EXT_DATA_VALIDATE(zicbop, RISCV_ISA_EXT_ZICBOP, riscv_ext_zicbop_validate),
 	__RISCV_ISA_EXT_SUPERSET_VALIDATE(zicboz, RISCV_ISA_EXT_ZICBOZ, riscv_xlinuxenvcfg_exts,
 					  riscv_ext_zicboz_validate),
 	__RISCV_ISA_EXT_DATA(ziccrse, RISCV_ISA_EXT_ZICCRSE),
@@ -1051,6 +1068,10 @@ void __init riscv_user_isa_enable(void)
 		current->thread.envcfg |= ENVCFG_CBCFE;
 	else if (any_cpu_has_zicbom)
 		pr_warn("Zicbom disabled as it is unavailable on some harts\n");
+
+	if (!riscv_has_extension_unlikely(RISCV_ISA_EXT_ZICBOP) &&
+	    any_cpu_has_zicbop)
+		pr_warn("Zicbop disabled as it is unavailable on some harts\n");
 }
 
 #ifdef CONFIG_RISCV_ALTERNATIVE
