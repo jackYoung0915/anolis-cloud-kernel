@@ -1697,6 +1697,8 @@ static void jbd2_stats_proc_exit(journal_t *journal)
 	remove_proc_entry("force_copy", journal->j_proc_entry);
 	remove_proc_entry("stats", journal->j_proc_entry);
 	remove_proc_entry("stall_thresh", journal->j_proc_entry);
+	remove_proc_entry("proxy_exec", journal->j_proc_entry);
+	remove_proc_entry("proxy_exec_for_highclass", journal->j_proc_entry);
 	remove_proc_entry(journal->j_devname, proc_jbd2_stats);
 }
 
