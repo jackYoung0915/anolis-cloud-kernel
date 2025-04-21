@@ -51,6 +51,8 @@ struct pci_controller {
 	/* This one's for the kernel only.  It's in KSEG somewhere.  */
 	void __iomem *ep_config_space_base;
 	void __iomem *rc_config_space_base;
+	void __iomem *piu_ior0_base;
+	void __iomem *piu_ior1_base;
 
 	unsigned long index;
 	unsigned long node;
@@ -80,6 +82,7 @@ struct pci_controller {
 
 extern void __init sw64_init_pci(void);
 extern void __init sw64_device_interrupt(unsigned long vector);
+extern void setup_intx_irqs(struct pci_controller *hose);
 extern void __init sw64_init_irq(void);
 extern void __init sw64_init_arch(void);
 extern struct pci_ops sw64_pci_ops;
@@ -107,6 +110,7 @@ extern int sw64_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
 		int where, int size, u32 *val);
 
 extern void pci_mark_rc_linkup(unsigned long node, unsigned long index);
+extern void pci_clear_rc_linkup(unsigned long node, unsigned long index);
 extern int pci_get_rc_linkup(unsigned long node, unsigned long index);
 
 #ifdef CONFIG_PCI_DOMAINS
@@ -159,6 +163,10 @@ extern void pci_remove_resource_files(struct pci_dev *dev);
 extern void __init reserve_mem_for_pci(void);
 extern int chip_pcie_configure(struct pci_controller *hose);
 
+#define PCI_INTX_ENABLE			((1UL) << 62)
+#define PCI_INTX_DISABLE		~((1UL) << 62)
+#define PCI_INTX_VALID			(1UL << 63)
+
 #define PCI_VENDOR_ID_JN		0x5656
 #define PCI_DEVICE_ID_SW64_ROOT_BRIDGE	0x3231
 #define PCI_DEVICE_ID_JN_PCIESW		0x1000
@@ -170,5 +178,7 @@ extern int chip_pcie_configure(struct pci_controller *hose);
 #define LAST_DEVICE_VECTOR		31
 
 #define PCITODMA_OFFSET			0x0	/*0 offset*/
+
+#define MAX_NR_RCS_PER_NODE		12
 
 #endif /* _ASM_SW64_PCI_H */

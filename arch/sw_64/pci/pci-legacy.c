@@ -244,7 +244,7 @@ static bool __init is_any_rc_linkup_one_node(unsigned long node)
 {
 	int i;
 
-	for (i = 0; i < 8; ++i) {
+	for (i = 0; i < MAX_NR_RCS_PER_NODE; ++i) {
 		if (pci_get_rc_linkup(node, i))
 			return true;
 	}
@@ -279,14 +279,14 @@ void __init sw64_init_arch(void)
 				pr_notice("PCIe is disabled on node %ld\n", node);
 				continue;
 			}
-			for (i = 0; i < MAX_NR_RCS; i++) {
+			for (i = 0; i < MAX_NR_RCS_PER_NODE; i++) {
 				if ((rc_enable >> i) & 0x1)
 					sw64_init_host(node, i);
 			}
 			if (is_any_rc_linkup_one_node(node)) {
 				memset(msg, 0, 64);
 				sprintf(msg, "Node %ld: RC [ ", node);
-				for (i = 0; i < MAX_NR_RCS; i++) {
+				for (i = 0; i < MAX_NR_RCS_PER_NODE; i++) {
 					if (pci_get_rc_linkup(node, i)) {
 						memset(id, 0, 8);
 						sprintf(id, "%d ", i);
@@ -303,47 +303,6 @@ void __init sw64_init_arch(void)
 }
 
 void __weak set_pcieport_service_irq(int node, int index) {}
-
-static void __init sw64_init_intx(struct pci_controller *hose)
-{
-	unsigned long int_conf, node, val_node;
-	unsigned long index, irq;
-	int rcid;
-
-	node = hose->node;
-	index = hose->index;
-
-	if (!node_online(node))
-		val_node = next_node_in(node, node_online_map);
-	else
-		val_node = node;
-	irq = irq_alloc_descs_from(NR_IRQS_LEGACY, 2, val_node);
-	WARN_ON(irq < 0);
-	irq_set_chip_and_handler(irq, &dummy_irq_chip, handle_level_irq);
-	irq_set_status_flags(irq, IRQ_LEVEL);
-	hose->int_irq = irq;
-	irq_set_chip_and_handler(irq + 1, &dummy_irq_chip, handle_level_irq);
-	hose->service_irq = irq + 1;
-	rcid = cpu_to_rcid(0);
-
-	pr_info_once("INTx are directed to node %d core %d.\n",
-			((rcid >> 6) & 0x3), (rcid & 0x1f));
-	int_conf = 1UL << 62 | rcid; /* rebase all intx on the first logical cpu */
-	if (sw64_chip_init->pci_init.set_intx)
-		sw64_chip_init->pci_init.set_intx(node, index, int_conf);
-
-	set_pcieport_service_irq(node, index);
-}
-
-void __init sw64_init_irq(void)
-{
-	struct pci_controller *hose;
-
-	/* Scan all of the recorded PCI controllers. */
-	hose = hose_head;
-	for (hose = hose_head; hose; hose = hose->next)
-		sw64_init_intx(hose);
-}
 
 void __init
 sw64_init_pci(void)
