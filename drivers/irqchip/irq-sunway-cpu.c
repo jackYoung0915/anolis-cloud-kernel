@@ -43,36 +43,49 @@ static void handle_intx(unsigned int offset)
 {
 	struct pci_controller *hose;
 	unsigned long value;
+	void __iomem *piu_ior0_base;
 
 	hose = hose_head;
+	offset <<= 7;
 	for (hose = hose_head; hose; hose = hose->next) {
-		value = read_piu_ior0(hose->node, hose->index, INTACONFIG + (offset << 7));
+		piu_ior0_base = hose->piu_ior0_base;
+
+		value = readq(piu_ior0_base + INTACONFIG + offset);
 		if (value >> 63) {
 			value = value & (~(1UL << 62));
-			write_piu_ior0(hose->node, hose->index, INTACONFIG + (offset << 7), value);
+			writeq(value, (piu_ior0_base + INTACONFIG + offset));
 			handle_irq(hose->int_irq);
 			value = value | (1UL << 62);
-			write_piu_ior0(hose->node, hose->index, INTACONFIG + (offset << 7), value);
+			writeq(value, (piu_ior0_base + INTACONFIG + offset));
 		}
 
 		if (IS_ENABLED(CONFIG_PCIE_PME)) {
-			value = read_piu_ior0(hose->node, hose->index, PMEINTCONFIG);
+			value = readq(piu_ior0_base + PMEINTCONFIG);
 			if (value >> 63) {
 				handle_irq(hose->service_irq);
-				write_piu_ior0(hose->node, hose->index, PMEINTCONFIG, value);
+				writeq(value, (piu_ior0_base + PMEINTCONFIG));
 			}
 		}
 
 		if (IS_ENABLED(CONFIG_PCIEAER)) {
-			value = read_piu_ior0(hose->node, hose->index, AERERRINTCONFIG);
+			value = readq(piu_ior0_base + AERERRINTCONFIG);
 			if (value >> 63) {
 				handle_irq(hose->service_irq);
-				write_piu_ior0(hose->node, hose->index, AERERRINTCONFIG, value);
+				writeq(value, (piu_ior0_base + AERERRINTCONFIG));
 			}
 		}
 
+		if (IS_ENABLED(CONFIG_HOTPLUG_PCI_PCIE_SUNWAY)) {
+			value = readq(piu_ior0_base + HPINTCONFIG);
+			if (value >> 63) {
+				handle_irq(hose->service_irq);
+				writeq(value, (piu_ior0_base + HPINTCONFIG));
+			}
+
+		}
+
 		if (hose->iommu_enable) {
-			value = read_piu_ior0(hose->node, hose->index, IOMMUEXCPT_STATUS);
+			value = readq(piu_ior0_base + IOMMUEXCPT_STATUS);
 			if (value >> 63)
 				handle_irq(hose->int_irq);
 		}
@@ -223,11 +236,8 @@ asmlinkage void do_entInt(unsigned long type, unsigned long vector,
 		set_irq_regs(old_regs);
 		return;
 	case INT_VT_SERIAL:
-		old_regs = set_irq_regs(regs);
-		handle_irq(type);
-		set_irq_regs(old_regs);
-		return;
 	case INT_VT_HOTPLUG:
+	case INT_VT_GPIOA_PIN0:
 		old_regs = set_irq_regs(regs);
 		handle_irq(type);
 		set_irq_regs(old_regs);
