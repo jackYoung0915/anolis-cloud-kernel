@@ -616,11 +616,7 @@ static inline void nvme_clear_nvme_request(struct request *req)
 /* initialize a passthrough request */
 void nvme_init_request(struct request *req, struct nvme_command *cmd)
 {
-	if (req->q->queuedata)
-		req->timeout = NVME_IO_TIMEOUT;
-	else /* no queuedata implies admin queue */
-		req->timeout = ADMIN_TIMEOUT;
-
+	req->timeout = req->q->rq_timeout;
 	req->cmd_flags |= REQ_FAILFAST_DRIVER;
 	if (req->mq_hctx->type == HCTX_TYPE_POLL)
 		req->cmd_flags |= REQ_POLLED;
@@ -2109,7 +2105,7 @@ int nvme_sec_submit(void *data, u16 spsp, u8 secp, void *buffer, size_t len,
 	cmd.common.cdw11 = cpu_to_le32(len);
 
 	return __nvme_submit_sync_cmd(ctrl->admin_q, &cmd, NULL, buffer, len,
-				      ADMIN_TIMEOUT, NVME_QID_ANY, 1, 0);
+				      ctrl->admin_q->rq_timeout, NVME_QID_ANY, 1, 0);
 }
 EXPORT_SYMBOL_GPL(nvme_sec_submit);
 #endif /* CONFIG_BLK_SED_OPAL */
@@ -3061,6 +3057,70 @@ static const struct file_operations nvme_dev_fops = {
 	.uring_cmd	= nvme_dev_uring_cmd,
 };
 
+static ssize_t admin_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", ctrl->admin_tagset->timeout / HZ);
+}
+
+static ssize_t admin_timeout_store(struct device *dev,
+				   struct device_attribute *attr, const char *buf,
+				   size_t count)
+{
+	int ret;
+	unsigned int timeout;
+	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	ret = kstrtouint(buf, 10, &timeout);
+	if (ret < 0)
+		return ret;
+
+	if (timeout > 0) {
+		timeout = timeout * HZ;
+		ctrl->admin_tagset->timeout = timeout;
+		blk_queue_rq_timeout(ctrl->admin_q, timeout);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(admin_timeout);
+
+static ssize_t io_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", ctrl->tagset->timeout / HZ);
+}
+
+static ssize_t io_timeout_store(struct device *dev,
+				struct device_attribute *attr, const char *buf,
+				size_t count)
+{
+	int ret;
+	unsigned int timeout;
+	struct nvme_ns *ns;
+	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	ret = kstrtouint(buf, 10, &timeout);
+	if (ret < 0)
+		return ret;
+
+	if (timeout > 0) {
+		timeout = timeout * HZ;
+		ctrl->tagset->timeout = timeout;
+
+		down_read(&ctrl->namespaces_rwsem);
+		list_for_each_entry(ns, &ctrl->namespaces, list) {
+			blk_queue_rq_timeout(ns->queue, timeout);
+		}
+		up_read(&ctrl->namespaces_rwsem);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(io_timeout);
+
 static ssize_t nvme_sysfs_reset(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
@@ -3399,6 +3459,8 @@ static DEVICE_ATTR(reconnect_delay, S_IRUGO | S_IWUSR,
 static struct attribute *nvme_dev_attrs[] = {
 	&dev_attr_reset_controller.attr,
 	&dev_attr_rescan_controller.attr,
+	&dev_attr_admin_timeout.attr,
+	&dev_attr_io_timeout.attr,
 	&dev_attr_model.attr,
 	&dev_attr_serial.attr,
 	&dev_attr_firmware_rev.attr,
@@ -4494,9 +4556,10 @@ void nvme_unfreeze(struct nvme_ctrl *ctrl)
 }
 EXPORT_SYMBOL_GPL(nvme_unfreeze);
 
-int nvme_wait_freeze_timeout(struct nvme_ctrl *ctrl, long timeout)
+int nvme_wait_freeze_timeout(struct nvme_ctrl *ctrl)
 {
 	struct nvme_ns *ns;
+	long timeout = ctrl->tagset->timeout;
 
 	down_read(&ctrl->namespaces_rwsem);
 	list_for_each_entry(ns, &ctrl->namespaces, list) {
