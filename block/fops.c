@@ -500,7 +500,7 @@ const struct address_space_operations def_blk_aops = {
 	.readahead		= blkdev_readahead,
 	.writepages		= blkdev_writepages,
 	.is_partially_uptodate  = iomap_is_partially_uptodate,
-	.error_remove_page	= generic_error_remove_page,
+	.error_remove_folio	= generic_error_remove_folio,
 	.migrate_folio		= filemap_migrate_folio,
 };
 #endif /* CONFIG_BUFFER_HEAD */
@@ -631,7 +631,7 @@ blkdev_direct_write(struct kiocb *iocb, struct iov_iter *from)
 
 static ssize_t blkdev_buffered_write(struct kiocb *iocb, struct iov_iter *from)
 {
-	return iomap_file_buffered_write(iocb, from, &blkdev_iomap_ops);
+	return iomap_file_buffered_write(iocb, from, &blkdev_iomap_ops, NULL);
 }
 
 /*

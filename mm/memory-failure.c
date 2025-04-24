@@ -919,39 +919,38 @@ static const char * const action_page_types[] = {
  * The page count will stop it from being freed by unpoison.
  * Stress tests should be aware of this memory leak problem.
  */
-static int delete_from_lru_cache(struct page *p)
+static int delete_from_lru_cache(struct folio *folio)
 {
-	if (isolate_lru_page(p)) {
+	if (folio_isolate_lru(folio)) {
 		/*
 		 * Clear sensible page flags, so that the buddy system won't
-		 * complain when the page is unpoison-and-freed.
+		 * complain when the folio is unpoison-and-freed.
 		 */
-		ClearPageActive(p);
-		ClearPageUnevictable(p);
+		folio_clear_active(folio);
+		folio_clear_unevictable(folio);
 
 		/*
 		 * Poisoned page might never drop its ref count to 0 so we have
 		 * to uncharge it manually from its memcg.
 		 */
-		mem_cgroup_uncharge(page_folio(p));
+		mem_cgroup_uncharge(folio);
 
 		/*
-		 * drop the page count elevated by isolate_lru_page()
+		 * drop the refcount elevated by folio_isolate_lru()
 		 */
-		put_page(p);
+		folio_put(folio);
 		return 0;
 	}
 	return -EIO;
 }
 
-static int truncate_error_page(struct page *p, unsigned long pfn,
+static int truncate_error_folio(struct folio *folio, unsigned long pfn,
 				struct address_space *mapping)
 {
 	int ret = MF_FAILED;
 
-	if (mapping->a_ops->error_remove_page) {
-		struct folio *folio = page_folio(p);
-		int err = mapping->a_ops->error_remove_page(mapping, p);
+	if (mapping->a_ops->error_remove_folio) {
+		int err = mapping->a_ops->error_remove_folio(mapping, folio);
 
 		if (err != 0)
 			pr_info("%#lx: Failed to punch page: %d\n", pfn, err);
@@ -964,7 +963,7 @@ static int truncate_error_page(struct page *p, unsigned long pfn,
 		 * If the file system doesn't support it just invalidate
 		 * This fails on dirty or anything with private pages
 		 */
-		if (invalidate_inode_page(p))
+		if (mapping_evict_folio(mapping, folio))
 			ret = MF_RECOVERED;
 		else
 			pr_info("%#lx: Failed to invalidate\n",	pfn);
@@ -1031,17 +1030,18 @@ static int me_unknown(struct page_state *ps, struct page *p)
  */
 static int me_pagecache_clean(struct page_state *ps, struct page *p)
 {
+	struct folio *folio = page_folio(p);
 	int ret;
 	struct address_space *mapping;
 	bool extra_pins;
 
-	delete_from_lru_cache(p);
+	delete_from_lru_cache(folio);
 
 	/*
-	 * For anonymous pages we're done the only reference left
+	 * For anonymous folios the only reference left
 	 * should be the one m_f() holds.
 	 */
-	if (PageAnon(p)) {
+	if (folio_test_anon(folio)) {
 		ret = MF_RECOVERED;
 		goto out;
 	}
@@ -1053,11 +1053,9 @@ static int me_pagecache_clean(struct page_state *ps, struct page *p)
 	 * has a reference, because it could be file system metadata
 	 * and that's not safe to truncate.
 	 */
-	mapping = page_mapping(p);
+	mapping = folio_mapping(folio);
 	if (!mapping) {
-		/*
-		 * Page has been teared down in the meanwhile
-		 */
+		/* Folio has been torn down in the meantime */
 		ret = MF_FAILED;
 		goto out;
 	}
@@ -1073,12 +1071,12 @@ static int me_pagecache_clean(struct page_state *ps, struct page *p)
 	 *
 	 * Open: to take i_rwsem or not for this? Right now we don't.
 	 */
-	ret = truncate_error_page(p, page_to_pfn(p), mapping);
+	ret = truncate_error_folio(folio, page_to_pfn(p), mapping);
 	if (has_extra_refcount(ps, p, extra_pins))
 		ret = MF_FAILED;
 
 out:
-	unlock_page(p);
+	folio_unlock(folio);
 
 	return ret;
 }
@@ -1156,15 +1154,16 @@ static int me_pagecache_dirty(struct page_state *ps, struct page *p)
  */
 static int me_swapcache_dirty(struct page_state *ps, struct page *p)
 {
+	struct folio *folio = page_folio(p);
 	int ret;
 	bool extra_pins = false;
 
-	ClearPageDirty(p);
+	folio_clear_dirty(folio);
 	/* Trigger EIO in shmem: */
-	ClearPageUptodate(p);
+	folio_clear_uptodate(folio);
 
-	ret = delete_from_lru_cache(p) ? MF_FAILED : MF_DELAYED;
-	unlock_page(p);
+	ret = delete_from_lru_cache(folio) ? MF_FAILED : MF_DELAYED;
+	folio_unlock(folio);
 
 	if (ret == MF_DELAYED)
 		extra_pins = true;
@@ -1182,7 +1181,7 @@ static int me_swapcache_clean(struct page_state *ps, struct page *p)
 
 	delete_from_swap_cache(folio);
 
-	ret = delete_from_lru_cache(p) ? MF_FAILED : MF_RECOVERED;
+	ret = delete_from_lru_cache(folio) ? MF_FAILED : MF_RECOVERED;
 	folio_unlock(folio);
 
 	if (has_extra_refcount(ps, p, false))
@@ -1206,7 +1205,7 @@ static int me_huge_page(struct page_state *ps, struct page *p)
 
 	mapping = folio_mapping(folio);
 	if (mapping) {
-		res = truncate_error_page(&folio->page, page_to_pfn(p), mapping);
+		res = truncate_error_folio(folio, page_to_pfn(p), mapping);
 		/* The page is kept in page cache. */
 		extra_pins = true;
 		folio_unlock(folio);
