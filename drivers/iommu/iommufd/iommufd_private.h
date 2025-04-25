@@ -41,6 +41,8 @@ int iommufd_sw_msi_install(struct iommufd_ctx *ictx,
 			   struct iommufd_sw_msi_map *msi_map);
 #endif
 
+struct kvm;
+
 struct iommufd_ctx {
 	struct file *file;
 	struct xarray objects;
@@ -62,6 +64,8 @@ struct iommufd_ctx {
 	/* Compatibility with VFIO no iommu */
 	u8 no_iommu_mode;
 	struct iommufd_ioas *vfio_ioas;
+	/* Associated KVM pointer */
+	struct kvm *kvm;
 };
 
 /* Entry for iommufd_ctx::mt_mmap */
