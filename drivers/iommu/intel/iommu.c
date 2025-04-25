@@ -3108,7 +3108,7 @@ intel_iommu_domain_alloc_second_stage(struct device *dev,
 }
 
 static struct iommu_domain *
-intel_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags,
+intel_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags, struct kvm *kvm,
 				      const struct iommu_user_data *user_data)
 {
 	struct device_domain_info *info = dev_iommu_priv_get(dev);

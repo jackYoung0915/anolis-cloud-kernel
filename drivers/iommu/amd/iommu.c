@@ -2762,7 +2762,7 @@ static struct iommu_domain *amd_iommu_domain_alloc_paging_v2(struct device *dev,
 }
 
 static struct iommu_domain *
-amd_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags,
+amd_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags, struct kvm *kvm,
 				    const struct iommu_user_data *user_data)
 
 {
