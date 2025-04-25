@@ -3603,7 +3603,7 @@ static struct iommu_domain arm_smmu_blocked_domain = {
 };
 
 static struct iommu_domain *
-arm_smmu_domain_alloc_paging_flags(struct device *dev, u32 flags,
+arm_smmu_domain_alloc_paging_flags(struct device *dev, u32 flags, struct kvm *kvm,
 				   const struct iommu_user_data *user_data)
 {
 	struct arm_smmu_master *master = dev_iommu_priv_get(dev);

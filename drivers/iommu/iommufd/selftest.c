@@ -365,7 +365,8 @@ __mock_domain_alloc_nested(const struct iommu_user_data *user_data)
 
 static struct iommu_domain *
 mock_domain_alloc_nested(struct device *dev, struct iommu_domain *parent,
-			 u32 flags, const struct iommu_user_data *user_data)
+			 u32 flags, struct kvm *kvm,
+			 const struct iommu_user_data *user_data)
 {
 	struct mock_iommu_domain_nested *mock_nested;
 	struct mock_iommu_domain *mock_parent;
@@ -518,7 +519,7 @@ err_free:
 }
 
 static struct iommu_domain *
-mock_domain_alloc_paging_flags(struct device *dev, u32 flags,
+mock_domain_alloc_paging_flags(struct device *dev, u32 flags, struct kvm *kvm,
 			       const struct iommu_user_data *user_data)
 {
 	bool has_dirty_flag = flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING;

@@ -739,14 +739,14 @@ struct iommu_ops {
 #endif
 	struct iommu_domain *(*domain_alloc_identity)(struct device *dev);
 	struct iommu_domain *(*domain_alloc_paging_flags)(
-		struct device *dev, u32 flags,
+		struct device *dev, u32 flags, struct kvm *kvm,
 		const struct iommu_user_data *user_data);
 	struct iommu_domain *(*domain_alloc_paging)(struct device *dev);
 	struct iommu_domain *(*domain_alloc_sva)(struct device *dev,
 						 struct mm_struct *mm);
 	struct iommu_domain *(*domain_alloc_nested)(
 		struct device *dev, struct iommu_domain *parent, u32 flags,
-		const struct iommu_user_data *user_data);
+		struct kvm *kvm, const struct iommu_user_data *user_data);
 
 	struct iommu_device *(*probe_device)(struct device *dev);
 	void (*release_device)(struct device *dev);

@@ -174,7 +174,7 @@ iommufd_hwpt_paging_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
 
 	if (ops->domain_alloc_paging_flags) {
 		domain = ops->domain_alloc_paging_flags(idev->dev,
-				flags & ~IOMMU_HWPT_FAULT_ID_VALID, user_data);
+				flags & ~IOMMU_HWPT_FAULT_ID_VALID, ictx->kvm, user_data);
 		if (IS_ERR(domain)) {
 			rc = PTR_ERR(domain);
 			goto out_abort;
@@ -278,7 +278,7 @@ iommufd_hwpt_nested_alloc(struct iommufd_ctx *ictx,
 
 	domain = ops->domain_alloc_nested(
 		idev->dev, parent->common.domain,
-		flags & ~IOMMU_HWPT_FAULT_ID_VALID, user_data);
+		flags & ~IOMMU_HWPT_FAULT_ID_VALID, ictx->kvm, user_data);
 	if (IS_ERR(domain)) {
 		rc = PTR_ERR(domain);
 		goto out_abort;
