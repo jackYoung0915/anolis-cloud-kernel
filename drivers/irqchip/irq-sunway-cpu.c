@@ -117,25 +117,6 @@ static void dummy_perf(unsigned long vector, struct pt_regs *regs)
 void (*perf_irq)(unsigned long vector, struct pt_regs *regs) = dummy_perf;
 EXPORT_SYMBOL(perf_irq);
 
-static void handle_fault_int(void)
-{
-	int node;
-	unsigned long value;
-
-	node = __this_cpu_read(hard_node_id);
-	pr_info("enter fault int, si_fault_stat = %#lx\n",
-			sw64_io_read(node, SI_FAULT_STAT));
-	sw64_io_write(node, SI_FAULT_INT_EN, 0);
-	sw64_io_write(node, DLI_RLTD_FAULT_INTEN, 0);
-#if defined(CONFIG_UNCORE_XUELANG)
-	value = 0;
-#elif defined(CONFIG_UNCORE_JUNZHANG)
-	value = sw64_io_read(node, FAULT_INT_CONFIG);
-	value |= (1 << 8);
-#endif
-	__io_write_fault_int_en(node, value);
-}
-
 static void handle_mt_int(void)
 {
 	pr_info("enter mt int\n");
@@ -146,33 +127,6 @@ static void handle_nmi_int(void)
 	pr_info("enter nmi int\n");
 }
 
-#ifdef CONFIG_SW64_PINTC
-static void handle_dev_int(struct pt_regs *regs)
-{
-	unsigned long config_val, val, stat;
-	int node = 0;
-	unsigned int hwirq;
-
-	config_val = sw64_io_read(node, DEV_INT_CONFIG);
-	val = config_val & (~(1UL << 8));
-	sw64_io_write(node, DEV_INT_CONFIG, val);
-	stat = sw64_io_read(node, MCU_DVC_INT);
-
-	while (stat) {
-		hwirq = ffs(stat) - 1;
-		generic_handle_domain_irq(mcu_irq_domain, hwirq);
-		stat &= ~(1UL << hwirq);
-	}
-
-	sw64_io_write(node, DEV_INT_CONFIG, config_val);
-}
-#else
-static void handle_dev_int(struct pt_regs *regs)
-{
-	pr_crit(PREFIX "the child controller PINTC is not configured!\n");
-}
-#endif
-
 int pme_state;
 
 asmlinkage void do_entInt(unsigned long type, unsigned long vector,
@@ -181,16 +135,23 @@ asmlinkage void do_entInt(unsigned long type, unsigned long vector,
 	struct pt_regs *old_regs;
 	extern char __idle_start[], __idle_end[];
 
+	/* restart idle routine if it is interrupted */
+	if (regs->pc > (u64)__idle_start && regs->pc < (u64)__idle_end)
+		regs->pc = (u64)__idle_start;
+	if (regs->cause != -2)
+		irq_enter();
+	else
+		nmi_enter();
+	old_regs = set_irq_regs(regs);
+
 #ifdef CONFIG_SUBARCH_C4
 	if (pme_state == PME_WFW) {
 		pme_state = PME_PENDING;
-		return;
+		goto out;
 	}
 
 	if (pme_state == PME_PENDING) {
-		old_regs = set_irq_regs(regs);
 		handle_device_interrupt(vector);
-		set_irq_regs(old_regs);
 		pme_state = PME_CLEAR;
 	}
 #endif
@@ -198,78 +159,76 @@ asmlinkage void do_entInt(unsigned long type, unsigned long vector,
 	if (is_guest_or_emul()) {
 		if ((type & 0xffff) > 15) {
 			vector = type;
-			if (vector == 16)
+			if (vector == 16 || vector == 17)
 				type = INT_INTx;
 			else
 				type = INT_MSI;
 		}
 	}
 
-	/* restart idle routine if it is interrupted */
-	if (regs->pc > (u64)__idle_start && regs->pc < (u64)__idle_end)
-		regs->pc = (u64)__idle_start;
-
 	switch (type & 0xffff) {
 	case INT_MSI:
-		old_regs = set_irq_regs(regs);
-		handle_pci_msi_interrupt(type, vector, irq_arg);
-		set_irq_regs(old_regs);
-		return;
+		if (is_guest_or_emul())
+			vt_handle_pci_msi_interrupt(type, vector, irq_arg);
+		else
+			handle_pci_msi_interrupt(type, vector, irq_arg);
+		goto out;
 	case INT_INTx:
-		old_regs = set_irq_regs(regs);
 		handle_device_interrupt(vector);
-		set_irq_regs(old_regs);
-		return;
+		goto out;
 
 	case INT_IPI:
 #ifdef CONFIG_SMP
 		handle_ipi(regs);
-		return;
+		goto out;
 #else
 		irq_err_count++;
 		pr_crit("Interprocessor interrupt? You must be kidding!\n");
-#endif
 		break;
+#endif
 	case INT_RTC:
-		old_regs = set_irq_regs(regs);
 		sw64_timer_interrupt();
-		set_irq_regs(old_regs);
-		return;
+		goto out;
 	case INT_VT_SERIAL:
 	case INT_VT_HOTPLUG:
 	case INT_VT_GPIOA_PIN0:
-		old_regs = set_irq_regs(regs);
 		handle_irq(type);
-		set_irq_regs(old_regs);
-		return;
+		goto out;
+#if defined(CONFIG_SUBARCH_C3B)
 	case INT_PC0:
 		perf_irq(PMC_PC0, regs);
-		return;
+		goto out;
 	case INT_PC1:
 		perf_irq(PMC_PC1, regs);
-		return;
+		goto out;
+#elif defined(CONFIG_SUBARCH_C4)
+	case INT_PC:
+		perf_irq(PMC_PC0, regs);
+		goto out;
+#endif
 	case INT_DEV:
 		handle_dev_int(regs);
-		return;
+		goto out;
 	case INT_FAULT:
-		old_regs = set_irq_regs(regs);
 		handle_fault_int();
-		set_irq_regs(old_regs);
-		return;
+		goto out;
 	case INT_MT:
-		old_regs = set_irq_regs(regs);
 		handle_mt_int();
-		set_irq_regs(old_regs);
-		return;
+		goto out;
 	case INT_NMI:
-		old_regs = set_irq_regs(regs);
 		handle_nmi_int();
-		set_irq_regs(old_regs);
-		return;
+		goto out;
 	default:
 		pr_crit("Hardware intr	%ld %lx? uh?\n", type, vector);
 	}
 	pr_crit("PC = %016lx PS = %04lx\n", regs->pc, regs->ps);
+
+out:
+	set_irq_regs(old_regs);
+	if (regs->cause != -2)
+		irq_exit();
+	else
+		nmi_exit();
 }
 EXPORT_SYMBOL(do_entInt);
 
@@ -338,12 +297,6 @@ static int __init pintc_parse_madt(union acpi_subtable_headers *header,
 	struct acpi_madt_sw_pintc *pintc;
 
 	pintc = (struct acpi_madt_sw_pintc *)header;
-
-	/* Not yet supported */
-	if (pintc->node > 0) {
-		pr_warn(PREFIX "PINTC and LPC-INTC on node x(x > 0) are not supported\n");
-		return 0;
-	}
 
 	if ((pintc->version == ACPI_MADT_SW_PINTC_VERSION_NONE) ||
 		(pintc->version >= ACPI_MADT_SW_PINTC_VERSION_RESERVED)) {

@@ -87,7 +87,7 @@ static int pcie_poll_cmd(struct controller *ctrl, int timeout)
 
 	do {
 		pcie_capability_read_word(pdev, PCI_EXP_SLTSTA, &slot_status);
-		if (slot_status == (u16) ~0) {
+		if (PCI_POSSIBLE_ERROR(slot_status)) {
 			ctrl_info(ctrl, "%s: no response from device\n",
 				  __func__);
 			return 0;
@@ -96,6 +96,8 @@ static int pcie_poll_cmd(struct controller *ctrl, int timeout)
 		if (slot_status & PCI_EXP_SLTSTA_CC) {
 			pcie_capability_write_word(pdev, PCI_EXP_SLTSTA,
 						   PCI_EXP_SLTSTA_CC);
+			ctrl->cmd_busy = 0;
+			smp_mb();
 			return 1;
 		}
 		msleep(10);
@@ -163,7 +165,7 @@ static void pcie_do_write_cmd(struct controller *ctrl, u16 cmd,
 	pcie_wait_cmd(ctrl);
 
 	pcie_capability_read_word(pdev, PCI_EXP_SLTCTL, &slot_ctrl);
-	if (slot_ctrl == (u16) ~0) {
+	if (PCI_POSSIBLE_ERROR(slot_ctrl)) {
 		ctrl_info(ctrl, "%s: no response from device\n", __func__);
 		goto out;
 	}
@@ -233,7 +235,7 @@ int sunway_pciehp_check_link_active(struct controller *ctrl)
 	int ret;
 
 	ret = pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &lnk_status);
-	if (ret == PCIBIOS_DEVICE_NOT_FOUND || lnk_status == (u16)~0)
+	if (ret == PCIBIOS_DEVICE_NOT_FOUND || PCI_POSSIBLE_ERROR(lnk_status))
 		return -ENODEV;
 
 	ret = !!(lnk_status & PCI_EXP_LNKSTA_DLLLA);
@@ -249,7 +251,7 @@ static bool pcie_wait_link_active(struct controller *ctrl)
 	struct pci_controller *hose = pci_bus_to_pci_controller(bus);
 
 	if (pcie_wait_for_link(pdev, true)) {
-		pci_mark_rc_linkup(hose->node, hose->index);
+		pci_mark_rc_linkup(hose);
 		sunway_pciehp_restore_rc_piu(ctrl);
 		return true;
 	}
@@ -380,17 +382,10 @@ int sunway_pciehp_check_link_status(struct controller *ctrl)
 static int __sunway_pciehp_link_set(struct controller *ctrl, bool enable)
 {
 	struct pci_dev *pdev = ctrl_dev(ctrl);
-	u16 lnk_ctrl;
 
-	pcie_capability_read_word(pdev, PCI_EXP_LNKCTL, &lnk_ctrl);
-
-	if (enable)
-		lnk_ctrl &= ~PCI_EXP_LNKCTL_LD;
-	else
-		lnk_ctrl |= PCI_EXP_LNKCTL_LD;
-
-	pcie_capability_write_word(pdev, PCI_EXP_LNKCTL, lnk_ctrl);
-	ctrl_dbg(ctrl, "%s: lnk_ctrl = %x\n", __func__, lnk_ctrl);
+	pcie_capability_clear_and_set_word(pdev, PCI_EXP_LNKCTL,
+			PCI_EXP_LNKCTL_LD,
+			enable ? 0 : PCI_EXP_LNKCTL_LD);
 
 	return 0;
 }
@@ -408,7 +403,7 @@ int sunway_pciehp_link_disable(struct controller *ctrl)
 	int ret;
 
 	ret =  __sunway_pciehp_link_set(ctrl, false);
-	pci_clear_rc_linkup(hose->node, hose->index);
+	pci_clear_rc_linkup(hose);
 
 	return ret;
 }
@@ -463,7 +458,6 @@ void sunway_pciehp_get_power_status(struct controller *ctrl, u8 *status)
 	u16 slot_ctrl;
 
 	pcie_capability_read_word(pdev, PCI_EXP_SLTCTL, &slot_ctrl);
-
 	ctrl_dbg(ctrl, "%s: SLOTCTRL %x value read %x\n", __func__,
 		 pci_pcie_cap(ctrl->pci_dev) + PCI_EXP_SLTCTL, slot_ctrl);
 
@@ -508,7 +502,7 @@ int sunway_pciehp_card_present(struct controller *ctrl)
 	int ret;
 
 	ret = pcie_capability_read_word(pdev, PCI_EXP_SLTSTA, &slot_status);
-	if (ret == PCIBIOS_DEVICE_NOT_FOUND || slot_status == (u16)~0)
+	if (ret == PCIBIOS_DEVICE_NOT_FOUND || PCI_POSSIBLE_ERROR(slot_status))
 		return -ENODEV;
 
 	return !!(slot_status & PCI_EXP_SLTSTA_PDS);
@@ -700,7 +694,7 @@ void sunway_pciehp_poll(struct controller *ctrl, u32 events)
 
 		for (i = 0; i < 30; i++) {
 			if (pcie_wait_for_link(pdev, true)) {
-				pci_mark_rc_linkup(hose->node, hose->index);
+				pci_mark_rc_linkup(hose);
 				sunway_pciehp_restore_rc_piu(ctrl);
 
 				writeq(HP_CTRL_FINISH, (piu_ior0_base + HP_CTRL));
@@ -770,7 +764,7 @@ static irqreturn_t sunway_pciehp_isr(int irq, void *dev_id)
 
 read_status:
 	pcie_capability_read_word(pdev, PCI_EXP_SLTSTA, &status);
-	if (status == (u16) ~0) {
+	if (PCI_POSSIBLE_ERROR(status)) {
 		ctrl_info(ctrl, "%s: no response from device\n", __func__);
 		if (parent)
 			pm_runtime_put(parent);
@@ -791,6 +785,8 @@ read_status:
 	 */
 	if (ctrl->power_fault_detected)
 		status &= ~PCI_EXP_SLTSTA_PFD;
+	else if (status & PCI_EXP_SLTSTA_PFD)
+		ctrl->power_fault_detected = true;
 
 	events |= status;
 	if (!events) {
@@ -800,7 +796,7 @@ read_status:
 	}
 
 	if (status) {
-		pcie_capability_write_word(pdev, PCI_EXP_SLTSTA, events);
+		pcie_capability_write_word(pdev, PCI_EXP_SLTSTA, status);
 
 		/*
 		 * In MSI mode, all event bits must be zero before the port
@@ -874,15 +870,11 @@ static irqreturn_t sunway_pciehp_ist(int irq, void *dev_id)
 	}
 
 	/* Check Attention Button Pressed */
-	if (events & PCI_EXP_SLTSTA_ABP) {
-		ctrl_info(ctrl, "Slot(%s): Attention button pressed\n",
-			  slot_name(ctrl));
+	if (events & PCI_EXP_SLTSTA_ABP)
 		sunway_pciehp_handle_button_press(ctrl);
-	}
 
 	/* Check Power Fault Detected */
-	if ((events & PCI_EXP_SLTSTA_PFD) && !ctrl->power_fault_detected) {
-		ctrl->power_fault_detected = 1;
+	if (events & PCI_EXP_SLTSTA_PFD) {
 		ctrl_err(ctrl, "Slot(%s): Power fault\n", slot_name(ctrl));
 		sunway_pciehp_set_indicators(ctrl, PCI_EXP_SLTCTL_PWR_IND_OFF,
 				PCI_EXP_SLTCTL_ATTN_IND_ON);
@@ -892,13 +884,11 @@ static irqreturn_t sunway_pciehp_ist(int irq, void *dev_id)
 	 * Disable requests have higher priority than Presence Detect Changed
 	 * or Data Link Layer State Changed events.
 	 */
-	down_read(&ctrl->reset_lock);
-
+	down_read_nested(&ctrl->reset_lock, ctrl->depth);
 	if (events & DISABLE_SLOT)
 		sunway_pciehp_handle_disable_request(ctrl);
 	else if (events & (PCI_EXP_SLTSTA_PDC | PCI_EXP_SLTSTA_DLLSC))
 		sunway_pciehp_handle_presence_or_link_change(ctrl, events);
-
 	up_read(&ctrl->reset_lock);
 
 	ret = IRQ_HANDLED;
@@ -956,7 +946,9 @@ static void pcie_enable_notification(struct controller *ctrl)
 	else
 		cmd |= PCI_EXP_SLTCTL_PDCE;
 	if (!sunway_pciehp_poll_mode)
-		cmd |= PCI_EXP_SLTCTL_HPIE | PCI_EXP_SLTCTL_CCIE;
+		cmd |= PCI_EXP_SLTCTL_HPIE;
+	if (!sunway_pciehp_poll_mode && !NO_CMD_CMPL(ctrl))
+		cmd |= PCI_EXP_SLTCTL_CCIE;
 
 	mask = (PCI_EXP_SLTCTL_PDCE | PCI_EXP_SLTCTL_ABPE |
 		PCI_EXP_SLTCTL_PFDE |
@@ -987,6 +979,31 @@ void sunway_pcie_clear_hotplug_events(struct controller *ctrl)
 				   PCI_EXP_SLTSTA_PDC | PCI_EXP_SLTSTA_DLLSC);
 }
 
+/**
+ * sunway_pciehp_slot_reset() - ignore link event caused by error-induced hot reset
+ *
+ * Called from pcie_portdrv_slot_reset() after AER or DPC initiated a reset
+ * further up in the hierarchy to recover from an error.  The reset was
+ * propagated down to this hotplug port.  Ignore the resulting link flap.
+ * If the link failed to retrain successfully, synthesize the ignored event.
+ * Surprise removal during reset is detected through Presence Detect Changed.
+ */
+int sunway_pciehp_slot_reset(struct pci_dev *dev)
+{
+	struct controller *ctrl = pci_get_drvdata(dev);
+
+	if (ctrl->state != ON_STATE)
+		return 0;
+
+	pcie_capability_write_word(ctrl_dev(ctrl), PCI_EXP_SLTSTA,
+			PCI_EXP_SLTSTA_DLLSC);
+
+	if (!sunway_pciehp_check_link_active(ctrl))
+		sunway_pciehp_request(ctrl, PCI_EXP_SLTSTA_DLLSC);
+
+	return 0;
+}
+
 /*
  * sunway_pciehp has a 1:1 bus:slot relationship so we ultimately want a secondary
  * bus reset of the bridge, but at the same time we want to ensure that it is
@@ -995,7 +1012,7 @@ void sunway_pcie_clear_hotplug_events(struct controller *ctrl)
  * momentarily, if we see that they could interfere. Also, clear any spurious
  * events after.
  */
-int sunway_pciehp_reset_slot(struct hotplug_slot *hotplug_slot, int probe)
+int sunway_pciehp_reset_slot(struct hotplug_slot *hotplug_slot, bool probe)
 {
 	struct controller *ctrl = to_ctrl(hotplug_slot);
 	struct pci_dev *pdev = ctrl_dev(ctrl);
@@ -1005,7 +1022,7 @@ int sunway_pciehp_reset_slot(struct hotplug_slot *hotplug_slot, int probe)
 	if (probe)
 		return 0;
 
-	down_write(&ctrl->reset_lock);
+	down_write_nested(&ctrl->reset_lock, ctrl->depth);
 
 	if (!ATTN_BUTTN(ctrl)) {
 		ctrl_mask |= PCI_EXP_SLTCTL_PDCE;
@@ -1061,10 +1078,24 @@ static inline void dbg_ctrl(struct controller *ctrl)
 
 #define FLAG(x, y)	(((x) & (y)) ? '+' : '-')
 
+static inline int sunway_pcie_hotplug_depth(struct pci_dev *dev)
+{
+	struct pci_bus *bus = dev->bus;
+	int depth = 0;
+
+	while (bus->parent) {
+		bus = bus->parent;
+		if (bus->self && bus->self->is_hotplug_bridge)
+			depth++;
+	}
+
+	return depth;
+}
+
 struct controller *sunwayhpc_init(struct pci_dev *dev)
 {
 	struct controller *ctrl;
-	u32 slot_cap, slot_cap2, link_cap;
+	u32 slot_cap, slot_cap2;
 	u8 poweron;
 	struct pci_bus *subordinate = dev->subordinate;
 
@@ -1073,6 +1104,7 @@ struct controller *sunwayhpc_init(struct pci_dev *dev)
 		return NULL;
 
 	ctrl->pci_dev = dev;
+	ctrl->depth = sunway_pcie_hotplug_depth(dev);
 	pcie_capability_read_dword(dev, PCI_EXP_SLTCAP, &slot_cap);
 
 	if (dev->hotplug_user_indicators)
@@ -1108,9 +1140,6 @@ struct controller *sunwayhpc_init(struct pci_dev *dev)
 	if (dmi_first_match(inband_presence_disabled_dmi_table))
 		ctrl->inband_presence_disabled = 1;
 
-	/* Check if Data Link Layer Link Active Reporting is implemented */
-	pcie_capability_read_dword(dev, PCI_EXP_LNKCAP, &link_cap);
-
 	/* Clear all remaining event bits in Slot Status register. */
 	pcie_capability_write_word(dev, PCI_EXP_SLTSTA,
 		PCI_EXP_SLTSTA_ABP | PCI_EXP_SLTSTA_PFD |
@@ -1129,7 +1158,7 @@ struct controller *sunwayhpc_init(struct pci_dev *dev)
 		FLAG(slot_cap, PCI_EXP_SLTCAP_EIP),
 		FLAG(slot_cap, PCI_EXP_SLTCAP_NCCS),
 		FLAG(slot_cap2, PCI_EXP_SLTCAP2_IBPD),
-		FLAG(link_cap, PCI_EXP_LNKCAP_DLLLARC));
+		FLAG(dev->link_active_reporting, true));
 
 	/*
 	 * If empty slot's power status is on, turn power off.	The IRQ isn't

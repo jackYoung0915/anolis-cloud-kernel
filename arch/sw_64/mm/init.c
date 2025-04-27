@@ -46,10 +46,7 @@ static phys_addr_t mem_size_limit;
 #ifdef CONFIG_MEMORY_HOTPLUG_SPARSE
 unsigned long memory_block_size_bytes(void)
 {
-	if (is_in_guest())
-		return MIN_MEMORY_BLOCK_SIZE_VM_MEMHP;
-	else
-		return MIN_MEMORY_BLOCK_SIZE;
+	return MIN_MEMORY_BLOCK_SIZE;
 }
 #endif /* CONFIG_MEMORY_HOTPLUG_SPARSE */
 
@@ -331,16 +328,16 @@ core_initcall_sync(sw64_kvm_pool_init);
 
 void __init sw64_memblock_init(void)
 {
-	/**
-	 * Detect all memory on all nodes, used in the following
-	 * cases:
-	 * 1. Legacy memory detect
-	 * 2. Legacy NUMA initialization
-	 */
-	setup_socket_info();
-	show_socket_mem_layout();
-
 	if (sunway_boot_magic != 0xDEED2024UL) {
+		/**
+		 * Detect all memory on all nodes, used in the following
+		 * cases:
+		 * 1. Legacy memory detect
+		 * 2. Legacy NUMA initialization
+		 */
+		setup_socket_info();
+		show_socket_mem_layout();
+
 		/* Find our usable memory */
 		mem_detect();
 

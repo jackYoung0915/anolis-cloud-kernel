@@ -22,7 +22,12 @@
 
 bool set_msi_flag;
 
-
+#define VCPU_STAT(n, x, ...) \
+       { n, offsetof(struct kvm_vcpu, stat.x), KVM_STAT_VCPU, ##  __VA_ARGS__ }
+#define VM_STAT(n, x, ...) \
+       { n, offsetof(struct kvm, stat.x), KVM_STAT_VM, ## __VA_ARGS__ }
+#define DFX_STAT(n, x, ...) \
+       { n, offsetof(struct kvm_vcpu_stat, x), DFX_SW64_STAT_U64, ## __VA_ARGS__ }
 
 static unsigned long get_new_vpn_context(struct kvm_vcpu *vcpu, long cpu)
 {
@@ -35,6 +40,21 @@ static unsigned long get_new_vpn_context(struct kvm_vcpu *vcpu, long cpu)
 	}
 	last_vpn(cpu) = next;
 	return next;
+}
+
+int kvm_arch_set_irq_inatomic(struct kvm_kernel_irq_routing_entry *e,
+		struct kvm *kvm, int irq_source_id,
+		int level, bool line_status)
+{
+	switch (e->type) {
+	case KVM_IRQ_ROUTING_MSI:
+		if (!kvm_set_msi(e, kvm, irq_source_id, level, line_status))
+			return 0;
+		break;
+	default:
+		break;
+	}
+	return -EWOULDBLOCK;
 }
 
 int vcpu_interrupt_line(struct kvm_vcpu *vcpu, int number, bool level)
@@ -52,19 +72,17 @@ int kvm_arch_check_processor_compat(void *opaque)
 int kvm_set_msi(struct kvm_kernel_irq_routing_entry *e, struct kvm *kvm, int irq_source_id,
 		int level, bool line_status)
 {
-	unsigned int vcid;
-	unsigned int vcpu_idx;
+	unsigned int dest_id;
 	struct kvm_vcpu *vcpu = NULL;
-	int irq = e->msi.data & 0xff;
+	int vector = e->msi.data & 0xff;
 
-	vcid = (e->msi.address_lo & VT_MSIX_ADDR_DEST_ID_MASK) >> VT_MSIX_ADDR_DEST_ID_SHIFT;
-	vcpu_idx = vcid & 0x1f;
-	vcpu = kvm_get_vcpu(kvm, vcpu_idx);
+	dest_id = (e->msi.address_lo & VT_MSIX_ADDR_DEST_ID_MASK) >> VT_MSIX_ADDR_DEST_ID_SHIFT;
+	vcpu = kvm_get_vcpu(kvm, dest_id);
 
 	if (!vcpu)
 		return -EINVAL;
 
-	return vcpu_interrupt_line(vcpu, irq, true);
+	return vcpu_interrupt_line(vcpu, vector, true);
 }
 
 void sw64_kvm_switch_vpn(struct kvm_vcpu *vcpu)
@@ -104,7 +122,7 @@ void sw64_kvm_switch_vpn(struct kvm_vcpu *vcpu)
 	}
 }
 
-void check_vcpu_requests(struct kvm_vcpu *vcpu)
+static int check_vcpu_requests(struct kvm_vcpu *vcpu)
 {
 	unsigned long vpn;
 	long cpu = smp_processor_id();
@@ -114,12 +132,69 @@ void check_vcpu_requests(struct kvm_vcpu *vcpu)
 			vpn = vcpu->arch.vpnc[cpu] & VPN_MASK;
 			tbivpn(0, 0, vpn);
 		}
+
+		if (kvm_dirty_ring_check_request(vcpu))
+			return 0;
 	}
+
+	return 1;
 }
 
+struct kvm_stats_debugfs_item debugfs_entries[] = {
+	VCPU_STAT("exits", exits),
+	VCPU_STAT("io_exits", io_exits),
+	VCPU_STAT("mmio_exits", mmio_exits),
+	VCPU_STAT("migration_set_dirty", migration_set_dirty),
+	VCPU_STAT("shutdown_exits", shutdown_exits),
+	VCPU_STAT("restart_exits", restart_exits),
+	VCPU_STAT("ipi_exits", ipi_exits),
+	VCPU_STAT("timer_exits", timer_exits),
+	VCPU_STAT("debug_exits", debug_exits),
+	VCPU_STAT("fatal_error_exits", fatal_error_exits),
+	VCPU_STAT("halt_exits", halt_exits),
+	VCPU_STAT("halt_successful_poll", halt_successful_poll),
+	VCPU_STAT("halt_attempted_poll", halt_attempted_poll),
+	VCPU_STAT("halt_wakeup", halt_wakeup),
+	VCPU_STAT("halt_poll_invalid", halt_poll_invalid),
+	VCPU_STAT("signal_exits", signal_exits),
+	{ "vcpu_stat", 0, KVM_STAT_DFX_SW64 },
+	{ NULL }
+};
+
+struct dfx_sw64_kvm_stats_debugfs_item dfx_sw64_debugfs_entries[] = {
+	DFX_STAT("pid", pid),
+	DFX_STAT("exits", exits),
+	DFX_STAT("io_exits", io_exits),
+	DFX_STAT("mmio_exits", mmio_exits),
+	DFX_STAT("migration_set_dirty", migration_set_dirty),
+	DFX_STAT("shutdown_exits", shutdown_exits),
+	DFX_STAT("restart_exits", restart_exits),
+	DFX_STAT("ipi_exits", ipi_exits),
+	DFX_STAT("timer_exits", timer_exits),
+	DFX_STAT("debug_exits", debug_exits),
+	DFX_STAT("fatal_error_exits", fatal_error_exits),
+	DFX_STAT("halt_exits", halt_exits),
+	DFX_STAT("halt_successful_poll", halt_successful_poll),
+	DFX_STAT("halt_attempted_poll", halt_attempted_poll),
+	DFX_STAT("halt_wakeup", halt_wakeup),
+	DFX_STAT("halt_poll_invalid", halt_poll_invalid),
+	DFX_STAT("signal_exits", signal_exits),
+	DFX_STAT("steal", steal),
+	DFX_STAT("st_max", st_max),
+	DFX_STAT("utime", utime),
+	DFX_STAT("stime", stime),
+	DFX_STAT("gtime", gtime),
+	{ NULL }
+};
 
 int kvm_arch_vcpu_runnable(struct kvm_vcpu *vcpu)
 {
+	if (vcpu->arch.restart)
+		return 1;
+
+	if (vcpu->arch.vcb.vcpu_irq_disabled)
+		return 0;
+
 	return ((!bitmap_empty(vcpu->arch.irqs_pending, SWVM_IRQS) || !vcpu->arch.halted)
 			&& !vcpu->arch.power_off);
 }
@@ -209,7 +284,7 @@ int kvm_arch_create_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
 
 void kvm_arch_vcpu_free(struct kvm_vcpu *vcpu)
 {
-	kvm_mmu_free_memory_caches(vcpu);
+	kvm_mmu_free_memory_cache(&vcpu->arch.mmu_page_cache);
 	hrtimer_cancel(&vcpu->arch.hrt);
 }
 
@@ -223,13 +298,11 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	/* Set up the timer for Guest */
 	pr_info("vcpu: [%d], regs addr = %#lx, vcpucb = %#lx\n", vcpu->vcpu_id,
 			(unsigned long)&vcpu->arch.regs, (unsigned long)&vcpu->arch.vcb);
+	vcpu->arch.mmu_page_cache.gfp_zero = __GFP_ZERO;
 	vcpu->arch.vtimer_freq = cpuid(GET_CPU_FREQ, 0) * 1000UL * 1000UL;
 	hrtimer_init(&vcpu->arch.hrt, CLOCK_REALTIME, HRTIMER_MODE_ABS);
 	vcpu->arch.hrt.function = clockdev_fn;
 	vcpu->arch.tsk = current;
-
-	vcpu->arch.vcb.soft_cid = vcpu->vcpu_id;
-	vcpu->arch.vcb.vcpu_irq_disabled = 1;
 	vcpu->arch.pcpu_id = -1; /* force flush tlb for the first time */
 
 	return 0;
@@ -275,10 +348,24 @@ int kvm_arch_vcpu_setup(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
+void kvm_arch_vcpu_stat_reset(struct kvm_vcpu_stat *vcpu_stat)
+{
+	vcpu_stat->st_max = 0;
+}
+
+static void update_steal_time(struct kvm_vcpu *vcpu)
+{
+	u64 delta;
+
+	delta = current->sched_info.run_delay - vcpu->stat.steal;
+	vcpu->stat.steal = current->sched_info.run_delay;
+	vcpu->stat.st_max = max(vcpu->stat.st_max, delta);
+}
 
 void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
 	vcpu->cpu = cpu;
+	update_steal_time(vcpu);
 }
 
 void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
@@ -318,9 +405,16 @@ int kvm_arch_vcpu_ioctl_get_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
 int kvm_arch_vcpu_ioctl_set_guest_debug(struct kvm_vcpu *vcpu,
 						struct kvm_guest_debug *dbg)
 {
+	trace_kvm_set_guest_debug(vcpu, dbg->control);
 	return 0;
 }
 
+void update_vcpu_stat_time(struct kvm_vcpu_stat *vcpu_stat)
+{
+	vcpu_stat->utime = current->utime;
+	vcpu_stat->stime = current->stime;
+	vcpu_stat->gtime = current->gtime;
+}
 
 /*
  * Return > 0 to return to guest, < 0 on error, 0 (and set exit_reason) on
@@ -359,12 +453,11 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		if (signal_pending(current)) {
 			ret = -EINTR;
 			run->exit_reason = KVM_EXIT_INTR;
+			vcpu->stat.signal_exits++;
 		}
 
 		if (ret <= 0) {
-			local_irq_enable();
-			preempt_enable();
-			continue;
+			goto exit;
 		}
 
 		memset(&hargs, 0, sizeof(hargs));
@@ -384,7 +477,14 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		vcpu->arch.halted = 0;
 
 		sw64_kvm_switch_vpn(vcpu);
-		check_vcpu_requests(vcpu);
+		ret = check_vcpu_requests(vcpu);
+		if (ret <= 0) {
+exit:
+			local_irq_enable();
+			preempt_enable();
+			continue;
+		}
+
 		guest_enter_irqoff();
 
 		/* update aptp before the guest runs */
@@ -399,6 +499,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		/* Back from guest */
 		vcpu->mode = OUTSIDE_GUEST_MODE;
 
+		vcpu->stat.exits++;
 		local_irq_enable();
 		guest_exit_irqoff();
 
@@ -408,6 +509,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		/* ret = 0 indicate interrupt in guest mode, ret > 0 indicate hcall */
 		ret = handle_exit(vcpu, run, ret, &hargs);
+		update_vcpu_stat_time(&vcpu->stat);
 	}
 
 	if (vcpu->sigset_active)
@@ -549,6 +651,8 @@ int kvm_vm_ioctl_irq_line(struct kvm *kvm, struct kvm_irq_level *irq_level,
 	bool level = irq_level->level;
 
 	irq_num = irq;
+	trace_kvm_irq_line(0, irq_num, irq_level->level);
+
 	/* target core for Intx is core0 */
 	vcpu = kvm_get_vcpu(kvm, 0);
 	if (!vcpu)

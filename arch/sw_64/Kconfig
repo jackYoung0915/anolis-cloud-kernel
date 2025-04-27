@@ -44,6 +44,7 @@ config SW64
 	select ARCH_INLINE_WRITE_UNLOCK_BH
 	select ARCH_INLINE_WRITE_UNLOCK_IRQ
 	select ARCH_INLINE_WRITE_UNLOCK_IRQRESTORE
+	select ARCH_KEEP_MEMBLOCK
 	select ARCH_NO_PREEMPT
 	select ARCH_SUPPORTS_ACPI
 	select ARCH_SUPPORTS_ATOMIC_RMW
@@ -99,6 +100,8 @@ config SW64
 	select HAVE_PCI
 	select HAVE_PCSPKR_PLATFORM
 	select HAVE_PERF_EVENTS
+	select HAVE_PERF_EVENTS_NMI if SUBARCH_C4
+	select HAVE_HARDLOCKUP_DETECTOR_PERF if PERF_EVENTS && HAVE_PERF_EVENTS_NMI
 	select HAVE_PERF_REGS
 	select HAVE_PERF_USER_STACK_DUMP
 	select HAVE_REGS_AND_STACK_ACCESS_API
@@ -121,8 +124,7 @@ config SW64
 	select SET_FS
 	select SPARSEMEM_EXTREME if SPARSEMEM
 	select SW64_IRQ_CPU
-	select SW64_IRQ_MSI if PCI_MSI
-	select SW64_IRQ_MSI_VT if PCI_MSI
+	select SW64_PCI_INTX if PCI
 	select SW64_TIMER
 	select SWIOTLB
 	select THREAD_INFO_IN_TASK
@@ -478,7 +480,7 @@ config RELOCATION_TABLE_SIZE
 	hex "Relocation table size"
 	depends on RELOCATABLE
 	range 0x0 0x01000000
-	default "0x80000"
+	default "0x100000"
 	help
 	  A table of relocation data will be appended to the kernel binary
 	  and parsed at boot to fix up the relocated kernel.
