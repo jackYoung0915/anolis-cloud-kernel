@@ -10387,8 +10387,8 @@ void memcg_meminfo(struct mem_cgroup *memcg,
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	ext->anon_thps = memcg_page_state(memcg, NR_ANON_THPS);
 #endif
-	ext->shmem_thps = 0;
-	ext->shmem_pmd_mapped = 0;
+	ext->shmem_thps = memcg_page_state(memcg, NR_SHMEM_THPS);
+	ext->shmem_pmd_mapped = memcg_page_state(memcg, NR_SHMEM_PMDMAPPED);
 
 	swap_size = memcg_page_state(memcg, MEMCG_SWAP);
 	limit = memsw_limit = PAGE_COUNTER_MAX;
