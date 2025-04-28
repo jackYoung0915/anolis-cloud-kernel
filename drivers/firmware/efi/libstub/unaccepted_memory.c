@@ -12,7 +12,8 @@ unsigned long find_next_bit_stub(const unsigned long *addr, unsigned long size,
 extern
 unsigned long find_next_zero_bit_stub(const unsigned long *addr, unsigned long size,
 				      unsigned long offset);
-#ifndef for_each_set_bitrange_from
+
+#undef for_each_set_bitrange_from
 /**
  * for_each_set_bitrange_from - iterate over all set bit ranges [b; e)
  * @b: bit offset of start of current bitrange (first set bit); must be initialized
@@ -26,7 +27,6 @@ unsigned long find_next_zero_bit_stub(const unsigned long *addr, unsigned long s
 	     (e) = find_next_zero_bit_stub((addr), (size), (b) + 1), \
 	     (b) < (size);                                           \
 	     (b) = (e) + 1)
-#endif
 
 efi_status_t allocate_unaccepted_bitmap(__u32 nr_desc,
 					struct efi_boot_memmap *map)
