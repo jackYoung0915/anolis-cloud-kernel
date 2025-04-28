@@ -2117,6 +2117,16 @@ static struct ctl_table kern_table[] = {
 		.proc_handler   = proc_douintvec_minmax,
 		.extra1         = SYSCTL_TWO,
 	},
+	{
+		.procname       = "rich_container_ext_enable",
+		.data           = &sysctl_rich_container_ext_enable,
+		.maxlen         = sizeof(int),
+		.mode           = 0600,
+		.proc_handler   = proc_douintvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+
 #endif
 	{
 		.procname       = "fault_event_enable",
