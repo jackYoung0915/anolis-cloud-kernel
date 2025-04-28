@@ -7389,7 +7389,9 @@ static void fr_apply_vma(struct vm_area_struct *vma)
 	unsigned long next;
 	spinlock_t *pml;
 	pmd_t *pmdp = NULL;
+#ifdef CONFIG_FS_DAX_PMD
 	pmd_t pmd;
+#endif
 	bool applied = false;
 
 	do {
