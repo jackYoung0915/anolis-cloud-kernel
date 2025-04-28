@@ -283,7 +283,7 @@ static void virtblk_rq_unmap(struct virtqueue *vq, struct virtblk_req *vbr)
 		virtblk_unmap_sg(vq, vbr->sg_table.sgl, DMA_TO_DEVICE);
 		virtblk_unmap_sg(vq, vbr->sg_table_extra.sgl, DMA_FROM_DEVICE);
 	} else {
-		if (req_op(req) == REQ_OP_WRITE)
+		if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
 			dir = DMA_TO_DEVICE;
 		else
 			dir = DMA_FROM_DEVICE;
@@ -1899,13 +1899,15 @@ static void virtblk_uring_task_cb(struct io_uring_cmd *ioucmd)
 {
 	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(pdu->req);
+	blk_status_t status = virtblk_result(vbr);
 
 	if (pdu->bio)
 		blk_rq_unmap_user(pdu->bio);
+	/* for dynamic request, vbr will be freed after this */
 	blk_mq_free_request(pdu->req);
 
 	/* currently result has no use, it should be zero as cqe->res */
-	io_uring_cmd_done(ioucmd, virtblk_result(vbr), 0);
+	io_uring_cmd_done(ioucmd, status, 0);
 }
 
 static void virtblk_uring_cmd_end_io(struct request *req, blk_status_t err)
