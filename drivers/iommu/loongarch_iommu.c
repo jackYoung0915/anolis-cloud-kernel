@@ -1172,14 +1172,6 @@ static phys_addr_t la_iommu_iova_to_phys(struct iommu_domain *domain,
 	return phys;
 }
 
-static void la_domain_set_plaform_dma_ops(struct device *dev)
-{
-	/*
-	 * loongarch doesn't setup default domains because we can't hook into the
-	 * normal probe path
-	 */
-}
-
 const struct iommu_ops la_iommu_ops = {
 	.capable = la_iommu_capable,
 	.domain_alloc = la_iommu_domain_alloc,
@@ -1188,7 +1180,6 @@ const struct iommu_ops la_iommu_ops = {
 	.device_group = la_iommu_device_group,
 	.pgsize_bitmap	= LA_IOMMU_PGSIZE,
 	.owner = THIS_MODULE,
-	.set_platform_dma_ops = la_domain_set_plaform_dma_ops,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= la_iommu_attach_dev,
 		.map = la_iommu_map,
@@ -1794,6 +1785,7 @@ static const struct pci_device_id loongson_iommu_pci_tbl[] = {
 	{ PCI_DEVICE(0x14, 0x7a1f) },
 	{ 0, }
 };
+MODULE_DEVICE_TABLE(pci, loongson_iommu_pci_tbl);
 
 static struct pci_driver loongarch_iommu_driver = {
 	.name = "loongarch-iommu",
