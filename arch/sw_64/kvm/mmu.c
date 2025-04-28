@@ -70,21 +70,35 @@ enum {
  *
  * Function clears a PMD entry, flushes TLBs.
  */
-static void apt_dissolve_pmd(struct kvm *kvm, phys_addr_t addr, pmd_t *pmd)
+static void apt_dissolve_pmd(struct kvm *kvm, pmd_t *pmd)
 {
-	int i;
-
 	if (!pmd_trans_huge(*pmd))
 		return;
 
-	if (pmd_cont(*pmd)) {
-		for (i = 0; i < CONT_PMDS; i++, pmd++)
-			pmd_clear(pmd);
-	} else
+	pmd_clear(pmd);
+	kvm_flush_remote_tlbs(kvm);
+	put_page(virt_to_page(pmd));
+}
+
+/**
+ * apt_dissolve_cont_pmd() - clear and flush huge cont PMD entry
+ * @kvm:	pointer to kvm structure.
+ * @addr:	IPA
+ * @pmd:	pmd pointer for IPA
+ *
+ * Function clears a cont PMD entry, flushes TLBs.
+ */
+static void apt_dissolve_cont_pmd(struct kvm *kvm, pmd_t *pmd)
+{
+	int i;
+	pmd_t *start_pmd;
+
+	start_pmd = pmd;
+	for (i = 0; i < CONT_PMDS; i++, pmd++)
 		pmd_clear(pmd);
 
 	kvm_flush_remote_tlbs(kvm);
-	put_page(virt_to_page(pmd));
+	put_page(virt_to_page(start_pmd));
 }
 
 /**
@@ -95,7 +109,7 @@ static void apt_dissolve_pmd(struct kvm *kvm, phys_addr_t addr, pmd_t *pmd)
  *
  * Function clears a PUD entry, flushes TLBs.
  */
-static void apt_dissolve_pud(struct kvm *kvm, phys_addr_t addr, pud_t *pudp)
+static void apt_dissolve_pud(struct kvm *kvm, pud_t *pudp)
 {
 	if (!pud_huge(*pudp))
 		return;
@@ -146,8 +160,10 @@ static void unmap_apt_pmds(struct kvm *kvm, pud_t *pud,
 		if (!pmd_none(*pmd)) {
 			if (pmd_trans_huge(*pmd)) {
 				if (pmd_cont(*pmd)) {
-					for (i = 0; i < CONT_PMDS; i++, pmd++)
-						pmd_clear(pmd);
+					for (i = 0; i < CONT_PMDS; i++)
+						pmd_clear(pmd + i);
+					pmd += CONT_PMDS - 1;
+					next += CONT_PMD_SIZE - PMD_SIZE;
 				} else
 					pmd_clear(pmd);
 				/* Do we need flush tlb???? edited by lff */
@@ -802,7 +818,7 @@ dissolve:
 	 * on to allocate page.
 	 */
 	if (logging_active)
-		apt_dissolve_pud(kvm, addr, pud);
+		apt_dissolve_pud(kvm, pud);
 
 find_pud:
 	if (pud_none(*pud)) {
@@ -826,8 +842,13 @@ find_pud:
 	 * While dirty page logging - dissolve huge PMD, then continue on to
 	 * allocate page.
 	 */
-	if (logging_active)
-		apt_dissolve_pmd(kvm, addr, pmd);
+	if (logging_active) {
+		if (pmd_cont(*pmd))
+			apt_dissolve_cont_pmd(kvm,
+					pmd_offset(pud, addr & CONT_PMD_MASK));
+		else
+			apt_dissolve_pmd(kvm, pmd);
+	}
 
 find_pmd:
 	/* Create stage-2 page mappings - Level 2 */
@@ -891,7 +912,7 @@ static int apt_set_pte(struct kvm *kvm, struct kvm_mmu_memory_cache *cache,
 	 * on to allocate page.
 	 */
 	if (logging_active)
-		apt_dissolve_pud(kvm, addr, pud);
+		apt_dissolve_pud(kvm, pud);
 
 	if (pud_none(*pud)) {
 		if (!cache)
@@ -914,8 +935,13 @@ static int apt_set_pte(struct kvm *kvm, struct kvm_mmu_memory_cache *cache,
 	 * While dirty page logging - dissolve huge PMD, then continue on to
 	 * allocate page.
 	 */
-	if (logging_active)
-		apt_dissolve_pmd(kvm, addr, pmd);
+	if (logging_active) {
+		if (pmd_cont(*pmd))
+			apt_dissolve_cont_pmd(kvm,
+					pmd_offset(pud, addr & CONT_PMD_MASK));
+		else
+			apt_dissolve_pmd(kvm, pmd);
+	}
 
 	/* Create stage-2 page mappings - Level 2 */
 	if (pmd_none(*pmd)) {
@@ -954,10 +980,11 @@ static int apt_set_pte(struct kvm *kvm, struct kvm_mmu_memory_cache *cache,
 
 
 static int apt_set_pmd_huge(struct kvm *kvm, struct kvm_mmu_memory_cache
-		*cache, phys_addr_t addr, const pmd_t *new_pmd, unsigned long sz)
+		*cache, phys_addr_t addr, pmd_t *new_pmd, unsigned long sz)
 {
 	pmd_t *pmd, old_pmd, *ori_pmd;
 	int i;
+	unsigned long dpfn;
 retry:
 	pmd = apt_get_pmd(kvm, cache, addr, sz);
 	VM_BUG_ON(!pmd);
@@ -1020,8 +1047,11 @@ retry:
 
 	/* Do we need WRITE_ONCE(pmd, new_pmd)? */
 	if (sz == CONT_PMD_SIZE) {
-		for (i = 0; i < CONT_PMDS; i++, ori_pmd++)
+		dpfn = 1UL << (_PFN_SHIFT + PMD_SHIFT - PAGE_SHIFT);
+		for (i = 0; i < CONT_PMDS; i++, ori_pmd++) {
 			set_pmd(ori_pmd, *new_pmd);
+			new_pmd->pmd += dpfn;
+		}
 	} else
 		set_pmd(pmd, *new_pmd);
 	return 0;
@@ -1191,7 +1221,7 @@ static int user_mem_abort(struct kvm_vcpu *vcpu,
 
 	/* Let's check if we will get back a huge page backed by hugetlbfs */
 	down_read(&current->mm->mmap_lock);
-	vma = find_vma_intersection(current->mm, hva, hva + 1);
+	vma = vma_lookup(current->mm, hva);
 	if (unlikely(!vma)) {
 		kvm_err("Failed to find VMA for hva 0x%lx\n", hva);
 		up_read(&current->mm->mmap_lock);
@@ -1352,7 +1382,6 @@ static int user_mem_abort(struct kvm_vcpu *vcpu,
 
 out_unlock:
 	spin_unlock(&kvm->mmu_lock);
-	kvm_set_pfn_accessed(pfn);
 	kvm_release_pfn_clean(pfn);
 	return ret;
 }
@@ -1404,7 +1433,7 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	 * needs emulation.
 	 */
 
-	if (hva == KVM_HVA_ERR_BAD) {
+	if (hva == KVM_HVA_ERR_BAD || (write_fault && !writable)) {
 		hargs->arg1 = fault_gpa | (hargs->arg1 & 0x1fffUL);
 		ret = io_mem_abort(vcpu, run, hargs);
 		goto out_unlock;
@@ -1507,18 +1536,19 @@ bool kvm_set_spte_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 	return false;
 }
 
-/**
- * kvm_mmu_write_protect_pt_masked() - write protect dirty pages
+
+/*
+ * kvm_arch_mmu_enable_log_dirty_pt_masked - enable dirty logging for selected pages.
  * @kvm:	The KVM pointer
  * @slot:	The memory slot associated with mask
  * @gfn_offset:	The gfn offset in memory slot
- * @mask:	The mask of dirty pages at offset 'gfn_offset' in this memory
- *		slot to be write protected
+ * @mask:	The mask of pages at offset 'gfn_offset' in this memory
+ *		slot to enable dirty logging on
  *
- * Walks bits set in mask write protects the associated pte's. Caller must
+ * Write protect selected pages to enable dirty logging for them. Caller must
  * acquire kvm_mmu_lock.
  */
-static void kvm_mmu_write_protect_pt_masked(struct kvm *kvm,
+void kvm_arch_mmu_enable_log_dirty_pt_masked(struct kvm *kvm,
 		struct kvm_memory_slot *slot,
 		gfn_t gfn_offset, unsigned long mask)
 {
@@ -1527,18 +1557,4 @@ static void kvm_mmu_write_protect_pt_masked(struct kvm *kvm,
 	phys_addr_t end = (base_gfn + __fls(mask) + 1) << PAGE_SHIFT;
 
 	apt_wp_range(kvm, start, end);
-}
-
-/*
- * kvm_arch_mmu_enable_log_dirty_pt_masked - enable dirty logging for selected
- * dirty pages.
- *
- * It calls kvm_mmu_write_protect_pt_masked to write protect selected pages to
- * enable dirty logging for them.
- */
-void kvm_arch_mmu_enable_log_dirty_pt_masked(struct kvm *kvm,
-		struct kvm_memory_slot *slot,
-		gfn_t gfn_offset, unsigned long mask)
-{
-	kvm_mmu_write_protect_pt_masked(kvm, slot, gfn_offset, mask);
 }

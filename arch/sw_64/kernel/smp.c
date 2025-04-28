@@ -6,6 +6,7 @@
 #include <linux/smp.h>
 #include <linux/delay.h>
 #include <linux/irq.h>
+#include <linux/irq_work.h>
 #include <linux/cpu.h>
 #include <linux/acpi.h>
 #include <linux/of.h>
@@ -39,6 +40,7 @@ enum ipi_message_type {
 	IPI_RESCHEDULE,
 	IPI_CALL_FUNC,
 	IPI_CPU_STOP,
+	IPI_IRQ_WORK,
 };
 
 int smp_num_cpus = 1;		/* Number that came online.  */
@@ -98,9 +100,10 @@ static void downshift_freq(void)
 		struct cpu_topology *sib_topo = &cpu_topology[cpu];
 
 		if ((cpu_topo->package_id == sib_topo->package_id) &&
-		    (cpu_topo->core_id == sib_topo->core_id))
+				(cpu_topo->core_id == sib_topo->core_id))
 			return;
 	}
+
 
 	core_id = rcid_to_core_id(cpu_to_rcid(cpuid));
 	node_id = rcid_to_domain_id(cpu_to_rcid(cpuid));
@@ -155,6 +158,9 @@ void smp_callin(void)
 	current->active_mm = &init_mm;
 	/* update csr:ptbr */
 	update_ptbr_sys(virt_to_phys(init_mm.pgd));
+#ifdef CONFIG_SUBARCH_C4
+	update_ptbr_usr(__pa_symbol(empty_zero_page));
+#endif
 
 	if (IS_ENABLED(CONFIG_SUBARCH_C4) && is_in_host()) {
 		nmi_stack_page = alloc_pages_node(
@@ -397,7 +403,7 @@ void __init setup_smp(void)
 	init_cpu_present(cpu_none_mask);
 
 	/* Legacy core detect */
-	sw64_chip_init->early_init.setup_core_map(&core_start);
+	sw64_chip_init->early_init.setup_core_map();
 
 	/* For unified kernel, NR_CPUS is the maximum possible value */
 	for (i = 0; i < NR_CPUS; i++) {
@@ -535,10 +541,11 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	wmb();
 	smp_rcb->ready = 0;
 
-#ifdef CONFIG_SUBARCH_C3B
-	/* send wake up signal */
-	send_wakeup_interrupt(cpu);
-#endif
+	if (!is_junzhang_v1()) {
+		/* send wake up signal */
+		send_wakeup_interrupt(cpu);
+	}
+
 	smp_boot_one_cpu(cpu, tidle);
 
 #ifdef CONFIG_SUBARCH_C3B
@@ -584,6 +591,13 @@ static void ipi_cpu_stop(int cpu)
 		wait_for_interrupt();
 }
 
+#ifdef CONFIG_IRQ_WORK
+void arch_irq_work_raise(void)
+{
+	send_ipi_message(cpumask_of(smp_processor_id()), IPI_IRQ_WORK);
+}
+#endif
+
 void handle_ipi(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
@@ -611,6 +625,10 @@ void handle_ipi(struct pt_regs *regs)
 
 			case IPI_CPU_STOP:
 				ipi_cpu_stop(cpu);
+				break;
+
+			case IPI_IRQ_WORK:
+				irq_work_run();
 				break;
 
 			default:
@@ -823,17 +841,16 @@ void arch_cpu_idle_dead(void)
 	}
 
 #ifdef CONFIG_SUSPEND
-
-#ifdef CONFIG_SUBARCH_C3B
-	sleepen();
-	send_sleep_interrupt(smp_processor_id());
-	while (1)
-		asm("nop");
-#else
-	asm volatile("halt");
-	while (1)
-		asm("nop");
-#endif
+	if (!is_junzhang_v1()) {
+		sleepen();
+		send_sleep_interrupt(smp_processor_id());
+		while (1)
+			asm("nop");
+	} else {
+		asm volatile("halt");
+		while (1)
+			asm("nop");
+	}
 
 #else
 	asm volatile("memb");

@@ -49,6 +49,8 @@ export LIBS_Y
 
 boot := arch/sw_64/boot
 
+vdso-install-y += arch/sw_64/kernel/vdso.so.dbg
+
 #Default target when executing make with no arguments
 all: $(boot)/vmlinux.bin.gz
 

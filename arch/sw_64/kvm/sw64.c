@@ -15,6 +15,7 @@
 #include <asm/barrier.h>
 #include <asm/core.h>
 #include <asm/pci_impl.h>
+#include <asm/cpu.h>
 
 #define CREATE_TRACE_POINTS
 #include "trace.h"
@@ -231,6 +232,8 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_IRQCHIP:
 	case KVM_CAP_IOEVENTFD:
 	case KVM_CAP_SYNC_MMU:
+	case KVM_CAP_READONLY_MEM:
+	case KVM_CAP_SET_GUEST_DEBUG:
 		r = 1;
 		break;
 	case KVM_CAP_NR_VCPUS:
@@ -603,13 +606,6 @@ int kvm_arch_vcpu_ioctl_set_fpu(struct kvm_vcpu *vcpu, struct kvm_fpu *fpu)
 vm_fault_t kvm_arch_vcpu_fault(struct kvm_vcpu *vcpu, struct vm_fault *vmf)
 {
 	return VM_FAULT_SIGBUS;
-}
-
-void kvm_arch_flush_remote_tlbs_memslot(struct kvm *kvm,
-					struct kvm_memory_slot *memslot)
-{
-	/* Let implementation handle TLB/GVA invalidation */
-	kvm_arch_flush_shadow_memslot(kvm, memslot);
 }
 
 int kvm_dev_ioctl_check_extension(long ext)
