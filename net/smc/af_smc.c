@@ -1508,7 +1508,7 @@ static int smc_connect_rdma(struct smc_sock *smc,
 	if (ini->first_contact_local)
 		smc_link_save_peer_info(link, aclc, ini);
 
-	if (smc_rmb_rtoken_handling(&smc->conn, link, aclc)) {
+	if (smc_rmb_rtoken_handling(&smc->conn, link, aclc, ini->first_contact_local)) {
 		reason_code = SMC_CLC_DECL_ERR_RTOK;
 		goto connect_abort;
 	}
@@ -2757,7 +2757,7 @@ static int smc_listen_rdma_finish(struct smc_sock *new_smc,
 	if (local_first)
 		smc_link_save_peer_info(link, cclc, ini);
 
-	if (smc_rmb_rtoken_handling(&new_smc->conn, link, cclc))
+	if (smc_rmb_rtoken_handling(&new_smc->conn, link, cclc, local_first))
 		return SMC_CLC_DECL_ERR_RTOK;
 
 	if (local_first) {

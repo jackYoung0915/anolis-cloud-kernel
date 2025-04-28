@@ -1270,7 +1270,7 @@ err_out:
 	return NULL;
 }
 
-static void smcr_buf_unuse(struct smc_buf_desc *buf_desc, bool is_rmb,
+static void smcr_buf_unuse(struct smc_buf_desc *buf_desc, bool is_rmb, bool reusable,
 			   struct smc_link_group *lgr)
 {
 	struct rw_semaphore *lock;	/* lock buffer list */
@@ -1289,7 +1289,7 @@ static void smcr_buf_unuse(struct smc_buf_desc *buf_desc, bool is_rmb,
 		}
 	}
 
-	if (buf_desc->is_reg_err) {
+	if (buf_desc->is_reg_err || !reusable) {
 		/* buf registration failed, reuse not possible */
 		lock = is_rmb ? &lgr->rmbs_lock :
 				&lgr->sndbufs_lock;
@@ -1331,7 +1331,7 @@ static void smc_buf_unuse(struct smc_connection *conn,
 	if (conn->sndbuf_desc) {
 		bufsize = conn->sndbuf_desc->len;
 		if (!is_smcd && conn->sndbuf_desc->is_vm)
-			smcr_buf_unuse(conn->sndbuf_desc, false, lgr);
+			smcr_buf_unuse(conn->sndbuf_desc, false, true, lgr);
 		else
 			WRITE_ONCE(conn->sndbuf_desc->used, 0);
 		SMC_STAT_RMB_SIZE(smc, is_smcd, false, false, bufsize);
@@ -1340,7 +1340,8 @@ static void smc_buf_unuse(struct smc_connection *conn,
 	if (conn->rmb_desc) {
 		bufsize = conn->rmb_desc->len;
 		if (!is_smcd) {
-			smcr_buf_unuse(conn->rmb_desc, true, lgr);
+			smcr_buf_unuse(conn->rmb_desc, true,
+				       smc_cdc_rxed_any_close_or_senddone(conn), lgr);
 		} else {
 			bufsize += sizeof(struct smcd_cdc_msg);
 			memzero_explicit(conn->rmb_desc->cpu_addr, bufsize);
@@ -2639,7 +2640,7 @@ static int __smc_buf_create(struct smc_sock *smc, bool is_smcd, bool is_rmb)
 
 	if (!is_smcd) {
 		if (smcr_buf_map_usable_links(lgr, buf_desc, is_rmb)) {
-			smcr_buf_unuse(buf_desc, is_rmb, lgr);
+			smcr_buf_unuse(buf_desc, is_rmb, true, lgr);
 			return -ENOMEM;
 		}
 	}
@@ -2823,7 +2824,7 @@ void smc_rtoken_set2(struct smc_link_group *lgr, int rtok_idx, int link_id,
 }
 
 /* add a new rtoken from peer */
-int smc_rtoken_add(struct smc_link *lnk, __be64 nw_vaddr, __be32 nw_rkey)
+int smc_rtoken_add(struct smc_link *lnk, __be64 nw_vaddr, __be32 nw_rkey, bool add_if_not_found)
 {
 	struct smc_link_group *lgr = smc_get_lgr(lnk);
 	u64 dma_addr = be64_to_cpu(nw_vaddr);
@@ -2838,6 +2839,9 @@ int smc_rtoken_add(struct smc_link *lnk, __be64 nw_vaddr, __be32 nw_rkey)
 			return i;
 		}
 	}
+
+	if (!add_if_not_found)
+		return -1;
 	i = smc_rmb_reserve_rtoken_idx(lgr);
 	if (i < 0)
 		return i;
@@ -2859,17 +2863,15 @@ int smc_rtoken_delete(struct smc_link *lnk, __be32 nw_rkey)
 		    test_bit(i, lgr->rtokens_used_mask)) {
 			read_lock_bh(&lgr->conns_lock);
 			smc = smc_lgr_get_sock_by_rtoken(i, lgr);
-			read_unlock_bh(&lgr->conns_lock);
-			if (smc)
-				spin_lock_bh(&smc->conn.send_lock);
 
 			for (j = 0; j < SMC_LINKS_PER_LGR_MAX; j++) {
 				lgr->rtokens[i][j].rkey = 0;
 				lgr->rtokens[i][j].dma_addr = 0;
 			}
 			clear_bit(i, lgr->rtokens_used_mask);
-
+			read_unlock_bh(&lgr->conns_lock);
 			if (smc) {
+				spin_lock_bh(&smc->conn.send_lock);
 				smc->conn.rtoken_idx = SMC_RTOKEN_UNINITIALIZED;
 				spin_unlock_bh(&smc->conn.send_lock);
 				/* sock_hold in smc_lgr_get_sock_by_rtoken */
@@ -2884,10 +2886,13 @@ int smc_rtoken_delete(struct smc_link *lnk, __be32 nw_rkey)
 /* save rkey and dma_addr received from peer during clc handshake */
 int smc_rmb_rtoken_handling(struct smc_connection *conn,
 			    struct smc_link *lnk,
-			    struct smc_clc_msg_accept_confirm *clc)
+			    struct smc_clc_msg_accept_confirm *clc,
+				bool first_contact)
 {
+	read_lock_bh(&lnk->lgr->conns_lock);
 	conn->rtoken_idx = smc_rtoken_add(lnk, clc->r0.rmb_dma_addr,
-					  clc->r0.rmb_rkey);
+					  clc->r0.rmb_rkey, first_contact);
+	read_unlock_bh(&lnk->lgr->conns_lock);
 	if (conn->rtoken_idx < 0)
 		return conn->rtoken_idx;
 	return 0;
