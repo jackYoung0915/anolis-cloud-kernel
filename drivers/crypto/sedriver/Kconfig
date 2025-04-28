@@ -1,0 +1,12 @@
+#
+# se chip configuration
+#
+
+config SW_SE_CHIP
+	tristate "Loongson Secure Engine Cryptographic Accelerator"
+	depends on LOONGARCH
+	help
+	  This driver supports the Secure Engine (SE) cryptographic accelerator
+	  integrated in Loongson 3A5000/3C5000 processors. It provides hardware
+	  acceleration for AES, SHA-256, and RSA algorithms. Supports three
+	  compilation modes: built-in, module, and disabled.
