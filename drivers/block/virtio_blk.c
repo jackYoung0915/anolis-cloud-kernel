@@ -283,7 +283,7 @@ static void virtblk_rq_unmap(struct virtqueue *vq, struct virtblk_req *vbr)
 		virtblk_unmap_sg(vq, vbr->sg_table.sgl, DMA_TO_DEVICE);
 		virtblk_unmap_sg(vq, vbr->sg_table_extra.sgl, DMA_FROM_DEVICE);
 	} else {
-		if (req_op(req) == REQ_OP_WRITE)
+		if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
 			dir = DMA_TO_DEVICE;
 		else
 			dir = DMA_FROM_DEVICE;
