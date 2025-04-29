@@ -29,6 +29,12 @@ struct perf_mem_event perf_mem_events_amd[PERF_MEM_EVENTS__MAX] = {
 	E("mem-ldst",	"%s//",		NULL,	false,	0),
 };
 
+
+struct perf_mem_event perf_mem_events_amd_ldlat[PERF_MEM_EVENTS__MAX] = {
+	E(NULL,		NULL,		NULL,	false,	0),
+	E(NULL,		NULL,		NULL,	false,	0),
+	E("mem-ldst",	"%s/ldlat=%u/",	NULL,	true,	0),
+};
 bool is_mem_loads_aux_event(struct evsel *leader)
 {
 	struct perf_pmu *pmu = perf_pmus__find("cpu");
