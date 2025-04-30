@@ -214,6 +214,7 @@ config ARM64
 	select SYSCTL_EXCEPTION_TRACE
 	select THREAD_INFO_IN_TASK
 	select HAVE_LIVEPATCH
+	select ARCH_SUPPORTS_PT_RECLAIM
 	help
 	  ARM 64-bit (AArch64) Linux support.
 
