@@ -240,11 +240,9 @@ static void amdgpu_ih_handle_fix_work(struct work_struct *work)
 	struct amdgpu_device *adev =
 		container_of(work, struct amdgpu_device, irq.ih.fix_work);
 	struct amdgpu_ih_ring *ih = &adev->irq.ih;
-	struct amdgpu_iv_entry entry;
 
 	u32 wptr;
 	u32 old_rptr;
-	int restart_fg = 0;
 
 restart:
 
@@ -256,8 +254,6 @@ restart:
 	amdgpu_ih_fix_loongarch_pcie_order_start(&adev->irq.ih, old_rptr, wptr, true);
 
 	while (adev->irq.ih.rptr != wptr) {
-		u32 ring_index = adev->irq.ih.rptr >> 2;
-
 		amdgpu_irq_dispatch(adev, ih);
 		ih->rptr &= ih->ptr_mask;
 	}
@@ -269,7 +265,6 @@ restart:
 	mb();
 
 	if (ih->rptr != amdgpu_ih_get_wptr(adev, ih)) {
-		restart_fg = 1;
 		goto restart;
 	}
 
