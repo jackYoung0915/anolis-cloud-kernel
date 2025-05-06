@@ -41,6 +41,9 @@
 #include <linux/swapfile.h>
 #include <linux/iversion.h>
 #include <linux/zswap.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include "swap.h"
 
 static struct vfsmount *shm_mnt;
@@ -1780,7 +1783,17 @@ unsigned long shmem_allowable_huge_orders(struct inode *inode,
 		return 0;
 
 	/* If the hardware/firmware marked hugepage support disabled. */
+#ifdef CONFIG_VKERNEL
+	unsigned long flags = transparent_hugepage_flags;
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		flags = vk->mem_pref.thp_flags;
+	if (vk_thp_disabled_by_hw(flags))
+#else
 	if (transparent_hugepage_flags & (1 << TRANSPARENT_HUGEPAGE_UNSUPPORTED))
+#endif
 		return 0;
 
 	global_orders = shmem_huge_global_enabled(inode, index, write_end,

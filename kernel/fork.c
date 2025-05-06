@@ -103,6 +103,10 @@
 #include <linux/tick.h>
 #include <linux/fault_event.h>
 
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
+
 #include <asm/pgalloc.h>
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
@@ -2295,6 +2299,9 @@ __latent_entropy struct task_struct *copy_process(
 	struct file *pidfile = NULL;
 	const u64 clone_flags = args->flags;
 	struct nsproxy *nsp = current->nsproxy;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	/*
 	 * Don't allow sharing the root directory with processes in a different
@@ -2426,6 +2433,12 @@ __latent_entropy struct task_struct *copy_process(
 	 * to stop root fork bombs.
 	 */
 	retval = -EAGAIN;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	/* Vkernel: Check vkernel data race */
+	if (vk && data_race(vk->sysctl_kernel.nr_threads >= vk->sysctl_kernel.max_threads))
+		goto bad_fork_cleanup_count;
+#endif
 	if (data_race(nr_threads >= max_threads))
 		goto bad_fork_cleanup_count;
 
@@ -2763,6 +2776,10 @@ __latent_entropy struct task_struct *copy_process(
 					  &p->signal->thread_head);
 		}
 		attach_pid(p, PIDTYPE_PID);
+#ifdef CONFIG_VKERNEL
+		if (vk)
+			vk->sysctl_kernel.nr_threads++;
+#endif
 		nr_threads++;
 	}
 	total_forks++;
@@ -3616,6 +3633,13 @@ int sysctl_max_threads(struct ctl_table *table, int write,
 	int threads = max_threads;
 	int min = 1;
 	int max = MAX_THREADS;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		threads = vk->sysctl_kernel.max_threads;
+#endif
 
 	t = *table;
 	t.data = &threads;
@@ -3626,7 +3650,14 @@ int sysctl_max_threads(struct ctl_table *table, int write,
 	if (ret || !write)
 		return ret;
 
+#ifdef CONFIG_VKERNEL
+	if (vk)
+		vk->sysctl_kernel.max_threads = threads;
+	else
+		max_threads = threads;
+#else
 	max_threads = threads;
+#endif
 
 	return 0;
 }

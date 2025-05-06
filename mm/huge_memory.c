@@ -41,6 +41,9 @@
 #include <linux/compat.h>
 #include <linux/page_dup.h>
 
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
 #include "internal.h"
@@ -93,6 +96,14 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 					 unsigned long orders)
 {
 	unsigned long supported_orders;
+#ifdef CONFIG_VKERNEL
+	unsigned long flags = transparent_hugepage_flags;
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		flags = vk->mem_pref.thp_flags;
+#endif
 
 	/* Check the intersection of requested and supported orders. */
 	if (vma_is_anonymous(vma))
@@ -109,7 +120,11 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 	if (!vma->vm_mm)		/* vdso */
 		return 0;
 
+#ifdef CONFIG_VKERNEL
+	if (vk_thp_disabled_by_hw(flags) || vma_thp_disabled(vma, vm_flags))
+#else
 	if (thp_disabled_by_hw() || vma_thp_disabled(vma, vm_flags))
+#endif
 		return false;
 
 	/* khugepaged doesn't collapse DAX vma, but page fault is fine. */
@@ -161,9 +176,15 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
 		 * Enforce sysfs THP requirements as necessary. Anonymous vmas
 		 * were already handled in thp_vma_allowable_orders().
 		 */
+#ifdef CONFIG_VKERNEL
+		if (enforce_sysfs &&
+		    (!vk_hugepage_flags_enabled(flags) || (!(vm_flags & VM_HUGEPAGE) &&
+						   !vk_hugepage_flags_always(flags))))
+#else
 		if (enforce_sysfs &&
 		    (!hugepage_global_enabled() || (!(vm_flags & VM_HUGEPAGE) &&
 						    !hugepage_global_always())))
+#endif
 			return 0;
 
 		/*
@@ -1283,6 +1304,14 @@ static vm_fault_t __do_huge_pmd_anonymous_page(struct vm_fault *vmf,
 	pgtable_t pgtable;
 	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
 	vm_fault_t ret = 0;
+#ifdef CONFIG_VKERNEL
+	unsigned long flags = transparent_hugepage_flags;
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		flags = vk->mem_pref.thp_flags;
+#endif
 
 	VM_BUG_ON_FOLIO(!folio_test_large(folio), folio);
 
@@ -1369,23 +1398,33 @@ release:
 gfp_t vma_thp_gfp_mask(struct vm_area_struct *vma)
 {
 	const bool vma_madvised = vma && (vma->vm_flags & VM_HUGEPAGE);
+	unsigned long *flags = &transparent_hugepage_flags;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		flags = &vk->mem_pref.thp_flags;
+
+	/* FIXME: should we both check global and local flags? */
+#endif
 
 	/* Always do synchronous compaction */
-	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags))
+	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, flags))
 		return GFP_TRANSHUGE | (vma_madvised ? 0 : __GFP_NORETRY);
 
 	/* Kick kcompactd and fail quickly */
-	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, &transparent_hugepage_flags))
+	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, flags))
 		return GFP_TRANSHUGE_LIGHT | __GFP_KSWAPD_RECLAIM;
 
 	/* Synchronous compaction if madvised, otherwise kick kcompactd */
-	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, &transparent_hugepage_flags))
+	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, flags))
 		return GFP_TRANSHUGE_LIGHT |
 			(vma_madvised ? __GFP_DIRECT_RECLAIM :
 					__GFP_KSWAPD_RECLAIM);
 
 	/* Only do synchronous compaction if madvised */
-	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, &transparent_hugepage_flags))
+	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, flags))
 		return GFP_TRANSHUGE_LIGHT |
 		       (vma_madvised ? __GFP_DIRECT_RECLAIM : 0);
 
@@ -1420,9 +1459,22 @@ vm_fault_t do_huge_pmd_anonymous_page(struct vm_fault *vmf)
 		return VM_FAULT_OOM;
 	khugepaged_enter_vma(vma, vma->vm_flags);
 
+#ifdef CONFIG_VKERNEL
+	unsigned long flags = transparent_hugepage_flags;
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		flags = vk->mem_pref.thp_flags;
+#endif
+
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
 			!mm_forbids_zeropage(vma->vm_mm) &&
+#ifdef CONFIG_VKERNEL
+			vk_transparent_hugepage_use_zero_page(flags)) {
+#else
 			transparent_hugepage_use_zero_page()) {
+#endif
 		pgtable_t pgtable;
 		struct page *zero_page;
 		vm_fault_t ret;

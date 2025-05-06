@@ -3,6 +3,9 @@
 #include <linux/compat.h>
 #include <linux/syscalls.h>
 #include <linux/time_namespace.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include "futex.h"
 
@@ -87,6 +90,13 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 {
 	int cmd = op & FUTEX_CMD_MASK;
 	unsigned int flags = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && vk->syscall.do_futex)
+		return vk->syscall.do_futex(uaddr, op, val, timeout, uaddr2, val2, val3);
+#endif
 
 	if (!(op & FUTEX_PRIVATE_FLAG))
 		flags |= FLAGS_SHARED;

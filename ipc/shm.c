@@ -44,6 +44,9 @@
 #include <linux/mount.h>
 #include <linux/ipc_namespace.h>
 #include <linux/rhashtable.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/uaccess.h>
 
@@ -757,6 +760,18 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 		file = hugetlb_file_setup(name, hugesize, acctflag,
 				HUGETLB_SHMFS_INODE, (shmflg >> SHM_HUGE_SHIFT) & SHM_HUGE_MASK);
 	} else {
+#ifdef CONFIG_VKERNEL
+		struct vkernel *vk;
+
+		vk = vkernel_find_vk_by_task(current);
+		if (vk) {
+			if  ((shmflg & SHM_NORESERVE) &&
+					vk->sysctl_vm.overcommit_memory != OVERCOMMIT_NEVER)
+				acctflag = VM_NORESERVE;
+		} else if  ((shmflg & SHM_NORESERVE) &&
+				sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+			acctflag = VM_NORESERVE;
+#else
 		/*
 		 * Do not allow no accounting for OVERCOMMIT_NEVER, even
 		 * if it's asked for.
@@ -764,6 +779,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 		if  ((shmflg & SHM_NORESERVE) &&
 				sysctl_overcommit_memory != OVERCOMMIT_NEVER)
 			acctflag = VM_NORESERVE;
+#endif
 		file = shmem_kernel_file_setup(name, size, acctflag);
 	}
 	error = PTR_ERR(file);

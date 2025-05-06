@@ -72,6 +72,9 @@
 #ifdef CONFIG_TEXT_UNEVICTABLE
 #include <linux/unevictable.h>
 #endif
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
@@ -125,6 +128,13 @@ late_initcall(kernel_exit_sysfs_init);
 
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		vk->sysctl_kernel.nr_threads--;
+#endif
 	nr_threads--;
 	detach_pid(p, PIDTYPE_PID);
 	if (group_dead) {

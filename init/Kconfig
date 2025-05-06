@@ -1300,6 +1300,26 @@ config NET_NS
 	  Allow user space to create what appear to be multiple instances
 	  of the network stack.
 
+config VKERNEL
+	bool "Virtual Kernel support"
+	def_bool n
+	depends on X86_64 || ARM64
+	help
+	  This option enables the kernel to support the vkernel system.
+	  VKernel provides more fine-grained isolation and customization
+	  for the containers, such as syscall isolation, file access
+	  protection, capability enhancement, and etc.
+
+config VKERNEL_DRIVER
+	tristate "Virtual Kernel driver"
+	depends on VKERNEL
+	default m
+	help
+	  Enables vkernel kernel drivers.
+	  This driver provides real policies for vkernel, such as syscall
+	  rules, file rule, capability rule, and etc. Additional custom
+	  module plugins can also be registered to this driver.
+
 endif # NAMESPACES
 
 config CHECKPOINT_RESTORE

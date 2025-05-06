@@ -20,6 +20,9 @@
 #include <linux/ratelimit.h>
 #include <linux/list_lru.h>
 #include <linux/iversion.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include <trace/events/writeback.h>
 #include "internal.h"
 
@@ -158,6 +161,9 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	static const struct inode_operations empty_iops;
 	static const struct file_operations no_open_fops = {.open = no_open};
 	struct address_space *const mapping = &inode->i_data;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
@@ -231,6 +237,11 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 
 	if (unlikely(security_inode_alloc(inode)))
 		return -ENOMEM;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		this_cpu_inc(*vk->sysctl_fs.nr_inodes);
+#endif
 	this_cpu_inc(nr_inodes);
 
 	return 0;
@@ -281,6 +292,10 @@ static struct inode *alloc_inode(struct super_block *sb)
 
 void __destroy_inode(struct inode *inode)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
+
 	BUG_ON(inode_has_buffers(inode));
 	inode_detach_wb(inode);
 	security_inode_free(inode);
@@ -296,6 +311,11 @@ void __destroy_inode(struct inode *inode)
 		posix_acl_release(inode->i_acl);
 	if (inode->i_default_acl && !is_uncached_acl(inode->i_default_acl))
 		posix_acl_release(inode->i_default_acl);
+#endif
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		this_cpu_dec(*vk->sysctl_fs.nr_inodes);
 #endif
 	this_cpu_dec(nr_inodes);
 }
@@ -455,6 +475,10 @@ EXPORT_SYMBOL(ihold);
 
 static void __inode_add_lru(struct inode *inode, bool rotate)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
+
 	if (inode->i_state & (I_DIRTY_ALL | I_SYNC | I_FREEING | I_WILL_FREE))
 		return;
 	if (atomic_read(&inode->i_count))
@@ -464,8 +488,14 @@ static void __inode_add_lru(struct inode *inode, bool rotate)
 	if (!mapping_shrinkable(&inode->i_data))
 		return;
 
-	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
+	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru)) {
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (vk)
+			this_cpu_inc(*vk->sysctl_fs.nr_unused);
+#endif
 		this_cpu_inc(nr_unused);
+	}
 	else if (rotate)
 		inode->i_state |= I_REFERENCED;
 }
@@ -482,8 +512,16 @@ void inode_add_lru(struct inode *inode)
 
 static void inode_lru_list_del(struct inode *inode)
 {
-	if (list_lru_del(&inode->i_sb->s_inode_lru, &inode->i_lru))
+	if (list_lru_del(&inode->i_sb->s_inode_lru, &inode->i_lru)) {
+#ifdef CONFIG_VKERNEL
+		struct vkernel *vk;
+
+		vk = vkernel_find_vk_by_task(current);
+		if (vk)
+			this_cpu_dec(*vk->sysctl_fs.nr_unused);
+#endif
 		this_cpu_dec(nr_unused);
+	}
 }
 
 static void inode_pin_lru_isolating(struct inode *inode)
@@ -849,6 +887,11 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 {
 	struct list_head *freeable = arg;
 	struct inode	*inode = container_of(item, struct inode, i_lru);
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+#endif
 
 	/*
 	 * We are inverting the lru lock/inode->i_lock here, so use a
@@ -868,6 +911,10 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	    !mapping_shrinkable(&inode->i_data)) {
 		list_lru_isolate(lru, &inode->i_lru);
 		spin_unlock(&inode->i_lock);
+#ifdef CONFIG_VKERNEL
+		if (vk)
+			this_cpu_dec(*vk->sysctl_fs.nr_unused);
+#endif
 		this_cpu_dec(nr_unused);
 		return LRU_REMOVED;
 	}
@@ -907,6 +954,10 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	list_lru_isolate_move(lru, &inode->i_lru, freeable);
 	spin_unlock(&inode->i_lock);
 
+#ifdef CONFIG_VKERNEL
+	if (vk)
+		this_cpu_dec(*vk->sysctl_fs.nr_unused);
+#endif
 	this_cpu_dec(nr_unused);
 	return LRU_REMOVED;
 }

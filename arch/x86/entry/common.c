@@ -19,6 +19,9 @@
 #include <linux/nospec.h>
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #ifdef CONFIG_XEN_PV
 #include <xen/xen-ops.h>
@@ -45,10 +48,26 @@ static __always_inline bool do_syscall_x64(struct pt_regs *regs, int nr)
 	 * numbers for comparisons.
 	 */
 	unsigned int unr = nr;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (likely(unr < NR_syscalls)) {
 		unr = array_index_nospec(unr, NR_syscalls);
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (!vk)
+			regs->ax = sys_call_table[unr](regs);
+		else {
+			this_cpu_write(current_syscall_task, current);
+			this_cpu_write(current_syscall_vk, vk);
+			regs->ax = (vk->syscall.table)[unr](regs);
+			this_cpu_write(current_syscall_vk, NULL);
+			this_cpu_write(current_syscall_task, NULL);
+		}
+#else
 		regs->ax = x64_sys_call(regs, unr);
+#endif
 		return true;
 	}
 	return false;

@@ -18,6 +18,10 @@
 #include <linux/cma.h>
 #endif
 #include <linux/zswap.h>
+#include <linux/memcontrol.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include <asm/page.h>
 #include "internal.h"
 #include <linux/pid_namespace.h>
@@ -35,6 +39,7 @@ static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 static int meminfo_proc_show(struct seq_file *m, void *v)
 {
 	struct sysinfo i;
+	unsigned long commit_limit;
 	unsigned long committed;
 	unsigned long sreclaimable, sunreclaim;
 	int lru;
@@ -48,6 +53,18 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		memcg = rich_container_get_memcg();
 	}
 	rcu_read_unlock();
+#endif
+
+#if defined(CONFIG_VKERNEL) && defined(CONFIG_MEMCG)
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (!memcg)
+		memcg = mem_cgroup_from_task(current);
+	if (vk && memcg)
+		commit_limit = vk_vm_commit_limit(&vk->sysctl_vm, memcg);
+#else
+	commit_limit = vm_commit_limit();
 #endif
 
 	if (!memcg) {
@@ -151,7 +168,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "Bounce:         ",
 		    global_zone_page_state(NR_BOUNCE));
 	show_val_kb(m, "WritebackTmp:   ", ext.writeback_temp);
-	show_val_kb(m, "CommitLimit:    ", vm_commit_limit());
+	show_val_kb(m, "CommitLimit:    ", commit_limit);
 	show_val_kb(m, "Committed_AS:   ", committed);
 	seq_printf(m, "VmallocTotal:   %8lu kB\n",
 		   (unsigned long)VMALLOC_TOTAL >> 10);

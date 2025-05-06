@@ -32,6 +32,9 @@
 #include <linux/fs_context.h>
 #include <linux/shmem_fs.h>
 #include <linux/mnt_idmapping.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include "pnode.h"
 #include "internal.h"
@@ -2208,6 +2211,13 @@ int count_mounts(struct mnt_namespace *ns, struct mount *mnt)
 	unsigned int max = READ_ONCE(sysctl_mount_max);
 	unsigned int mounts = 0;
 	struct mount *p;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && ns->mounts > READ_ONCE(vk->sysctl_fs.mount_max))
+		return -ENOSPC;
+#endif
 
 	if (ns->mounts >= max)
 		return -ENOSPC;

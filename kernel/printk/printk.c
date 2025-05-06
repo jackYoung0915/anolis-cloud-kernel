@@ -47,6 +47,9 @@
 #include <linux/sched/clock.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <asm/sections.h>
@@ -1112,6 +1115,9 @@ static unsigned int __init add_to_rb(struct printk_ringbuffer *rb,
 	dest_r.info->flags = r->info->flags;
 	dest_r.info->ts_nsec = r->info->ts_nsec;
 	dest_r.info->caller_id = r->info->caller_id;
+#ifdef CONFIG_VKERNEL
+	dest_r.info->ns = r->info->ns;
+#endif
 	memcpy(&dest_r.info->dev_info, &r->info->dev_info, sizeof(dest_r.info->dev_info));
 
 	prb_final_commit(&e);
@@ -2205,6 +2211,9 @@ int vprintk_store(int facility, int level,
 #ifdef CONFIG_SW64_RRK
 	extern void sw64_printk(const char *fmt, va_list args);
 #endif
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (!printk_enter_irqsave(recursion_ptr, irqflags))
 		return 0;
@@ -2290,6 +2299,11 @@ int vprintk_store(int facility, int level,
 	r.info->flags = flags & 0x1f;
 	r.info->ts_nsec = ts_nsec;
 	r.info->caller_id = caller_id;
+#ifdef CONFIG_VKERNEL
+	/* Set log namespace (host can set any invalid value) */
+	vk = vkernel_find_vk_by_task(current);
+	r.info->ns = vk ? vk->log_ns : 0;
+#endif
 	if (dev_info)
 		memcpy(&r.info->dev_info, dev_info, sizeof(r.info->dev_info));
 

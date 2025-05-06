@@ -24,6 +24,9 @@
 #include <linux/sizes.h>
 #include <linux/compat.h>
 
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include <linux/uaccess.h>
 
 #include "internal.h"
@@ -916,6 +919,28 @@ unsigned long vm_commit_limit(void)
 	return allowed;
 }
 
+#if defined(CONFIG_VKERNEL) && defined(CONFIG_MEMCG)
+unsigned long vk_vm_commit_limit(struct vkernel_sysctl_vm *vm,
+	struct mem_cgroup *memcg)
+{
+	unsigned long allowed;
+	struct mem_cgroup *iter;
+	unsigned long limit;
+
+	if (vm->overcommit_kbytes)
+		allowed = vm->overcommit_kbytes >> (PAGE_SHIFT - 10);
+	else {
+		limit = totalram_pages() - hugetlb_total_pages();
+		for (iter = memcg; iter; iter = parent_mem_cgroup(iter))
+			limit = min(limit, iter->memory.max);
+		allowed = (limit * vm->overcommit_ratio / 100);
+	}
+	allowed += min_t(unsigned long, total_swap_pages, memcg->swap.max);
+
+	return allowed;
+}
+#endif
+
 /*
  * Make sure vm_committed_as in one cacheline and not cacheline shared with
  * other variables. It can be updated by several CPUs frequently.
@@ -937,9 +962,29 @@ struct percpu_counter vm_committed_as ____cacheline_aligned_in_smp;
  */
 unsigned long vm_memory_committed(void)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		return percpu_counter_sum_positive(&vk->sysctl_vm.vm_committed_as);
+#endif
 	return percpu_counter_sum_positive(&vm_committed_as);
 }
 EXPORT_SYMBOL_GPL(vm_memory_committed);
+
+#ifdef CONFIG_VKERNEL
+void vm_acct_memory(long pages)
+{
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		percpu_counter_add_batch(&vk->sysctl_vm.vm_committed_as, pages,
+			vk->sysctl_vm.as_batch);
+	percpu_counter_add_batch(&vm_committed_as, pages, vm_committed_as_batch);
+}
+#endif
 
 /*
  * Check that a process has enough memory to allocate a new virtual
@@ -960,16 +1005,34 @@ EXPORT_SYMBOL_GPL(vm_memory_committed);
 int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 {
 	long allowed;
+	int overcommit = sysctl_overcommit_memory;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#ifdef CONFIG_MEMCG
+	struct mem_cgroup *memcg;
+	long memcg_allowed;
+#endif
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk) {
+		overcommit = vk->sysctl_vm.overcommit_memory;
+#ifdef CONFIG_MEMCG
+		memcg = mem_cgroup_from_task(current);
+		if (memcg)
+			memcg_allowed = vk_vm_commit_limit(&vk->sysctl_vm, memcg);
+#endif
+	}
+#endif
 
 	vm_acct_memory(pages);
 
 	/*
 	 * Sometimes we want to use more memory than we have
 	 */
-	if (sysctl_overcommit_memory == OVERCOMMIT_ALWAYS)
+	if (overcommit == OVERCOMMIT_ALWAYS)
 		return 0;
 
-	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
+	if (overcommit == OVERCOMMIT_GUESS) {
 		if (pages > totalram_pages() + total_swap_pages)
 			goto error;
 		return 0;
@@ -990,6 +1053,12 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 
 		allowed -= min_t(long, mm->total_vm / 32, reserve);
 	}
+
+#if defined(CONFIG_VKERNEL) && defined(CONFIG_MEMCG)
+	if (vk &&
+	    percpu_counter_read_positive(&vk->sysctl_vm.vm_committed_as) < memcg_allowed)
+		return 0;
+#endif
 
 	if (percpu_counter_read_positive(&vm_committed_as) < allowed)
 		return 0;
