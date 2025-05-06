@@ -5,6 +5,9 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/bug.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include "printk_ringbuffer.h"
 
 /**
@@ -1803,6 +1806,14 @@ static int prb_read(struct printk_ringbuffer *rb, u64 seq,
 	struct prb_desc desc;
 	unsigned long id;
 	int err;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	/* Skip record when reading log owned by other ns */
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && vk->log_ns != info->ns)
+		return -ENOENT;
+#endif
 
 	/* Extract the ID, used to specify the descriptor to read. */
 	id = DESC_ID(atomic_long_read(state_var));

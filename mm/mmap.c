@@ -48,6 +48,9 @@
 #include <linux/sched/mm.h>
 #include <linux/ksm.h>
 
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
@@ -1196,7 +1199,16 @@ struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma)
  */
 static inline unsigned long round_hint_to_min(unsigned long hint)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
+
 	hint &= PAGE_MASK;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && ((void *)hint != NULL) && (hint < vk->sysctl_vm.mmap_min_addr))
+		hint = PAGE_ALIGN(vk->sysctl_vm.mmap_min_addr);
+#endif
 	if (((void *)hint != NULL) &&
 	    (hint < mmap_min_addr))
 		return PAGE_ALIGN(mmap_min_addr);
@@ -1263,6 +1275,9 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 {
 	struct mm_struct *mm = current->mm;
 	int pkey = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	*populate = 0;
 
@@ -1296,6 +1311,11 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		return -EOVERFLOW;
 
 	/* Too many mappings? */
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && mm->map_count > vk->sysctl_vm.max_map_count)
+		return -ENOMEM;
+#endif
 	if (mm->map_count > sysctl_max_map_count)
 		return -ENOMEM;
 
@@ -1419,6 +1439,13 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	 * memory use of this mapping.
 	 */
 	if (flags & MAP_NORESERVE) {
+#ifdef CONFIG_VKERNEL
+		if (vk) {
+			if (vk->sysctl_vm.overcommit_memory != OVERCOMMIT_NEVER)
+				vm_flags |= VM_NORESERVE;
+		} else if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+			vm_flags |= VM_NORESERVE;
+#else
 		/* We honor MAP_NORESERVE if allowed to overcommit */
 		if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
 			vm_flags |= VM_NORESERVE;
@@ -1426,6 +1453,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		/* hugetlb applies strict overcommit unless MAP_NORESERVE */
 		if (file && is_file_hugepages(file))
 			vm_flags |= VM_NORESERVE;
+#endif
 	}
 
 	addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
@@ -1622,6 +1650,9 @@ static unsigned long unmapped_area(struct vm_unmapped_area_info *info)
 	unsigned long length, gap;
 	unsigned long low_limit, high_limit;
 	struct vm_area_struct *tmp;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	MA_STATE(mas, &current->mm->mm_mt, 0, 0);
 
@@ -1631,6 +1662,11 @@ static unsigned long unmapped_area(struct vm_unmapped_area_info *info)
 		return -ENOMEM;
 
 	low_limit = info->low_limit;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && low_limit < vk->sysctl_vm.mmap_min_addr)
+		low_limit = vk->sysctl_vm.mmap_min_addr;
+#endif
 	if (low_limit < mmap_min_addr)
 		low_limit = mmap_min_addr;
 	high_limit = info->high_limit;
@@ -1674,6 +1710,9 @@ static unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 	unsigned long length, gap, gap_end;
 	unsigned long low_limit, high_limit;
 	struct vm_area_struct *tmp;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	MA_STATE(mas, &current->mm->mm_mt, 0, 0);
 	/* Adjust search length to account for worst case alignment overhead */
@@ -1682,6 +1721,11 @@ static unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 		return -ENOMEM;
 
 	low_limit = info->low_limit;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && low_limit < vk->sysctl_vm.mmap_min_addr)
+		low_limit = vk->sysctl_vm.mmap_min_addr;
+#endif
 	if (low_limit < mmap_min_addr)
 		low_limit = mmap_min_addr;
 	high_limit = info->high_limit;
@@ -1753,6 +1797,13 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 	struct vm_area_struct *vma, *prev;
 	struct vm_unmapped_area_info info;
 	const unsigned long mmap_end = arch_get_mmap_end(addr, len, flags);
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && len > mmap_end - vk->sysctl_vm.mmap_min_addr)
+		return -ENOMEM;
+#endif
 
 	if (len > mmap_end - mmap_min_addr)
 		return -ENOMEM;
@@ -1764,6 +1815,9 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 		addr = PAGE_ALIGN(addr);
 		vma = find_vma_prev(mm, addr, &prev);
 		if (mmap_end - len >= addr && addr >= mmap_min_addr &&
+#ifdef CONFIG_VKERNEL
+		    (!vk || addr >= vk->sysctl_vm.mmap_min_addr) &&
+#endif
 		    (!vma || addr + len <= vm_start_gap(vma)) &&
 		    (!prev || addr >= vm_end_gap(prev)))
 			return addr;
@@ -1801,6 +1855,13 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 	struct mm_struct *mm = current->mm;
 	struct vm_unmapped_area_info info;
 	const unsigned long mmap_end = arch_get_mmap_end(addr, len, flags);
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && len > mmap_end - vk->sysctl_vm.mmap_min_addr)
+		return -ENOMEM;
+#endif
 
 	/* requested length too big for entire address space */
 	if (len > mmap_end - mmap_min_addr)
@@ -1814,6 +1875,9 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 		addr = PAGE_ALIGN(addr);
 		vma = find_vma_prev(mm, addr, &prev);
 		if (mmap_end - len >= addr && addr >= mmap_min_addr &&
+#ifdef CONFIG_VKERNEL
+				(!vk || addr >= vk->sysctl_vm.mmap_min_addr) &&
+#endif
 				(!vma || addr + len <= vm_start_gap(vma)) &&
 				(!prev || addr >= vm_end_gap(prev)))
 			return addr;
@@ -2121,11 +2185,19 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	MA_STATE(mas, &mm->mm_mt, vma->vm_start, vma->vm_start);
 	struct vm_area_struct *prev;
 	int error = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (!(vma->vm_flags & VM_GROWSDOWN))
 		return -EFAULT;
 
 	address &= PAGE_MASK;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && address < vk->sysctl_vm.mmap_min_addr)
+		return -EPERM;
+#endif
 	if (address < mmap_min_addr || address < FIRST_USER_ADDRESS)
 		return -EPERM;
 
@@ -2498,6 +2570,13 @@ out_free_vma:
 int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	      unsigned long addr, int new_below)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && vma->vm_mm->map_count >= vk->sysctl_vm.max_map_count)
+		return -ENOMEM;
+#endif
 	if (vma->vm_mm->map_count >= sysctl_max_map_count)
 		return -ENOMEM;
 
@@ -2529,6 +2608,10 @@ do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	int error = -ENOMEM;
 	unsigned long locked_vm = 0;
 	MA_STATE(mas_detach, &mt_detach, 0, 0);
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
+
 	mt_init_flags(&mt_detach, vmi->mas.tree->ma_flags & MT_FLAGS_LOCK_MASK);
 	mt_on_stack(mt_detach);
 
@@ -2548,6 +2631,11 @@ do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		 * not exceed its limit; but let map_count go just above
 		 * its limit temporarily, to help free resources as expected.
 		 */
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (vk && mm->map_count >= vk->sysctl_vm.max_map_count)
+			goto map_count_exceeded;
+#endif
 		if (end < vma->vm_end && mm->map_count >= sysctl_max_map_count)
 			goto map_count_exceeded;
 
@@ -3197,6 +3285,9 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 {
 	struct mm_struct *mm = current->mm;
 	struct vma_prepare vp;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	/*
 	 * Check against address space limits by the changed size
@@ -3206,6 +3297,11 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	if (!may_expand_vm(mm, flags, len >> PAGE_SHIFT))
 		return -ENOMEM;
 
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && mm->map_count > vk->sysctl_vm.max_map_count)
+		return -ENOMEM;
+#endif
 	if (mm->map_count > sysctl_max_map_count)
 		return -ENOMEM;
 

@@ -7,6 +7,9 @@
 #include <linux/ptrace.h>
 #include <linux/randomize_kstack.h>
 #include <linux/syscalls.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <asm/debug-monitors.h>
 #include <asm/exception.h>
@@ -42,13 +45,31 @@ static void invoke_syscall(struct pt_regs *regs, unsigned int scno,
 			   const syscall_fn_t syscall_table[])
 {
 	long ret;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	add_random_kstack_offset();
 
 	if (scno < sc_nr) {
 		syscall_fn_t syscall_fn;
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (!vk) {
+			syscall_fn = syscall_table[array_index_nospec(scno, sc_nr)];
+			ret = __invoke_syscall(regs, syscall_fn);
+		} else {
+			syscall_fn = (vk->syscall.table)[array_index_nospec(scno, sc_nr)];
+			this_cpu_write(current_syscall_task, current);
+			this_cpu_write(current_syscall_vk, vk);
+			ret = __invoke_syscall(regs, syscall_fn);
+			this_cpu_write(current_syscall_vk, NULL);
+			this_cpu_write(current_syscall_task, NULL);
+		}
+#else
 		syscall_fn = syscall_table[array_index_nospec(scno, sc_nr)];
 		ret = __invoke_syscall(regs, syscall_fn);
+#endif
 	} else {
 		ret = do_ni_syscall(regs, scno);
 	}

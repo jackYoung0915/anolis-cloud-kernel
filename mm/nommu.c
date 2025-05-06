@@ -34,6 +34,9 @@
 #include <linux/syscalls.h>
 #include <linux/audit.h>
 #include <linux/printk.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <linux/uio.h>
@@ -1318,6 +1321,9 @@ int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	struct vm_region *region;
 	unsigned long npages;
 	struct mm_struct *mm;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	/* we're only permitted to split anonymous regions (these should have
 	 * only a single usage on the region) */
@@ -1325,6 +1331,11 @@ int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		return -ENOMEM;
 
 	mm = vma->vm_mm;
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && mm->map_count >= vk->sysctl_kernel.max_map_count)
+		return -ENOMEM;
+#endif
 	if (mm->map_count >= sysctl_max_map_count)
 		return -ENOMEM;
 

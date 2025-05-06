@@ -22,6 +22,9 @@
 #include <linux/close_range.h>
 #include <net/sock.h>
 #include <linux/init_task.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include "internal.h"
 
@@ -103,6 +106,9 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 {
 	struct fdtable *fdt;
 	void *data;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	/*
 	 * Figure out how many fds we actually want to support in this fdtable.
@@ -123,6 +129,11 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 	 * We make sure that nr remains a multiple of BITS_PER_LONG - otherwise
 	 * bitmaps handling below becomes unpleasant, to put it mildly...
 	 */
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && unlikely(nr > vk->sysctl_fs.nr_open))
+		nr = ((vk->sysctl_fs.nr_open - 1) | (BITS_PER_LONG - 1)) + 1;
+#endif
 	if (unlikely(nr > sysctl_nr_open))
 		nr = ((sysctl_nr_open - 1) | (BITS_PER_LONG - 1)) + 1;
 
@@ -214,6 +225,9 @@ static int expand_files(struct files_struct *files, unsigned int nr)
 {
 	struct fdtable *fdt;
 	int expanded = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 repeat:
 	fdt = files_fdtable(files);
@@ -223,6 +237,11 @@ repeat:
 		return expanded;
 
 	/* Can we expand? */
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && nr >= vk->sysctl_fs.nr_open)
+		return -EMFILE;
+#endif
 	if (nr >= sysctl_nr_open)
 		return -EMFILE;
 

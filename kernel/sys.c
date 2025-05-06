@@ -64,6 +64,9 @@
 #include <linux/rcupdate.h>
 #include <linux/uidgid.h>
 #include <linux/cred.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #include <linux/nospec.h>
 
@@ -1457,6 +1460,9 @@ static int do_prlimit(struct task_struct *tsk, unsigned int resource,
 {
 	struct rlimit *rlim;
 	int retval = 0;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (resource >= RLIM_NLIMITS)
 		return -EINVAL;
@@ -1465,6 +1471,12 @@ static int do_prlimit(struct task_struct *tsk, unsigned int resource,
 	if (new_rlim) {
 		if (new_rlim->rlim_cur > new_rlim->rlim_max)
 			return -EINVAL;
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (vk && resource == RLIMIT_NOFILE &&
+				new_rlim->rlim_max > vk->sysctl_fs.nr_open)
+			return -EPERM;
+#endif
 		if (resource == RLIMIT_NOFILE &&
 				new_rlim->rlim_max > sysctl_nr_open)
 			return -EPERM;
@@ -1928,6 +1940,9 @@ static int validate_prctl_map_addr(struct prctl_mm_map *prctl_map)
 {
 	unsigned long mmap_max_addr = TASK_SIZE;
 	int error = -EINVAL, i;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	static const unsigned char offsets[] = {
 		offsetof(struct prctl_mm_map, start_code),
@@ -1950,6 +1965,11 @@ static int validate_prctl_map_addr(struct prctl_mm_map *prctl_map)
 	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
 		u64 val = *(u64 *)((char *)prctl_map + offsets[i]);
 
+#ifdef CONFIG_VKERNEL
+		vk = vkernel_find_vk_by_task(current);
+		if (vk && (unsigned long)val < vk->sysctl_vm.mmap_min_addr)
+			goto out;
+#endif
 		if ((unsigned long)val >= mmap_max_addr ||
 		    (unsigned long)val < mmap_min_addr)
 			goto out;
@@ -2135,6 +2155,9 @@ static int prctl_set_mm(int opt, unsigned long addr,
 	};
 	struct vm_area_struct *vma;
 	int error;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+#endif
 
 	if (arg5 || (arg4 && (opt != PR_SET_MM_AUXV &&
 			      opt != PR_SET_MM_MAP &&
@@ -2155,6 +2178,11 @@ static int prctl_set_mm(int opt, unsigned long addr,
 	if (opt == PR_SET_MM_AUXV)
 		return prctl_set_auxv(mm, addr, arg4);
 
+#ifdef CONFIG_VKERNEL
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && addr < vk->sysctl_vm.mmap_min_addr)
+		return -EINVAL;
+#endif
 	if (addr >= TASK_SIZE || addr < mmap_min_addr)
 		return -EINVAL;
 

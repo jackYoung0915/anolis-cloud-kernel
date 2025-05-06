@@ -24,6 +24,9 @@
 #include <linux/parser.h>
 #include <linux/fsnotify.h>
 #include <linux/seq_file.h>
+#ifdef CONFIG_VKERNEL
+#include <linux/vkernel.h>
+#endif
 
 #define DEVPTS_DEFAULT_MODE 0600
 /*
@@ -512,6 +515,15 @@ static struct file_system_type devpts_fs_type = {
 int devpts_new_index(struct pts_fs_info *fsi)
 {
 	int index = -ENOSPC;
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk && atomic_inc_return(&vk->sysctl_kernel.pty_count) >=
+			(vk->sysctl_kernel.pty_limit -
+			(fsi->mount_opts.reserve ? 0 : vk->sysctl_kernel.pty_reserve)))
+		goto out;
+#endif
 
 	if (atomic_inc_return(&pty_count) >= (pty_limit -
 			  (fsi->mount_opts.reserve ? 0 : pty_reserve)))
@@ -521,13 +533,25 @@ int devpts_new_index(struct pts_fs_info *fsi)
 			GFP_KERNEL);
 
 out:
-	if (index < 0)
+	if (index < 0) {
+#ifdef CONFIG_VKERNEL
+		if (vk)
+			atomic_dec(&vk->sysctl_kernel.pty_count);
+#endif
 		atomic_dec(&pty_count);
+	}
 	return index;
 }
 
 void devpts_kill_index(struct pts_fs_info *fsi, int idx)
 {
+#ifdef CONFIG_VKERNEL
+	struct vkernel *vk;
+
+	vk = vkernel_find_vk_by_task(current);
+	if (vk)
+		atomic_dec(&vk->sysctl_kernel.pty_count);
+#endif
 	ida_free(&fsi->allocated_ptys, idx);
 	atomic_dec(&pty_count);
 }
