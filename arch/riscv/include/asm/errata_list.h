@@ -11,24 +11,6 @@
 #include <asm/hwcap.h>
 #include <asm/vendorid_list.h>
 
-#ifdef CONFIG_ERRATA_ANDES
-#define ERRATA_ANDESTECH_NO_IOCP	0
-#define ERRATA_ANDESTECH_NUMBER		1
-#endif
-
-#ifdef CONFIG_ERRATA_SIFIVE
-#define	ERRATA_SIFIVE_CIP_453 0
-#define	ERRATA_SIFIVE_CIP_1200 1
-#define	ERRATA_SIFIVE_NUMBER 2
-#endif
-
-#ifdef CONFIG_ERRATA_THEAD
-#define	ERRATA_THEAD_PBMT 0
-#define	ERRATA_THEAD_CMO 1
-#define	ERRATA_THEAD_PMU 2
-#define	ERRATA_THEAD_NUMBER 3
-#endif
-
 #ifdef __ASSEMBLY__
 
 #define ALT_INSN_FAULT(x)						\
@@ -128,9 +110,12 @@ asm volatile(ALTERNATIVE(						\
  *   0000000    11001     00000      000      00000  0001011
  */
 #define THEAD_inval_A0	".long 0x0265000b"
-#define THEAD_clean_A0	".long 0x0255000b"
+#define THEAD_clean_A0	".long 0x0275000b"
 #define THEAD_flush_A0	".long 0x0275000b"
 #define THEAD_SYNC_S	".long 0x0190000b"
+#define THEAD_inval_PA_A0	".long 0x02a5000b"
+#define THEAD_clean_PA_A0	".long 0x02b5000b"
+#define THEAD_flush_PA_A0	".long 0x02b5000b"
 
 #define ALT_CMO_OP(_op, _start, _size, _cachesize)			\
 asm volatile(ALTERNATIVE_2(						\
@@ -155,6 +140,33 @@ asm volatile(ALTERNATIVE_2(						\
 	: : "r"(_cachesize),						\
 	    "r"((unsigned long)(_start) & ~((_cachesize) - 1UL)),	\
 	    "r"((unsigned long)(_start) + (_size))			\
+	: "a0")
+
+#define ALT_CMO_OP_VPA(_op, _vaddr, _paddr, _size, _cachesize)		\
+asm volatile(ALTERNATIVE_2(						\
+	__nops(6),							\
+	"mv a0, %1\n\t"							\
+	"j 2f\n\t"							\
+	"3:\n\t"							\
+	CBO_##_op(a0)							\
+	"add a0, a0, %0\n\t"						\
+	"2:\n\t"							\
+	"bltu a0, %2, 3b\n\t"						\
+	"nop", 0, RISCV_ISA_EXT_ZICBOM, CONFIG_RISCV_ISA_ZICBOM,		\
+	"mv a0, %3\n\t"							\
+	"j 2f\n\t"							\
+	"3:\n\t"							\
+	THEAD_##_op##_PA_A0 "\n\t"					\
+	"add a0, a0, %0\n\t"						\
+	"2:\n\t"							\
+	"bltu a0, %4, 3b\n\t"						\
+	THEAD_SYNC_S, THEAD_VENDOR_ID,					\
+			ERRATA_THEAD_CMO, CONFIG_ERRATA_THEAD_CMO)	\
+	: : "r"(_cachesize),						\
+	    "r"((unsigned long)(_vaddr) & ~((_cachesize) - 1UL)),	\
+	    "r"((unsigned long)(_vaddr) + (_size)),			\
+	    "r"((unsigned long)(_paddr) & ~((_cachesize) - 1UL)),	\
+	    "r"((unsigned long)(_paddr) + (_size))			\
 	: "a0")
 
 #define THEAD_C9XX_RV_IRQ_PMU			17
