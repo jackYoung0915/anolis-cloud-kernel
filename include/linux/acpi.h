@@ -98,6 +98,7 @@ enum acpi_irq_model_id {
 #ifdef CONFIG_SW64
 	ACPI_IRQ_MODEL_SWPIC,
 #endif
+	ACPI_IRQ_MODEL_RINTC,
 	ACPI_IRQ_MODEL_COUNT
 };
 
@@ -1342,6 +1343,8 @@ struct acpi_probe_entry {
 	kernel_ulong_t driver_data;
 };
 
+void arch_sort_irqchip_probe(struct acpi_probe_entry *ap_head, int nr);
+
 #define ACPI_DECLARE_PROBE_ENTRY(table, name, table_id, subtable,	\
 				 valid, data, fn)			\
 	static const struct acpi_probe_entry __acpi_probe_##name	\
@@ -1551,6 +1554,12 @@ static inline int acpi_pptt_get_cpumask_from_cache_id_and_level(u32 cache_id,
 void acpi_arm_init(void);
 #else
 static inline void acpi_arm_init(void) { }
+#endif
+
+#ifdef CONFIG_RISCV
+void acpi_riscv_init(void);
+#else
+static inline void acpi_riscv_init(void) { }
 #endif
 
 #ifdef CONFIG_ACPI_PCC

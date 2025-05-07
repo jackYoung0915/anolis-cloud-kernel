@@ -794,6 +794,9 @@ static const char * const acpi_honor_dep_ids[] = {
 	"INTC1059", /* IVSC (TGL) driver must be loaded to allow i2c access to camera sensors */
 	"INTC1095", /* IVSC (ADL) driver must be loaded to allow i2c access to camera sensors */
 	"INTC100A", /* IVSC (RPL) driver must be loaded to allow i2c access to camera sensors */
+	"RSCV0001", /* RISC-V PLIC */
+	"RSCV0002", /* RISC-V APLIC */
+	"PNP0C0F",  /* PCI Link Device */
 	NULL
 };
 
@@ -1959,6 +1962,48 @@ void acpi_scan_hotplug_enabled(struct acpi_hotplug_profile *hotplug, bool val)
 	mutex_unlock(&acpi_scan_lock);
 }
 
+int acpi_scan_add_dep(acpi_handle handle, struct acpi_handle_list *dep_devices)
+{
+	u32 count;
+	int i;
+
+	for (count = 0, i = 0; i < dep_devices->count; i++) {
+		struct acpi_device_info *info;
+		struct acpi_dep_data *dep;
+		bool skip, honor_dep;
+		acpi_status status;
+
+		status = acpi_get_object_info(dep_devices->handles[i], &info);
+		if (ACPI_FAILURE(status)) {
+			acpi_handle_debug(handle, "Error reading _DEP device info\n");
+			continue;
+		}
+
+		skip = acpi_info_matches_ids(info, acpi_ignore_dep_ids);
+		honor_dep = acpi_info_matches_ids(info, acpi_honor_dep_ids);
+		kfree(info);
+
+		if (skip)
+			continue;
+
+		dep = kzalloc(sizeof(*dep), GFP_KERNEL);
+		if (!dep)
+			continue;
+
+		count++;
+
+		dep->supplier = dep_devices->handles[i];
+		dep->consumer = handle;
+		dep->honor_dep = honor_dep;
+
+		mutex_lock(&acpi_dep_list_lock);
+		list_add_tail(&dep->node, &acpi_dep_list);
+		mutex_unlock(&acpi_dep_list_lock);
+	}
+
+	return count;
+}
+
 static void acpi_scan_init_hotplug(struct acpi_device *adev)
 {
 	struct acpi_hardware_id *hwid;
@@ -1978,12 +2023,22 @@ static void acpi_scan_init_hotplug(struct acpi_device *adev)
 	}
 }
 
-static u32 acpi_scan_check_dep(acpi_handle handle, bool check_dep)
+u32 __weak arch_acpi_add_auto_dep(acpi_handle handle) { return 0; }
+
+static u32 acpi_scan_check_dep(acpi_handle handle)
 {
 	struct acpi_handle_list dep_devices;
 	acpi_status status;
-	u32 count;
-	int i;
+	u32 count = 0;
+
+	/*
+	 * Some architectures like RISC-V need to add dependencies for
+	 * all devices which use GSI to the interrupt controller so that
+	 * interrupt controller is probed before any of those devices.
+	 * Instead of mandating _DEP on all the devices, detect the
+	 * dependency and add automatically.
+	 */
+	count += arch_acpi_add_auto_dep(handle);
 
 	/*
 	 * Check for _HID here to avoid deferring the enumeration of:
@@ -1991,53 +2046,26 @@ static u32 acpi_scan_check_dep(acpi_handle handle, bool check_dep)
 	 * 2. ACPI nodes describing USB ports.
 	 * Still, checking for _HID catches more then just these cases ...
 	 */
-	if (!check_dep || !acpi_has_method(handle, "_DEP") ||
-	    !acpi_has_method(handle, "_HID"))
-		return 0;
+	if (!acpi_has_method(handle, "_DEP") || !acpi_has_method(handle, "_HID"))
+		return count;
 
 	status = acpi_evaluate_reference(handle, "_DEP", NULL, &dep_devices);
 	if (ACPI_FAILURE(status)) {
 		acpi_handle_debug(handle, "Failed to evaluate _DEP.\n");
-		return 0;
+		return count;
 	}
 
-	for (count = 0, i = 0; i < dep_devices.count; i++) {
-		struct acpi_device_info *info;
-		struct acpi_dep_data *dep;
-		bool skip, honor_dep;
-
-		status = acpi_get_object_info(dep_devices.handles[i], &info);
-		if (ACPI_FAILURE(status)) {
-			acpi_handle_debug(handle, "Error reading _DEP device info\n");
-			continue;
-		}
-
-		skip = acpi_info_matches_ids(info, acpi_ignore_dep_ids);
-		honor_dep = acpi_info_matches_ids(info, acpi_honor_dep_ids);
-		kfree(info);
-
-		if (skip)
-			continue;
-
-		dep = kzalloc(sizeof(*dep), GFP_KERNEL);
-		if (!dep)
-			continue;
-
-		count++;
-
-		dep->supplier = dep_devices.handles[i];
-		dep->consumer = handle;
-		dep->honor_dep = honor_dep;
-
-		mutex_lock(&acpi_dep_list_lock);
-		list_add_tail(&dep->node , &acpi_dep_list);
-		mutex_unlock(&acpi_dep_list_lock);
-	}
-
+	count += acpi_scan_add_dep(handle, &dep_devices);
 	return count;
 }
 
-static acpi_status acpi_bus_check_add(acpi_handle handle, bool check_dep,
+static acpi_status acpi_scan_check_crs_csi2_cb(acpi_handle handle, u32 a, void *b, void **c)
+{
+	acpi_mipi_check_crs_csi2(handle);
+	return AE_OK;
+}
+
+static acpi_status acpi_bus_check_add(acpi_handle handle, bool first_pass,
 				      struct acpi_device **adev_p)
 {
 	struct acpi_device *device = acpi_fetch_acpi_dev(handle);
@@ -2055,9 +2083,25 @@ static acpi_status acpi_bus_check_add(acpi_handle handle, bool check_dep,
 		if (acpi_device_should_be_hidden(handle))
 			return AE_OK;
 
-		/* Bail out if there are dependencies. */
-		if (acpi_scan_check_dep(handle, check_dep) > 0)
-			return AE_CTRL_DEPTH;
+		if (first_pass) {
+			acpi_mipi_check_crs_csi2(handle);
+
+			/* Bail out if there are dependencies. */
+			if (acpi_scan_check_dep(handle) > 0) {
+				/*
+				 * The entire CSI-2 connection graph needs to be
+				 * extracted before any drivers or scan handlers
+				 * are bound to struct device objects, so scan
+				 * _CRS CSI-2 resource descriptors for all
+				 * devices below the current handle.
+				 */
+				acpi_walk_namespace(ACPI_TYPE_DEVICE, handle,
+						    ACPI_UINT32_MAX,
+						    acpi_scan_check_crs_csi2_cb,
+						    NULL, NULL, NULL);
+				return AE_CTRL_DEPTH;
+			}
+		}
 
 		fallthrough;
 	case ACPI_TYPE_ANY:	/* for ACPI_ROOT_OBJECT */
@@ -2080,10 +2124,10 @@ static acpi_status acpi_bus_check_add(acpi_handle handle, bool check_dep,
 	}
 
 	/*
-	 * If check_dep is true at this point, the device has no dependencies,
+	 * If first_pass is true at this point, the device has no dependencies,
 	 * or the creation of the device object would have been postponed above.
 	 */
-	acpi_add_single_object(&device, handle, type, !check_dep);
+	acpi_add_single_object(&device, handle, type, !first_pass);
 	if (!device)
 		return AE_CTRL_DEPTH;
 
@@ -2497,11 +2541,20 @@ int acpi_bus_scan(acpi_handle handle)
 	if (!device)
 		return -ENODEV;
 
+	/*
+	 * Allocate ACPI _CRS CSI-2 software nodes using information extracted
+	 * from the _CRS CSI-2 resource descriptors during the ACPI namespace
+	 * walk above.
+	 */
+	acpi_mipi_scan_crs_csi2();
+
 	acpi_bus_attach(device, (void *)true);
 
 	/* Pass 2: Enumerate all of the remaining devices. */
 
 	acpi_scan_postponed();
+
+	acpi_mipi_crs_csi2_cleanup();
 
 	return 0;
 }
@@ -2689,6 +2742,8 @@ static int __init acpi_match_madt(union acpi_subtable_headers *header,
 	return 0;
 }
 
+void __weak arch_sort_irqchip_probe(struct acpi_probe_entry *ap_head, int nr) { }
+
 int __init __acpi_probe_device_table(struct acpi_probe_entry *ap_head, int nr)
 {
 	int count = 0;
@@ -2697,6 +2752,7 @@ int __init __acpi_probe_device_table(struct acpi_probe_entry *ap_head, int nr)
 		return 0;
 
 	mutex_lock(&acpi_probe_mutex);
+	arch_sort_irqchip_probe(ap_head, nr);
 	for (ape = ap_head; nr; ape++, nr--) {
 		if (ACPI_COMPARE_NAMESEG(ACPI_SIG_MADT, ape->id)) {
 			acpi_probe_count = 0;

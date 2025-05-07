@@ -365,6 +365,24 @@ struct acpi_device_data {
 
 struct acpi_gpio_mapping;
 
+struct acpi_device_software_node_port {
+	unsigned int port_nr;
+};
+
+/**
+ * struct acpi_device_software_nodes - Software nodes for an ACPI device
+ * @nodes: Software nodes for root as well as ports and endpoints.
+ * @nodeprts: Array of software node pointers, for (un)registering them.
+ * @ports: Information related to each port and endpoint within a port.
+ * @num_ports: The number of ports.
+ */
+struct acpi_device_software_nodes {
+	struct software_node *nodes;
+	const struct software_node **nodeptrs;
+	struct acpi_device_software_node_port *ports;
+	unsigned int num_ports;
+};
+
 /* Device */
 struct acpi_device {
 	u32 pld_crc;
@@ -819,6 +837,9 @@ static inline void acpi_put_acpi_dev(struct acpi_device *adev)
 {
 	acpi_dev_put(adev);
 }
+
+int acpi_scan_add_dep(acpi_handle handle, struct acpi_handle_list *dep_devices);
+u32 arch_acpi_add_auto_dep(acpi_handle handle);
 #else	/* CONFIG_ACPI */
 
 static inline int register_acpi_bus_type(void *bus) { return 0; }
