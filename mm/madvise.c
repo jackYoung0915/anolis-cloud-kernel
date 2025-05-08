@@ -763,9 +763,13 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
 static long madvise_dontneed_single_vma(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end)
 {
+	struct zap_details details = {
+		.reclaim_pt = true,
+	};
+
 	if (unlikely(vma_is_pgtable_shared(vma)))
 		return pgtable_share_dontneed_single_vma(vma, start, end);
-	zap_page_range(vma, start, end - start);
+	zap_page_range_single(vma, start, end - start, &details);
 	return 0;
 }
 

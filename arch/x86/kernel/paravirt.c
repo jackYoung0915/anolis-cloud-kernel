@@ -323,8 +323,13 @@ struct paravirt_patch_template pv_ops = {
 	.mmu.flush_tlb_kernel	= native_flush_tlb_global,
 	.mmu.flush_tlb_one_user	= native_flush_tlb_one_user,
 	.mmu.flush_tlb_others	= native_flush_tlb_others,
+#ifndef CONFIG_PT_RECLIAM
 	.mmu.tlb_remove_table	=
 			(void (*)(struct mmu_gather *, void *))tlb_remove_page,
+#else
+	.mmu.tlb_remove_table	=
+			(void (*)(struct mmu_gather *, void *))tlb_remove_table,
+#endif
 
 	.mmu.exit_mmap		= paravirt_nop,
 	.mmu.notify_page_enc_status_changed	= paravirt_nop,

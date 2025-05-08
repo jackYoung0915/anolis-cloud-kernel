@@ -1228,11 +1228,136 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 static inline bool should_zap_cows(struct zap_details *details)
 {
 	/* By default, zap all pages */
-	if (!details)
+	if (!details || details->reclaim_pt)
 		return true;
 
 	/* Or, we zap COWed pages only if the caller wants to */
 	return !details->check_mapping;
+}
+
+static inline void zap_present_pte(struct mmu_gather *tlb,
+		struct vm_area_struct *vma, pte_t *pte, pte_t ptent,
+		unsigned long addr, struct zap_details *details,
+		int *rss, bool *force_flush, bool *force_break)
+{
+	struct mm_struct *mm = tlb->mm;
+	struct page *page;
+
+	page = vm_normal_page(vma, addr, ptent);
+	if (unlikely(details) && page) {
+		/*
+		 * unmap_shared_mapping_pages() wants to
+		 * invalidate cache without truncating:
+		 * unmap shared but keep private pages.
+		 */
+		if (details->check_mapping &&
+		    details->check_mapping != page_rmapping(page))
+			return;
+
+		/*
+		 * unmap_mapping_zeropages() only unmaps zero
+		 * pages filled in the VMA. Page cache should
+		 * not be unmapped.
+		 */
+		if (unlikely(details->flags & ZAP_ZEROPAGE))
+			return;
+	}
+	ptent = ptep_get_and_clear_full(mm, addr, pte,
+					tlb->fullmm);
+	tlb_remove_tlb_entry(tlb, pte, addr);
+	if (unlikely(!page)) {
+		if (unlikely(details && (details->flags & ZAP_ZEROPAGE)))
+			*force_flush = true;
+		return;
+	}
+
+	if (!PageAnon(page)) {
+		if (pte_dirty(ptent)) {
+			*force_flush = true;
+			set_page_dirty(page);
+		}
+		if (pte_young(ptent) &&
+		    likely(!(vma->vm_flags & VM_SEQ_READ)))
+			mark_page_accessed(page);
+	}
+	rss[mm_counter(page)]--;
+	page_remove_rmap(page, false);
+	if (unlikely(page_mapcount(page) < 0))
+		print_bad_pte(vma, addr, ptent, page);
+	if (unlikely(__tlb_remove_page(tlb, page))) {
+		*force_flush = true;
+		*force_break = true;
+	}
+}
+
+static inline void zap_nonpresent_ptes(struct mmu_gather *tlb,
+		struct vm_area_struct *vma, pte_t *pte, pte_t ptent,
+		unsigned int max_nr, unsigned long addr,
+		struct zap_details *details, int *rss)
+{
+	struct mm_struct *mm = tlb->mm;
+	swp_entry_t entry;
+
+	entry = pte_to_swp_entry(ptent);
+	if (is_device_private_entry(entry)) {
+		struct page *page = device_private_entry_to_page(entry);
+
+		if (unlikely(details && details->check_mapping)) {
+			/*
+			 * unmap_shared_mapping_pages() wants to
+			 * invalidate cache without truncating:
+			 * unmap shared but keep private pages.
+			 */
+			if (details->check_mapping !=
+			    page_rmapping(page))
+				return;
+		}
+
+		pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
+		rss[mm_counter(page)]--;
+		page_remove_rmap(page, false);
+		put_page(page);
+	}
+
+	if (!non_swap_entry(entry)) {
+		/* Genuine swap entry, hence a private anon page */
+		if (!should_zap_cows(details))
+			return;
+
+		rss[MM_SWAPENTS]--;
+	} else if (is_migration_entry(entry)) {
+		struct page *page;
+
+		page = migration_entry_to_page(entry);
+		if (details && details->check_mapping &&
+		    details->check_mapping != page_rmapping(page))
+			return;
+
+		rss[mm_counter(page)]--;
+	}
+	if (unlikely(!free_swap_and_cache(entry)))
+		print_bad_pte(vma, addr, ptent, NULL);
+	pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
+}
+
+static inline void do_zap_pte_range(struct mmu_gather *tlb,
+				    struct vm_area_struct *vma, pte_t *pte,
+				    unsigned long addr, unsigned long end,
+				    struct zap_details *details, int *rss,
+				    bool *force_flush, bool *force_break)
+{
+	pte_t ptent = ptep_get(pte);
+	int max_nr = (end - addr) / PAGE_SIZE;
+
+	if (pte_none(ptent))
+		return;
+
+	if (pte_present(ptent))
+		zap_present_pte(tlb, vma, pte, ptent, addr,
+				details, rss, force_flush, force_break);
+	else
+		zap_nonpresent_ptes(tlb, vma, pte, ptent, max_nr, addr,
+				    details, rss);
 }
 
 static unsigned long zap_pte_range(struct mmu_gather *tlb,
@@ -1240,13 +1365,16 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 				unsigned long addr, unsigned long end,
 				struct zap_details *details)
 {
+	bool force_flush = false, force_break = false;
 	struct mm_struct *mm = tlb->mm;
-	int force_flush = 0;
 	int rss[NR_MM_COUNTERS];
 	spinlock_t *ptl;
 	pte_t *start_pte;
 	pte_t *pte;
-	swp_entry_t entry;
+	pmd_t pmdval;
+	unsigned long start = addr;
+	bool can_reclaim_pt = reclaim_pt_is_enabled(start, end, details);
+	bool direct_reclaim = false;
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 again:
@@ -1256,105 +1384,19 @@ again:
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
 	do {
-		pte_t ptent = *pte;
-		if (pte_none(ptent))
-			continue;
-
 		if (need_resched())
 			break;
 
-		if (pte_present(ptent)) {
-			struct page *page;
-
-			page = vm_normal_page(vma, addr, ptent);
-			if (unlikely(details) && page) {
-				/*
-				 * unmap_shared_mapping_pages() wants to
-				 * invalidate cache without truncating:
-				 * unmap shared but keep private pages.
-				 */
-				if (details->check_mapping &&
-				    details->check_mapping != page_rmapping(page))
-					continue;
-
-				/*
-				 * unmap_mapping_zeropages() only unmaps zero
-				 * pages filled in the VMA. Page cache should
-				 * not be unmapped.
-				 */
-				if (unlikely(details->flags & ZAP_ZEROPAGE))
-					continue;
-			}
-			ptent = ptep_get_and_clear_full(mm, addr, pte,
-							tlb->fullmm);
-			tlb_remove_tlb_entry(tlb, pte, addr);
-			if (unlikely(!page)) {
-				if (unlikely(details && (details->flags & ZAP_ZEROPAGE)))
-					force_flush = 1;
-				continue;
-			}
-
-			if (!PageAnon(page)) {
-				if (pte_dirty(ptent)) {
-					force_flush = 1;
-					set_page_dirty(page);
-				}
-				if (pte_young(ptent) &&
-				    likely(!(vma->vm_flags & VM_SEQ_READ)))
-					mark_page_accessed(page);
-			}
-			rss[mm_counter(page)]--;
-			page_remove_rmap(page, false);
-			if (unlikely(page_mapcount(page) < 0))
-				print_bad_pte(vma, addr, ptent, page);
-			if (unlikely(__tlb_remove_page(tlb, page))) {
-				force_flush = 1;
-				addr += PAGE_SIZE;
-				break;
-			}
-			continue;
+		do_zap_pte_range(tlb, vma, pte, addr, end, details, rss,
+				 &force_flush, &force_break);
+		if (unlikely(force_break)) {
+			addr += PAGE_SIZE;
+			break;
 		}
-
-		entry = pte_to_swp_entry(ptent);
-		if (is_device_private_entry(entry)) {
-			struct page *page = device_private_entry_to_page(entry);
-
-			if (unlikely(details && details->check_mapping)) {
-				/*
-				 * unmap_shared_mapping_pages() wants to
-				 * invalidate cache without truncating:
-				 * unmap shared but keep private pages.
-				 */
-				if (details->check_mapping !=
-				    page_rmapping(page))
-					continue;
-			}
-
-			pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
-			rss[mm_counter(page)]--;
-			page_remove_rmap(page, false);
-			put_page(page);
-			continue;
-		}
-
-		if (!non_swap_entry(entry)) {
-			/* Genuine swap entry, hence a private anon page */
-			if (!should_zap_cows(details))
-				continue;
-			rss[MM_SWAPENTS]--;
-		} else if (is_migration_entry(entry)) {
-			struct page *page;
-
-			page = migration_entry_to_page(entry);
-			if (details && details->check_mapping &&
-			    details->check_mapping != page_rmapping(page))
-				continue;
-			rss[mm_counter(page)]--;
-		}
-		if (unlikely(!free_swap_and_cache(entry)))
-			print_bad_pte(vma, addr, ptent, NULL);
-		pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
 	} while (pte++, addr += PAGE_SIZE, addr != end);
+
+	if (can_reclaim_pt && addr == end)
+		direct_reclaim = try_get_and_clear_pmd(mm, pmd, &pmdval);
 
 	add_mm_rss_vec(mm, rss);
 	arch_leave_lazy_mmu_mode();
@@ -1371,13 +1413,22 @@ again:
 	 * memory too. Restart if we didn't do everything.
 	 */
 	if (force_flush) {
-		force_flush = 0;
+		force_flush = false;
 		tlb_flush_mmu(tlb);
 	}
 
 	if (addr != end) {
 		cond_resched();
+		force_flush = false;
+		force_break = false;
 		goto again;
+	}
+
+	if (can_reclaim_pt) {
+		if (direct_reclaim)
+			free_pte(mm, start, tlb, pmdval);
+		else
+			try_to_free_pte(mm, pmd, start, tlb);
 	}
 
 	return addr;
@@ -1628,19 +1679,27 @@ EXPORT_SYMBOL_GPL(zap_page_range);
  *
  * The range must fit into one VMA.
  */
-static void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
-		unsigned long size, struct zap_details *details)
+void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
+			   unsigned long size, struct zap_details *details)
 {
+	const unsigned long end = address + size;
 	struct mmu_notifier_range range;
 	struct mmu_gather tlb;
 
 	lru_add_drain();
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, vma->vm_mm,
-				address, address + size);
+				address, end);
+	if (is_vm_hugetlb_page(vma))
+		adjust_range_if_pmd_sharing_possible(vma, &range.start,
+						     &range.end);
 	tlb_gather_mmu(&tlb, vma->vm_mm, address, range.end);
 	update_hiwater_rss(vma->vm_mm);
 	mmu_notifier_invalidate_range_start(&range);
-	unmap_single_vma(&tlb, vma, address, range.end, details);
+	/*
+	 * unmap 'address-end' not 'range.start-range.end' as range
+	 * could have been expanded for hugetlb pmd sharing.
+	 */
+	unmap_single_vma(&tlb, vma, address, end, details);
 	mmu_notifier_invalidate_range_end(&range);
 	tlb_finish_mmu(&tlb, address, range.end);
 }
