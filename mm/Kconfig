@@ -1368,4 +1368,11 @@ config PT_RECLAIM
 
 	  Note: now only empty user PTE page table pages will be reclaimed.
 
+config PRE_OOM
+	bool "Enable pre oom control"
+	depends on MEMCG
+	help
+	  This feature is used to ensure that higher priority tasks would not enter the
+	  direct reclaim path when applying for memory allocation.
+
 endmenu

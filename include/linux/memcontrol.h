@@ -419,6 +419,10 @@ struct mem_cgroup {
 	bool allow_pgtable_bind;
 #endif
 
+#ifdef CONFIG_PRE_OOM
+	bool pre_oom;
+#endif
+
 #ifdef CONFIG_LRU_GEN
 	/* per-memcg mm_struct list */
 	struct lru_gen_mm_list mm_list;
