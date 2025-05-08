@@ -43,6 +43,10 @@ enum HYGON_PSP_OPCODE {
 
 int psp_mutex_enabled;
 extern struct mutex sev_cmd_mutex;
+static int psp_cmd_timeout = 100;
+static bool psp_dead;
+unsigned int psp_int_rcvd;
+wait_queue_head_t psp_int_queue;
 
 uint64_t atomic64_exchange(uint64_t *dst, uint64_t val)
 {
@@ -130,6 +134,100 @@ static irqreturn_t psp_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static int psp_wait_cmd_ioc(struct psp_device *psp,
+			    unsigned int *reg, unsigned int timeout)
+{
+	int ret;
+
+	ret = wait_event_timeout(psp_int_queue,
+			psp_int_rcvd, timeout * HZ);
+	if (!ret)
+		return -ETIMEDOUT;
+
+	*reg = ioread32(psp->io_regs + psp->vdata->sev->cmdresp_reg);
+
+	return 0;
+}
+
+static int __psp_do_cmd_locked(int cmd, void *data, int *psp_ret)
+{
+	struct psp_device *psp = psp_master;
+	unsigned int phys_lsb, phys_msb;
+	unsigned int reg, ret = 0;
+
+	if (!psp)
+		return -ENODEV;
+
+	if (psp_dead)
+		return -EBUSY;
+
+	if (data && WARN_ON_ONCE(!virt_addr_valid(data)))
+		return -EINVAL;
+
+	/* Get the physical address of the command buffer */
+	phys_lsb = data ? lower_32_bits(__psp_pa(data)) : 0;
+	phys_msb = data ? upper_32_bits(__psp_pa(data)) : 0;
+
+	dev_dbg(psp->dev, "psp command id %#x buffer 0x%08x%08x timeout %us\n",
+		cmd, phys_msb, phys_lsb, psp_cmd_timeout);
+
+	iowrite32(phys_lsb, psp->io_regs + psp->vdata->sev->cmdbuff_addr_lo_reg);
+	iowrite32(phys_msb, psp->io_regs + psp->vdata->sev->cmdbuff_addr_hi_reg);
+
+	psp_int_rcvd = 0;
+
+	reg = cmd;
+	reg <<= SEV_CMDRESP_CMD_SHIFT;
+	reg |= SEV_CMDRESP_IOC;
+	iowrite32(reg, psp->io_regs + psp->vdata->sev->cmdresp_reg);
+
+	/* wait for command completion */
+	ret = psp_wait_cmd_ioc(psp, &reg, psp_cmd_timeout);
+	if (ret) {
+		if (psp_ret)
+			*psp_ret = 0;
+
+		dev_err(psp->dev, "psp command %#x timed out, disabling PSP\n", cmd);
+		psp_dead = true;
+
+		return ret;
+	}
+
+	if (psp_ret)
+		*psp_ret = reg & PSP_CMDRESP_ERR_MASK;
+
+	if (reg & PSP_CMDRESP_ERR_MASK) {
+		dev_dbg(psp->dev, "psp command %#x failed (%#010x)\n",
+			cmd, reg & PSP_CMDRESP_ERR_MASK);
+		ret = -EIO;
+	}
+
+	return ret;
+}
+
+int psp_do_cmd(int cmd, void *data, int *psp_ret)
+{
+	int rc;
+	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
+
+	if (is_hygon_psp && mutex_enabled) {
+		if (psp_mutex_lock_timeout(&psp_misc->data_pg_aligned->mb_mutex,
+			PSP_MUTEX_TIMEOUT) != 1) {
+			return -EBUSY;
+		}
+	} else {
+		mutex_lock(&sev_cmd_mutex);
+	}
+	rc = __psp_do_cmd_locked(cmd, data, psp_ret);
+	if (is_hygon_psp && mutex_enabled)
+		psp_mutex_unlock(&psp_misc->data_pg_aligned->mb_mutex);
+	else
+		mutex_unlock(&sev_cmd_mutex);
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(psp_do_cmd);
+
 #ifdef CONFIG_HYGON_PSP2CPU_CMD
 static DEFINE_SPINLOCK(p2c_notifier_lock);
 static p2c_notifier_t p2c_notifiers[P2C_NOTIFIERS_MAX] = {NULL};
@@ -194,8 +292,12 @@ static irqreturn_t psp_irq_handler_hygon(int irq, void *data)
 				if (vpsp_in_ringbuffer_mode) {
 					queue_work(vpsp_wq, &vpsp_work);
 				} else {
-					sev->int_rcvd = 1;
-					wake_up(&sev->int_queue);
+					psp_int_rcvd = 1;
+					wake_up(&psp_int_queue);
+					if (sev != NULL) {
+						sev->int_rcvd = 1;
+						wake_up(&sev->int_queue);
+					}
 				}
 			}
 		}
@@ -625,6 +727,8 @@ int psp_dev_init(struct sp_device *sp)
 	ret = psp_init(psp, capability);
 	if (ret)
 		goto e_irq;
+
+	init_waitqueue_head(&psp_int_queue);
 
 	if (sp->set_psp_master_device)
 		sp->set_psp_master_device(sp);
