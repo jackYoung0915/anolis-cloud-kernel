@@ -1505,7 +1505,8 @@ static int init_vq(struct virtio_blk *vblk)
 	vblk->no_align = false;
 	vblk->hide_bdev = false;
 
-	if (!virtblk_rpair_disable)
+	/* ext feature only support for virtio_blk over pci device currently */
+	if (!virtblk_rpair_disable && dev_is_pci(&vblk->vdev->dev))
 		err = init_vq_rpair(vblk);
 
 	/* if err > 0, then vring pair fall back to original virtqueue use*/
