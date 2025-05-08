@@ -72,6 +72,7 @@
 #ifdef CONFIG_TEXT_UNEVICTABLE
 #include <linux/unevictable.h>
 #endif
+#include <linux/pre_oom.h>
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
@@ -920,6 +921,15 @@ void __noreturn do_exit(long code)
 		put_page(tsk->task_frag.page);
 
 	exit_task_stack_account(tsk);
+
+#ifdef CONFIG_PRE_OOM
+	/*
+	 * Killed task has been stalled in reclaim path, release the semaphore
+	 * here.
+	 */
+	if (unlikely(tsk->reclaim_stall))
+		pre_oom_leave();
+#endif
 
 	check_stack_usage();
 	preempt_disable();

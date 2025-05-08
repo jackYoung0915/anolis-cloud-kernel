@@ -1009,6 +1009,9 @@ struct task_struct {
 	/* whether the LRU algorithm may apply to this access */
 	unsigned			in_lru_fault:1;
 #endif
+#ifdef CONFIG_PRE_OOM
+	unsigned			reclaim_stall:1;
+#endif
 #ifdef CONFIG_COMPAT_BRK
 	unsigned			brk_randomized:1;
 #endif

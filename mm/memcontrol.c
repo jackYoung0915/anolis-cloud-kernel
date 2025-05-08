@@ -67,6 +67,7 @@
 #include <linux/sched/isolation.h>
 #include <linux/pid_namespace.h>
 #include <linux/proc_fs.h>
+#include <linux/pre_oom.h>
 #include "internal.h"
 #include <net/sock.h>
 #include <net/ip.h>
@@ -2597,11 +2598,13 @@ static void reclaim_wmark(struct mem_cgroup *memcg)
 	 * simply record the whole duration of reclaim_wmark work for the
 	 * overhead-accuracy trade-off.
 	 */
+	pre_oom_enter();
 	start = ktime_get_ns();
 	psi_memstall_enter(&pflags);
 	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, true);
 	psi_memstall_leave(&pflags);
 	duration = ktime_get_ns() - start;
+	pre_oom_leave();
 
 	if (!css_tryget_online(&memcg->css))
 		return;
@@ -2637,11 +2640,13 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 
 		memcg_memory_event(memcg, MEMCG_HIGH);
 
+		pre_oom_enter();
 		psi_memstall_enter(&pflags);
 		nr_reclaimed += try_to_free_mem_cgroup_pages(memcg, nr_pages,
 							gfp_mask,
 							MEMCG_RECLAIM_MAY_SWAP);
 		psi_memstall_leave(&pflags);
+		pre_oom_leave();
 	} while ((memcg = parent_mem_cgroup(memcg)) &&
 		 !mem_cgroup_is_root(memcg));
 
@@ -2933,12 +2938,14 @@ retry:
 	memcg_memory_event(mem_over_limit, MEMCG_MAX);
 	raised_max_event = true;
 
+	pre_oom_enter();
 	memcg_lat_stat_start(&start);
 	psi_memstall_enter(&pflags);
 	nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages,
 						    gfp_mask, reclaim_options);
 	psi_memstall_leave(&pflags);
 	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
+	pre_oom_leave();
 
 	if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
 		goto retry;
@@ -6226,6 +6233,30 @@ static ssize_t mem_cgroup_duptext_nodes_write(struct kernfs_open_file *of,
 }
 #endif
 
+#ifdef CONFIG_PRE_OOM
+static u64 memcg_pre_oom_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return READ_ONCE(memcg->pre_oom);
+}
+
+static int memcg_pre_oom_write(struct cgroup_subsys_state *css,
+			       struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val == 1)
+		memcg->pre_oom = true;
+	else if (val == 0)
+		memcg->pre_oom = false;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+#endif /* CONFIG_PRE_OOM */
+
 static struct cftype mem_cgroup_legacy_files[] = {
 	{
 		.name = "usage_in_bytes",
@@ -6520,6 +6551,13 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.name = "async_fork",
 		.read_u64 = mem_cgroup_async_fork_read,
 		.write_u64 = mem_cgroup_async_fork_write,
+	},
+#endif
+#ifdef CONFIG_PRE_OOM
+	{
+		.name = "pre_oom",
+		.write_u64 = memcg_pre_oom_write,
+		.read_u64 = memcg_pre_oom_read,
 	},
 #endif
 	{ },	/* terminate */
@@ -8433,6 +8471,13 @@ static struct cftype memory_files[] = {
 		.name = "async_fork",
 		.read_u64 = mem_cgroup_async_fork_read,
 		.write_u64 = mem_cgroup_async_fork_write,
+	},
+#endif
+#ifdef CONFIG_PRE_OOM
+	{
+		.name = "pre_oom",
+		.write_u64 = memcg_pre_oom_write,
+		.read_u64 = memcg_pre_oom_read,
 	},
 #endif
 	{ }	/* terminate */
