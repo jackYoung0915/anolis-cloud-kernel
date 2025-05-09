@@ -9,6 +9,7 @@
 #define pr_fmt(fmt) "KHO: " fmt
 
 #include <linux/cma.h>
+#include <linux/bitops.h>
 #include <linux/count_zeros.h>
 #include <linux/debugfs.h>
 #include <linux/kexec.h>
