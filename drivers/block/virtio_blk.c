@@ -302,7 +302,7 @@ static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 	if (ret < 0)
 		return ret;
 
-	ret = virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	ret = virtqueue_add_sgs_rpair(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
 	if (ret < 0)
 		virtblk_rq_unmap(vq, vbr);
 	return ret;
@@ -337,7 +337,7 @@ static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr)
 	if (ret < 0)
 		return ret;
 
-	ret = virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	ret = virtqueue_add_sgs_rpair(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
 	if (ret < 0)
 		virtblk_rq_unmap(vq, vbr);
 	return ret;
