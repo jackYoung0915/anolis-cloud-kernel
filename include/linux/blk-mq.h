@@ -695,7 +695,7 @@ enum {
 	/* hw queue is inactive after all its CPUs become offline */
 	BLK_MQ_S_INACTIVE	= 3,
 
-	BLK_MQ_MAX_DEPTH	= 10240,
+	BLK_MQ_MAX_DEPTH	= 65536,
 
 	BLK_MQ_CPU_WORK_BATCH	= 8,
 };
