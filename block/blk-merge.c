@@ -595,6 +595,75 @@ int __blk_rq_map_sg(struct request_queue *q, struct request *rq,
 }
 EXPORT_SYMBOL(__blk_rq_map_sg);
 
+static int __blk_bios_map_sg_bidir(struct request_queue *q, struct bio *bio,
+		struct scatterlist *sglist[], struct scatterlist **sg[])
+{
+	struct bio_vec bvec, bvprv = { NULL };
+	struct bvec_iter iter;
+	int nsegs = 0;
+	bool new_bio = false, write = false, prev_write = false;
+	/* we have ensure that a bidir req only have two bio in the list,
+	 * what we do here is to map the two bio to two scatterlist.
+	 */
+
+	for_each_bio(bio) {
+		write = op_is_write(bio_op(bio));
+		bio_for_each_bvec(bvec, bio, iter) {
+			/*
+			 * Only try to merge bvecs from two bios given we
+			 * have done bio internal merge when adding pages
+			 * to bio.
+			 * For first time enter this loop, 'new_bio' is
+			 * false, ignore prev_write and write until next
+			 * loop.
+			 */
+			if (new_bio && prev_write == write &&
+			    __blk_segment_map_sg_merge(q, &bvec, &bvprv, sg[prev_write]))
+				goto next_bvec;
+
+			if (bvec.bv_offset + bvec.bv_len <= PAGE_SIZE)
+				nsegs += __blk_bvec_map_sg(bvec, sglist[write], sg[write]);
+			else
+				nsegs += blk_bvec_map_sg(q, &bvec, sglist[write], sg[write]);
+next_bvec:
+			new_bio = false;
+		}
+		if (likely(bio->bi_iter.bi_size)) {
+			bvprv = bvec;
+			new_bio = true;
+			prev_write = write;
+		}
+	}
+
+	return nsegs;
+}
+
+int blk_rq_map_sg_bidir(struct request_queue *q, struct request *rq,
+		struct scatterlist *sglist_write, struct scatterlist *sglist_read)
+{
+	int nsegs = 0;
+	struct scatterlist *sglist[2] = {sglist_read, sglist_write};
+	struct scatterlist *last_sg_write = NULL, *last_sg_read = NULL;
+	struct scatterlist **sglist_last[2] = {&last_sg_write, &last_sg_read};
+
+	if (rq->bio)
+		nsegs = __blk_bios_map_sg_bidir(q, rq->bio, sglist, sglist_last);
+
+	if (last_sg_write)
+		sg_mark_end(last_sg_write);
+
+	if (last_sg_read)
+		sg_mark_end(last_sg_read);
+	/*
+	 * Something must have been wrong if the figured number of
+	 * segment is bigger than number of req's physical segments
+	 */
+	WARN_ON(nsegs > blk_rq_nr_phys_segments(rq));
+
+	return nsegs;
+}
+EXPORT_SYMBOL(blk_rq_map_sg_bidir);
+
 static inline unsigned int blk_rq_get_max_sectors(struct request *rq,
 						  sector_t offset)
 {
