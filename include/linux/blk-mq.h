@@ -1176,6 +1176,10 @@ static inline int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 
 	return __blk_rq_map_sg(q, rq, sglist, &last_sg);
 }
+
+int blk_rq_map_sg_bidir(struct request_queue *q, struct request *rq,
+	struct scatterlist *sglist_write, struct scatterlist *sglist_read);
+
 void blk_dump_rq_flags(struct request *, char *);
 
 #ifdef CONFIG_BLK_DEV_ZONED
