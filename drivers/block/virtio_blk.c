@@ -1342,7 +1342,15 @@ static enum rq_end_io_ret virtblk_uring_cmd_end_io(struct request *req, blk_stat
 	if (!pdu->status)
 		pdu->status = blk_status_to_errno(err);
 
-	io_uring_cmd_do_in_task_lazy(ioucmd, virtblk_uring_task_cb);
+	/*
+	 * For iopoll, complete it directly.
+	 * Otherwise, move the completion to task work.
+	 */
+	if (blk_rq_is_poll(req)) {
+		WRITE_ONCE(ioucmd->cookie, NULL);
+		virtblk_uring_task_cb(ioucmd, IO_URING_F_UNLOCKED);
+	} else
+		io_uring_cmd_do_in_task_lazy(ioucmd, virtblk_uring_task_cb);
 
 	return RQ_END_IO_FREE;
 }
@@ -1407,6 +1415,8 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		rq_flags |= REQ_NOWAIT;
 		blk_flags = BLK_MQ_REQ_NOWAIT;
 	}
+	if (issue_flags & IO_URING_F_IOPOLL)
+		rq_flags |= REQ_POLLED;
 
 	rq_flags |= (type & VIRTIO_BLK_T_OUT) ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN;
 
@@ -1429,6 +1439,11 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		/* user should ensure passthrough command have data */
 		blk_mq_free_request(req);
 		return -EINVAL;
+	}
+
+	if (blk_rq_is_poll(req)) {
+		ioucmd->flags |= IORING_URING_CMD_POLLED;
+		WRITE_ONCE(ioucmd->cookie, req);
 	}
 
 	/* to free bio on completion, as req->bio will be null at that time */
@@ -1472,6 +1487,22 @@ static int virtblk_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue
 			struct virtio_blk, cdev);
 
 	return virtblk_uring_cmd(vblk, ioucmd, issue_flags);
+}
+
+static int virtblk_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
+				 struct io_comp_batch *iob,
+				 unsigned int poll_flags)
+{
+	struct request *req;
+	int ret = 0;
+
+	if (!(ioucmd->flags & IORING_URING_CMD_POLLED))
+		return 0;
+
+	req = READ_ONCE(ioucmd->cookie);
+	if (req && blk_rq_is_poll(req))
+		ret = blk_rq_poll(req, iob, poll_flags);
+	return ret;
 }
 
 static void virtblk_cdev_rel(struct device *dev)
@@ -1548,6 +1579,7 @@ static const struct file_operations virtblk_chr_fops = {
 	.open		= virtblk_chr_open,
 	.release	= virtblk_chr_release,
 	.uring_cmd	= virtblk_chr_uring_cmd,
+	.uring_cmd_iopoll = virtblk_chr_uring_cmd_iopoll,
 };
 
 static unsigned int virtblk_queue_depth;
