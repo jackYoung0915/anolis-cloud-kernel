@@ -138,6 +138,7 @@ struct virtio_blk {
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 	bool ring_pair;
+	bool no_align;
 	/* saved indirect desc pointer, dma_addr and dma_len for SQ */
 	struct virtblk_indir_desc **indir_desc;
 #endif
@@ -1817,6 +1818,9 @@ int check_ext_feature(struct virtio_blk *vblk, void __iomem *ioaddr,
 	vblk->ring_pair = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_PAIR);
 	if (vblk->ring_pair)
 		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_PAIR);
+	vblk->no_align = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
+	if (vblk->no_align)
+		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
 
 	return 0;
 }
@@ -2008,6 +2012,7 @@ static int init_vq(struct virtio_blk *vblk)
 	 * to orginal use, so err needs a positive initial value
 	 */
 	vblk->ring_pair = false;
+	vblk->no_align = false;
 
 	/* ext feature only support for virtio_blk over pci device currently */
 	if (!virtblk_rpair_disable && dev_is_pci(vblk->vdev->dev.parent)) {
@@ -2817,6 +2822,11 @@ static int virtblk_probe(struct virtio_device *vdev)
 		max_size = min(max_size, v);
 
 	blk_queue_max_segment_size(q, max_size);
+
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	if (vblk->no_align)
+		blk_queue_dma_alignment(q, 0);
+#endif
 
 	/* Host can optionally specify the block size of the device */
 	err = virtio_cread_feature(vdev, VIRTIO_BLK_F_BLK_SIZE,
