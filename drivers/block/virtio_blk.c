@@ -25,6 +25,9 @@
 #include "virtio_blk_ext.c"
 #endif
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/virtio_blk.h>
+
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
 #define MAX_DISCARD_SEGMENTS 256u
@@ -955,6 +958,7 @@ static inline void virtblk_request_done(struct request *req)
 	blk_status_t status = virtblk_result(virtblk_vbr_status(vbr));
 	struct virtio_blk *vblk = req->mq_hctx->queue->queuedata;
 
+	trace_virtblk_request_done(req, vbr->in_hdr.status);
 	virtblk_unmap_data(req, vbr);
 	virtblk_cleanup_cmd(req);
 
@@ -1072,6 +1076,7 @@ static blk_status_t virtblk_prep_rq_rpair(struct blk_mq_hw_ctx *hctx,
 		return status;
 
 	num = virtblk_map_data(hctx, req, vbr);
+	trace_virtio_prep_rq(req, vbr_is_bidirectional(vbr), num);
 	if (unlikely(num < 0))
 		return virtblk_fail_to_queue(req, -ENOMEM);
 	vbr->sg_table.nents = num;
@@ -1094,6 +1099,7 @@ static blk_status_t virtblk_prep_rq(struct blk_mq_hw_ctx *hctx,
 		return status;
 
 	num = virtblk_map_data(hctx, req, vbr);
+	trace_virtio_prep_rq(req, vbr_is_bidirectional(vbr), num);
 	if (unlikely(num < 0))
 		return virtblk_fail_to_queue(req, -ENOMEM);
 	vbr->sg_table.nents = num;
@@ -2524,6 +2530,8 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		ioucmd->flags |= IORING_URING_CMD_POLLED;
 		WRITE_ONCE(ioucmd->cookie, req);
 	}
+
+	trace_virtblk_uring_cmd_io(req, type, cmd->sector);
 
 	/* to free bio on completion, as req->bio will be null at that time */
 	pdu->bio = req->bio;
