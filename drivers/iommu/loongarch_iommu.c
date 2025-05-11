@@ -42,12 +42,12 @@ MODULE_LICENSE("GPL");
 
 #define IVRS_HEADER_LENGTH		48
 #define ACPI_IVHD_TYPE_MAX_SUPPORTED	0x40
-#define IVHD_DEV_ALL                    0x01
-#define IVHD_DEV_SELECT                 0x02
-#define IVHD_DEV_SELECT_RANGE_START     0x03
-#define IVHD_DEV_RANGE_END              0x04
-#define IVHD_DEV_ALIAS                  0x42
-#define IVHD_DEV_EXT_SELECT             0x46
+#define IVHD_DEV_ALL			0x01
+#define IVHD_DEV_SELECT			0x02
+#define IVHD_DEV_SELECT_RANGE_START	0x03
+#define IVHD_DEV_RANGE_END		0x04
+#define IVHD_DEV_ALIAS			0x42
+#define IVHD_DEV_EXT_SELECT		0x46
 #define IVHD_DEV_ACPI_HID		0xf0
 
 #define IVHD_HEAD_TYPE10		0x10
@@ -109,7 +109,7 @@ u16	la_iommu_last_bdf;			/* largest PCI device id
 						 *  we have to handle
 						 */
 
-int loongarch_iommu_disable = 1;
+int loongarch_iommu_disable;
 
 #define iommu_write_regl(iommu, off, val) \
 	writel(val, iommu->confbase + off)
@@ -575,7 +575,7 @@ static struct dom_info *alloc_dom_info(void)
 	spin_lock_init(&info->lock);
 	mutex_init(&info->ptl_lock);
 	info->domain.geometry.aperture_start = 0;
-	info->domain.geometry.aperture_end   = ~0ULL;
+	info->domain.geometry.aperture_end = ~0ULL;
 	info->domain.geometry.force_aperture = true;
 
 	return info;
@@ -671,7 +671,7 @@ struct loongarch_iommu *find_iommu_by_dev(struct pci_dev  *pdev)
 	pcisegment = pci_domain_nr(bus);
 	rlookupentry = lookup_rlooptable(pcisegment);
 	if (rlookupentry == NULL) {
-		pr_info("%s find segment %d rlookupentry failed\n", __func__,
+		pr_debug("%s find segment %d rlookupentry failed\n", __func__,
 				pcisegment);
 		return iommu;
 	}
@@ -699,7 +699,13 @@ struct iommu_device *iommu_init_device(struct device *dev)
 	}
 	iommu = find_iommu_by_dev(pdev);
 	if (iommu == NULL) {
-		pci_info(pdev, "%s find iommu failed by dev\n", __func__);
+		pci_dbg(pdev, "%s the device is not managed by iommu\n", __func__);
+		return iommu_dev;
+	}
+
+	if (iommu->disabled) {
+		pci_dbg(pdev, "%s the iommu[seg:%d devid:%#x] is disabled\n",
+			__func__, iommu->segment, iommu->devid);
 		return iommu_dev;
 	}
 	dev_data = kzalloc(sizeof(*dev_data), GFP_KERNEL);
@@ -1166,14 +1172,6 @@ static phys_addr_t la_iommu_iova_to_phys(struct iommu_domain *domain,
 	return phys;
 }
 
-static void la_domain_set_plaform_dma_ops(struct device *dev)
-{
-	/*
-	 * loongarch doesn't setup default domains because we can't hook into the
-	 * normal probe path
-	 */
-}
-
 const struct iommu_ops la_iommu_ops = {
 	.capable = la_iommu_capable,
 	.domain_alloc = la_iommu_domain_alloc,
@@ -1182,7 +1180,6 @@ const struct iommu_ops la_iommu_ops = {
 	.device_group = la_iommu_device_group,
 	.pgsize_bitmap	= LA_IOMMU_PGSIZE,
 	.owner = THIS_MODULE,
-	.set_platform_dma_ops = la_domain_set_plaform_dma_ops,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= la_iommu_attach_dev,
 		.map = la_iommu_map,
@@ -1239,8 +1236,9 @@ static int loongarch_iommu_probe(struct pci_dev *pdev,
 
 	compat = check_device_compat(pdev);
 	if (!compat) {
+		iommu->disabled = true;
 		pci_info(pdev,
-		"%s The iommu driver is not compatible with this device\n",
+		"%s The iommu driver is not compatible with this device, disabled!!!\n",
 		__func__);
 		return -ENODEV;
 	}
@@ -1283,7 +1281,7 @@ static int loongarch_iommu_probe(struct pci_dev *pdev,
 	}
 
 	ret = iommu_device_sysfs_add(&iommu->iommu_dev, &pdev->dev,
-		       NULL, "ivhd-%#x", iommu->devid);
+			NULL, "ivhd-%#x-%#x", iommu->segment, iommu->devid);
 	iommu_device_register(&iommu->iommu_dev, &la_iommu_ops, NULL);
 	return 0;
 
@@ -1655,7 +1653,7 @@ static int __init init_iommu_all(struct acpi_table_header *table)
 
 /**
  * get_highest_supported_ivhd_type - Look up the appropriate IVHD type
- * @ivrs          Pointer to the IVRS header
+ * @ivrs	Pointer to the IVRS header
  *
  * This function search through all IVDB of the maximum supported IVHD
  */
@@ -1787,6 +1785,7 @@ static const struct pci_device_id loongson_iommu_pci_tbl[] = {
 	{ PCI_DEVICE(0x14, 0x7a1f) },
 	{ 0, }
 };
+MODULE_DEVICE_TABLE(pci, loongson_iommu_pci_tbl);
 
 static struct pci_driver loongarch_iommu_driver = {
 	.name = "loongarch-iommu",
