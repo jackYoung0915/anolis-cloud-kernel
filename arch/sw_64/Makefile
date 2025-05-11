@@ -27,8 +27,8 @@ endif
 
 CHECKFLAGS	+= -D__sw__
 cflags-y	:= -pipe -ffixed-8 -mno-fp-regs #-msmall-data
-ifeq ($(CONFIG_SUBARCH_C4),y)
-	cflags-y += -fsw-rev -fno-sw-unalign-byte
+ifneq ($(CONFIG_SUBARCH_C3B),y)
+	cflags-y += -fsw-rev -fsw-unalign-byte
 endif
 cflags-y	+= $(call cc-option, -fno-jump-tables)
 
