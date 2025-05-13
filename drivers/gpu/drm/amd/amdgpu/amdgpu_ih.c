@@ -373,7 +373,7 @@ restart_ih:
 	r = amdgpu_ih_fix_loongarch_pcie_order_start(&adev->irq.ih, old_rptr, wptr, false);
 	if (r) {
 		if (old_rptr == ((wptr + 16) & adev->irq.ih.ptr_mask) ||
-		    old_rptr == ((wptr + 32) & adev->irq.ih.ptr_mask)) {
+		    old_rptr == ((wptr + 32) & adev->irq.ih.ptr_mask))
 			return IRQ_NONE;
 
 		atomic_xchg(&adev->irq.cs_lock, 1);
