@@ -274,7 +274,9 @@ bool ethtool_convert_link_mode_to_legacy_u32(u32 *legacy_u32,
 #define ETHTOOL_COALESCE_TX_AGGR_MAX_BYTES	BIT(24)
 #define ETHTOOL_COALESCE_TX_AGGR_MAX_FRAMES	BIT(25)
 #define ETHTOOL_COALESCE_TX_AGGR_TIME_USECS	BIT(26)
-#define ETHTOOL_COALESCE_ALL_PARAMS		GENMASK(26, 0)
+#define ETHTOOL_COALESCE_RX_PROFILE		BIT(27)
+#define ETHTOOL_COALESCE_TX_PROFILE		BIT(28)
+#define ETHTOOL_COALESCE_ALL_PARAMS		GENMASK(28, 0)
 
 #define ETHTOOL_COALESCE_USECS						\
 	(ETHTOOL_COALESCE_RX_USECS | ETHTOOL_COALESCE_TX_USECS)
@@ -599,6 +601,28 @@ struct ethtool_mm_stats {
 };
 
 /**
+ * struct ethtool_rxfh_param - RXFH (RSS) parameters
+ * @hfunc: Defines the current RSS hash function used by HW (or to be set to).
+ *	Valid values are one of the %ETH_RSS_HASH_*.
+ * @indir_size: On SET, the array size of the user buffer for the
+ *	indirection table, which may be zero, or
+ *	%ETH_RXFH_INDIR_NO_CHANGE.  On GET (read from the driver),
+ *	the array size of the hardware indirection table.
+ * @indir: The indirection table of size @indir_size entries.
+ * @key_size: On SET, the array size of the user buffer for the hash key,
+ *	which may be zero.  On GET (read from the driver), the size of the
+ *	hardware hash key.
+ * @key: The hash key of size @key_size bytes.
+ */
+struct ethtool_rxfh_param {
+	u8	hfunc;
+	u32	indir_size;
+	u32	*indir;
+	u32	key_size;
+	u8	*key;
+};
+
+/**
  * struct ethtool_ops - optional netdev operations
  * @cap_link_lanes_supported: indicates if the driver supports lanes
  *	parameter.
@@ -848,14 +872,14 @@ struct ethtool_ops {
 	int	(*reset)(struct net_device *, u32 *);
 	u32	(*get_rxfh_key_size)(struct net_device *);
 	u32	(*get_rxfh_indir_size)(struct net_device *);
-	int	(*get_rxfh)(struct net_device *, u32 *indir, u8 *key,
-			    u8 *hfunc);
-	int	(*set_rxfh)(struct net_device *, const u32 *indir,
-			    const u8 *key, const u8 hfunc);
-	int	(*get_rxfh_context)(struct net_device *, u32 *indir, u8 *key,
-				    u8 *hfunc, u32 rss_context);
-	int	(*set_rxfh_context)(struct net_device *, const u32 *indir,
-				    const u8 *key, const u8 hfunc,
+	int	(*get_rxfh)(struct net_device *, struct ethtool_rxfh_param *);
+	int	(*set_rxfh)(struct net_device *, struct ethtool_rxfh_param *,
+			    struct netlink_ext_ack *extack);
+	int	(*get_rxfh_context)(struct net_device *,
+				    struct ethtool_rxfh_param *,
+				    u32 rss_context);
+	int	(*set_rxfh_context)(struct net_device *,
+				    struct ethtool_rxfh_param *,
 				    u32 *rss_context, bool delete);
 	void	(*get_channels)(struct net_device *, struct ethtool_channels *);
 	int	(*set_channels)(struct net_device *, struct ethtool_channels *);
