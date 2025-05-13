@@ -10,6 +10,9 @@
 #include <linux/blk-mq.h>
 #include <linux/blk-mq-pci.h>
 #include <linux/blk-integrity.h>
+#ifdef CONFIG_LOONGARCH
+#include <linux/delay.h>
+#endif
 #include <linux/dmi.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -1099,7 +1102,7 @@ static irqreturn_t nvme_irq(int irq, void *data)
 
 #ifdef CONFIG_LOONGARCH
 	/* Ensure that the data is completely in place */
-	mb();
+	udelay(30);
 #endif
 	if (nvme_poll_cq(nvmeq, &iob)) {
 		if (!rq_list_empty(iob.req_list))
