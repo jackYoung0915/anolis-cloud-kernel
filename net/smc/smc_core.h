@@ -34,6 +34,10 @@
 					 * 16-255 as needed.
 					 */
 #define SMC_MAX_TOKEN_LOCAL		255
+
+extern long sysctl_global_mem[3];
+extern atomic_long_t smc_global_memory_allocated;
+
 struct smc_lgr_list {			/* list of link group definition */
 	struct list_head	list;
 	spinlock_t		lock;	/* protects list of link groups */
@@ -639,6 +643,7 @@ void smc_smcd_terminate_all(struct smcd_dev *dev);
 void smc_smcr_terminate_all(struct smc_ib_device *smcibdev);
 int smc_buf_create(struct smc_sock *smc, bool is_smcd);
 int smcd_buf_attach(struct smc_sock *smc);
+int smc_get_bufsize(struct smc_sock *smc, bool is_rmb);
 int smc_uncompress_bufsize(u8 compressed);
 int smc_rmb_rtoken_handling(struct smc_connection *conn, struct smc_link *link,
 			    struct smc_clc_msg_accept_confirm *clc);
@@ -685,4 +690,46 @@ static inline struct smc_link_group *smc_get_lgr(struct smc_link *link)
 {
 	return link->lgr;
 }
+
+static inline long smc_net_mem_allocated(struct net *net)
+{
+	return atomic_long_read(&net->smc.memory_allocated);
+}
+
+static inline long smc_global_mem_allocated(void)
+{
+	return atomic_long_read(&smc_global_memory_allocated);
+}
+
+static inline void smc_net_mem_allocated_add(struct net *net, int val)
+{
+	atomic_long_add(val, &net->smc.memory_allocated);
+}
+
+static inline void smc_net_mem_allocated_sub(struct net *net, int val)
+{
+	atomic_long_sub(val, &net->smc.memory_allocated);
+}
+
+static inline void smc_global_mem_allocated_add(int val)
+{
+	atomic_long_add(val, &smc_global_memory_allocated);
+}
+
+static inline void smc_global_mem_allocated_sub(int val)
+{
+	atomic_long_sub(val, &smc_global_memory_allocated);
+}
+
+static inline bool smc_net_mem_exceeded(struct smc_sock *smc)
+{
+	int bufsize = smc_get_bufsize(smc, true) + smc_get_bufsize(smc, false);
+	long global_mem_allocated = smc_global_mem_allocated() + bufsize;
+	struct net *net = sock_net(&smc->sk);
+	long net_mem_allocated = smc_net_mem_allocated(net) + bufsize;
+
+	return net_mem_allocated >= READ_ONCE(net->smc.sysctl_mem[2]) ||
+		global_mem_allocated >= READ_ONCE(sysctl_global_mem[2]);
+}
+
 #endif

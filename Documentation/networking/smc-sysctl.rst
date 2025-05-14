@@ -85,3 +85,33 @@ experiment_vendor_options - UNSIGNED INTEGER
 	Notice that it is experimental and may be removed in the future.
 
 	Default: 0xFFFFFFFF
+
+global_mem - vector of 3 INTEGERs: min, pressure, max
+	min: below this number of bytes the whole SMC-R and SMC-D stack is not
+	bothered about its memory appetite.
+
+	pressure: when amount of memory allocated by the whole SMC-R and SMC-D
+	exceeds this number of bytes, this doesn't do anything in this version.
+	SMC-R will recycle memory in pressure mode, which is exited when memory
+	consumption falls under "min".
+
+	max: number of bytes allowed for the whole SMC-R and SMC-D, otherwise
+	fallback to TCP. Also it takes effect when per net namespace limit reached.
+
+	Defaults are calculated at boot time from amount of available
+	memory.
+
+mem - vector of 3 INTEGERs: min, pressure, max
+	min: below this number of bytes current net namespace SMC-R and SMC-D
+	stack is not bothered about its memory appetite.
+
+	pressure: when amount of memory allocated by current net namespace of
+	SMC-R and SMC-D exceeds this number of bytes, this doesn't do anything
+	in this version. SMC-R will recycle memory in pressure mode, which is
+	exited when memory consumption falls under "min".
+
+	max: number of bytes allowed for current net namespace SMC-R and SMC-D,
+	otherwise fallback to TCP.
+
+	Defaults are calculated at boot time from amount of available
+	memory.
