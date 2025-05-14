@@ -361,7 +361,9 @@ again:
 out:
 	lock_sock(sock->sk);
 	/* since we release sock before, there might be state changed */
-	if (err >= 0 && smc_sk_state(&smc->sk) != SMC_INIT)
+	if (err >= 0 &&
+	    (smc_sk_state(&smc->sk) != SMC_INIT &&
+	     smc_sk_state(&smc->sk) != SMC_APPCLOSEWAIT1))
 		err = -EPIPE;
 	if (err >= 0)
 		msg->msg_namelen = addr_len;
