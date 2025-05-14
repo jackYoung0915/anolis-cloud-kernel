@@ -455,6 +455,11 @@ __cold int io_sq_offload_create(struct io_ring_ctx *ctx,
 			ret = -EINVAL;
 			goto err;
 		}
+		if ((ctx->flags & IORING_SETUP_IDLE_US) &&
+		    !(ctx->flags & IORING_SETUP_SQPOLL_PERCPU)) {
+			ret = -EINVAL;
+			goto err;
+		}
 
 		sqd = io_get_sq_data(p, &attached, &percpu_found);
 		if (IS_ERR(sqd)) {
@@ -464,11 +469,6 @@ __cold int io_sq_offload_create(struct io_ring_ctx *ctx,
 
 		ctx->sq_creds = get_current_cred();
 		ctx->sq_data = sqd;
-		if ((ctx->flags & IORING_SETUP_IDLE_US) &&
-		    !(ctx->flags & IORING_SETUP_SQPOLL_PERCPU)) {
-			ret = -EINVAL;
-			goto err;
-		}
 
 		/*
 		 * for ms mode: ctx->sq_thread_idle is jiffies
