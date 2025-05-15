@@ -2353,6 +2353,20 @@ int security_inode_removexattr(struct mnt_idmap *idmap,
 }
 
 /**
+ * security_inode_post_removexattr() - Update the inode after a removexattr op
+ * @dentry: file
+ * @name: xattr name
+ *
+ * Update the inode after a successful removexattr operation.
+ */
+void security_inode_post_removexattr(struct dentry *dentry, const char *name)
+{
+	if (unlikely(IS_PRIVATE(d_backing_inode(dentry))))
+		return;
+	call_void_hook(inode_post_removexattr, dentry, name);
+}
+
+/**
  * security_inode_need_killpriv() - Check if security_inode_killpriv() required
  * @dentry: associated dentry
  *
@@ -2857,6 +2871,23 @@ int security_file_open(struct file *file)
 
 	return fsnotify_perm(file, MAY_OPEN);
 }
+
+/**
+ * security_file_post_open() - Evaluate a file after it has been opened
+ * @file: the file
+ * @mask: access mask
+ *
+ * Evaluate an opened file and the access mask requested with open(). The hook
+ * is useful for LSMs that require the file content to be available in order to
+ * make decisions.
+ *
+ * Return: Returns 0 if permission is granted.
+ */
+int security_file_post_open(struct file *file, int mask)
+{
+       return call_int_hook(file_post_open, 0, file, mask);
+}
+EXPORT_SYMBOL_GPL(security_file_post_open);
 
 /**
  * security_file_truncate() - Check if truncating a file is allowed
