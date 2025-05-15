@@ -10,6 +10,8 @@
 #ifndef __CSV_H
 #define __CSV_H
 
+extern u32 hygon_csv_build;
+
 #ifdef CONFIG_HYGON_CSV
 
 /*
