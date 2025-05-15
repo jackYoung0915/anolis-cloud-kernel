@@ -51,6 +51,7 @@ static const char * const pstore_type_names[] = {
 	"powerpc-common",
 	"pmsg",
 	"powerpc-opal",
+	"ttyprobe",
 };
 
 static int pstore_new_entry;
@@ -599,6 +600,9 @@ int pstore_register(struct pstore_info *psi)
 	if (psi->flags & PSTORE_FLAGS_PMSG &&
 	    !psback->front_cnt[PSTORE_TYPE_PMSG]++)
 		pstore_register_pmsg();
+	if (psi->flags & PSTORE_FLAGS_TTYPROBE &&
+	    !psback->front_cnt[PSTORE_TYPE_TTYPROBE]++)
+		pstore_register_ttyprobe();
 
 	/* Start watching for new records, if desired. */
 	pstore_timer_kick();
@@ -651,6 +655,9 @@ void pstore_unregister(struct pstore_info *psi)
 			if (psi->flags & PSTORE_FLAGS_DMESG)
 				pstore_unregister_kmsg(&entry->pstore_dumper);
 	}
+	if (psi->flags & PSTORE_FLAGS_TTYPROBE &&
+	    !--psback->front_cnt[PSTORE_TYPE_TTYPROBE])
+		pstore_unregister_ttyprobe();
 
 	/* Stop timer and make sure all work has finished. */
 	del_timer_sync(&pstore_timer);
