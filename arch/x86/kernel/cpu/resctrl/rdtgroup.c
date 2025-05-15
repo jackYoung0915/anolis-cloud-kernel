@@ -211,6 +211,131 @@ int resctrl_arch_set_cdp_enabled(enum resctrl_res_level l, bool enable)
 	return 0;
 }
 
+/*
+ * Workaround to detect if memory bandwidth HWDRC feature is capable.
+ *
+ * CPUID for memory bandwidth HWDRC feature is not exposed by H/W.
+ * Check presence of HWDRC OS mailbox MSRs. Read out the discovery bit of
+ * HWDRC OS mailbox data which indicates if the feature is capable.
+ */
+bool resctrl_arch_is_hwdrc_mb_capable(void)
+{
+	u32 retries;
+	u64 data;
+	int status;
+
+	/* Only enable memory bandwidth HWDRC after ICELAKE server */
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+	    boot_cpu_data.x86_model < INTEL_FAM6_ICELAKE_X) {
+		pr_debug("HWDRC: Not support until ICELAKE server\n");
+		goto out;
+	}
+
+	/* Check presence of mailbox MSRs */
+	if (rdmsrl_safe(HWDRC_MSR_OS_MAILBOX_INTERFACE, &data)) {
+		pr_debug("HWDRC: Can't access OS mailbox interface MSR\n");
+		goto out;
+	}
+
+	if (rdmsrl_safe(HWDRC_MSR_OS_MAILBOX_DATA, &data)) {
+		pr_debug("HWDRC: Can't access OS mailbox data MSR\n");
+		goto out;
+	}
+
+	/* Poll for run_busy bit == 0 */
+	status = -EBUSY;
+	retries = HWDRC_OS_MAILBOX_RETRY_COUNT;
+	do {
+		rdmsrl(HWDRC_MSR_OS_MAILBOX_INTERFACE, data);
+		if (!(data & HWDRC_MSR_OS_MAILBOX_BUSY_BIT)) {
+			status = 0;
+			break;
+		}
+	} while (--retries);
+
+	if (status)
+		goto out;
+
+	/* Write command register: 0x800054d0 */
+	data = HWDRC_MSR_OS_MAILBOX_BUSY_BIT |
+		HWDRC_SUB_COMMAND_MEM_CLOS_EN << 8 |
+		HWDRC_COMMAND_MEM_CLOS_EN;
+	pr_debug("HWDRC: Write command register: 0x%llx\n", data);
+	if (wrmsrl_safe(HWDRC_MSR_OS_MAILBOX_INTERFACE, data)) {
+		pr_debug("HWDRC: Write command register 0x%llx failed!\n", data);
+		goto out;
+	}
+
+	/* Poll for run_busy bit == 0 */
+	retries = HWDRC_OS_MAILBOX_RETRY_COUNT;
+	do {
+		rdmsrl(HWDRC_MSR_OS_MAILBOX_INTERFACE, data);
+		if (!(data & HWDRC_MSR_OS_MAILBOX_BUSY_BIT)) {
+			rdmsrl(HWDRC_MSR_OS_MAILBOX_DATA, data);
+			pr_debug("HWDRC: Read MEM_CLOS_EN data: 0x%llx\n", data);
+
+			/* Feature capability bit is set */
+			if (data & HWDRC_MEMCLOS_AVAILABLE) {
+				pr_debug("HWDRC: Memory bandwidth HWDRC is capable\n");
+				return true;
+			}
+
+			/* Feature capability bit is not set */
+			break;
+		}
+	} while (--retries);
+
+out:
+	pr_debug("HWDRC: Memory bandwidth HWDRC is not capable\n");
+	return false;
+}
+
+static void mba_enable(enum resctrl_res_level l)
+{
+	struct rdt_hw_resource *r_hw = &rdt_resources_all[l];
+	struct rdt_resource *r = &r_hw->r_resctrl;
+
+	r->alloc_capable = true;
+}
+
+static void mba_disable(enum resctrl_res_level l)
+{
+	struct rdt_hw_resource *r_hw = &rdt_resources_all[l];
+	struct rdt_resource *r = &r_hw->r_resctrl;
+
+	r->alloc_capable = false;
+}
+
+/*
+ * Currently memory bandwidth HWDRC feature is enabled or disabled by the user
+ * outside of the scope of the resctrl filesystem. When memory bandwidth HWDRC
+ * is enabled, it takes over MBA hooks in resctrl for memory bandwidth
+ * throttling.
+ *
+ * Set memory bandwidth HWDRC enabled in resctrl so that the user who enables
+ * memory bandwidth HWDRC can make sure that resctrl doesn't provide any hooks
+ * to control MBA.
+ *
+ * Set memory bandwidth HWDRC disabled in resctrl, MBA is enabled by default.
+ */
+int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level l, bool hwdrc_mb)
+{
+	struct rdt_resource *r = &rdt_resources_all[l].r_resctrl;
+
+	if (!resctrl_arch_is_hwdrc_mb_capable() || hwdrc_mb == r->membw.hwdrc_mb)
+		return -EINVAL;
+
+	/* MBA and memory bandwidth HWDRC features are mutually exclusive */
+	if (hwdrc_mb)
+		mba_disable(l);
+	else
+		mba_enable(l);
+
+	r->membw.hwdrc_mb = hwdrc_mb;
+
+	return 0;
+}
+
 static int reset_all_ctrls(struct rdt_resource *r)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
