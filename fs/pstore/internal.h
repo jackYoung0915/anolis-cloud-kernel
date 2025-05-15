@@ -33,6 +33,14 @@ static inline void pstore_register_pmsg(void) {}
 static inline void pstore_unregister_pmsg(void) {}
 #endif
 
+#ifdef CONFIG_PSTORE_TTYPROBE
+extern void pstore_register_ttyprobe(void);
+extern void pstore_unregister_ttyprobe(void);
+#else
+static inline void pstore_register_ttyprobe(void) {}
+static inline void pstore_unregister_ttyprobe(void) {}
+#endif
+
 extern struct pstore_backends *psback;
 
 extern void	pstore_set_kmsg_bytes(unsigned int bytes);

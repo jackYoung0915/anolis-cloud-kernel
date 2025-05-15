@@ -52,6 +52,14 @@ static long ftrace_size = -1;
 module_param(ftrace_size, long, 0400);
 MODULE_PARM_DESC(ftrace_size, "ftrace size in kbytes");
 
+#if IS_ENABLED(CONFIG_PSTORE_TTYPROBE)
+static long ttyprobe_size = CONFIG_PSTORE_BLK_TTYPROBE_SIZE;
+#else
+static long ttyprobe_size = -1;
+#endif
+module_param(ttyprobe_size, long, 0400);
+MODULE_PARM_DESC(ttyprobe_size, "ttyprobe_size size in kbytes");
+
 static bool best_effort;
 module_param(best_effort, bool, 0400);
 MODULE_PARM_DESC(best_effort, "use best effort to write (i.e. do not require storage driver pstore support, default: off)");
@@ -130,6 +138,7 @@ static int __register_pstore_device(struct pstore_device_info *dev)
 	verify_size(pmsg_size, 4096, dev->flags & PSTORE_FLAGS_PMSG);
 	verify_size(console_size, 4096, dev->flags & PSTORE_FLAGS_CONSOLE);
 	verify_size(ftrace_size, 4096, dev->flags & PSTORE_FLAGS_FTRACE);
+	verify_size(ttyprobe_size, 4096, dev->flags & PSTORE_FLAGS_TTYPROBE);
 	dev->zone.max_reason = max_reason;
 
 	/* Initialize required zone ownership details. */
@@ -247,6 +256,7 @@ int pstore_blk_get_config(struct pstore_blk_config *info)
 	info->pmsg_size = check_size(pmsg_size, 4096);
 	info->ftrace_size = check_size(ftrace_size, 4096);
 	info->console_size = check_size(console_size, 4096);
+	info->ttyprobe_size = check_size(ttyprobe_size, 4096);
 
 	return 0;
 }
