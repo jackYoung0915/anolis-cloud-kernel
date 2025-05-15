@@ -41,6 +41,7 @@ struct pstore_blk_config {
 	unsigned long pmsg_size;
 	unsigned long console_size;
 	unsigned long ftrace_size;
+	unsigned long ttyprobe_size;
 };
 
 /**
