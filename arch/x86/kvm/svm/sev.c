@@ -2764,6 +2764,9 @@ void __init sev_hardware_setup(void)
 	bool sev_es_supported = false;
 	bool sev_supported = false;
 
+	if (is_x86_vendor_hygon() && hygon_csv_build < 1878 && !sme_me_mask)
+		goto out;
+
 	/*
 	 * SEV must obviously be supported in hardware.  Sanity check that the
 	 * CPU supports decode assists, which is mandatory for SEV guests to
