@@ -18,7 +18,7 @@ if NET_VENDOR_NEBULA_MATRIX
 
 config NBL_CORE
     tristate "Nebula-matrix Ethernet Controller m18110 Family support"
-    depends on PCI && VFIO
+    depends on PCI && VFIO && VFIO_MDEV
     depends on ARM64 || X86_64
     default m
     help
