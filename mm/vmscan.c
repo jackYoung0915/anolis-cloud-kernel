@@ -7706,6 +7706,7 @@ void __memcg_pagecache_shrink(struct mem_cgroup *memcg,
 		nr_should_reclaim = memcg->pgcache_limit_reclaim_bytes;
 
 	sc.nr_to_reclaim = max(nr_should_reclaim, SWAP_CLUSTER_MAX);
+	set_task_reclaim_state(current, &sc.reclaim_state);
 	do {
 		if (!is_memcg_pgcache_limit_enabled(memcg))
 			break;
@@ -7734,5 +7735,6 @@ void __memcg_pagecache_shrink(struct mem_cgroup *memcg,
 		if (__pagecache_shrink(memcg, &sc) < 0)
 			break;
 	} while (--sc.priority >= 0);
+	set_task_reclaim_state(current, NULL);
 }
 #endif
