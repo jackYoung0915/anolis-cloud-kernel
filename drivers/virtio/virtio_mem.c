@@ -613,7 +613,7 @@ static int virtio_mem_add_memory(struct virtio_mem *vm, uint64_t addr,
 				 uint64_t size)
 {
 	int rc;
-	mhp_t extra_flags = 0;
+	mhp_t mhp_flags = MHP_MERGE_RESOURCE | MHP_NID_IS_MGID;
 
 	/*
 	 * When force-unloading the driver and we still have memory added to
@@ -633,10 +633,10 @@ static int virtio_mem_add_memory(struct virtio_mem *vm, uint64_t addr,
 #ifdef CONFIG_X86_64
 	/* only support memmap_on_memory on sbm scenario */
 	if (vm->in_sbm)
-		extra_flags |= MHP_MEMMAP_ON_MEMORY;
+		mhp_flags |= MHP_VM_IN_SMB;
 #endif
 	rc = add_memory_driver_managed(vm->mgid, addr, size, vm->resource_name,
-			MHP_MERGE_RESOURCE | MHP_NID_IS_MGID, extra_flags);
+				       mhp_flags);
 	if (rc) {
 		atomic64_sub(size, &vm->offline_size);
 		dev_warn(&vm->vdev->dev, "adding memory failed: %d\n", rc);

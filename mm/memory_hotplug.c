@@ -1303,8 +1303,7 @@ bool mhp_supports_memmap_on_memory(unsigned long size)
  *
  * we are OK calling __meminit stuff here - we have CONFIG_MEMORY_HOTPLUG
  */
-int __ref add_memory_resource(int nid, struct resource *res,
-		mhp_t mhp_flags, mhp_t extra_flags)
+int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 {
 	struct mhp_params params = { .pgprot = pgprot_mhp(PAGE_KERNEL) };
 	struct vmem_altmap mhp_altmap = {};
@@ -1346,7 +1345,7 @@ int __ref add_memory_resource(int nid, struct resource *res,
 	 * Self hosted memmap array
 	 */
 	if ((mhp_flags & MHP_MEMMAP_ON_MEMORY) ||
-		((extra_flags & MHP_MEMMAP_ON_MEMORY) &&
+		((mhp_flags & MHP_VM_IN_SMB) &&
 		mhp_memmap_on_memory())) {
 		if (!mhp_supports_memmap_on_memory(size)) {
 			ret = -EINVAL;
@@ -1421,7 +1420,7 @@ int __ref __add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags)
 	if (IS_ERR(res))
 		return PTR_ERR(res);
 
-	ret = add_memory_resource(nid, res, mhp_flags, 0);
+	ret = add_memory_resource(nid, res, mhp_flags);
 	if (ret < 0)
 		release_memory_resource(res);
 	return ret;
@@ -1462,7 +1461,7 @@ EXPORT_SYMBOL_GPL(add_memory);
  */
 int add_memory_driver_managed(int nid, u64 start, u64 size,
 			      const char *resource_name,
-			      mhp_t mhp_flags, mhp_t extra_flags)
+			      mhp_t mhp_flags)
 {
 	struct resource *res;
 	int rc;
@@ -1480,7 +1479,7 @@ int add_memory_driver_managed(int nid, u64 start, u64 size,
 		goto out_unlock;
 	}
 
-	rc = add_memory_resource(nid, res, mhp_flags, extra_flags);
+	rc = add_memory_resource(nid, res, mhp_flags);
 	if (rc < 0)
 		release_memory_resource(res);
 
