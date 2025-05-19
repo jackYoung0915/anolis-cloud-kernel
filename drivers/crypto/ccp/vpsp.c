@@ -19,7 +19,6 @@
 #include <linux/workqueue.h>
 #include <linux/hashtable.h>
 
-#include "psp-ringbuf.h"
 #include "psp-dev.h"
 #include "sev-dev.h"
 #include "vpsp.h"
@@ -64,6 +63,9 @@
  */
 DEFINE_HASHTABLE(vpsp_cmd_ctx_table, 11);
 DEFINE_RWLOCK(table_rwlock);
+
+static struct vpsp_cmd_ctx *vpsp_cmd_ctx_array[CSV_COMMAND_PRIORITY_NUM]
+				[CSV_RING_BUFFER_SIZE / CSV_RING_BUFFER_ESIZE];
 
 static struct vpsp_cmd_ctx *vpsp_hashtable_find_cmd_ctx(gpa_t key1, pid_t key2)
 {
@@ -130,7 +132,7 @@ static struct vpsp_cmd_ctx *vpsp_cmd_ctx_create(gpa_t key1, pid_t key2)
 		 * the initial value must be greater than 0.
 		 */
 		refcount_set(&cmd_ctx->ref, 1);
-		cmd_ctx->statval = VPSP_CMD_STATUS_RUNNING;
+		cmd_ctx->statval = PSP_CMD_STATUS_RUNNING;
 		cmd_ctx->key1 = key1;
 		cmd_ctx->key2 = key2;
 		vpsp_hashtable_add_cmd_ctx(cmd_ctx);
@@ -146,7 +148,7 @@ static struct vpsp_cmd_ctx *vpsp_cmd_ctx_create(gpa_t key1, pid_t key2)
  * only additional to perform decrement refcount.
  *
  * Actual memory release occurs when the refcount drops to 0,
- * which may happen during the vpsp_worker_handler or
+ * which may happen during the psp_worker_handler or
  * vpsp_cmd_ctx_destroy process.
  *
  * @cmd_ctx: the vpsp_cmd_ctx object
@@ -857,4 +859,264 @@ int do_vpsp_op_ioctl(struct vpsp_dev_ctrl *ctrl)
 		break;
 	}
 	return ret;
+}
+
+struct csv_ringbuffer_queue vpsp_ring_buffer[CSV_COMMAND_PRIORITY_NUM];
+
+static void vpsp_ring_update_head(int prio, uint32_t new_head)
+{
+	struct csv_ringbuffer_queue *ring_buffer = &vpsp_ring_buffer[prio];
+	uint32_t orig_head = csv_cmd_queue_head(&ring_buffer->cmd_ptr);
+	uint32_t comple_num = 0, index = orig_head;
+	struct vpsp_cmd_ctx *ctx = NULL;
+	int i, mask = ring_buffer->cmd_ptr.mask;
+
+	if (new_head >= orig_head)
+		comple_num = new_head - orig_head;
+	else
+		comple_num = mask - (orig_head - new_head) + 1;
+
+	for (i = 0; i < comple_num; ++i) {
+		index = (orig_head + i) & mask;
+		ctx = vpsp_cmd_ctx_array[prio][index];
+		if (ctx) {
+			/**
+			 * Write the result back to the cmd ctx,
+			 * after which we can safely perform
+			 * the ringbuffer dequeue operation without
+			 * waiting for the Guest to retrieve the result.
+			 */
+			ctx->statval = ringbuffer_get_status(ring_buffer, index);
+			vpsp_cmd_ctx_obj_put(ctx, false);
+		}
+	}
+
+	psp_ringbuffer_dequeue(ring_buffer, NULL, NULL, comple_num);
+}
+
+static int vpsp_psp_mutex_trylock(void)
+{
+	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
+
+	if (is_hygon_psp && mutex_enabled)
+		return psp_mutex_trylock(&psp_misc->data_pg_aligned->mb_mutex);
+	else
+		return mutex_trylock(&sev_cmd_mutex);
+}
+
+static int vpsp_psp_mutex_unlock(void)
+{
+	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
+
+	if (is_hygon_psp && mutex_enabled)
+		psp_mutex_unlock(&psp_misc->data_pg_aligned->mb_mutex);
+	else
+		mutex_unlock(&sev_cmd_mutex);
+
+	return 0;
+}
+
+static void vpsp_ringbuffer_wakeup_locked(struct work_struct *unused)
+{
+	unsigned int hi_head = 0, low_head = 0;
+	struct sev_user_data_status data;
+
+	psp_ringbuffer_get_newhead(&hi_head, &low_head);
+
+	/* update head */
+	vpsp_ring_update_head(CSV_COMMAND_PRIORITY_HIGH, hi_head);
+	vpsp_ring_update_head(CSV_COMMAND_PRIORITY_LOW, low_head);
+
+	if (!psp_generic_rb_supported) {
+		/* exit ringbuf mode by send CMD in mailbox mode */
+		psp_do_cmd_locked(SEV_CMD_PLATFORM_STATUS, &data, NULL, 0);
+	}
+}
+
+int vpsp_do_cmd(int cmd, phys_addr_t phy_addr, int *psp_ret)
+{
+	int rc;
+	int mutex_enabled = READ_ONCE(psp_mutex_enabled);
+
+	if (is_hygon_psp && mutex_enabled) {
+		if (psp_mutex_lock_timeout(&psp_misc->data_pg_aligned->mb_mutex,
+					PSP_MUTEX_TIMEOUT) != 1) {
+			return -EBUSY;
+		}
+	} else {
+		mutex_lock(&sev_cmd_mutex);
+	}
+
+	rc = psp_do_cmd_locked(cmd, (void *)phy_addr, psp_ret, PSP_DO_CMD_OP_PHYADDR);
+
+	if (is_hygon_psp && mutex_enabled)
+		psp_mutex_unlock(&psp_misc->data_pg_aligned->mb_mutex);
+	else
+		mutex_unlock(&sev_cmd_mutex);
+
+	return rc;
+}
+
+/*
+ * Try to obtain the result again by the command index, this
+ * interface is used in ringbuffer mode
+ */
+int vpsp_try_get_result(struct vpsp_cmd_ctx *cmd_ctx, struct vpsp_ret *psp_ret)
+{
+	int ret = 0;
+	uint8_t prio = cmd_ctx->rb_prio;
+	uint16_t statval = PSP_CMD_STATUS_RUNNING;
+	uint32_t index = cmd_ctx->rb_index;
+	phys_addr_t phy_addr = cmd_ctx->psp_cmdbuf_paddr;
+	struct csv_cmdptr_entry cmd = {0};
+
+	/* Get the retult directly if the command has been executed */
+	if (index >= 0) {
+		if (cmd_ctx->statval != PSP_CMD_STATUS_RUNNING)
+			statval = cmd_ctx->statval;
+		else
+			statval = ringbuffer_get_status(&vpsp_ring_buffer[prio], index);
+		if (statval != PSP_CMD_STATUS_RUNNING) {
+			psp_ret->pret = statval;
+			psp_ret->status = VPSP_FINISH;
+			return 0;
+		}
+	}
+
+	if (vpsp_psp_mutex_trylock()) {
+		/*
+		 * Use mailbox mode to execute a command if there is
+		 * only one command
+		 */
+		if (csv_cmd_queue_size(&vpsp_ring_buffer[prio].cmd_ptr) == 1) {
+			/* dequeue command from queue*/
+			psp_ringbuffer_dequeue(&vpsp_ring_buffer[prio], &cmd, NULL, 1);
+			ret = psp_do_cmd_locked(cmd.cmd_id, (void *)phy_addr,
+						(int *)psp_ret, PSP_DO_CMD_OP_PHYADDR);
+			psp_ret->status = VPSP_FINISH;
+			vpsp_psp_mutex_unlock();
+			if (unlikely(ret)) {
+				if (ret == -EIO) {
+					ret = 0;
+				} else {
+					pr_err("[%s]: psp do cmd error, %d\n",
+						__func__, psp_ret->pret);
+					ret = -EIO;
+					goto end;
+				}
+			}
+		} else {
+			psp_worker_register_notify(vpsp_ringbuffer_wakeup_locked);
+			ret = psp_do_ringbuffer_cmds_locked(vpsp_ring_buffer, (int *)psp_ret);
+			if (unlikely(ret)) {
+				pr_err("[%s]: psp ringbuf execute failed %d\n",
+						__func__, ret);
+				psp_ret->status = VPSP_FINISH;
+				vpsp_psp_mutex_unlock();
+				goto end;
+			}
+			psp_ret->status = VPSP_RUNNING;
+		}
+	} else {
+		/* Change the command to the running state if getting the mutex
+		 * fails
+		 */
+		psp_ret->status = VPSP_RUNNING;
+		return 0;
+	}
+end:
+	return ret;
+}
+
+/*
+ * Send the virtual psp command to the PSP device and try to get the
+ * execution result, the interface and the vpsp_try_get_result
+ * interface are executed asynchronously. If the execution succeeds,
+ * the result is returned to the VM. If the execution fails, the
+ * vpsp_try_get_result interface will be used to obtain the result
+ * later again
+ */
+int vpsp_try_do_cmd(int cmd, phys_addr_t phy_addr,
+		struct vpsp_cmd_ctx *cmd_ctx, struct vpsp_ret *psp_ret)
+{
+	int ret = 0;
+	int rb_supported;
+	int index = -1;
+	uint8_t prio = CSV_COMMAND_PRIORITY_LOW;
+
+	/* ringbuffer mode check and parse command prio*/
+	rb_supported = vpsp_parse_ringbuffer_cmd_prio(&prio,
+			(struct vpsp_cmd *)&cmd);
+	if (rb_supported) {
+		/* fill command in ringbuffer's queue and get index */
+		index = psp_ringbuffer_enqueue(&vpsp_ring_buffer[prio], cmd, phy_addr, 0);
+		if (unlikely(index < 0)) {
+			/* do mailbox command if queuing failed*/
+			ret = vpsp_do_cmd(cmd, phy_addr, (int *)psp_ret);
+			if (unlikely(ret)) {
+				if (ret == -EIO) {
+					ret = 0;
+				} else {
+					pr_err("[%s]: psp do cmd error, %d\n",
+						__func__, psp_ret->pret);
+					ret = -EIO;
+					goto end;
+				}
+			}
+			psp_ret->status = VPSP_FINISH;
+			goto end;
+		}
+
+		cmd_ctx->rb_index = index;
+		cmd_ctx->rb_prio = prio;
+		cmd_ctx->psp_cmdbuf_paddr = phy_addr;
+		vpsp_cmd_ctx_array[prio][index] = cmd_ctx;
+		vpsp_cmd_ctx_obj_get(cmd_ctx);
+
+		/* try to get result from the ringbuffer command */
+		ret = vpsp_try_get_result(cmd_ctx, psp_ret);
+		if (unlikely(ret)) {
+			pr_err("[%s]: vpsp_try_get_result failed %d\n", __func__, ret);
+			goto end;
+		}
+	} else {
+		/* mailbox mode */
+		ret = vpsp_do_cmd(cmd, phy_addr, (int *)psp_ret);
+		if (unlikely(ret)) {
+			if (ret == -EIO) {
+				ret = 0;
+			} else {
+				pr_err("[%s]: psp do cmd error, %d\n",
+						__func__, psp_ret->pret);
+				ret = -EIO;
+				goto end;
+			}
+		}
+		psp_ret->status = VPSP_FINISH;
+	}
+
+end:
+	return ret;
+}
+
+/*
+ * parse commands from the virtual machine
+ */
+int vpsp_parse_ringbuffer_cmd_prio(uint8_t *prio,
+		struct vpsp_cmd *vcmd)
+{
+	int rb_supported;
+
+	psp_ringbuffer_check_support();
+	rb_supported = (psp_legacy_rb_supported || psp_generic_rb_supported);
+
+	/* parse prio by vcmd */
+	if (rb_supported && vcmd->is_high_rb)
+		*prio = CSV_COMMAND_PRIORITY_HIGH;
+	else
+		*prio = CSV_COMMAND_PRIORITY_LOW;
+	/* clear rb level bit in vcmd */
+	vcmd->is_high_rb = 0;
+
+	return rb_supported;
 }
