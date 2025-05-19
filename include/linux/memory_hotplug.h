@@ -128,6 +128,8 @@ typedef int __bitwise mhp_t;
  */
 #define MHP_NID_IS_MGID		((__force mhp_t)BIT(2))
 
+#define MHP_VM_IN_SMB		((__force mhp_t)BIT(3))
+
 /*
  * Extended parameters for memory hotplug:
  * altmap: alternative allocator for memmap array (optional)
@@ -332,10 +334,10 @@ extern void __ref free_area_init_core_hotplug(struct pglist_data *pgdat);
 extern int __add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags);
 extern int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags);
 extern int add_memory_resource(int nid, struct resource *resource,
-			       mhp_t mhp_flags, mhp_t extra_flags);
+			       mhp_t mhp_flags);
 extern int add_memory_driver_managed(int nid, u64 start, u64 size,
 				     const char *resource_name,
-				     mhp_t mhp_flags, mhp_t extra_flags);
+				     mhp_t mhp_flags);
 extern void move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
 				   unsigned long nr_pages,
 				   struct vmem_altmap *altmap, int migratetype);
