@@ -163,9 +163,9 @@ static void esw_vport_change_handler(struct work_struct *work)
 	mutex_unlock(&esw->state_lock);
 }
 
-void xsc_eswitch_enable_vport(struct xsc_eswitch *esw,
-			      struct xsc_vport *vport,
-			      enum xsc_eswitch_vport_event enabled_events)
+static void xsc_eswitch_enable_vport(struct xsc_eswitch *esw,
+				     struct xsc_vport *vport,
+				     enum xsc_eswitch_vport_event enabled_events)
 {
 	mutex_lock(&esw->state_lock);
 	if (vport->enabled)
@@ -184,26 +184,8 @@ unlock_out:
 	mutex_unlock(&esw->state_lock);
 }
 
-void xsc_eswitch_disable_vport(struct xsc_eswitch *esw,
-			       struct xsc_vport *vport)
-{
-	u16 vport_num = vport->vport;
-
-	mutex_lock(&esw->state_lock);
-	if (!vport->enabled)
-		goto done;
-
-	xsc_core_dbg(esw->dev, "Disabling vport(%d)\n", vport_num);
-	/* Mark this vport as disabled to discard new events */
-	vport->enabled = false;
-	vport->enabled_events = 0;
-	esw->enabled_vports--;
-done:
-	mutex_unlock(&esw->state_lock);
-}
-
-void xsc_eswitch_enable_pf_vf_vports(struct xsc_eswitch *esw,
-				     enum xsc_eswitch_vport_event enabled_events)
+static void xsc_eswitch_enable_pf_vf_vports(struct xsc_eswitch *esw,
+					    enum xsc_eswitch_vport_event enabled_events)
 {
 	struct xsc_vport *vport;
 	int i;
@@ -220,7 +202,7 @@ void xsc_eswitch_enable_pf_vf_vports(struct xsc_eswitch *esw,
 					XSC_VPORT_PROMISC_CHANGE | \
 					XSC_VPORT_VLAN_CHANGE)
 
-int esw_legacy_enable(struct xsc_eswitch *esw)
+static int esw_legacy_enable(struct xsc_eswitch *esw)
 {
 	struct xsc_vport *vport;
 	unsigned long i;
@@ -323,12 +305,13 @@ int xsc_eswitch_init(struct xsc_core_device *dev)
 	esw->first_host_vport = xsc_eswitch_first_host_vport_num(dev);
 	esw->work_queue = create_singlethread_workqueue("xsc_esw_wq");
 	if (!esw->work_queue) {
+		xsc_core_err(dev, "failed to create eswitch work queue\n");
 		err = -ENOMEM;
 		goto abort;
 	}
-	esw->vports = kcalloc(total_vports, sizeof(struct xsc_vport),
-			      GFP_KERNEL);
+	esw->vports = xsc_vzalloc(total_vports * sizeof(struct xsc_vport));
 	if (!esw->vports) {
+		xsc_core_err(dev, "failed to alloc mem for eswitch vports\n");
 		err = -ENOMEM;
 		goto abort;
 	}
@@ -356,9 +339,9 @@ int xsc_eswitch_init(struct xsc_core_device *dev)
 abort:
 	if (esw->work_queue)
 		destroy_workqueue(esw->work_queue);
-	kfree(esw->vports);
+	xsc_vfree(esw->vports);
 	kfree(esw);
-	return 0;
+	return err;
 }
 
 void xsc_eswitch_cleanup(struct xsc_core_device *dev)
@@ -369,15 +352,33 @@ void xsc_eswitch_cleanup(struct xsc_core_device *dev)
 	xsc_core_dbg(dev, "cleanup\n");
 
 	destroy_workqueue(dev->priv.eswitch->work_queue);
-	kfree(dev->priv.eswitch->vports);
+	xsc_vfree(dev->priv.eswitch->vports);
 	kfree(dev->priv.eswitch);
 }
+
+#ifdef XSC_ESW_GUID_ENABLE
+static void node_guid_gen_from_mac(u64 *node_guid, u8 mac[ETH_ALEN])
+{
+	((u8 *)node_guid)[7] = mac[0];
+	((u8 *)node_guid)[6] = mac[1];
+	((u8 *)node_guid)[5] = mac[2];
+	((u8 *)node_guid)[4] = 0xff;
+	((u8 *)node_guid)[3] = 0xfe;
+	((u8 *)node_guid)[2] = mac[3];
+	((u8 *)node_guid)[1] = mac[4];
+	((u8 *)node_guid)[0] = mac[5];
+}
+#endif
 
 int xsc_eswitch_set_vport_mac(struct xsc_eswitch *esw,
 			      u16 vport, u8 mac[ETH_ALEN])
 {
 	struct xsc_vport *evport = xsc_eswitch_get_vport(esw, vport);
 	int err = 0;
+
+#ifdef XSC_ESW_GUID_ENABLE
+	u64 node_guid;
+#endif
 
 	if (IS_ERR(evport))
 		return PTR_ERR(evport);
@@ -402,6 +403,21 @@ int xsc_eswitch_set_vport_mac(struct xsc_eswitch *esw,
 
 	ether_addr_copy(evport->info.mac, mac);
 
+#ifdef XSC_ESW_GUID_ENABLE
+	node_guid_gen_from_mac(&node_guid, mac);
+	err = xsc_modify_other_nic_vport_node_guid(esw->dev, vport, node_guid);
+	if (err)
+		xsc_core_err(esw->dev,
+			     "Failed to set vport %d node guid, err = %d. RDMA_CM will not function properly for this VF.\n",
+			     vport, err);
+	evport->info.node_guid = node_guid;
+#endif
+
+#ifdef XSC_ESW_FDB_ENABLE
+	if (evport->enabled && esw->mode == XSC_ESWITCH_LEGACY)
+		err = esw_vport_ingress_config(esw, evport);
+#endif
+
 unlock:
 	mutex_unlock(&esw->state_lock);
 	return err;
@@ -422,8 +438,8 @@ int xsc_eswitch_get_vport_mac(struct xsc_eswitch *esw,
 	return 0;
 }
 
-int __xsc_eswitch_set_vport_vlan(struct xsc_eswitch *esw, int vport, u16 vlan,
-				 u8 qos, __be16 proto, u8 set_flags)
+static int __xsc_eswitch_set_vport_vlan(struct xsc_eswitch *esw, int vport, u16 vlan,
+					u8 qos, __be16 proto, u8 set_flags)
 {
 	struct xsc_modify_nic_vport_context_in *in;
 	int err, in_sz;
