@@ -1,0 +1,3 @@
+* Tue May 20 2025 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-19%%DIST%%]
+- anolis: mm: duptext: Fix xas_store use-after-free error in the dedup path. (Guanjun)
+
