@@ -14,6 +14,19 @@
 %define kernelversion %%DIST_KERNELVERSION%%
 %define pkgrelease %%DIST_PKGRELEASEVERION%%
 
+# for sw_64 architecture
+%ifarch sw_64
+%if %(gcc -dM -E - </dev/null | grep '__sw_64_sw6b__\s*1$' -q ; echo $?) == 0
+%define sw_dist_arch -6b
+%else
+%if %(gcc -dM -E - </dev/null | grep '__sw_64_sw8a__\s*1$' -q ; echo $?) == 0
+%define sw_dist_arch -8a
+%else
+%define sw_dist_arch _unknown_sw_arch
+%endif # sw8a architecture
+%endif # sw6b architecture
+%endif # all sw_64 architecture
+
 # Replace '-' with '_' where needed so that variants can use '-' in
 # their name.
 %define uname_suffix() %{lua:
@@ -84,6 +97,10 @@
 %ifarch loongarch64
 %define with_debug 0
 %define with_bpftool 0
+%endif
+
+%ifarch sw_64
+%define with_bpftool 1
 %endif
 
 %define with_gcov %{?_with_gcov: 1} %{?!_with_gcov: 0}
@@ -166,6 +183,14 @@
 %define kernel_image arch/arm64/boot/Image.gz
 %endif
 
+%ifarch sw_64
+%define all_arch_configs kernel-%{version}-sw_64*.config
+%define asmarch sw_64
+%define hdrarch sw_64
+%define make_target vmlinux
+%define kernel_image arch/sw_64/boot/vmlinux
+%endif
+
 %ifarch loongarch64
 %define all_arch_configs %{name}-%{version}-loongarch64*.config
 %define asmarch loongarch
@@ -203,7 +228,7 @@
 %endif
 
 # Architectures we build tools/cpupower on
-%define cpupowerarchs x86_64 aarch64
+%define cpupowerarchs x86_64 aarch64 sw_64
 
 #
 # Packages that need to be installed before the kernel is, because the %%post
@@ -222,7 +247,7 @@ Release: %{pkg_release}
 Summary: The Linux kernel, based on version %{version}, heavily modified with backports
 # DO NOT CHANGE THE 'ExclusiveArch' LINE TO TEMPORARILY EXCLUDE AN ARCHITECTURE BUILD.
 # SET %%nobuildarches (ABOVE) INSTEAD
-ExclusiveArch: noarch i686 x86_64 aarch64 loongarch64 riscv64
+ExclusiveArch: noarch i686 x86_64 aarch64 loongarch64 riscv64 sw_64
 ExclusiveOS: Linux
 
 
@@ -308,6 +333,10 @@ Source47: kernel-%{version}-aarch64-64k.config
 Source48: kernel-%{version}-aarch64-64k-debug.config
 Source49: kernel-%{version}-riscv64.config
 Source50: kernel-%{version}-riscv64-debug.config
+Source3000: kernel-%{version}-sw_64-6b.config
+Source3001: kernel-%{version}-sw_64-6b-debug.config
+Source3002: kernel-%{version}-sw_64-8a.config
+Source3003: kernel-%{version}-sw_64-8a-debug.config
 
 # Sources for kernel-tools
 Source2000: cpupower.service
@@ -792,7 +821,7 @@ BuildKernel() {
     DoModules=1
 
     # Pick the right config file for the kernel we're building
-    Config=kernel-%{version}-%{_target_cpu}${Flavour:+-${Flavour}}.config
+    Config=kernel-%{version}-%{_target_cpu}%{?sw_dist_arch}${Flavour:+-${Flavour}}.config
     DevelDir=/usr/src/kernels/%{KVERREL}${Flav}
 
     # When the bootable image is just the ELF kernel, strip it.
@@ -830,6 +859,10 @@ BuildKernel() {
 	%{make} -s ARCH=$Arch V=1 %{?_smp_mflags} KCFLAGS="$KCFLAGS" WITH_GCOV="%{?with_gcov}" modules %{?sparse_mflags} || exit 1
     fi
 
+%ifarch sw_64
+    objdump -d vmlinux>1
+    cp vmlinux ./arch/sw_64/boot/vmlinux
+%endif
     mkdir -p $RPM_BUILD_ROOT/%{image_install_path}
     mkdir -p $RPM_BUILD_ROOT/lib/modules/$KernelVer
 %if %{with_debuginfo}
@@ -1129,8 +1162,14 @@ BuildKernel %make_target %kernel_image 64k-debug
 BuildKernel %make_target %kernel_image
 %endif
 
+%ifarch sw_64
+%global perf_make \
+  make EXTRA_CFLAGS="${RPM_OPT_FLAGS}" LDFLAGS="%{__global_ldflags}" -C tools/perf V=1 NO_PERF_READ_VDSO32=1 NO_PERF_READ_VDSOX32=1 WERROR=0 NO_LIBUNWIND=1 HAVE_CPLUS_DEMANGLE=1 NO_GTK2=1 NO_STRLCPY=1 NO_BIONIC=1 LIBTRACEEVENT_DYNAMIC=1 %{?perf_build_extra_opts} prefix=%{_prefix} PYTHON=%{__python3}
+%else
 %global perf_make \
   make EXTRA_CFLAGS="${RPM_OPT_FLAGS}" LDFLAGS="%{__global_ldflags}" -C tools/perf V=1 NO_PERF_READ_VDSO32=1 NO_PERF_READ_VDSOX32=1 WERROR=0 NO_LIBUNWIND=1 HAVE_CPLUS_DEMANGLE=1 NO_GTK2=1 NO_STRLCPY=1 NO_BIONIC=1 LIBBPF_DYNAMIC=1 LIBTRACEEVENT_DYNAMIC=1 %{?perf_build_extra_opts} prefix=%{_prefix} PYTHON=%{__python3}
+%endif
+
 %if %{with_perf}
 # perf
 # make sure check-headers.sh is executable
