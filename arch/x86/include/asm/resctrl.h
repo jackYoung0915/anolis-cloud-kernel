@@ -216,6 +216,17 @@ static inline void *resctrl_arch_mon_ctx_alloc(struct rdt_resource *r, int evtid
 static inline void resctrl_arch_mon_ctx_free(struct rdt_resource *r, int evtid,
 					     void *ctx) { };
 
+int resctrl_arch_mbm_cntr_assign_enable(void);
+void resctrl_arch_mbm_cntr_assign_configure(void);
+void resctrl_arch_mbm_cntr_assign_disable(void);
+bool resctrl_arch_get_mbm_cntr_assign_enable(void);
+
+void resctrl_arch_event_config_set(void *info);
+u32 resctrl_arch_event_config_get(void *d, enum resctrl_event_id eventid);
+
+int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
+			     u32 rmid, u32 cntr_id, u32 closid, bool assign);
+
 u64 resctrl_arch_get_prefetch_disable_bits(void);
 int resctrl_arch_pseudo_lock_fn(void *_plr);
 int resctrl_arch_measure_cycles_lat_fn(void *_plr);
@@ -228,6 +239,8 @@ int resctrl_arch_set_cdp_enabled(enum resctrl_res_level l, bool enable);
 
 bool resctrl_arch_is_hwdrc_mb_capable(void);
 int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level l, bool hwdrc_mb);
+
+bool resctrl_arch_get_abmc_enabled(void);
 
 #else
 

@@ -818,22 +818,22 @@ static struct mon_evt mbm_bps_event = {
  */
 static void l3_mon_evt_init(struct rdt_resource *r)
 {
-	INIT_LIST_HEAD(&r->evt_list);
+	INIT_LIST_HEAD(&r->mon.evt_list);
 
 	if (resctrl_arch_is_llc_occupancy_enabled())
-		list_add_tail(&llc_occupancy_event.list, &r->evt_list);
+		list_add_tail(&llc_occupancy_event.list, &r->mon.evt_list);
 	if (resctrl_arch_is_mbm_total_enabled())
-		list_add_tail(&mbm_total_event.list, &r->evt_list);
+		list_add_tail(&mbm_total_event.list, &r->mon.evt_list);
 	if (resctrl_arch_is_mbm_local_enabled())
-		list_add_tail(&mbm_local_event.list, &r->evt_list);
+		list_add_tail(&mbm_local_event.list, &r->mon.evt_list);
 }
 
 static void mc_mon_evt_init(struct rdt_resource *r)
 {
-	INIT_LIST_HEAD(&r->evt_list);
+	INIT_LIST_HEAD(&r->mon.evt_list);
 
 	if (resctrl_arch_is_mbm_bps_enabled())
-		list_add_tail(&mbm_bps_event.list, &r->evt_list);
+		list_add_tail(&mbm_bps_event.list, &r->mon.evt_list);
 }
 
 int resctrl_mon_resource_init(void)
@@ -852,11 +852,13 @@ int resctrl_mon_resource_init(void)
 
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_TOTAL_EVENT_ID)) {
 		mbm_total_event.configurable = true;
-		mbm_config_rftype_init("mbm_total_bytes_config");
+		resctrl_file_fflags_init("mbm_total_bytes_config",
+					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
 	}
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_LOCAL_EVENT_ID)) {
 		mbm_local_event.configurable = true;
-		mbm_config_rftype_init("mbm_local_bytes_config");
+		resctrl_file_fflags_init("mbm_local_bytes_config",
+					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
 	}
 
 	r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);

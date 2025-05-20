@@ -24,6 +24,8 @@ DECLARE_STATIC_KEY_FALSE(mpam_enabled);
  * Only these event configuration bits are supported. MPAM can't know if
  * data is being written back, these will show up as a write.
  */
+#define READS_TO_LOCAL_MEM             BIT(0)
+#define NON_TEMP_WRITE_TO_LOCAL_MEM    BIT(2)
 #define MPAM_RESTRL_EVT_CONFIG_VALID	(READS_TO_LOCAL_MEM | NON_TEMP_WRITE_TO_LOCAL_MEM)
 
 static inline bool mpam_is_enabled(void)

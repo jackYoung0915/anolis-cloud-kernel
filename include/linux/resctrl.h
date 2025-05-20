@@ -12,6 +12,8 @@
 #include <asm/resctrl.h>
 #endif
 
+extern struct mutex rdtgroup_mutex;
+
 /* CLOSID, RMID value used by the default control group */
 #define RESCTRL_RESERVED_CLOSID		0
 #define RESCTRL_RESERVED_RMID		0
@@ -100,6 +102,7 @@ struct resctrl_staged_config {
  * @cqm_limbo:		worker to periodically read CQM h/w counters
  * @mbm_work_cpu:	worker CPU for MBM h/w counters
  * @cqm_work_cpu:	worker CPU for CQM h/w counters
+ * @mbm_cntr_map:	bitmap to track domain counter assignment
  * @plr:		pseudo-locked region (if any) associated with domain
  * @staged_config:	parsed configuration to be applied
  * @mbps_val:		When mba_sc is enabled, this holds the array of user
@@ -117,6 +120,7 @@ struct rdt_domain {
 	struct delayed_work		cqm_limbo;
 	int				mbm_work_cpu;
 	int				cqm_work_cpu;
+	unsigned long			*mbm_cntr_map;
 	struct pseudo_lock_region	*plr;
 	struct resctrl_staged_config	staged_config[CDP_NUM_TYPES];
 	u32				*mbps_val;
@@ -180,11 +184,24 @@ struct resctrl_membw {
 };
 
 /**
+ * struct resctrl_mon - Monitoring related data
+ * @num_rmid:		Number of RMIDs available
+ * @num_mbm_cntrs:	Number of monitoring counters
+ * @mbm_cntr_assignable:Is system capable of supporting monitor assignment?
+ * @evt_list:		List of monitoring events
+ */
+struct resctrl_mon {
+	int			num_rmid;
+	int			num_mbm_cntrs;
+	bool			mbm_cntr_assignable;
+	struct list_head	evt_list;
+};
+
+/**
  * struct rdt_resource - attributes of a resctrl resource
  * @rid:		The index of the resource
  * @alloc_capable:	Is allocation available on this machine
  * @mon_capable:	Is monitor feature available on this machine
- * @num_rmid:		Number of RMIDs available
  * @cache_level:	Which cache level defines scope of this resource
  * @cache:		Cache allocation related data
  * @membw:		If the component has bandwidth controls, their properties.
@@ -193,7 +210,6 @@ struct resctrl_membw {
  * @data_width:		Character width of data when displaying
  * @default_ctrl:	Specifies default cache cbm or memory B/W percent.
  * @format_str:		Per resource format string to show domain value
- * @evt_list:		List of monitoring events
  * @fflags:		flags to choose base and info files
  * @mbm_cfg_mask:	Bandwidth sources that can be tracked when Bandwidth
  *			Monitoring Event Configuration (BMEC) is supported.
@@ -203,16 +219,15 @@ struct rdt_resource {
 	int			rid;
 	bool			alloc_capable;
 	bool			mon_capable;
-	int			num_rmid;
 	int			cache_level;
 	struct resctrl_cache	cache;
 	struct resctrl_membw	membw;
+	struct resctrl_mon mon;
 	struct list_head	domains;
 	char			*name;
 	int			data_width;
 	u32			default_ctrl;
 	const char		*format_str;
-	struct list_head	evt_list;
 	unsigned long		fflags;
 	unsigned int		mbm_cfg_mask;
 	bool			cdp_capable;
@@ -260,6 +275,35 @@ struct resctrl_mon_config_info {
 };
 
 /*
+ * Assignment flags for ABMC feature
+ */
+#define ASSIGN_NONE			0
+#define ASSIGN_TOTAL			BIT(QOS_L3_MBM_TOTAL_EVENT_ID)
+#define ASSIGN_LOCAL			BIT(QOS_L3_MBM_LOCAL_EVENT_ID)
+
+/**
+ * mon_event_config_index_get - get the hardware index for the
+ *                              configurable event
+ * @evtid: event id.
+ *
+ * Return: 0 for evtid == QOS_L3_MBM_TOTAL_EVENT_ID
+ *         1 for evtid == QOS_L3_MBM_LOCAL_EVENT_ID
+ *         INVALID_CONFIG_INDEX for invalid evtid
+ */
+static inline unsigned int mon_event_config_index_get(u32 evtid)
+{
+	switch (evtid) {
+	case QOS_L3_MBM_TOTAL_EVENT_ID:
+		return 0;
+	case QOS_L3_MBM_LOCAL_EVENT_ID:
+		return 1;
+	default:
+		/* Should never reach here */
+		return INVALID_CONFIG_INDEX;
+	}
+}
+
+/*
  * Update and re-load this CPUs defaults. Called via IPI, takes a pointer to
  * struct resctrl_cpu_sync, or NULL.
  */
@@ -272,8 +316,6 @@ struct rdt_domain *resctrl_arch_find_domain(struct rdt_resource *r, int id);
 int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid);
 
 bool resctrl_arch_is_evt_configurable(enum resctrl_event_id evt);
-void resctrl_arch_mon_event_config_write(void *info);
-void resctrl_arch_mon_event_config_read(void *info);
 
 /* For use by arch code to remap resctrl's smaller CDP CLOSID range */
 static inline u32 resctrl_get_config_index(u32 closid,
@@ -397,6 +439,7 @@ void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d);
 
 extern unsigned int resctrl_rmid_realloc_threshold;
 extern unsigned int resctrl_rmid_realloc_limit;
+void resctrl_file_fflags_init(const char *config, unsigned long fflags);
 
 int resctrl_init(void);
 void resctrl_exit(void);
