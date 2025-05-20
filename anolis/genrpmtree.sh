@@ -47,6 +47,14 @@ function do_prep() {
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-riscv64.config
     cp ${DIST_OUTPUT}/kernel-ANCK-debug-riscv.config \
     ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-riscv64-debug.config
+    cp ${DIST_OUTPUT}/kernel-ANCK-generic-sw_64-6b.config \
+    ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-sw_64-6b.config
+    cp ${DIST_OUTPUT}/kernel-ANCK-generic-sw_64-6b.config \
+    ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-sw_64-6b-debug.config
+    cp ${DIST_OUTPUT}/kernel-ANCK-generic-sw_64-8a.config \
+    ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-sw_64-8a.config
+    cp ${DIST_OUTPUT}/kernel-ANCK-generic-sw_64-8a.config \
+    ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/kernel-${DIST_KERNELVERSION}-sw_64-8a-debug.config
 }
 
 do_prep
