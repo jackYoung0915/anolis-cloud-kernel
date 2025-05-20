@@ -166,7 +166,7 @@ static void __delete_from_dup_folios(struct folio *dup_folio, struct folio *foli
 static bool delete_from_dup_folios(struct folio *folio, bool locked, bool ignore_mlock)
 {
 	struct folio *tmp_folio, *next_folio;
-	struct list_head *list;
+	struct list_head *list, *old;
 	unsigned long flags;
 	enum ttu_flags ttu_flags = TTU_SYNC | TTU_BATCH_FLUSH;
 	int nid = folio_nid(folio);
@@ -204,11 +204,6 @@ static bool delete_from_dup_folios(struct folio *folio, bool locked, bool ignore
 			try_to_unmap(tmp_folio, ttu_flags);
 			if (folio_mapped(tmp_folio)) {
 				folio_unlock(tmp_folio);
-				/*
-				 * FIXME: Since the xas lock has been released,
-				 * changes to the XArray node must be considered
-				 * during error recovery processing.
-				 */
 				goto error;
 			}
 			folio_unlock(tmp_folio);
@@ -225,6 +220,12 @@ out:
 
 error:
 	xas_lock_irqsave(&xas, flags);
+repeat:
+	xas_reset(&xas);
+	old = xas_load(&xas);
+	if (xas_retry(&xas, old))
+		goto repeat;
+	VM_BUG_ON_FOLIO(old != NULL, folio);
 	xas_store(&xas, list);
 	xas_unlock_irqrestore(&xas, flags);
 	return false;
