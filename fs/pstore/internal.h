@@ -33,10 +33,18 @@ static inline void pstore_register_pmsg(void) {}
 static inline void pstore_unregister_pmsg(void) {}
 #endif
 
-extern struct pstore_info *psinfo;
+#ifdef CONFIG_PSTORE_TTYPROBE
+extern void pstore_register_ttyprobe(void);
+extern void pstore_unregister_ttyprobe(void);
+#else
+static inline void pstore_register_ttyprobe(void) {}
+static inline void pstore_unregister_ttyprobe(void) {}
+#endif
+
+extern struct pstore_backends *psback;
 
 extern void	pstore_set_kmsg_bytes(int);
-extern void	pstore_get_records(int);
+extern void	pstore_get_records(struct pstore_info *psi, int quiet);
 extern void	pstore_get_backend_records(struct pstore_info *psi,
 					   struct dentry *root, int quiet);
 extern int	pstore_put_backend_records(struct pstore_info *psi);
@@ -47,6 +55,7 @@ extern void	pstore_record_init(struct pstore_record *record,
 
 /* Called during pstore init/exit. */
 int __init	pstore_init_fs(void);
+int __init pstore_init_entry(void);
 void __exit	pstore_exit_fs(void);
 
 #endif

@@ -6,6 +6,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/kobject.h>
 #include <linux/fs.h>
 #include <linux/fsnotify.h>
 #include <linux/pagemap.h>
@@ -284,7 +285,7 @@ static const struct super_operations pstore_ops = {
 	.show_options	= pstore_show_options,
 };
 
-static struct dentry *psinfo_lock_root(void)
+static struct dentry *psinfo_lock_root(struct pstore_info *psinfo)
 {
 	struct dentry *root;
 
@@ -307,7 +308,7 @@ int pstore_put_backend_records(struct pstore_info *psi)
 	struct pstore_private *pos, *tmp;
 	struct dentry *root;
 
-	root = psinfo_lock_root();
+	root = psinfo_lock_root(psi);
 	if (!root)
 		return 0;
 
@@ -400,21 +401,22 @@ fail_inode:
  * when we are re-scanning the backing store looking to add new
  * error records.
  */
-void pstore_get_records(int quiet)
+void pstore_get_records(struct pstore_info *psi, int quiet)
 {
 	struct dentry *root;
 
-	root = psinfo_lock_root();
+	root = psinfo_lock_root(psi);
 	if (!root)
 		return;
 
-	pstore_get_backend_records(psinfo, root, quiet);
+	pstore_get_backend_records(psi, root, quiet);
 	inode_unlock(d_inode(root));
 }
 
 static int pstore_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct inode *inode;
+	struct pstore_info_list *entry;
 
 	sb->s_maxbytes		= MAX_LFS_FILESIZE;
 	sb->s_blocksize		= PAGE_SIZE;
@@ -439,7 +441,13 @@ static int pstore_fill_super(struct super_block *sb, void *data, int silent)
 	scoped_guard(mutex, &pstore_sb_lock)
 		pstore_sb = sb;
 
-	pstore_get_records(0);
+	if (!psback)
+		return 0;
+
+	mutex_lock(&psback_lock);
+	list_for_each_entry(entry, &psback->list_entry, list)
+		pstore_get_records(entry->psi, 0);
+	mutex_unlock(&psback_lock);
 
 	return 0;
 }
@@ -483,6 +491,43 @@ int __init pstore_init_fs(void)
 		sysfs_remove_mount_point(fs_kobj, "pstore");
 
 out:
+	return err;
+}
+
+static ssize_t loaded_backend_show(struct kobject *k,
+				   struct kobj_attribute *attr, char *buf)
+{
+	struct pstore_info_list *entry;
+	char *old, *loaded_backend = NULL;
+
+	mutex_lock(&psback_lock);
+	list_for_each_entry(entry, &psback->list_entry, list)
+		if (!loaded_backend)
+			loaded_backend = kstrdup(entry->psi->name, GFP_KERNEL);
+		else {
+			old = loaded_backend;
+			loaded_backend = kasprintf(GFP_KERNEL, "%s,%s",
+						   old, entry->psi->name);
+			kfree(old);
+		}
+	mutex_unlock(&psback_lock);
+
+	return sprintf(buf, "%s\n", loaded_backend);
+}
+
+static struct kobj_attribute backend_attribute =
+	__ATTR(loaded_backend, 0444, loaded_backend_show, NULL);
+
+int __init pstore_init_entry(void)
+{
+	int err = 0;
+	struct kobject *pstore_kobj;
+
+	pstore_kobj = kset_find_obj(module_kset, "pstore");
+	if (pstore_kobj) {
+		err = sysfs_create_file(pstore_kobj, &backend_attribute.attr);
+		kobject_put(pstore_kobj);
+	}
 	return err;
 }
 

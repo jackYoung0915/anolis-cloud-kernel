@@ -65,6 +65,17 @@ config PSTORE_FTRACE
 
 	  If unsure, say N.
 
+config PSTORE_TTYPROBE
+	bool "Log tty messages"
+	depends on PSTORE
+	help
+	  When the option is enabled, pstore will log all messages send
+	  to tty drivers, even if no oops or panic happened. It can be
+	  useful to log serial information when there is no access to
+	  serial ports or the tty drivers work abnormally.
+
+	  If unsure, say N.
+
 config PSTORE_RAM
 	tristate "Log panic/oops to a RAM buffer"
 	depends on PSTORE
@@ -185,6 +196,18 @@ config PSTORE_BLK_FTRACE_SIZE
 	default 64
 	help
 	  This just sets size of ftrace log (ftrace_size) for pstore/blk. The
+	  size is in KB and must be a multiple of 4.
+
+	  NOTE that, both Kconfig and module parameters can configure
+	  pstore/blk, but module parameters have priority over Kconfig.
+
+config PSTORE_BLK_TTYPROBE_SIZE
+	int "Size in Kbytes of ttyprobe log to store"
+	depends on PSTORE_BLK
+	depends on PSTORE_TTYPROBE
+	default 64
+	help
+	  This just sets size of ttyprobe log (ttyprobe_size) for pstore/blk. The
 	  size is in KB and must be a multiple of 4.
 
 	  NOTE that, both Kconfig and module parameters can configure

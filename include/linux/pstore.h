@@ -38,6 +38,7 @@ enum pstore_type_id {
 	PSTORE_TYPE_PPC_COMMON	= 6,
 	PSTORE_TYPE_PMSG	= 7,
 	PSTORE_TYPE_PPC_OPAL	= 8,
+	PSTORE_TYPE_TTYPROBE	= 9,
 
 	/* End of the list */
 	PSTORE_TYPE_MAX
@@ -201,11 +202,35 @@ struct pstore_info {
 	int		(*erase)(struct pstore_record *record);
 };
 
+/* Supported multibackends */
+extern struct mutex psback_lock;
+
+struct pstore_info_list {
+	struct pstore_info *psi;
+	char *big_oops_buf;
+	size_t max_compressed_size;
+	struct kmsg_dumper pstore_dumper;
+	struct list_head list;
+};
+
+/**
+ * struct pstore_backends - management of pstore backends
+ * @front_cnt:	count of each enabled frontend
+ * @list_entry:	entry of pstore backend driver information list
+ *
+ */
+
+struct pstore_backends {
+	int front_cnt[PSTORE_TYPE_MAX];
+	struct list_head list_entry;
+};
+
 /* Supported frontends */
 #define PSTORE_FLAGS_DMESG	BIT(0)
 #define PSTORE_FLAGS_CONSOLE	BIT(1)
 #define PSTORE_FLAGS_FTRACE	BIT(2)
 #define PSTORE_FLAGS_PMSG	BIT(3)
+#define PSTORE_FLAGS_TTYPROBE	BIT(4)
 
 extern int pstore_register(struct pstore_info *);
 extern void pstore_unregister(struct pstore_info *);
