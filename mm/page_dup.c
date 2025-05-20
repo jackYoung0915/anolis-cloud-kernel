@@ -162,7 +162,7 @@ static void __delete_from_dup_pages(struct page *dup_page, struct page *page)
 static bool delete_from_dup_pages(struct page *page, bool locked, bool ignore_mlock)
 {
 	struct page *tmp_page, *next_page;
-	struct list_head *list;
+	struct list_head *list, *old;
 	unsigned long flags;
 	enum ttu_flags ttu_flags = TTU_SYNC | TTU_BATCH_FLUSH;
 	int nid = page_to_nid(page);
@@ -211,6 +211,12 @@ out:
 
 error:
 	xas_lock_irqsave(&xas, flags);
+repeat:
+	xas_reset(&xas);
+	old = xas_load(&xas);
+	if (xas_retry(&xas, old))
+		goto repeat;
+	VM_BUG_ON_PAGE(old != NULL, page);
 	xas_store(&xas, list);
 	xas_unlock_irqrestore(&xas, flags);
 
