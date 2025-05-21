@@ -962,6 +962,8 @@ static int build_group_balancer_root_domain(void)
 	return 0;
 }
 
+static void validate_topology_levels(void);
+
 /* BFS to build group balancer sched domain tree. */
 static int build_group_balancer_sched_domains(void)
 {
@@ -972,6 +974,8 @@ static int build_group_balancer_sched_domains(void)
 	struct group_balancer_sched_domain *parent, *n;
 	char *name = NULL;
 
+	update_group_balancer_root_cpumask();
+	validate_topology_levels();
 	/*
 	 * The group balancer sched domain is a tree.
 	 * If the root was not built on boot, build the root node first.
@@ -1270,7 +1274,7 @@ cleanup_root:
 
 void update_group_balancer_root_cpumask(void)
 {
-	cpumask_copy(&root_cpumask, housekeeping_cpumask(HK_TYPE_DOMAIN));
+	cpumask_and(&root_cpumask, housekeeping_cpumask(HK_TYPE_DOMAIN), cpu_online_mask);
 }
 
 static int __init group_balancer_init(void)
