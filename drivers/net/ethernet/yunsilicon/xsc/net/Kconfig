@@ -11,6 +11,3 @@ config YUNSILICON_XSC_ETH
 	help
 	  This driver provides ethernet support for
 	  Yunsilicon XSC devices.
-
-	  To compile this driver as a module, choose M here. The module
-	  will be called xsc_eth.

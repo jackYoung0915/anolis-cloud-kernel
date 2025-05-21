@@ -10,6 +10,3 @@ config INFINIBAND_XSC
 	help
 	  This driver provides RDMA support for
 	  Yunsilicon XSC devices.
-
-	  To compile this driver as a module, choose M here. The module
-	  will be called xsc_ib.
