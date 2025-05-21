@@ -12,6 +12,7 @@
 #include "common/xsc_ioctl.h"
 #include "common/xsc_cmd.h"
 #include "net/xsc_eth.h"
+#include "eswitch.h"
 
 #include <linux/if_bonding.h>
 #include <net/neighbour.h>
@@ -26,8 +27,8 @@ struct xsc_board_lag *xsc_board_lag_get(struct xsc_core_device *xdev)
 }
 EXPORT_SYMBOL(xsc_board_lag_get);
 
-void xsc_board_lag_set(struct xsc_core_device *xdev,
-		       void *board_lag)
+static void xsc_board_lag_set(struct xsc_core_device *xdev,
+			      void *board_lag)
 {
 	struct xsc_board_lag *board_lag_new = board_lag;
 
@@ -35,7 +36,7 @@ void xsc_board_lag_set(struct xsc_core_device *xdev,
 	board_lag_array[xdev->board_info->board_id] = board_lag_new;
 }
 
-void xsc_board_lag_reset(u32 board_id)
+static void xsc_board_lag_reset(u32 board_id)
 {
 	board_lag_array[board_id] = NULL;
 }
@@ -72,7 +73,7 @@ static enum netdev_lag_tx_type bond_lag_tx_type(struct bonding *bond)
 	}
 }
 
-enum netdev_lag_hash bond_lag_hash_type(struct bonding *bond)
+static enum netdev_lag_hash bond_lag_hash_type(struct bonding *bond)
 {
 	switch (bond->params.xmit_policy) {
 	case BOND_XMIT_POLICY_LAYER2:
@@ -119,7 +120,7 @@ static inline struct xsc_lag *__xsc_get_lag(struct xsc_core_device *xdev)
 	return &board_lag->xsc_lag[xdev->bond_id];
 }
 
-int xsc_cmd_create_lag(struct xsc_lag_event *entry)
+static int xsc_cmd_create_lag(struct xsc_lag_event *entry)
 {
 	struct xsc_create_lag_mbox_in in = {};
 	struct xsc_create_lag_mbox_out out = {};
@@ -127,12 +128,13 @@ int xsc_cmd_create_lag(struct xsc_lag_event *entry)
 	struct net_device *netdev = xdev->netdev;
 	int ret = 0;
 
+	memset(&in, 0, sizeof(in));
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_CREATE);
 
 	in.req.lag_id = cpu_to_be16(entry->lag_id);
 	in.req.lag_type = entry->lag_type;
 	in.req.lag_sel_mode = entry->lag_sel_mode;
-	in.req.mac_idx = xdev->pf_id;
+	in.req.pf_idx = xdev->pf_id;
 	in.req.bond_mode = entry->bond_mode;
 	in.req.slave_status = entry->slave_status;
 
@@ -142,7 +144,7 @@ int xsc_cmd_create_lag(struct xsc_lag_event *entry)
 		      entry->lag_id, entry->lag_type, entry->lag_sel_mode, entry->bond_mode);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	if (ret || out.hdr.status) {
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
 		xsc_core_err(xdev, "failed to create LAG, err =%d out.status= %u\n",
 			     ret, out.hdr.status);
 		return -ENOEXEC;
@@ -151,7 +153,7 @@ int xsc_cmd_create_lag(struct xsc_lag_event *entry)
 	return 0;
 }
 
-int xsc_cmd_add_lag_member(struct xsc_lag_event *entry)
+static int xsc_cmd_add_lag_member(struct xsc_lag_event *entry)
 {
 	struct xsc_add_lag_member_mbox_in in = {};
 	struct xsc_add_lag_member_mbox_out out = {};
@@ -159,15 +161,19 @@ int xsc_cmd_add_lag_member(struct xsc_lag_event *entry)
 	struct net_device *netdev = xdev->netdev;
 	int ret = 0;
 
+	memset(&in, 0, sizeof(in));
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_ADD_MEMBER);
 
 	in.req.lag_id = cpu_to_be16(entry->lag_id);
 	in.req.lag_type = entry->lag_type;
 	in.req.lag_sel_mode = entry->lag_sel_mode;
-	in.req.mac_idx = xdev->pf_id;
+	in.req.pf_idx = xdev->pf_id;
 	in.req.bond_mode = entry->bond_mode;
 	in.req.slave_status = entry->slave_status;
-	in.req.mad_mac_idx = entry->roce_lag_xdev->pf_id;
+	in.req.roce_pf_idx = entry->roce_lag_xdev->pf_id;
+
+	in.hdr.ver = LAG_CMD_V1;
+	in.req.roce_pf_func_data = entry->roce_pf_func_data;
 
 	memcpy(in.req.netdev_addr, netdev->dev_addr, ETH_ALEN);
 
@@ -175,7 +181,7 @@ int xsc_cmd_add_lag_member(struct xsc_lag_event *entry)
 		      entry->lag_id, entry->lag_type, entry->bond_mode);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	if (ret || out.hdr.status) {
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
 		xsc_core_err(xdev, "failed to add LAG member, err =%d out.status= %u\n",
 			     ret, out.hdr.status);
 		return -ENOEXEC;
@@ -184,30 +190,36 @@ int xsc_cmd_add_lag_member(struct xsc_lag_event *entry)
 	return 0;
 }
 
-int xsc_cmd_remove_lag_member(struct xsc_lag_event *entry)
+static int xsc_cmd_remove_lag_member(struct xsc_lag_event *entry)
 {
 	struct xsc_remove_lag_member_mbox_in in = {};
 	struct xsc_remove_lag_member_mbox_out out = {};
 	struct xsc_core_device *xdev = entry->xdev;
 	int ret = 0;
 
+	memset(&in, 0, sizeof(in));
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_REMOVE_MEMBER);
 
 	in.req.lag_id = cpu_to_be16(entry->lag_id);
 	in.req.lag_type = entry->lag_type;
-	in.req.mac_idx = xdev->pf_id;
+	in.req.pf_idx = xdev->pf_id;
 	in.req.bond_mode = entry->bond_mode;
-	if (entry->lag_type & XSC_LAG_FLAG_ROCE && entry->is_roce_lag_xdev) {
+	if (entry->lag_type & XSC_LAG_FLAG_ROCE) {
 		in.req.is_roce_lag_xdev = entry->is_roce_lag_xdev;
-		in.req.mad_mac_idx = entry->roce_lag_xdev->pf_id;
+		in.req.roce_pf_idx = entry->roce_lag_xdev->pf_id;
 		in.req.not_roce_lag_xdev_mask = entry->not_roce_lag_xdev_mask;
 	}
+
+	in.hdr.ver = LAG_CMD_V1;
+	in.req.roce_pf_func_data = entry->roce_pf_func_data;
+	memcpy(in.req.func_data,
+	       entry->func_data, sizeof(entry->func_data));
 
 	xsc_core_info(xdev, "remove LAG member: lag_id = %d, lag_type = %d, bond_mode = %d\n",
 		      entry->lag_id, entry->lag_type, entry->bond_mode);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	if (ret || out.hdr.status) {
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
 		xsc_core_err(xdev, "failed to add LAG member, err =%d out.status= %u\n",
 			     ret, out.hdr.status);
 		return -ENOEXEC;
@@ -216,19 +228,20 @@ int xsc_cmd_remove_lag_member(struct xsc_lag_event *entry)
 	return 0;
 }
 
-int xsc_cmd_update_lag_member_status(struct xsc_lag_event *entry)
+static int xsc_cmd_update_lag_member_status(struct xsc_lag_event *entry)
 {
 	struct xsc_update_lag_member_status_mbox_in in = {};
 	struct xsc_update_lag_member_status_mbox_out out = {};
 	struct xsc_core_device *xdev = entry->xdev;
 	int ret = 0;
 
+	memset(&in, 0, sizeof(in));
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_UPDATE_MEMBER_STATUS);
 
 	in.req.lag_type = entry->lag_type;
 	in.req.bond_mode = entry->bond_mode;
 	in.req.lag_id = cpu_to_be16(entry->lag_id);
-	in.req.mac_idx = xdev->pf_id;
+	in.req.pf_idx = xdev->pf_id;
 	in.req.slave_status = entry->slave_status;
 
 	xsc_core_info(xdev, "update LAG member status: lag_id = %d, bond_mode = %d, lag_type = %d, slave_status = %d, mac_idx = %d\n",
@@ -236,7 +249,7 @@ int xsc_cmd_update_lag_member_status(struct xsc_lag_event *entry)
 		      entry->slave_status, xdev->pf_id);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	if (ret || out.hdr.status) {
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
 		xsc_core_err(xdev, "failed to update LAG member status, err=%d out.status=%u\n",
 			     ret, out.hdr.status);
 		return -ENOEXEC;
@@ -245,13 +258,14 @@ int xsc_cmd_update_lag_member_status(struct xsc_lag_event *entry)
 	return ret;
 }
 
-int xsc_cmd_update_lag_hash_type(struct xsc_lag_event *entry)
+static int xsc_cmd_update_lag_hash_type(struct xsc_lag_event *entry)
 {
 	struct xsc_update_lag_hash_type_mbox_in in = {};
 	struct xsc_update_lag_hash_type_mbox_out out = {};
 	struct xsc_core_device *xdev = entry->xdev;
 	int ret = 0;
 
+	memset(&in, 0, sizeof(in));
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_UPDATE_HASH_TYPE);
 
 	in.req.lag_id = cpu_to_be16(entry->lag_id);
@@ -261,7 +275,7 @@ int xsc_cmd_update_lag_hash_type(struct xsc_lag_event *entry)
 		      entry->lag_id, in.req.lag_sel_mode);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	if (ret || out.hdr.status) {
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
 		xsc_core_err(xdev, "failed to update LAG hash type, err=%d out.status=%u\n",
 			     ret, out.hdr.status);
 		return -ENOEXEC;
@@ -270,24 +284,25 @@ int xsc_cmd_update_lag_hash_type(struct xsc_lag_event *entry)
 	return ret;
 }
 
-int xsc_cmd_destroy_lag(struct xsc_lag_event *entry)
+static int xsc_cmd_destroy_lag(struct xsc_lag_event *entry)
 {
 	struct xsc_destroy_lag_mbox_in in = {};
 	struct xsc_destroy_lag_mbox_out out = {};
 	struct xsc_core_device *xdev = entry->xdev;
 	int ret = 0;
 
+	memset(&in, 0, sizeof(in));
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_DESTROY);
 
 	in.req.lag_id = cpu_to_be16(entry->lag_id);
 	in.req.lag_type = entry->lag_type;
-	in.req.mac_idx = xdev->pf_id;
+	in.req.pf_idx = xdev->pf_id;
 	in.req.bond_mode = entry->bond_mode;
 
 	xsc_core_info(xdev, "destroy LAG: lag_id = %d\n", entry->lag_id);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	if (ret || out.hdr.status) {
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
 		xsc_core_err(xdev, "failed to destroy LAG, err =%d out.status= %u\n",
 			     ret, out.hdr.status);
 		return -ENOEXEC;
@@ -313,14 +328,33 @@ static int xsc_lag_set_qos(struct xsc_core_device *xdev, u16 lag_id, u8 member_i
 	in.hdr.opcode = cpu_to_be16(XSC_CMD_OP_LAG_SET_QOS);
 
 	ret = xsc_cmd_exec(xdev, &in, sizeof(in), &out, sizeof(out));
-	return ret;
+	if (ret || (out.hdr.status != 0 && out.hdr.status != XSC_CMD_STATUS_NOT_SUPPORTED)) {
+		xsc_core_err(xdev, "failed to set lag qos, err =%d out.status= %u\n",
+			     ret, out.hdr.status);
+		return -ENOEXEC;
+	}
+
+	return 0;
 }
 
-void xsc_create_lag(struct xsc_lag_event *entry)
+static inline int xsc_lag_abnormal_operate_check(struct xsc_core_device *xdev,
+						 u8 lag_type)
+{
+	if (lag_type != XSC_LAG_FLAG_SRIOV && xsc_get_user_mode(xdev)) {
+		xsc_core_err(xdev, "Failed to opetate non sriov LAG while ovs is on");
+		return  -EOPNOTSUPP;
+	}
+	return 0;
+}
+
+static void xsc_create_lag(struct xsc_lag_event *entry)
 {
 	int ret = 0;
 	bool roce_lag = entry->lag_type & XSC_LAG_FLAG_ROCE;
 	struct xsc_core_device *xdev = entry->xdev;
+
+	if (xsc_lag_abnormal_operate_check(xdev, entry->lag_type))
+		return;
 
 	if (roce_lag)
 		xsc_remove_dev_by_protocol(xdev, XSC_INTERFACE_PROTOCOL_IB);
@@ -347,11 +381,14 @@ out:
 		xsc_add_dev_by_protocol(xdev, XSC_INTERFACE_PROTOCOL_IB);
 }
 
-void xsc_add_lag_member(struct xsc_lag_event *entry)
+static void xsc_add_lag_member(struct xsc_lag_event *entry)
 {
 	int ret = 0;
 	bool roce_lag = entry->lag_type & XSC_LAG_FLAG_ROCE;
 	struct xsc_core_device *xdev = entry->xdev;
+
+	if (xsc_lag_abnormal_operate_check(xdev, entry->lag_type))
+		return;
 
 	if (roce_lag)
 		xsc_remove_dev_by_protocol(xdev, XSC_INTERFACE_PROTOCOL_IB);
@@ -375,12 +412,15 @@ out:
 		xsc_add_dev_by_protocol(xdev, XSC_INTERFACE_PROTOCOL_IB);
 }
 
-void xsc_remove_lag_member(struct xsc_lag_event *entry)
+static void xsc_remove_lag_member(struct xsc_lag_event *entry)
 {
 	int ret = 0;
 	bool roce_lag = entry->lag_type & XSC_LAG_FLAG_ROCE;
 	struct xsc_core_device *xdev = entry->xdev;
 	struct xsc_core_device *roce_lag_xdev = entry->roce_lag_xdev;
+
+	if (xsc_lag_abnormal_operate_check(xdev, entry->lag_type))
+		return;
 
 	if (roce_lag && entry->is_roce_lag_xdev)
 		xsc_remove_dev_by_protocol(xdev, XSC_INTERFACE_PROTOCOL_IB);
@@ -410,7 +450,7 @@ out:
 		xsc_add_dev_by_protocol(xdev, XSC_INTERFACE_PROTOCOL_IB);
 }
 
-void xsc_update_lag_member_status(struct xsc_lag_event *entry)
+static void xsc_update_lag_member_status(struct xsc_lag_event *entry)
 {
 	int ret = 0;
 	struct xsc_core_device *xdev = entry->xdev;
@@ -430,7 +470,7 @@ void xsc_update_lag_member_status(struct xsc_lag_event *entry)
 	}
 }
 
-void xsc_update_lag_hash_type(struct xsc_lag_event *entry)
+static void xsc_update_lag_hash_type(struct xsc_lag_event *entry)
 {
 	int ret = 0;
 	struct xsc_core_device *xdev = entry->xdev;
@@ -440,7 +480,7 @@ void xsc_update_lag_hash_type(struct xsc_lag_event *entry)
 		xsc_core_err(xdev, "failed to update LAG member status, err =%d\n", ret);
 }
 
-void xsc_destroy_lag(struct xsc_lag_event *entry)
+static void xsc_destroy_lag(struct xsc_lag_event *entry)
 {
 	int ret = 0;
 	bool roce_lag = entry->lag_type & XSC_LAG_FLAG_ROCE;
@@ -451,7 +491,7 @@ void xsc_destroy_lag(struct xsc_lag_event *entry)
 
 	ret = xsc_cmd_destroy_lag(entry);
 	if (ret) {
-		xsc_core_err(xdev, "failed to create LAG, err =%d\n", ret);
+		xsc_core_err(xdev, "failed to destroy LAG, err =%d\n", ret);
 		goto out;
 	}
 
@@ -529,12 +569,6 @@ static inline bool xsc_is_roce_lag_allowed(struct xsc_lag *lag)
 			xsc_core_info(xdev, "create ROCE LAG while sriov is open\n");
 			break;
 		}
-
-		roce_lag_support &=	radix_tree_empty(&xdev->priv_device.bdf_tree);
-		if (!roce_lag_support) {
-			xsc_core_info(xdev, "create ROCE LAG while the ib device is open\n");
-			break;
-		}
 	}
 
 	return roce_lag_support;
@@ -554,6 +588,14 @@ static bool xsc_is_sriov_lag_allowed(struct xsc_lag *lag)
 	return sriov_lag_support;
 }
 
+static bool xsc_is_dpu_soc_lag(struct xsc_lag *lag)
+{
+	struct xsc_core_device *xdev = list_first_entry(&lag->slave_list,
+							struct xsc_core_device, slave_node);
+
+	return xsc_is_soc_pf(xdev);
+}
+
 static u8 xsc_get_lag_type(struct xsc_lag *lag)
 {
 	u8 lag_type;
@@ -564,7 +606,7 @@ static u8 xsc_get_lag_type(struct xsc_lag *lag)
 	lag_mode_support = (lag->tx_type == NETDEV_LAG_TX_TYPE_ACTIVEBACKUP ||
 			 lag->tx_type == NETDEV_LAG_TX_TYPE_HASH);
 	roce_lag = lag_mode_support && xsc_is_roce_lag_allowed(lag);
-	sriov_lag = lag_mode_support && xsc_is_sriov_lag_allowed(lag);
+	sriov_lag = lag_mode_support && (xsc_is_sriov_lag_allowed(lag) || xsc_is_dpu_soc_lag(lag));
 	lag_type = sriov_lag ? XSC_LAG_FLAG_SRIOV :
 		(roce_lag ? XSC_LAG_FLAG_ROCE : XSC_LAG_FLAG_KERNEL);
 
@@ -601,8 +643,8 @@ out:
 	return slave_status;
 }
 
-void pack_lag_create(struct xsc_lag *lag,
-		     struct xsc_core_device *xdev, bool no_wq)
+static void pack_lag_create(struct xsc_lag *lag,
+			    struct xsc_core_device *xdev, bool no_wq)
 {
 	struct net_device *ndev = xdev->netdev;
 	struct xsc_lag_event *entry;
@@ -634,8 +676,16 @@ void pack_lag_create(struct xsc_lag *lag,
 		xsc_create_lag(entry);
 }
 
-void pack_lag_add_member(struct xsc_lag *lag,
-			 struct xsc_core_device *xdev, bool no_wq)
+static inline void xsc_salve_func_data_set(struct xsc_core_device *xdev,
+					   struct slave_func_data *func_data)
+{
+	func_data->pcie_no	= xdev->pcie_no;
+	func_data->pf_id	= xdev->pf_id;
+	func_data->valid	= 1;
+}
+
+static void pack_lag_add_member(struct xsc_lag *lag,
+				struct xsc_core_device *xdev, bool no_wq)
 {
 	struct xsc_lag_event *entry;
 	struct net_device *ndev = xdev->netdev;
@@ -653,7 +703,6 @@ void pack_lag_add_member(struct xsc_lag *lag,
 	if (entry->lag_type != lag->lag_type) {
 		xsc_core_err(xdev, "do not permit add slave to different type lag, xdev_lag_type = %d, lag_type = %d\n",
 			     entry->lag_type, lag->lag_type);
-
 		kfree(entry);
 		return;
 	}
@@ -668,7 +717,7 @@ void pack_lag_add_member(struct xsc_lag *lag,
 	roce_lag_xdev = list_first_entry(&lag->slave_list,
 					 struct xsc_core_device, slave_node);
 	entry->roce_lag_xdev = roce_lag_xdev;
-	entry->not_roce_lag_xdev_mask = lag->not_roce_lag_xdev_mask;
+	xsc_salve_func_data_set(roce_lag_xdev, &entry->roce_pf_func_data);
 
 	xsc_core_info(xdev, "lag_sel_mode = %d, slave_status = %d, lag_type = %d\n",
 		      entry->lag_sel_mode, entry->slave_status, entry->lag_type);
@@ -679,8 +728,8 @@ void pack_lag_add_member(struct xsc_lag *lag,
 		xsc_add_lag_member(entry);
 }
 
-void pack_lag_remove_member(struct xsc_lag *lag,
-			    struct xsc_core_device *xdev, bool no_wq)
+static void pack_lag_remove_member(struct xsc_lag *lag,
+				   struct xsc_core_device *xdev, bool no_wq)
 {
 	struct xsc_lag_event *entry;
 	struct xsc_core_device *roce_lag_xdev = NULL;
@@ -705,28 +754,30 @@ void pack_lag_remove_member(struct xsc_lag *lag,
 	if (entry->lag_type & XSC_LAG_FLAG_ROCE) {
 		roce_lag_xdev = list_first_entry(&lag->slave_list,
 						 struct xsc_core_device, slave_node);
+		entry->roce_lag_xdev = roce_lag_xdev;
 		if (roce_lag_xdev == xdev) {
 			entry->is_roce_lag_xdev = 1;
 
-			list_for_each_entry(xdev_tmp, &lag->slave_list, slave_node)	{
+			list_for_each_entry(xdev_tmp, &lag->slave_list, slave_node) {
 				cnt++;
 				if (cnt == 1)
 					continue;
-
 				if (cnt == 2) {
-					roce_lag_xdev = xdev_tmp;
+					entry->roce_lag_xdev = xdev_tmp;
+					xsc_salve_func_data_set(xdev_tmp,
+								&entry->roce_pf_func_data);
 					continue;
 				}
-
+				xsc_salve_func_data_set(xdev_tmp, &entry->func_data[cnt - 3]);
 				not_roce_lag_xdev_mask |= BIT(xdev_tmp->pf_id);
 			}
-			entry->roce_lag_xdev = roce_lag_xdev;
 			entry->not_roce_lag_xdev_mask = not_roce_lag_xdev_mask;
 		}
 	}
 
-	xsc_core_info(xdev, "lag_type = %d, is_roce_lag_xdev = %d, not_roce_lag_xdev_mask = %d\n",
-		      entry->lag_type, entry->is_roce_lag_xdev, entry->not_roce_lag_xdev_mask);
+	xsc_core_info(xdev, "lag_type = %d, is_roce_lag_xdev = %d, roce_pf_func_data = %d\n",
+		      entry->lag_type, entry->is_roce_lag_xdev,
+		      *(u8 *)&entry->roce_pf_func_data);
 
 	if (!no_wq)
 		pack_add_and_wake_wq(board_lag, entry);
@@ -734,8 +785,9 @@ void pack_lag_remove_member(struct xsc_lag *lag,
 		xsc_remove_lag_member(entry);
 }
 
-void pack_lag_update_member_status(struct xsc_lag *lag,
-				   struct net_device *ndev, enum lag_slave_status slave_status)
+static void pack_lag_update_member_status(struct xsc_lag *lag,
+					  struct net_device *ndev,
+					  enum lag_slave_status slave_status)
 {
 	struct xsc_lag_event *entry;
 	struct xsc_adapter *adapter = netdev_priv(ndev);
@@ -762,8 +814,8 @@ void pack_lag_update_member_status(struct xsc_lag *lag,
 	pack_add_and_wake_wq(board_lag, entry);
 }
 
-void pack_lag_update_hash_type(struct xsc_lag *lag,
-			       u8 bond_id, enum netdev_lag_hash hash_type)
+static void pack_lag_update_hash_type(struct xsc_lag *lag,
+				      u8 bond_id, enum netdev_lag_hash hash_type)
 {
 	struct xsc_lag_event *entry;
 	struct xsc_core_device *xdev = NULL;
@@ -792,7 +844,7 @@ void pack_lag_update_hash_type(struct xsc_lag *lag,
 	pack_add_and_wake_wq(board_lag, entry);
 }
 
-void pack_lag_destroy(struct xsc_lag *lag, struct xsc_core_device *xdev, bool no_wq)
+static void pack_lag_destroy(struct xsc_lag *lag, struct xsc_core_device *xdev, bool no_wq)
 {
 	struct xsc_lag_event *entry;
 	struct xsc_board_lag *board_lag = xsc_board_lag_get(xdev);
@@ -836,7 +888,9 @@ static u8 xsc_get_valid_bond_id(struct xsc_board_lag *board_lag)
 }
 
 static void xsc_lag_setup(struct xsc_board_lag *board_lag,
-			  struct net_device *upper, struct xsc_core_device *xdev, bool no_wq)
+			  struct net_device *upper,
+			  struct xsc_core_device *xdev,
+			  bool no_wq)
 {
 	struct bonding *bond = netdev_priv(upper);
 	struct xsc_lag *lag = NULL;
@@ -872,7 +926,8 @@ static bool xsc_is_ndev_xsc_pf(struct net_device *slave_ndev)
 	struct pci_dev *pdev = to_pci_dev(dev->parent);
 
 	return (pdev->device == XSC_MS_PF_DEV_ID ||
-		pdev->device == XSC_MV_SOC_PF_DEV_ID);
+		pdev->device == XSC_MV_SOC_PF_DEV_ID ||
+		pdev->device == XSC_MC_PF_DEV_ID_DIAMOND);
 }
 
 static u8 xsc_get_bond_board_xsc_cnt(struct net_device *upper,
@@ -956,6 +1011,26 @@ static void xsc_lag_update_member(struct xsc_lag *lag,
 		xsc_lag_member_remove(lag, xdev, false);
 }
 
+static bool ndev_is_member_of_lag(struct net_device *bond_ndev,
+				  struct net_device *ndev,
+				  struct xsc_lag *lag)
+{
+	struct xsc_adapter *adapter = netdev_priv(ndev);
+	struct xsc_core_device *xdev = adapter->xdev;
+	struct xsc_core_device *xdev_tmp;
+
+	if (lag->bond_dev != bond_ndev ||
+	    lag->board_id != xdev->board_info->board_id)
+		return false;
+
+	list_for_each_entry(xdev_tmp, &lag->slave_list, slave_node) {
+		if (xdev_tmp->mac_port == xdev->mac_port)
+			return false;
+	}
+
+	return true;
+}
+
 static u8 xsc_get_upper_bond_id(struct net_device *bond_ndev,
 				struct net_device *ndev, struct xsc_board_lag *board_lag,
 				bool hash_change)
@@ -963,18 +1038,13 @@ static u8 xsc_get_upper_bond_id(struct net_device *bond_ndev,
 	u8	i;
 	struct xsc_lag *lag;
 	u8 bond_valid_mask = board_lag->bond_valid_mask;
-	struct xsc_adapter *adapter;
-	struct xsc_core_device *xdev;
 	u8 bond_id = BOND_ID_INVALID;
 
 	for (i = 0; i < XSC_BOARD_LAG_MAX; i++) {
 		if (bond_valid_mask & BIT(i)) {
 			lag = &board_lag->xsc_lag[i];
 			if (!hash_change) {
-				adapter = netdev_priv(ndev);
-				xdev = adapter->xdev;
-				if (lag->bond_dev == bond_ndev &&
-				    lag->board_id == xdev->board_info->board_id) {
+				if (ndev_is_member_of_lag(bond_ndev, ndev, lag)) {
 					bond_id = i;
 					break;
 				}
@@ -1028,8 +1098,12 @@ static void xsc_handle_changeupper_event(struct xsc_board_lag *board_lag,
 	adapter = netdev_priv(ndev);
 	xdev = adapter->xdev;
 
-	bond_id = xsc_get_upper_bond_id(upper, ndev, board_lag, false);
-	xdev->bond_id = bond_id;
+	if (xdev->bond_id == BOND_ID_INVALID) {
+		bond_id = xsc_get_upper_bond_id(upper, ndev, board_lag, false);
+		xdev->bond_id = bond_id;
+	} else {
+		bond_id = xdev->bond_id;
+	}
 
 	xsc_core_dbg(xdev, "bond_id = %d\n", bond_id);
 
@@ -1054,6 +1128,8 @@ static void xsc_handle_changelowerstate_event(struct xsc_board_lag *board_lag,
 	struct xsc_lag *lag;
 	u8 bond_id;
 	enum lag_slave_status slave_status = XSC_LAG_SLAVE_INACTIVE;
+	struct xsc_adapter *adapter;
+	struct xsc_core_device *xdev;
 
 	if (!netif_is_lag_port(ndev) || !info->lower_state_info)
 		return;
@@ -1076,7 +1152,9 @@ static void xsc_handle_changelowerstate_event(struct xsc_board_lag *board_lag,
 		return;
 	}
 
-	bond_id = xsc_get_upper_bond_id(bond_dev, ndev, board_lag, false);
+	adapter = netdev_priv(ndev);
+	xdev = adapter->xdev;
+	bond_id = xdev->bond_id;
 	if (bond_id == BOND_ID_INVALID) {
 		mutex_unlock(&board_lag->lock);
 		return;
@@ -1085,6 +1163,8 @@ static void xsc_handle_changelowerstate_event(struct xsc_board_lag *board_lag,
 	lag = &board_lag->xsc_lag[bond_id];
 	pack_lag_update_member_status(lag, ndev, slave_status);
 	mutex_unlock(&board_lag->lock);
+
+	return;
 }
 
 static void xsc_handle_changehash_event(struct xsc_board_lag *board_lag,
@@ -1117,6 +1197,8 @@ static void xsc_handle_changehash_event(struct xsc_board_lag *board_lag,
 		pack_lag_update_hash_type(lag, bond_id, hash_type);
 	}
 	mutex_unlock(&board_lag->lock);
+
+	return;
 }
 
 static int xsc_lag_netdev_event(struct notifier_block *this,
@@ -1124,6 +1206,9 @@ static int xsc_lag_netdev_event(struct notifier_block *this,
 {
 	struct net_device *ndev = netdev_notifier_info_to_dev(ptr);
 	struct xsc_board_lag *board_lag;
+
+	if (!net_eq(dev_net(ndev), &init_net))
+		return NOTIFY_DONE;
 
 	if (event != NETDEV_CHANGE && event != NETDEV_CHANGEUPPER &&
 	    event != NETDEV_CHANGELOWERSTATE)
@@ -1217,6 +1302,7 @@ void xsc_lag_add_xdev(struct xsc_core_device *xdev)
 
 	if (err)
 		xsc_core_dbg(xdev, "add xdev err=%d\n", err);
+
 }
 EXPORT_SYMBOL(xsc_lag_add_xdev);
 
@@ -1390,13 +1476,28 @@ u16 xsc_get_lag_id(struct xsc_core_device *xdev)
 
 	xsc_board_lag_lock(xdev);
 	lag = __xsc_get_lag(xdev);
-	if (lag && __xsc_lag_is_active(lag) && !__xsc_lag_is_kernel(lag))
+	if (lag && __xsc_lag_is_active(lag))
 		lag_id = lag->lag_id;
 	xsc_board_lag_unlock(xdev);
 
 	return lag_id;
 }
 EXPORT_SYMBOL(xsc_get_lag_id);
+
+bool xsc_lag_is_kernel(struct xsc_core_device *xdev)
+{
+	struct xsc_lag *lag;
+	bool is_kernel = false;
+
+	xsc_board_lag_lock(xdev);
+	lag = __xsc_get_lag(xdev);
+	if (lag && __xsc_lag_is_active(lag) && __xsc_lag_is_kernel(lag))
+		is_kernel = true;
+	xsc_board_lag_unlock(xdev);
+
+	return is_kernel;
+}
+EXPORT_SYMBOL(xsc_lag_is_kernel);
 
 struct xsc_core_device *xsc_get_roce_lag_xdev(struct xsc_core_device *xdev)
 {
@@ -1416,3 +1517,22 @@ struct xsc_core_device *xsc_get_roce_lag_xdev(struct xsc_core_device *xdev)
 	return roce_lag_xdev;
 }
 EXPORT_SYMBOL(xsc_get_roce_lag_xdev);
+
+u16 xsc_lag_set_user_mode(struct xsc_core_device *xdev, u8 mode)
+{
+	struct xsc_lag *lag;
+	struct xsc_core_device *tmp_xdev;
+	struct xsc_board_lag *board_lag = xsc_board_lag_get(xdev);
+
+	mutex_lock(&board_lag->lock);
+	lag = __xsc_get_lag(xdev);
+	if (lag && __xsc_lag_is_active(lag)) {
+		list_for_each_entry(tmp_xdev, &lag->slave_list, slave_node) {
+			xsc_set_user_mode(tmp_xdev, mode);
+		}
+	}
+	mutex_unlock(&board_lag->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(xsc_lag_set_user_mode);
