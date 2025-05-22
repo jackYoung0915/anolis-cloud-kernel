@@ -1371,15 +1371,20 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	spinlock_t *ptl;
 	pte_t *start_pte;
 	pte_t *pte;
-	pmd_t pmdval;
+	pmd_t pmdval, orig_pmdval = pmd_read_atomic(pmd);
 	unsigned long start = addr;
 	bool can_reclaim_pt = reclaim_pt_is_enabled(start, end, details);
-	bool direct_reclaim = false;
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 again:
 	init_rss_vec(rss);
 	start_pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
+	/* PMD can be cleared and refilled at somewhere else, recheck it */
+	pmdval = pmd_read_atomic(pmd);
+	if (pmd_none(pmdval) || !pmd_same(orig_pmdval, pmdval)) {
+		pte_unmap_unlock(start_pte, ptl);
+		return end;
+	}
 	pte = start_pte;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
@@ -1394,9 +1399,6 @@ again:
 			break;
 		}
 	} while (pte++, addr += PAGE_SIZE, addr != end);
-
-	if (can_reclaim_pt && addr == end)
-		direct_reclaim = try_get_and_clear_pmd(mm, pmd, &pmdval);
 
 	add_mm_rss_vec(mm, rss);
 	arch_leave_lazy_mmu_mode();
@@ -1424,12 +1426,8 @@ again:
 		goto again;
 	}
 
-	if (can_reclaim_pt) {
-		if (direct_reclaim)
-			free_pte(mm, start, tlb, pmdval);
-		else
-			try_to_free_pte(mm, pmd, start, tlb);
-	}
+	if (can_reclaim_pt)
+		try_to_free_pte(mm, pmd, start, tlb, orig_pmdval);
 
 	return addr;
 }
@@ -1463,6 +1461,8 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 			spin_unlock(ptl);
 		}
 
+		fixup_pmd(vma, pmd, addr);
+
 		/*
 		 * Here there can be other concurrent MADV_DONTNEED or
 		 * trans huge page faults running, and if the pmd is
@@ -1470,8 +1470,6 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 		 * because MADV_DONTNEED holds the mmap_lock in read
 		 * mode.
 		 */
-		fixup_pmd(vma, pmd, addr);
-
 		if (pmd_none_or_trans_huge_or_clear_bad(pmd))
 			goto next;
 #ifdef CONFIG_PAGETABLE_SHARE
