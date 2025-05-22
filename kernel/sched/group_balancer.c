@@ -1408,6 +1408,19 @@ check_task_group_leap_level(struct task_group *tg, struct group_balancer_sched_d
 	tg->leap_level = false;
 }
 
+void update_free_tg_specs(struct group_balancer_sched_domain *gb_sd, int specs)
+{
+	struct group_balancer_sched_domain *parent;
+
+	if (specs != -1) {
+		for (parent = gb_sd; parent; parent = parent->parent) {
+			raw_spin_lock(&parent->lock);
+			parent->free_tg_specs += specs;
+			raw_spin_unlock(&parent->lock);
+		}
+	}
+}
+
 /*
  * When we attach/detach a task group to/from a domain, we hold the read lock
  * group_balancer_sched_domain_lock first, and then hold gb_sd->lock.
@@ -1422,19 +1435,8 @@ void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
 						  struct group_balancer_sched_domain *gb_sd,
 						  bool enable)
 {
-	int specs = tg->specs_ratio;
-	struct group_balancer_sched_domain *parent;
-
 	tg->gb_sd = gb_sd;
 	rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
-
-	if (specs != -1) {
-		for (parent = gb_sd; parent; parent = parent->parent) {
-			raw_spin_lock(&parent->lock);
-			parent->free_tg_specs -= specs;
-			raw_spin_unlock(&parent->lock);
-		}
-	}
 
 	tg->soft_cpus_allowed_ptr = gb_sd_span(gb_sd);
 	if (enable)
@@ -1450,6 +1452,7 @@ void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
 	raw_spin_lock(&gb_sd->lock);
 	add_tg_to_group_balancer_sched_domain_locked(tg, gb_sd, enable);
 	raw_spin_unlock(&gb_sd->lock);
+	update_free_tg_specs(gb_sd, -tg->specs_ratio);
 }
 
 static void
@@ -1457,18 +1460,8 @@ remove_tg_from_group_balancer_sched_domain_locked(struct task_group *tg,
 						  struct group_balancer_sched_domain *gb_sd,
 						  bool disable)
 {
-	int specs = tg->specs_ratio;
-
 	tg->gb_sd = NULL;
 	rb_erase(&tg->gb_node, &gb_sd->task_groups);
-	if (specs != -1) {
-		for (; gb_sd; gb_sd = gb_sd->parent) {
-			raw_spin_lock(&gb_sd->lock);
-			gb_sd->free_tg_specs += specs;
-			raw_spin_unlock(&gb_sd->lock);
-		}
-	}
-
 	if (disable)
 		walk_tg_tree_from(tg, tg_unset_gb_tg_down, tg_nop, NULL);
 }
@@ -1482,6 +1475,7 @@ remove_tg_from_group_balancer_sched_domain(struct task_group *tg,
 	raw_spin_lock(&gb_sd->lock);
 	remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, disable);
 	raw_spin_unlock(&gb_sd->lock);
+	update_free_tg_specs(gb_sd, tg->specs_ratio);
 	read_unlock(&group_balancer_sched_domain_lock);
 }
 
