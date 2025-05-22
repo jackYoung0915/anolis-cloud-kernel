@@ -2544,12 +2544,20 @@ int replace_free_hugepage_pages(unsigned long start_pfn, unsigned long end_pfn)
 
 	while (start_pfn < end_pfn) {
 		page = pfn_to_page(start_pfn);
+
+		/*
+		 * The page might have been dissolved from under our feet, so make sure
+		 * to carefully check the state under the lock.
+		 */
+		spin_lock_irq(&hugetlb_lock);
 		if (PageHuge(page)) {
 			h = page_hstate(page);
 		} else {
+			spin_unlock_irq(&hugetlb_lock);
 			start_pfn++;
 			continue;
 		}
+		spin_unlock_irq(&hugetlb_lock);
 
 		if (!page_count(page)) {
 			ret = alloc_and_dissolve_huge_page(h, page,
