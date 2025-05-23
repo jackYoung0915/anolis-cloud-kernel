@@ -377,6 +377,11 @@ enum {
 	KVM_REG_ARM_VENDOR_HYP_BIT_PTP		= 1,
 	KVM_REG_ARM_VENDOR_HYP_BIT_PV_LOCK	= 2,
 	KVM_REG_ARM_VENDOR_HYP_BIT_PV_CPU_FREQ	= 3,
+	/*
+	 * If the mainline conflicts, do not change the
+	 * current sequence, add in sequence.
+	 */
+	KVM_REG_ARM_VENDOR_HYP_BIT_IPIV         = 4,
 #ifdef __KERNEL__
 	KVM_REG_ARM_VENDOR_HYP_BMAP_BIT_COUNT,
 #endif
