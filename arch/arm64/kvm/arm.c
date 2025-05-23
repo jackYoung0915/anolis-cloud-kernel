@@ -66,8 +66,10 @@ bool kvm_ncsnp_support;
 /* Capability of DVMBM */
 bool kvm_dvmbm_support;
 
+#ifdef CONFIG_ARM64_HISI_IPIV
 /* Capability of IPIV */
 bool kvm_ipiv_support;
+#endif /* CONFIG_ARM64_HISI_IPIV */
 
 static DEFINE_PER_CPU(unsigned char, kvm_hyp_initialized);
 
@@ -255,7 +257,9 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 	kvm_arm_teardown_hypercalls(kvm);
 }
 
+#ifdef CONFIG_ARM64_HISI_IPIV
 extern struct static_key_false ipiv_enable;
+#endif
 
 int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 {
@@ -371,12 +375,14 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		else
 			r = kvm_supports_cacheable_pfnmap();
 		break;
+#ifdef CONFIG_ARM64_HISI_IPIV
 	case KVM_CAP_ARM_IPIV_MODE:
 		if (static_branch_unlikely(&ipiv_enable))
 			r = 1;
 		else
 			r = 0;
 		break;
+#endif
 #ifdef CONFIG_VIRT_PLAT_DEV
 	case KVM_CAP_ARM_VIRT_MSI_BYPASS:
 		r = sdev_enable;
@@ -2746,16 +2752,22 @@ static __init int kvm_arm_init(void)
 	probe_hisi_cpu_type();
 	kvm_ncsnp_support = hisi_ncsnp_supported();
 	kvm_dvmbm_support = hisi_dvmbm_supported();
+#ifdef CONFIG_ARM64_HISI_IPIV
 	kvm_ipiv_support = hisi_ipiv_supported();
+#endif
 	kvm_info("KVM ncsnp %s\n", kvm_ncsnp_support ? "enabled" : "disabled");
 	kvm_info("KVM dvmbm %s\n", kvm_dvmbm_support ? "enabled" : "disabled");
+#ifdef CONFIG_ARM64_HISI_IPIV
 	kvm_info("KVM ipiv %s\n", kvm_ipiv_support ? "enabled" : "disabled");
+#endif
 
 	if (kvm_dvmbm_support)
 		kvm_get_pg_cfg();
 
+#ifdef CONFIG_ARM64_HISI_IPIV
 	if (kvm_ipiv_support)
 		ipiv_gicd_init();
+#endif
 
 	in_hyp_mode = is_kernel_in_hyp_mode();
 
