@@ -29,6 +29,7 @@ struct its_vm {
 	u32			vlpi_count[GICv4_ITS_LIST_MAX];
 #ifdef CONFIG_ARM64_HISI_IPIV
 	bool			nassgireq;
+	bool			enable_ipiv_from_vmm;
 #endif
 };
 

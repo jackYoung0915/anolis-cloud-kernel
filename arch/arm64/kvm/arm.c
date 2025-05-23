@@ -83,6 +83,14 @@ int kvm_arch_vcpu_should_kick(struct kvm_vcpu *vcpu)
 	return kvm_vcpu_exiting_guest_mode(vcpu) == IN_GUEST_MODE;
 }
 
+#ifdef CONFIG_ARM64_HISI_IPIV
+static int kvm_hisi_ipiv_enable_cap(struct kvm *kvm, struct kvm_enable_cap *cap)
+{
+	kvm->arch.vgic.its_vm.enable_ipiv_from_vmm = true;
+	return 0;
+}
+#endif
+
 int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
 			    struct kvm_enable_cap *cap)
 {
@@ -130,6 +138,11 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
 		}
 		mutex_unlock(&kvm->slots_lock);
 		break;
+#ifdef CONFIG_ARM64_HISI_IPIV
+	case KVM_CAP_ARM_HISI_IPIV:
+		r = kvm_hisi_ipiv_enable_cap(kvm, cap);
+		break;
+#endif
 	default:
 		r = -EINVAL;
 		break;
@@ -376,7 +389,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 			r = kvm_supports_cacheable_pfnmap();
 		break;
 #ifdef CONFIG_ARM64_HISI_IPIV
-	case KVM_CAP_ARM_IPIV_MODE:
+	case KVM_CAP_ARM_HISI_IPIV:
 		if (static_branch_unlikely(&ipiv_enable))
 			r = 1;
 		else
