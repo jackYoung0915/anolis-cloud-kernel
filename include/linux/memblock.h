@@ -423,18 +423,27 @@ void *memblock_alloc_try_nid(phys_addr_t size, phys_addr_t align,
 			     phys_addr_t min_addr, phys_addr_t max_addr,
 			     int nid);
 
-static __always_inline void *memblock_alloc(phys_addr_t size, phys_addr_t align)
+static __always_inline void *memblock_alloc_nid(phys_addr_t size, phys_addr_t align, int nid)
 {
 	return memblock_alloc_try_nid(size, align, MEMBLOCK_LOW_LIMIT,
-				      MEMBLOCK_ALLOC_ACCESSIBLE, NUMA_NO_NODE);
+				      MEMBLOCK_ALLOC_ACCESSIBLE, nid);
+}
+
+static __always_inline void *memblock_alloc(phys_addr_t size, phys_addr_t align)
+{
+	return memblock_alloc_nid(size, align, NUMA_NO_NODE);
+}
+
+static inline void *memblock_alloc_raw_nid(phys_addr_t size, phys_addr_t align, int nid)
+{
+	return memblock_alloc_try_nid_raw(size, align, MEMBLOCK_LOW_LIMIT,
+					  MEMBLOCK_ALLOC_ACCESSIBLE, nid);
 }
 
 static inline void *memblock_alloc_raw(phys_addr_t size,
 					       phys_addr_t align)
 {
-	return memblock_alloc_try_nid_raw(size, align, MEMBLOCK_LOW_LIMIT,
-					  MEMBLOCK_ALLOC_ACCESSIBLE,
-					  NUMA_NO_NODE);
+	return memblock_alloc_raw_nid(size, align, NUMA_NO_NODE);
 }
 
 static inline void *memblock_alloc_from(phys_addr_t size,
