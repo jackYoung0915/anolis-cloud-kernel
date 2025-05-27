@@ -557,6 +557,8 @@ struct request_queue {
 
 	bool			mq_sysfs_init_done;
 
+	bool			enable_d2c_stats;
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -982,6 +984,8 @@ extern bool blk_queue_can_use_dma_map_merging(struct request_queue *q,
 					      struct device *dev);
 extern void blk_queue_rq_hang_threshold(struct request_queue *q,
 					unsigned int hang_threshold);
+extern void blk_queue_d2c_stats(struct request_queue *q,
+				bool enable);
 
 bool __must_check blk_get_queue(struct request_queue *);
 extern void blk_put_queue(struct request_queue *);
