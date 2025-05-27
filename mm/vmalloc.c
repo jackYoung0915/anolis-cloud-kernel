@@ -3451,6 +3451,14 @@ void *vmalloc_huge(unsigned long size, gfp_t gfp_mask)
 }
 EXPORT_SYMBOL_GPL(vmalloc_huge);
 
+void *vmalloc_huge_node(unsigned long size, gfp_t gfp_mask, int node)
+{
+	return __vmalloc_node_range(size, 1, VMALLOC_START, VMALLOC_END,
+				    gfp_mask, PAGE_KERNEL, VM_ALLOW_HUGE_VMAP,
+				    node, __builtin_return_address(0));
+}
+EXPORT_SYMBOL_GPL(vmalloc_huge_node);
+
 /**
  * vzalloc - allocate virtually contiguous memory with zero fill
  * @size:    allocation size
