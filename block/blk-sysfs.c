@@ -458,6 +458,26 @@ static ssize_t queue_hang_threshold_store(struct request_queue *q, const char *p
 	return count;
 }
 
+static ssize_t queue_d2c_stats_show(struct request_queue *q, char *page)
+{
+	return sprintf(page, "%u\n", q->enable_d2c_stats);
+}
+
+static ssize_t queue_d2c_stats_store(struct request_queue *q, const char *page,
+				size_t count)
+{
+	bool enable;
+	int err;
+
+	err = kstrtobool(page, &enable);
+	if (err)
+		return -EINVAL;
+
+	blk_queue_d2c_stats(q, enable);
+
+	return count;
+}
+
 static ssize_t queue_wc_show(struct request_queue *q, char *page)
 {
 	if (test_bit(QUEUE_FLAG_WC, &q->queue_flags))
@@ -548,6 +568,7 @@ QUEUE_RW_ENTRY(queue_io_timeout, "io_timeout");
 QUEUE_RO_ENTRY(queue_virt_boundary_mask, "virt_boundary_mask");
 QUEUE_RO_ENTRY(queue_dma_alignment, "dma_alignment");
 QUEUE_RW_ENTRY(queue_hang_threshold, "hang_threshold");
+QUEUE_RW_ENTRY(queue_d2c_stats, "d2c_stats");
 
 #ifdef CONFIG_BLK_DEV_THROTTLING_LOW
 QUEUE_RW_ENTRY(blk_throtl_sample_time, "throttle_sample_time");
@@ -678,6 +699,7 @@ static struct attribute *queue_attrs[] = {
 	&queue_virt_boundary_mask_entry.attr,
 	&queue_dma_alignment_entry.attr,
 	&queue_hang_threshold_entry.attr,
+	&queue_d2c_stats_entry.attr,
 	NULL,
 };
 
