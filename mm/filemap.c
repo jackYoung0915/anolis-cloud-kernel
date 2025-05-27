@@ -2559,8 +2559,7 @@ static inline bool pos_same_page(loff_t pos1, loff_t pos2, struct page *page)
 }
 
 
-static void filemap_end_dropbehind_read(struct address_space *mapping,
-					struct page *page)
+static void filemap_end_dropbehind_read(struct page *page)
 {
 	if (!PageDropbehind(page))
 		return;
@@ -2568,7 +2567,7 @@ static void filemap_end_dropbehind_read(struct address_space *mapping,
 		return;
 	if (trylock_page(page)) {
 		if (TestClearPageDropbehind(page))
-			page_unmap_invalidate(mapping, page, 0);
+			filemap_end_dropbehind(page);
 		unlock_page(page);
 	}
 }
@@ -2699,7 +2698,7 @@ put_pages:
 		for (i = 0; i < pg_nr; i++) {
 			struct page *page = pages[i];
 
-			filemap_end_dropbehind_read(mapping, page);
+			filemap_end_dropbehind_read(page);
 			put_page(page);
 		}
 	} while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
