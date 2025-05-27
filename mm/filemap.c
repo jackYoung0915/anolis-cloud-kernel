@@ -1551,7 +1551,11 @@ static void filemap_end_dropbehind(struct page *page)
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 
-	if (mapping && !PageWriteback(page) && !PageDirty(page))
+	if (PageWriteback(page) || PageDirty(page))
+		return;
+	if (!TestClearPageDropbehind(page))
+		return;
+	if (mapping)
 		page_unmap_invalidate(mapping, page, 0);
 }
 
@@ -1562,6 +1566,8 @@ static void filemap_end_dropbehind(struct page *page)
  */
 static void filemap_end_dropbehind_write(struct page *page)
 {
+	if (!PageDropbehind(page))
+		return;
 	/*
 	 * Hitting !in_task() should not happen off RWF_DONTCACHE writeback,
 	 * but can happen if normal writeback just happens to find dirty pages
@@ -1581,8 +1587,6 @@ static void filemap_end_dropbehind_write(struct page *page)
  */
 void end_page_writeback(struct page *page)
 {
-	bool page_dropbehind = false;
-
 	/*
 	 * TestClearPageReclaim could be used here but it is an atomic
 	 * operation and overkill in this particular case. Failing to
@@ -1602,17 +1606,13 @@ void end_page_writeback(struct page *page)
 	 * reused before the wake_up_page().
 	 */
 	get_page(page);
-	if (!PageDirty(page))
-		page_dropbehind = TestClearPageDropbehind(page);
-
 	if (!test_clear_page_writeback(page))
 		BUG();
 
 	smp_mb__after_atomic();
 	wake_up_page(page, PG_writeback);
 
-	if (page_dropbehind)
-		filemap_end_dropbehind_write(page);
+	filemap_end_dropbehind_write(page);
 	put_page(page);
 }
 EXPORT_SYMBOL(end_page_writeback);
@@ -2566,8 +2566,7 @@ static void filemap_end_dropbehind_read(struct page *page)
 	if (PageWriteback(page) || PageDirty(page))
 		return;
 	if (trylock_page(page)) {
-		if (TestClearPageDropbehind(page))
-			filemap_end_dropbehind(page);
+		filemap_end_dropbehind(page);
 		unlock_page(page);
 	}
 }
