@@ -115,10 +115,17 @@ late_initcall(fail_futex_debugfs);
  */
 struct futex_hash_bucket *futex_hash(union futex_key *key)
 {
+	int idx;
+
+	if (key->both.offset & (FUT_OFF_MMSHARED | FUT_OFF_INODE))
+		idx = MAX_NUMNODES;
+	else
+		idx = READ_ONCE(current->group_leader->futex_nid);
+
 	u32 hash = jhash2((u32 *)key, offsetof(typeof(*key), both.offset) / 4,
 			  key->both.offset);
 
-	return &futex_queues[0][hash & (futex_hashsize - 1)];
+	return &futex_queues[idx][hash & (futex_hashsize - 1)];
 }
 
 
@@ -240,6 +247,12 @@ int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
 
 	if (unlikely(should_fail_futex(fshared)))
 		return -EFAULT;
+
+	if (READ_ONCE(current->group_leader->futex_nid) == NUMA_NO_NODE) {
+		int id = numa_node_id();
+
+		cmpxchg(&current->group_leader->futex_nid, NUMA_NO_NODE, id);
+	}
 
 	/*
 	 * PROCESS_PRIVATE futexes are fast.
