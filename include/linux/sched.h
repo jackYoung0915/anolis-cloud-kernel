@@ -1326,6 +1326,7 @@ struct task_struct {
 	struct futex_pi_state		*pi_state_cache;
 	struct mutex			futex_exit_mutex;
 	unsigned int			futex_state;
+	unsigned int			futex_nid;
 #endif
 #ifdef CONFIG_PERF_EVENTS
 	struct perf_event_context	*perf_event_ctxp;
