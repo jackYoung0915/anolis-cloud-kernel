@@ -1545,6 +1545,16 @@ void unlock_page(struct page *page)
 }
 EXPORT_SYMBOL(unlock_page);
 
+static void filemap_end_dropbehind(struct page *page)
+{
+	struct address_space *mapping = page->mapping;
+
+	VM_BUG_ON_PAGE(!PageLocked(page), page);
+
+	if (mapping && !PageWriteback(page) && !PageDirty(page))
+		page_unmap_invalidate(mapping, page, 0);
+}
+
 /*
  * If page was marked as dropbehind, then pages should be dropped when writeback
  * completes. Do that now. If we fail, it's likely because of a big page -
@@ -1560,8 +1570,7 @@ static void page_end_dropbehind_write(struct page *page)
 	 * invalidation in that case.
 	 */
 	if (in_task() && trylock_page(page)) {
-		if (page->mapping)
-			page_unmap_invalidate(page->mapping, page, 0);
+		filemap_end_dropbehind(page);
 		unlock_page(page);
 	}
 }
