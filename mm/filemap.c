@@ -1560,7 +1560,7 @@ static void filemap_end_dropbehind(struct page *page)
  * completes. Do that now. If we fail, it's likely because of a big page -
  * just reset dropbehind for that case and latter completions should invalidate.
  */
-static void page_end_dropbehind_write(struct page *page)
+static void filemap_end_dropbehind_write(struct page *page)
 {
 	/*
 	 * Hitting !in_task() should not happen off RWF_DONTCACHE writeback,
@@ -1612,7 +1612,7 @@ void end_page_writeback(struct page *page)
 	wake_up_page(page, PG_writeback);
 
 	if (page_dropbehind)
-		page_end_dropbehind_write(page);
+		filemap_end_dropbehind_write(page);
 	put_page(page);
 }
 EXPORT_SYMBOL(end_page_writeback);
