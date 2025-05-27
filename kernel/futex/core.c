@@ -47,7 +47,8 @@
  * reside in the same cacheline.
  */
 static struct {
-	struct futex_hash_bucket *queues;
+	/* one more is for shared futex hash table queue */
+	struct futex_hash_bucket *queues[MAX_NUMNODES + 1];
 	unsigned long            hashsize;
 } __futex_data __read_mostly __aligned(2*sizeof(long));
 #define futex_queues   (__futex_data.queues)
@@ -117,7 +118,7 @@ struct futex_hash_bucket *futex_hash(union futex_key *key)
 	u32 hash = jhash2((u32 *)key, offsetof(typeof(*key), both.offset) / 4,
 			  key->both.offset);
 
-	return &futex_queues[hash & (futex_hashsize - 1)];
+	return &futex_queues[0][hash & (futex_hashsize - 1)];
 }
 
 
@@ -1130,28 +1131,51 @@ void futex_exit_release(struct task_struct *tsk)
 	futex_cleanup_end(tsk, FUTEX_STATE_DEAD);
 }
 
+static struct futex_hash_bucket* __init
+alloc_futex_hash(const char *tablename, int nid, int hash_size)
+{
+	struct futex_hash_bucket *fhb;
+	unsigned int shift;
+
+	fhb = alloc_large_system_hash_nid(tablename,
+					  sizeof(struct futex_hash_bucket),
+					  hash_size, 0, 0, &shift, NULL,
+					  hash_size, hash_size, nid);
+
+	hash_size = 1UL << shift;
+	for (int i = 0; i < hash_size; i++) {
+		atomic_set(&fhb[i].waiters, 0);
+		plist_head_init(&fhb[i].chain);
+		spin_lock_init(&fhb[i].lock);
+	}
+
+	return fhb;
+}
+
 static int __init futex_init(void)
 {
-	unsigned int futex_shift;
-	unsigned long i;
+	unsigned int nid;
 
 #if CONFIG_BASE_SMALL
 	futex_hashsize = 16;
 #else
-	futex_hashsize = roundup_pow_of_two(256 * num_possible_cpus());
+	futex_hashsize = 256 * num_possible_cpus();
+	futex_hashsize /= num_possible_nodes();
+	/* 32 is larger than 16 and not that too much */
+	futex_hashsize = max(32, futex_hashsize);
+	futex_hashsize = roundup_pow_of_two(futex_hashsize);
 #endif
 
-	futex_queues = alloc_large_system_hash("futex", sizeof(*futex_queues),
-					       futex_hashsize, 0, 0,
-					       &futex_shift, NULL,
-					       futex_hashsize, futex_hashsize);
-	futex_hashsize = 1UL << futex_shift;
+	for_each_node(nid)
+		futex_queues[nid] = alloc_futex_hash("private futex",
+						     nid, futex_hashsize);
 
-	for (i = 0; i < futex_hashsize; i++) {
-		atomic_set(&futex_queues[i].waiters, 0);
-		plist_head_init(&futex_queues[i].chain);
-		spin_lock_init(&futex_queues[i].lock);
-	}
+	/*
+	 * For shared futex, it could be accessed from different processes.
+	 * Can not use per-process index for futex hash. Use global hash table.
+	 */
+	futex_queues[MAX_NUMNODES] = alloc_futex_hash("shared futex", NUMA_NO_NODE,
+						      futex_hashsize);
 
 	return 0;
 }
