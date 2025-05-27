@@ -2457,12 +2457,12 @@ static unsigned long __init arch_reserved_kernel_pages(void)
 #endif
 
 /*
- * allocate a large system hash table from bootmem
+ * allocate a large system hash table from bootmem on specific numa node
  * - it is assumed that the hash table must contain an exact power-of-2
  *   quantity of entries
  * - limit is the number of hash buckets, not the total allocation size
  */
-void *__init alloc_large_system_hash(const char *tablename,
+void *__init alloc_large_system_hash_nid(const char *tablename,
 				     unsigned long bucketsize,
 				     unsigned long numentries,
 				     int scale,
@@ -2470,7 +2470,8 @@ void *__init alloc_large_system_hash(const char *tablename,
 				     unsigned int *_hash_shift,
 				     unsigned int *_hash_mask,
 				     unsigned long low_limit,
-				     unsigned long high_limit)
+				     unsigned long high_limit,
+				     int nid)
 {
 	unsigned long long max = high_limit;
 	unsigned long log2qty, size;
@@ -2530,12 +2531,11 @@ void *__init alloc_large_system_hash(const char *tablename,
 		size = bucketsize << log2qty;
 		if (flags & HASH_EARLY) {
 			if (flags & HASH_ZERO)
-				table = memblock_alloc(size, SMP_CACHE_BYTES);
+				table = memblock_alloc_nid(size, SMP_CACHE_BYTES, nid);
 			else
-				table = memblock_alloc_raw(size,
-							   SMP_CACHE_BYTES);
+				table = memblock_alloc_raw_nid(size, SMP_CACHE_BYTES, nid);
 		} else if (get_order(size) > MAX_ORDER || hashdist) {
-			table = vmalloc_huge(size, gfp_flags);
+			table = vmalloc_huge_node(size, gfp_flags, nid);
 			virt = true;
 			if (table)
 				huge = is_vm_area_hugepages(table);
@@ -2545,7 +2545,7 @@ void *__init alloc_large_system_hash(const char *tablename,
 			 * some pages at the end of hash table which
 			 * alloc_pages_exact() automatically does
 			 */
-			table = alloc_pages_exact(size, gfp_flags);
+			table = alloc_pages_exact_nid(nid, size, gfp_flags);
 			kmemleak_alloc(table, size, 1, gfp_flags);
 		}
 	} while (!table && size > PAGE_SIZE && --log2qty);
