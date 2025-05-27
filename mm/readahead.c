@@ -538,7 +538,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 	gfp_t gfp = readahead_gfp_mask(mapping);
 	unsigned long orders;
 
-	if (!mapping_large_folio_support(mapping))
+	if (!mapping_large_folio_support(mapping) || ra->size < 4)
 		goto fallback;
 
 	limit = min(limit, index + ra->size - 1);
