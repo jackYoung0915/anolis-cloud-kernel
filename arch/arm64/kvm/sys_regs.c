@@ -1310,6 +1310,7 @@ static int arm64_check_features(struct kvm_vcpu *vcpu,
 	u32 id = reg_to_encoding(rd);
 	u64 writable_mask = rd->val;
 	u64 limit, mask = 0;
+	u32 midr = read_cpuid_id();
 
 	/*
 	 * Hidden and unallocated ID registers may not have a corresponding
@@ -1331,8 +1332,11 @@ static int arm64_check_features(struct kvm_vcpu *vcpu,
 		u64 ftr_mask;
 
 		ftr_mask = arm64_ftr_mask(ftrp);
-		if ((ftr_mask & writable_mask) != ftr_mask)
-			continue;
+
+		if (MIDR_IMPLEMENTOR(midr) != ARM_CPU_IMP_PHYTIUM) {
+			if ((ftr_mask & writable_mask) != ftr_mask)
+				continue;
+		}
 
 		f_val = arm64_ftr_value(ftrp, val);
 		f_lim = arm64_ftr_value(ftrp, limit);
