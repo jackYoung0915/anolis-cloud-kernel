@@ -582,7 +582,7 @@ static inline unsigned long memblock_region_reserved_end_pfn(const struct memblo
 	     region < (memblock.reserved.regions + memblock.reserved.cnt); \
 	     region++)
 
-extern void *alloc_large_system_hash(const char *tablename,
+extern void *alloc_large_system_hash_nid(const char *tablename,
 				     unsigned long bucketsize,
 				     unsigned long numentries,
 				     int scale,
@@ -590,7 +590,32 @@ extern void *alloc_large_system_hash(const char *tablename,
 				     unsigned int *_hash_shift,
 				     unsigned int *_hash_mask,
 				     unsigned long low_limit,
-				     unsigned long high_limit);
+				     unsigned long high_limit,
+				     int nid);
+
+/*
+ * allocate a large system hash table from bootmem
+ * - it is assumed that the hash table must contain an exact power-of-2
+ *   quantity of entries
+ * - limit is the number of hash buckets, not the total allocation size
+ */
+static __always_inline void *alloc_large_system_hash(const char *tablename,
+				     unsigned long bucketsize,
+				     unsigned long numentries,
+				     int scale,
+				     int flags,
+				     unsigned int *_hash_shift,
+				     unsigned int *_hash_mask,
+				     unsigned long low_limit,
+				     unsigned long high_limit)
+{
+	return alloc_large_system_hash_nid(tablename, bucketsize,
+					   numentries, scale, flags,
+					   _hash_shift, _hash_mask,
+					   low_limit, high_limit,
+					   NUMA_NO_NODE);
+}
+
 
 #define HASH_EARLY	0x00000001	/* Allocating during early boot? */
 #define HASH_ZERO	0x00000002	/* Zero allocated hash table */
