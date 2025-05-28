@@ -549,13 +549,6 @@ void page_cache_ra_order(struct readahead_control *ractl,
 	/* See comment in page_cache_ra_unbounded() */
 	nofs = memalloc_nofs_save();
 	filemap_invalidate_lock_shared(mapping);
-
-	if (unlikely(!mapping_large_folio_support(mapping))) {
-		filemap_invalidate_unlock_shared(mapping);
-		memalloc_nofs_restore(nofs);
-		goto fallback;
-	}
-
 	while (index <= limit) {
 		unsigned int order = new_order;
 
