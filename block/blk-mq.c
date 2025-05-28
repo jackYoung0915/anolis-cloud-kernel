@@ -1028,10 +1028,9 @@ static inline void blk_account_io_done(struct request *req, u64 now)
 		part_stat_add(req->part, nsecs[sgrp], now - req->start_time_ns);
 		part_stat_local_dec(req->part,
 				    in_flight[op_is_write(req_op(req))]);
-		if (req->rq_flags & RQF_STATS) {
+		if (req->rq_flags & RQF_STATS)
 			part_stat_add(req->part, d2c_nsecs[sgrp],
 				      now - req->io_start_time_ns);
-		}
 		part_stat_unlock();
 	}
 }
@@ -1288,7 +1287,8 @@ void blk_mq_start_request(struct request *rq)
 
 	trace_block_rq_issue(rq);
 
-	if (test_bit(QUEUE_FLAG_STATS, &q->queue_flags)) {
+	if (test_bit(QUEUE_FLAG_STATS, &q->queue_flags) ||
+	    q->enable_d2c_stats) {
 		rq->io_start_time_ns = ktime_get_ns();
 		rq->stats_sectors = blk_rq_sectors(rq);
 		rq->rq_flags |= RQF_STATS;
