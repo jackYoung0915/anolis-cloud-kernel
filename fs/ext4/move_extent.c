@@ -545,34 +545,6 @@ mext_check_arguments(struct inode *orig_inode,
 	return 0;
 }
 
-/*
- * Disable buffered iomap path for the inode that requiring move extents,
- * fallback to buffer_head path.
- */
-static int ext4_disable_buffered_iomap_aops(struct inode *inode)
-{
-	int err;
-
-	/*
-	 * The buffered_head aops don't know how to handle folios
-	 * dirtied by iomap, so before falling back, flush all dirty
-	 * folios the inode has.
-	 */
-	filemap_invalidate_lock(inode->i_mapping);
-	err = filemap_write_and_wait(inode->i_mapping);
-	if (err < 0) {
-		filemap_invalidate_unlock(inode->i_mapping);
-		return err;
-	}
-	truncate_inode_pages(inode->i_mapping, 0);
-
-	ext4_clear_inode_state(inode, EXT4_STATE_BUFFERED_IOMAP);
-	ext4_set_aops(inode);
-	filemap_invalidate_unlock(inode->i_mapping);
-
-	return 0;
-}
-
 /**
  * ext4_move_extents - Exchange the specified range of a file
  *
@@ -637,24 +609,19 @@ ext4_move_extents(struct file *o_filp, struct file *d_filp, __u64 orig_blk,
 		return -EOPNOTSUPP;
 	}
 
+	if (ext4_test_inode_state(orig_inode, EXT4_STATE_BUFFERED_IOMAP) ||
+	    ext4_test_inode_state(donor_inode, EXT4_STATE_BUFFERED_IOMAP)) {
+		ext4_msg(orig_inode->i_sb, KERN_ERR,
+			 "Online defrag not supported for inode with iomap buffered IO path");
+		return -EOPNOTSUPP;
+	}
+
 	/* Protect orig and donor inodes against a truncate */
 	lock_two_nondirectories(orig_inode, donor_inode);
 
 	/* Wait for all existing dio workers */
 	inode_dio_wait(orig_inode);
 	inode_dio_wait(donor_inode);
-
-	/* Fallback to buffer_head aops for inodes with buffered iomap aops */
-	if (ext4_test_inode_state(orig_inode, EXT4_STATE_BUFFERED_IOMAP)) {
-		ret = ext4_disable_buffered_iomap_aops(orig_inode);
-		if (ret)
-			goto out_unlock;
-	}
-	if (ext4_test_inode_state(donor_inode, EXT4_STATE_BUFFERED_IOMAP)) {
-		ret = ext4_disable_buffered_iomap_aops(donor_inode);
-		if (ret)
-			goto out_unlock;
-	}
 
 	/* Protect extent tree against block allocations via delalloc */
 	ext4_double_down_write_data_sem(orig_inode, donor_inode);
@@ -739,7 +706,6 @@ out:
 
 	ext4_free_ext_path(path);
 	ext4_double_up_write_data_sem(orig_inode, donor_inode);
-out_unlock:
 	unlock_two_nondirectories(orig_inode, donor_inode);
 
 	return ret;
