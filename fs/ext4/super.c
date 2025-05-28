@@ -2440,7 +2440,7 @@ static int ext4_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		return 0;
 	case Opt_buffered_iomap:
 		ext4_msg(NULL, KERN_WARNING,
-			 "buffered iomap enabled. Warning: EXPERIMENTAL, use at your own risk");
+			 "buffered iomap enabled. Waring: EXPERIMENTAL, use at your own risk");
 		ctx_set_mount_opt2(ctx, EXT4_MOUNT2_BUFFERED_IOMAP);
 		return 0;
 	}
