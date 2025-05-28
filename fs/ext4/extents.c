@@ -4567,16 +4567,6 @@ static long ext4_zero_range(struct file *file, loff_t offset,
 					     new_size, flags);
 		if (ret)
 			return ret;
-
-		ret = filemap_write_and_wait_range(file->f_mapping,
-				round_down(offset, 1 << blkbits), offset);
-		if (ret)
-			return ret;
-
-		ret = filemap_write_and_wait_range(file->f_mapping, offset + len,
-				round_up((offset + len), 1 << blkbits));
-		if (ret)
-			return ret;
 	}
 
 	ret = ext4_update_disksize_before_punch(inode, offset, len);
