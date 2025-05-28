@@ -4028,7 +4028,6 @@ static const struct address_space_operations ext4_iomap_aops = {
 	.bmap                   = ext4_bmap,
 	.invalidate_folio       = iomap_invalidate_folio,
 	.release_folio          = iomap_release_folio,
-	.direct_IO		= noop_direct_IO,
 	.migrate_folio          = filemap_migrate_folio,
 	.is_partially_uptodate  = iomap_is_partially_uptodate,
 	.error_remove_folio     = generic_error_remove_folio,
