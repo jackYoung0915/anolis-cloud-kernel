@@ -5102,7 +5102,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	struct task_struct *next, *p, *max = NULL;
 	const struct cpumask *smt_mask;
-	bool fi_before = false, core_allow_unset;
+	bool fi_before = false;
 	bool core_clock_updated = (rq == rq->core);
 	unsigned long cookie;
 	int i, cpu, occ = 0;
@@ -5151,23 +5151,11 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 	put_prev_task_balance(rq, prev, rf);
 
-	core_allow_unset = sched_cookie_match_unset(rq->core->core_cookie);
 	smt_mask = cpu_smt_mask(cpu);
-	need_sync = !!rq->core->core_cookie || core_allow_unset;
+	need_sync = !!rq->core->core_cookie;
 
 	/* reset state */
 	rq->core->core_cookie = 0UL;
-
-	/* Restore cookie if the other ht has cookie. (Must be allow_unset) */
-	if (core_allow_unset) {
-		for_each_cpu_wrap(i, smt_mask, cpu + 1) {
-			rq_i = cpu_rq(i);
-			/* Now rq cookie is either NULL or allow_unset */
-			rq->core->core_cookie = rq_i->curr->core_cookie;
-			/* Assume we have only 2 HT. */
-			break;
-		}
-	}
 	if (rq->core->core_sibidle_count) {
 		if (!core_clock_updated) {
 			update_rq_clock(rq->core);
@@ -5204,7 +5192,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 */
 	if (!need_sync) {
 		next = pick_task(rq);
-		if (!next->core_cookie || next->core_cookie == rq->core->core_cookie) {
+		if (!next->core_cookie) {
 			rq->core_pick = NULL;
 			/*
 			 * For robustness, update the min_vruntime_fi for
