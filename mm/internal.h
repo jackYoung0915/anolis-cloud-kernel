@@ -723,8 +723,11 @@ void vunmap_range_noflush(unsigned long start, unsigned long end);
 DECLARE_PER_CPU(struct per_cpu_nodestat, boot_nodestats);
 
 /* pt_reclaim.c */
+bool try_get_and_clear_pmd(struct mm_struct *mm, pmd_t *pmd, pmd_t *pmdval);
+void free_pte(struct mm_struct *mm, unsigned long addr, struct mmu_gather *tlb,
+	      pmd_t pmdval);
 void try_to_free_pte(struct mm_struct *mm, pmd_t *pmd, unsigned long addr,
-		     struct mmu_gather *tlb, pmd_t orig_pmdval);
+		     struct mmu_gather *tlb);
 
 #ifdef CONFIG_PT_RECLAIM
 bool reclaim_pt_is_enabled(unsigned long start, unsigned long end,
