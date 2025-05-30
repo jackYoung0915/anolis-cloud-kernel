@@ -1368,24 +1368,33 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	bool force_flush = false, force_break = false;
 	struct mm_struct *mm = tlb->mm;
 	int rss[NR_MM_COUNTERS];
-	spinlock_t *ptl;
+	spinlock_t *ptl, *pml;
 	pte_t *start_pte;
 	pte_t *pte;
-	pmd_t pmdval, orig_pmdval = pmd_read_atomic(pmd);
+	pmd_t orig_pmdval = pmd_read_atomic(pmd);
 	unsigned long start = addr;
 	bool can_reclaim_pt = reclaim_pt_is_enabled(start, end, details);
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 again:
 	init_rss_vec(rss);
-	start_pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
-	/* PMD can be cleared and refilled at somewhere else, recheck it */
-	pmdval = pmd_read_atomic(pmd);
-	if (pmd_none(pmdval) || !pmd_same(orig_pmdval, pmdval)) {
-		pte_unmap_unlock(start_pte, ptl);
+	pml = pmd_lock(mm, pmd);
+	if (pmd_none(*pmd) || !pmd_same(orig_pmdval, *pmd)) {
+		spin_unlock(pml);
 		return end;
 	}
+	start_pte = pte_offset_map(pmd, addr);
+	if (!start_pte) {
+		spin_unlock(pml);
+		return end;
+	}
+	ptl = pte_lockptr(mm, pmd);
+	if (ptl != pml) {
+		spin_lock(ptl);
+		spin_unlock(pml);
+	}
 	pte = start_pte;
+
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
 	do {
@@ -3902,6 +3911,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	struct page *page;
 	vm_fault_t ret = 0;
 	pte_t entry;
+	spinlock_t *pml;
 
 	/* File mapping without ->vm_ops ? */
 	if (vma->vm_flags & VM_SHARED)
@@ -3969,11 +3979,25 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	if (vma->vm_flags & VM_WRITE)
 		entry = pte_mkwrite(pte_mkdirty(entry));
 
-	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
-			&vmf->ptl);
-	if (!pte_none(*vmf->pte)) {
+	pml = pmd_lock(vma->vm_mm, vmf->pmd);
+	if (unlikely(pmd_none(*vmf->pmd))) {
+		update_mmu_cache(vma, vmf->address, vmf->pte);
+		spin_unlock(pml);
+		goto release;
+	}
+	//vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+	//		&vmf->ptl);
+	vmf->ptl = NULL;
+	vmf->pte = pte_offset_map(vmf->pmd, vmf->address);
+	if (!vmf->pte || !pte_none(*vmf->pte)) {
+		spin_unlock(pml);
 		update_mmu_cache(vma, vmf->address, vmf->pte);
 		goto release;
+	}
+	vmf->ptl = pte_lockptr(vma->vm_mm, vmf->pmd);
+	if (pml != vmf->ptl) {
+		spin_lock(vmf->ptl);
+		spin_unlock(pml);
 	}
 
 	ret = check_stable_address_space(vma->vm_mm);
@@ -3996,7 +4020,8 @@ setpte:
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache(vma, vmf->address, vmf->pte);
 unlock:
-	pte_unmap_unlock(vmf->pte, vmf->ptl);
+	if (vmf->ptl)
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
 	return ret;
 release:
 	put_page(page);
