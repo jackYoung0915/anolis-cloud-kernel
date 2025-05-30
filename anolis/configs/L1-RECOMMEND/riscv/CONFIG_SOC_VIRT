@@ -1,1 +1,1 @@
-# CONFIG_SOC_VIRT is not set
+CONFIG_SOC_VIRT=y
