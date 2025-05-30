@@ -582,9 +582,9 @@ PAGEFLAG(Reclaim, reclaim, PF_NO_TAIL)
 PAGEFLAG(Readahead, readahead, PF_NO_COMPOUND)
 	TESTCLEARFLAG(Readahead, readahead, PF_NO_COMPOUND)
 
-PAGEFLAG(Dropbehind, dropbehind, PF_NO_COMPOUND)
-	TESTCLEARFLAG(Dropbehind, dropbehind, PF_HEAD)
-	__SETPAGEFLAG(Dropbehind, dropbehind, PF_HEAD)
+FOLIO_FLAG(dropbehind, FOLIO_HEAD_PAGE)
+	FOLIO_TEST_CLEAR_FLAG(dropbehind, FOLIO_HEAD_PAGE)
+	__FOLIO_SET_FLAG(dropbehind, FOLIO_HEAD_PAGE)
 
 #ifdef CONFIG_HIGHMEM
 /*

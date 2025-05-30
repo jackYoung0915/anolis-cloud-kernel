@@ -4155,8 +4155,8 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 	ssize_t written = 0;
 
 	do {
-		struct page *page = NULL;
-		struct folio *folio;
+		struct page *page;
+		struct folio *folio = NULL;
 		size_t offset;		/* Offset into folio */
 		size_t bytes;		/* Bytes to write to folio */
 		size_t copied;		/* Bytes copied from user */
@@ -4192,7 +4192,7 @@ retry:
 		 * can go away and just pass iocb or iocb flags.
 		 */
 		if (iocb->ki_flags & IOCB_DONTCACHE)
-			page = pagep_dropbehind;
+			folio = foliop_dropbehind;
 
 		status = a_ops->write_begin(file, mapping, pos, bytes,
 						&page, &fsdata);
