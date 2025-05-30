@@ -760,11 +760,21 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
  * An interface that causes the system to free clean pages and flush
  * dirty pages is already available as msync(MS_INVALIDATE).
  */
+static bool reclaim_pt;
+
+static int __init setup_reclaim_pt(char *str)
+{
+	reclaim_pt = true;
+
+	return 1;
+}
+__setup("reclaim_pt", setup_reclaim_pt);
+
 static long madvise_dontneed_single_vma(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end)
 {
 	struct zap_details details = {
-		.reclaim_pt = true,
+		.reclaim_pt = reclaim_pt,
 	};
 
 	if (unlikely(vma_is_pgtable_shared(vma)))
