@@ -4757,6 +4757,9 @@
 			      reboot_cpu is s[mp]#### with #### being the processor
 					to be used for rebooting.
 
+	reclaim_pt	[KNL]
+			Enable page table reclaim when calling MADV_DONTNEED.
+
 	refscale.holdoff= [KNL]
 			Set test-start holdoff period.  The purpose of
 			this parameter is to delay the start of the
