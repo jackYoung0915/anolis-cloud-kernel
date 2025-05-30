@@ -70,8 +70,8 @@ static inline int filemap_write_and_wait(struct address_space *mapping)
  * and the ->write_begin() handler on a file system supporting FOP_DONTCACHE
  * must check for this and pass FGP_DONTCACHE for folio creation.
  */
-#define pagep_dropbehind		((struct page *) 0xfee1c001)
-#define pagep_is_dropbehind(pagep)	(*(pagep) == pagep_dropbehind)
+#define foliop_dropbehind		((struct folio *) 0xfee1c001)
+#define foliop_is_dropbehind(foliop)	(*(foliop) == foliop_dropbehind)
 
 /**
  * filemap_set_wb_err - set a writeback error on an address_space
