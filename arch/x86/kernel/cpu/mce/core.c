@@ -1965,6 +1965,7 @@ static void __mcheck_cpu_clear_vendor(struct cpuinfo_x86 *c)
 		mce_intel_feature_clear(c);
 		break;
 
+	case X86_VENDOR_CENTAUR:
 	case X86_VENDOR_ZHAOXIN:
 		mce_zhaoxin_feature_clear(c);
 		break;
