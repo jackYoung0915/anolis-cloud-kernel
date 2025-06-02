@@ -10,13 +10,13 @@
 #if defined(CONFIG_ERRATA_THEAD_WRITE_ONCE) && !defined(NO_ALTERNATIVE)
 
 #define write_once_fence()				\
-	(asm volatile(ALTERNATIVE(			\
+	asm volatile(ALTERNATIVE(			\
 		"nop",					\
 		"fence w, o",				\
 		THEAD_VENDOR_ID,			\
 		ERRATA_THEAD_WRITE_ONCE,		\
 		CONFIG_ERRATA_THEAD_WRITE_ONCE)		\
-		: : : "memory"))
+		: : : "memory")
 
 #define __WRITE_ONCE(x, val)				\
 do {							\
