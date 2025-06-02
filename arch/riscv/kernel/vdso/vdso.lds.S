@@ -85,7 +85,6 @@ VERSION
 #ifndef COMPAT_VDSO
 		__vdso_riscv_hwprobe;
 #endif
-		__vdso_getrandom;
 	local: *;
 	};
 }
