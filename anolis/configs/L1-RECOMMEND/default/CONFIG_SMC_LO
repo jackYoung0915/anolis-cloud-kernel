@@ -1,1 +1,1 @@
-# CONFIG_SMC_LO is not set
+CONFIG_SMC_LO=y
