@@ -122,6 +122,8 @@ phys_addr_t acpi_pci_root_get_mcfg_addr(acpi_handle handle)
 
 bool pci_acpi_preserve_config(struct pci_host_bridge *host_bridge)
 {
+	bool ret = false;
+
 	if (ACPI_HANDLE(&host_bridge->dev)) {
 		union acpi_object *obj;
 
@@ -134,12 +136,15 @@ bool pci_acpi_preserve_config(struct pci_host_bridge *host_bridge)
 					      &pci_acpi_dsm_guid,
 					      1, DSM_PCI_PRESERVE_BOOT_CONFIG,
 					      NULL, ACPI_TYPE_INTEGER);
-		if (obj && obj->integer.value == 0)
-			return true;
+		if (!obj)
+			return false;
+		else if (obj->integer.value == 0)
+			ret = true;
+
 		ACPI_FREE(obj);
 	}
 
-	return false;
+	return ret;
 }
 
 /* _HPX PCI Setting Record (Type 0); same as _HPP */
