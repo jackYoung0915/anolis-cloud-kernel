@@ -500,6 +500,9 @@ static ssize_t loaded_backend_show(struct kobject *k,
 	struct pstore_info_list *entry;
 	char *old, *loaded_backend = NULL;
 
+	if (!psback)
+		return sprintf(buf, "null\n");
+
 	mutex_lock(&psback_lock);
 	list_for_each_entry(entry, &psback->list_entry, list)
 		if (!loaded_backend)
