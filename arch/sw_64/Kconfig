@@ -66,8 +66,9 @@ config SW64
 	select GENERIC_ARCH_TOPOLOGY
 	select GENERIC_CLOCKEVENTS
 	select GENERIC_GETTIMEOFDAY if HAVE_GENERIC_VDSO
+	select GENERIC_IOREMAP if SUBARCH_C4
+	select GENERIC_IRQ_EFFECTIVE_AFF_MASK if SMP
 	select GENERIC_IRQ_LEGACY
-	select GENERIC_IRQ_EFFECTIVE_AFF_MASK	if SMP
 	select GENERIC_IRQ_MIGRATION if SMP
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
@@ -91,13 +92,18 @@ config SW64
 	select HAVE_C_RECORDMCOUNT
 	select HAVE_DEBUG_BUGVERBOSE
 	select HAVE_DYNAMIC_FTRACE
+	select HAVE_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
 	select HAVE_DYNAMIC_FTRACE_WITH_REGS
 	select HAVE_EBPF_JIT
+	select HAVE_EFFICIENT_UNALIGNED_ACCESS if !SUBARCH_C3B
 	select HAVE_FAST_GUP
 	select HAVE_FTRACE_MCOUNT_RECORD
+	select HAVE_FUNCTION_ERROR_INJECTION
+	select HAVE_FUNCTION_GRAPH_RETVAL if HAVE_FUNCTION_GRAPH_TRACER
 	select HAVE_FUNCTION_GRAPH_TRACER
 	select HAVE_FUNCTION_TRACER
 	select HAVE_GENERIC_VDSO if MMU && 64BIT
+	select HAVE_HARDLOCKUP_DETECTOR_PERF if PERF_EVENTS && HAVE_PERF_EVENTS_NMI
 	select HAVE_IDE
 	select HAVE_KPROBES
 	select HAVE_KPROBES_ON_FTRACE
@@ -110,12 +116,14 @@ config SW64
 	select HAVE_PCSPKR_PLATFORM
 	select HAVE_PERF_EVENTS
 	select HAVE_PERF_EVENTS_NMI if SUBARCH_C4
-	select HAVE_HARDLOCKUP_DETECTOR_PERF if PERF_EVENTS && HAVE_PERF_EVENTS_NMI
 	select HAVE_PERF_REGS
 	select HAVE_PERF_USER_STACK_DUMP
 	select HAVE_REGS_AND_STACK_ACCESS_API
 	select HAVE_RELIABLE_STACKTRACE if STACKTRACE
+	select HAVE_RETHOOK
 	select HAVE_RSEQ
+	select HAVE_SAMPLE_FTRACE_DIRECT
+	select HAVE_SAMPLE_FTRACE_DIRECT_MULTI
 	select HAVE_SYSCALL_TRACEPOINTS
 	select IRQ_DOMAIN
 	select IRQ_FORCED_THREADING
@@ -446,6 +454,44 @@ config NUMA
 	  Access). This option is for configuring high-end multiprocessor
 	  server machines. If in doubt, say N.
 
+config NUMA_AWARE_SPINLOCKS
+	bool "Numa-aware spinlocks"
+	depends on NUMA
+	depends on QUEUED_SPINLOCKS
+	depends on 64BIT
+	depends on PARAVIRT_SPINLOCKS
+	default y
+	help
+	  Introduce NUMA (Non Uniform Memory Access) awareness into
+	  the slow path of spinlocks.
+
+	  In this variant of qspinlock, the kernel will try to keep the lock
+	  on the same node, thus reducing the number of remote cache misses,
+	  while trading some of the short term fairness for better performance.
+
+	  Say N if you want absolute first come first serve fairness.
+
+config PARAVIRT_SPINLOCKS
+	bool "Paravirtualization layer for spinlocks"
+	depends on PARAVIRT && SMP
+	help
+	  Paravirtualized spinlocks allow a pvops backend to replace the
+	  spinlock implementation with something virtualization-friendly
+	  (for example, block the virtual CPU rather than spinning).
+
+	  It has a minimal impact on native kernels and gives a nice performance
+	  benefit on paravirtualized KVM kernels.
+
+	  If you are unsure how to answer this question, answer Y.
+
+config PARAVIRT
+	bool "Enable paravirtualization code"
+	select PARAVIRT_SPINLOCKS
+	help
+	  This changes the kernel so it can modify itself when it is run
+	  under a hypervisor, potentially improving performance significantly
+	  over full virtualization.
+
 config USE_PERCPU_NUMA_NODE_ID
 	def_bool y
 	depends on NUMA
@@ -656,6 +702,14 @@ config ARCH_HIBERNATION_POSSIBLE
 config ARCH_SELECT_MEMORY_MODEL
 	def_bool ARCH_SPARSEMEM_ENABLE
 
+config SW64_POWERCAP
+	bool "Sunway powercap driver"
+	select IPMI_SI
+	depends on SW64 && CPU_FREQ && ACPI && IPMI_HANDLER
+	help
+	  This enables support for the sunway powercap driver
+	  based on BMC and IPMI system interface.
+
 source "drivers/cpuidle/Kconfig"
 
 source "drivers/idle/Kconfig"
@@ -663,3 +717,5 @@ source "drivers/idle/Kconfig"
 endmenu
 
 source "arch/sw_64/kvm/Kconfig"
+
+source "arch/sw_64/mm/Kconfig"
