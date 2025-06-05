@@ -1,1 +1,1 @@
-# CONFIG_VIRTIO_BLK is not set
+CONFIG_VIRTIO_BLK=y
