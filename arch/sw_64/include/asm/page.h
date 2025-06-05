@@ -58,6 +58,7 @@ extern unsigned long __boot_phys_addr(unsigned long);
 
 #define virt_to_pfn(vaddr)	(PHYS_PFN(__pa(vaddr)))
 #define pfn_to_virt(pfn)	(__va(PFN_PHYS(pfn)))
+#define sym_to_pfn(x)		__phys_to_pfn(__pa_symbol(x))
 
 #ifdef CONFIG_FLATMEM
 #define pfn_valid(pfn)		((pfn) < max_mapnr)
@@ -66,6 +67,9 @@ extern unsigned long __boot_phys_addr(unsigned long);
 #define VM_DATA_DEFAULT_FLAGS	VM_DATA_FLAGS_NON_EXEC
 #include <asm-generic/memory_model.h>
 #include <asm-generic/getorder.h>
+
+#define HAVE_ARCH_HUGETLB_UNMAPPED_AREA
+
 #endif
 
 #endif /* _ASM_SW64_PAGE_H */

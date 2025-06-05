@@ -78,8 +78,16 @@ enum exceptype {
 	PTE_LEVEL1,
 	PTE_LEVEL2,
 	PTE_LEVEL3,
-	UNAUTHORIZED_ACCESS,
+	LEVEL1_PTE_UNAUTHORIZED_ACCESS,
+	LEVEL2_PTE_UNAUTHORIZED_ACCESS,
+	LEVEL3_PTE_UNAUTHORIZED_ACCESS,
+	LEVEL1_PTE_GRANULARITY_ERROR,
+	LEVEL2_PTE_GRANULARITY_ERROR,
+	LEVEL3_PTE_GRANULARITY_ERROR,
 	ILLEGAL_RESPONSE,
+	INVALID_HIGH_ADDRESS,
+	SEGMENT_TRANSLATION_MISS,
+	SEGMENT_TRANSLATION_UNAUTHORIZED_ACCESS,
 	DTE_LEVEL1_VAL,
 	DTE_LEVEL2_VAL,
 	PTE_LEVEL1_VAL,
@@ -442,7 +450,8 @@ static int set_entry_by_devid(u16 devid,
 		dte_l2_val |= 0x1;
 
 	*dte_l2 = dte_l2_val;
-	pr_debug("iommu: device with id %d added to domain: %d\n", devid, sdomain->id);
+	pr_debug("device with id %d added to domain: %d with pte_root: %lx\n",
+			devid, sdomain->id, dte_l2_val);
 
 	return 0;
 }
@@ -736,6 +745,8 @@ irqreturn_t iommu_interrupt(int irq, void *dev)
 	}
 
 	sdomain = sdev->domain;
+	pr_info("iommu exception type:%#lx\n", type);
+
 	switch (type) {
 	case DTE_LEVEL1:
 		pr_info("invalid level1 dte, addr:%#lx, val:%#lx\n",
@@ -751,31 +762,55 @@ irqreturn_t iommu_interrupt(int irq, void *dev)
 		pr_info("invalid level1 pte, addr: %#lx, val:%#lx\n",
 			fetch_pte(sdomain, dva, PTE_LEVEL1),
 			fetch_pte(sdomain, dva, PTE_LEVEL1_VAL));
-
-		iommu_status &= ~(1UL << 62);
-		writeq(iommu_status, iommu->reg_base_addr + IOMMUEXCPT_STATUS);
 		break;
 	case PTE_LEVEL2:
 		pr_info("invalid level2 pte, addr: %#lx, val: %#lx\n",
 			fetch_pte(sdomain, dva, PTE_LEVEL2),
 			fetch_pte(sdomain, dva, PTE_LEVEL2_VAL));
-
-		iommu_status &= ~(1UL << 62);
-		writeq(iommu_status, iommu->reg_base_addr + IOMMUEXCPT_STATUS);
 		break;
-
 	case PTE_LEVEL3:
 		pr_info("invalid level3 pte, addr: %#lx, val: %#lx\n",
 			fetch_pte(sdomain, dva, PTE_LEVEL3),
 			fetch_pte(sdomain, dva, PTE_LEVEL3_VAL));
-
-		iommu_status &= ~(1UL << 62);
-		writeq(iommu_status, iommu->reg_base_addr + IOMMUEXCPT_STATUS);
+		break;
+	case LEVEL1_PTE_UNAUTHORIZED_ACCESS:
+		pr_info("level1 pte unauthorized access\n");
+		break;
+	case LEVEL2_PTE_UNAUTHORIZED_ACCESS:
+		pr_info("level2 pte unauthorized access\n");
+		break;
+	case LEVEL3_PTE_UNAUTHORIZED_ACCESS:
+		pr_info("level3 pte unauthorized access\n");
+		break;
+	case LEVEL1_PTE_GRANULARITY_ERROR:
+		pr_info("level1 pte granularity error\n");
+		break;
+	case LEVEL2_PTE_GRANULARITY_ERROR:
+		pr_info("level2 pte granularity error\n");
+		break;
+	case LEVEL3_PTE_GRANULARITY_ERROR:
+		pr_info("level3 pte granularity error\n");
+		break;
+	case ILLEGAL_RESPONSE:
+		pr_info("accessing the device table or page table \
+				return an illegal response\n");
+		break;
+	case INVALID_HIGH_ADDRESS:
+		pr_info("IOVA[63:42] is not zero\n");
+		break;
+	case SEGMENT_TRANSLATION_MISS:
+		pr_info("segment translation miss\n");
+		break;
+	case SEGMENT_TRANSLATION_UNAUTHORIZED_ACCESS:
+		pr_info("segment translation unauthorized access\n");
 		break;
 	default:
-		pr_info("iommu exception type %ld\n", type);
+		pr_info("unknown error\n");
 		break;
 	}
+
+	iommu_status &= ~(1UL << 62);
+	writeq(iommu_status, iommu->reg_base_addr + IOMMUEXCPT_STATUS);
 
 	return IRQ_HANDLED;
 }
@@ -1401,6 +1436,9 @@ sunway_iommu_iova_to_phys(struct iommu_domain *dom, dma_addr_t iova)
 	if (iova >= SW64_BAR_ADDRESS)
 		return iova;
 
+	if (iova >= MAX_IOVA_WIDTH)
+		return 0;
+
 	paddr = fetch_pte(sdomain, iova, PTE_LEVEL1_VAL);
 	if ((paddr & SW64_IOMMU_ENTRY_VALID) == 0)
 		return 0;
@@ -1460,21 +1498,41 @@ sunway_iommu_map(struct iommu_domain *dom, unsigned long iova,
 	int ret;
 
 	/*
-	 * As VFIO cannot distinguish between normal DMA request
-	 * and pci device BAR, check should be introduced manually
-	 * to avoid VFIO trying to map pci config space.
+	 * 3.5G ~ 4G currently is seen as PCI 32-bit MEMIO space. In theory,
+	 * this space should be excluded from memory space addressing (using
+	 * resv_region APIs), which will leave a memory hole on the entire memory
+	 * space naturally.
+	 *
+	 * However, some applications(especially qemu) under sunway do not
+	 * support incontiguous memory allocation right now. This memory
+	 * hole has to be seen as one of the valid IOVA ranges to pass VFIO
+	 * validness check for qemu. In this case, CPU is still capable of
+	 * allocating IOVA in this space, which is, frankly speaking, dangerous
+	 * and buggy.
+	 *
+	 * We manage to find a compromise solution, which is allow these IOVA
+	 * being allocated and mapped as usual, and with a warning issued to
+	 * users at the same time. So users can quickly learn if they are using
+	 * these "illegal" IOVA and thus change their strategies accordingly.
 	 */
-	if (iova > IO_BASE) {
-		pr_err("iova %#lx is out of memory!\n", iova);
-		return -ENOMEM;
+	if ((SW64_32BIT_DMA_LIMIT < iova + page_size)
+		&& (iova <= DMA_BIT_MASK(32))) {
+		pr_warn_once("process %s (pid:%d) is using domain %d with IOVA: %lx\n",
+			current->comm, current->pid, sdomain->id, iova);
 	}
 
-	if (iova >= SW64_BAR_ADDRESS)
+	/*
+	 * For the same reason, IOVA allocated from PCI dev BAR address should
+	 * be warned as well.
+	 */
+	if (iova >= SW64_BAR_ADDRESS) {
+		pr_warn_once("Domain %d are using IOVA: %lx\n", sdomain->id, iova);
 		return 0;
+	}
 
 	/* IOMMU v2 supports 42 bit mapped address width*/
 	if (iova >= MAX_IOVA_WIDTH) {
-		pr_err("IOMMU cannot map provided address: %lx\n", iova);
+		pr_err("The IOMMU hardware cannot map provided address: %lx\n", iova);
 		return -EFAULT;
 	}
 
@@ -1494,10 +1552,10 @@ sunway_iommu_unmap(struct iommu_domain *dom, unsigned long iova,
 	if (iova >= SW64_BAR_ADDRESS)
 		return page_size;
 
-	/* IOMMU v2 supports 42 bit mapped address width*/
+	/* IOMMU v2 supports 42 bit mapped address width */
 	if (iova >= MAX_IOVA_WIDTH) {
 		pr_err("Trying to unmap illegal IOVA : %lx\n", iova);
-		return -EFAULT;
+		return 0;
 	}
 
 	unmap_size = sunway_iommu_unmap_page(sdomain, iova, page_size);
@@ -1638,8 +1696,19 @@ static void sunway_iommu_get_resv_regions(struct device *dev,
 {
 	struct iommu_resv_region *region;
 	int prot = IOMMU_NOEXEC | IOMMU_MMIO;
+	struct iommu_domain *domain;
 
-	/* Reserve 3.5~4G for device */
+	/*
+	 * Allow user applications have access to a contiguous memory space,
+	 * so no reserves for unmanaged domains.
+	 *
+	 * See comments in map API for more detail.
+	 */
+	domain = iommu_get_domain_for_dev(dev);
+	if (domain->type == IOMMU_DOMAIN_UNMANAGED)
+		return;
+
+	/* Reserve 3.5~4G for MEMIO */
 	region = iommu_alloc_resv_region(SW64_32BIT_DMA_LIMIT,
 					 (DMA_BIT_MASK(32) - SW64_32BIT_DMA_LIMIT),
 					 prot, IOMMU_RESV_RESERVED);

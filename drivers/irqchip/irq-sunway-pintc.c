@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
+
+#define pr_fmt(fmt) "PINTC: " fmt
+
 #include <linux/irqdomain.h>
 #include <linux/irqchip.h>
 #include <linux/acpi.h>
@@ -43,8 +46,6 @@
  * +----------------------------------------------------------------+
  */
 
-#define PREFIX  "PINTC: "
-
 #define OFFSET_DLI_RLTD_FAULT_INTEN  0xa80UL
 #define OFFSET_MCU_DVC_INT           0x3000UL
 #define OFFSET_MCU_DVC_INT_EN        0x3080UL
@@ -84,6 +85,8 @@ struct pintc_chip_data {
 	void __iomem *mcu_base;   /* MCU/SPBU base address */
 	struct irq_chip *mcu_chip;
 	u32 mcu_irq_num;
+	raw_spinlock_t pintc_lock;
+	raw_spinlock_t mcu_lock;
 };
 
 static struct pintc_chip_data *chip_datas[MAX_NUMNODES];
@@ -116,59 +119,82 @@ static void pintc_free_chip_data(struct pintc_chip_data *chip_data)
 	kfree(chip_data);
 }
 
-static DEFINE_RAW_SPINLOCK(pintc_lock);
-static void lock_dev_lock(void)
-{
-	raw_spin_lock(&pintc_lock);
-}
-
-static void unlock_dev_lock(void)
-{
-	raw_spin_unlock(&pintc_lock);
-}
-
-static void mcu_irq_mask(struct irq_data *data)
+static void mcu_irq_disable(struct irq_data *data)
 {
 	struct pintc_chip_data *chip_data = data->chip_data;
-	unsigned long mask;
+	unsigned long mask, flags;
 	int hwirq = data->hwirq;
+
+	raw_spin_lock_irqsave(&chip_data->mcu_lock, flags);
 
 	mask = readq(chip_data->mcu_base + OFFSET_MCU_DVC_INT_EN);
 	mask &= ~(0x1UL << hwirq);
 	writeq(mask, chip_data->mcu_base + OFFSET_MCU_DVC_INT_EN);
+
+	raw_spin_unlock_irqrestore(&chip_data->mcu_lock, flags);
 }
 
-static void mcu_irq_unmask(struct irq_data *data)
+static void mcu_irq_enable(struct irq_data *data)
 {
 	struct pintc_chip_data *chip_data = data->chip_data;
-	unsigned long mask;
+	unsigned long mask, flags;
 	int hwirq = data->hwirq;
+
+	raw_spin_lock_irqsave(&chip_data->mcu_lock, flags);
 
 	mask = readq(chip_data->mcu_base + OFFSET_MCU_DVC_INT_EN);
 	mask |= (0x1UL << hwirq);
 	writeq(mask, chip_data->mcu_base + OFFSET_MCU_DVC_INT_EN);
+
+	raw_spin_unlock_irqrestore(&chip_data->mcu_lock, flags);
 }
 
-static void mcu_irq_enable(struct irq_data *irq_data)
+static void pintc_mcu_enable(void __iomem *pintc_base)
 {
-	struct pintc_chip_data *chip_data = irq_data->chip_data;
 	unsigned long devint_conf;
 
-	devint_conf = readq(chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+	devint_conf = readq(pintc_base + OFFSET_DEV_INT_CONFIG);
 	devint_conf |= (1UL << 8);
-	writeq(devint_conf, chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
-	mcu_irq_unmask(irq_data);
+	writeq(devint_conf, pintc_base + OFFSET_DEV_INT_CONFIG);
 }
 
-static void mcu_irq_disable(struct irq_data *irq_data)
+static void pintc_mcu_disable(void __iomem *pintc_base)
 {
-	struct pintc_chip_data *chip_data = irq_data->chip_data;
 	unsigned long devint_conf;
 
-	devint_conf = readq(chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+	devint_conf = readq(pintc_base + OFFSET_DEV_INT_CONFIG);
 	devint_conf &= ~(1UL << 8);
-	writeq(devint_conf, chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
-	mcu_irq_mask(irq_data);
+	writeq(devint_conf, pintc_base + OFFSET_DEV_INT_CONFIG);
+}
+
+static unsigned long
+pintc_mcu_disable_and_save(struct pintc_chip_data *chip_data)
+{
+	unsigned long val;
+
+	raw_spin_lock(&chip_data->pintc_lock);
+
+	val = readq(chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+	pintc_mcu_disable(chip_data->pintc_base);
+
+	raw_spin_unlock(&chip_data->pintc_lock);
+
+	return val & (1UL << 8);
+}
+
+static void
+pintc_mcu_restore(struct pintc_chip_data *chip_data, unsigned long val)
+{
+	unsigned long current_val;
+
+	raw_spin_lock(&chip_data->pintc_lock);
+
+	current_val = readq(chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+	current_val &= ~(1UL << 8);
+	current_val |= val;
+	writeq(current_val, chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+
+	raw_spin_unlock(&chip_data->pintc_lock);
 }
 
 static unsigned long make_pintc_int_target(u32 version, int rcid)
@@ -195,10 +221,30 @@ static unsigned long make_pintc_int_target(u32 version, int rcid)
 	return target;
 }
 
-static int __assign_mcu_irq_config(const struct pintc_chip_data *chip_data,
+static void update_pintc_mcu_target(struct pintc_chip_data *chip_data,
+		unsigned long target)
+{
+	unsigned long val, flags;
+
+	raw_spin_lock_irqsave(&chip_data->pintc_lock, flags);
+
+	val = readq(chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+
+	/* Disable MCU irqs until affinity setting is completed */
+	pintc_mcu_disable(chip_data->pintc_base);
+
+	val &= 0xffff;
+	val |= (target << 16);
+
+	writeq(val, chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+
+	raw_spin_unlock_irqrestore(&chip_data->pintc_lock, flags);
+}
+
+static int assign_mcu_irq_config(struct pintc_chip_data *chip_data,
 		cpumask_t *targets)
 {
-	unsigned long dev_int_tar, val;
+	unsigned long dev_int_tar;
 	unsigned int cpu;
 	int rcid;
 
@@ -219,25 +265,10 @@ static int __assign_mcu_irq_config(const struct pintc_chip_data *chip_data,
 
 	rcid = cpu_to_rcid(cpu);
 
-	val = readq(chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
 	dev_int_tar = make_pintc_int_target(chip_data->version, rcid);
-	val &= 0xffff;
-	val |= dev_int_tar << 16;
-	writeq(val, chip_data->pintc_base + OFFSET_DEV_INT_CONFIG);
+	update_pintc_mcu_target(chip_data, dev_int_tar);
 
 	return 0;
-}
-
-static int assign_mcu_irq_config(const struct pintc_chip_data *chip_data,
-		cpumask_t *targets)
-{
-	int ret;
-
-	lock_dev_lock();
-	ret = __assign_mcu_irq_config(chip_data, targets);
-	unlock_dev_lock();
-
-	return ret;
 }
 
 static int mcu_irq_set_affinity(struct irq_data *irq_data,
@@ -245,26 +276,21 @@ static int mcu_irq_set_affinity(struct irq_data *irq_data,
 {
 	struct pintc_chip_data *chip_data = irq_data->chip_data;
 	cpumask_t targets;
-	int ret = 0;
 
 	if (cpumask_any_and(dest, cpu_online_mask) >= nr_cpu_ids)
 		return -EINVAL;
 
 	cpumask_and(&targets, dest, cpu_online_mask);
 
-	mcu_irq_disable(irq_data);
-	ret = assign_mcu_irq_config(chip_data, &targets);
-	mcu_irq_enable(irq_data);
-
-	return ret;
+	return assign_mcu_irq_config(chip_data, &targets);
 }
 
 static struct irq_chip pintc_mcu_chip = {
 	.name			= "MCU-INT",
 	.irq_enable		= mcu_irq_enable,
 	.irq_disable		= mcu_irq_disable,
-	.irq_mask		= mcu_irq_mask,
-	.irq_unmask		= mcu_irq_unmask,
+	.irq_mask		= mcu_irq_disable,
+	.irq_unmask		= mcu_irq_enable,
 	.irq_set_affinity	= mcu_irq_set_affinity,
 };
 
@@ -378,33 +404,36 @@ static int __init pintc_init_mcu(struct pintc_chip_data *chip_data,
 				&pintc_mcu_domain_ops, chip_data);
 		/* Mask all interrupts for now */
 		writeq(0x0, chip_data->mcu_base + OFFSET_MCU_DVC_INT_EN);
+
+		/* When building the root domain, move it to a better location */
+		if (mcu_irq_domain)
+			pintc_mcu_enable(chip_data->pintc_base);
 	}
 
 	if (!mcu_irq_domain) {
-		pr_err(PREFIX "failed to create MCU irq domain\n");
+		pr_err("failed to create MCU irq domain\n");
 		return -ENOMEM;
 	}
 
-	pr_info(PREFIX "MCU version [%u] on node [%u] initialized\n",
+	raw_spin_lock_init(&chip_data->pintc_lock);
+	raw_spin_lock_init(&chip_data->mcu_lock);
+
+	pr_info("MCU version [%u] on node [%u] initialized\n",
 			chip_data->version, chip_data->node);
 
 	return 0;
 }
 
+/* Currently, only MCU controller on node 0 is supported */
 void handle_dev_int(struct pt_regs *regs)
 {
-	void __iomem *mcu_base, *intpu_base;
-	unsigned long config_val, val, stat;
+	unsigned long stat, val;
 	unsigned int hwirq;
 
-	/* Currently, only MCU controller on node 0 is supported */
-	mcu_base = chip_datas[0]->mcu_base;
-	intpu_base = chip_datas[0]->pintc_base;
+	/* Disable global irq of MCU due to some hardware reasons */
+	val = pintc_mcu_disable_and_save(chip_datas[0]);
 
-	config_val = readq(intpu_base + OFFSET_DEV_INT_CONFIG);
-	val = config_val & (~(1UL << 8));
-	writeq(val, intpu_base + OFFSET_DEV_INT_CONFIG);
-	stat = readq(mcu_base + OFFSET_MCU_DVC_INT);
+	stat = readq(chip_datas[0]->mcu_base + OFFSET_MCU_DVC_INT);
 
 	while (stat) {
 		hwirq = ffs(stat) - 1;
@@ -412,7 +441,7 @@ void handle_dev_int(struct pt_regs *regs)
 		stat &= ~(1UL << hwirq);
 	}
 
-	writeq(config_val, intpu_base + OFFSET_DEV_INT_CONFIG);
+	pintc_mcu_restore(chip_datas[0], val);
 }
 
 void handle_fault_int(void)
@@ -460,7 +489,7 @@ static int __init pintc_of_init_mcu(struct pintc_chip_data *chip_data,
 {
 	/* Not yet supported */
 	if (chip_data->node > 0) {
-		pr_info(PREFIX "MCU version [%u] on node [%u] skipped\n",
+		pr_info("MCU version [%u] on node [%u] skipped\n",
 				chip_data->version, chip_data->node);
 		return 0;
 	}
@@ -482,42 +511,25 @@ pintc_of_init_common(struct device_node *pintc,
 		return -ENODEV;
 
 	if (vt && parent) {
-		pr_err(PREFIX "virtual pintc has no parent controller\n");
+		pr_err("virtual pintc has no parent controller\n");
 		return -EINVAL;
 	}
 
-	ret = of_property_read_u32(pintc, "sw64,node", &node);
-	if (ret) {
-		node = 0;
-		pr_warn(PREFIX "\"sw64,node\" fallback to %u\n",
-				node);
-	}
-
-	ret = of_property_read_u32(pintc, "sw64,irq-num", &nr_irqs);
-	if (ret) {
-		nr_irqs = vt ? 16 : 8;
-		pr_warn(PREFIX "\"sw64,irq-num\" fallback to %u\n",
-				nr_irqs);
-	}
-
-	ret = of_property_read_u32(pintc, "sw64,ver", &version);
-	if (ret) {
-		version = 1;
-		pr_warn(PREFIX "\"sw64,ver\" fallback to %u\n",
-				version);
-	}
+	sunway_of_get_numa_node(pintc, &node, 0);
+	sunway_of_get_irq_num(pintc, &nr_irqs, vt ? 16 : 8);
+	sunway_of_get_version(pintc, &version, 1);
 
 	pintc_base = of_iomap(pintc, 0);
 	if (!vt && !pintc_base) {
 		pintc_base = ioremap(INTPU_BASE_V1, INTPU_SIZE_V1);
-		pr_warn(PREFIX "pintc base address fallback to 0x%lx\n",
+		pr_warn("pintc base address fallback to 0x%lx\n",
 				INTPU_BASE_V1);
 	}
 
 	mcu_base = of_iomap(pintc, 1);
 	if (!vt && !mcu_base) {
 		mcu_base = ioremap(MCU_BASE_V1, MCU_SIZE_V1);
-		pr_warn(PREFIX "mcu base address fallback to 0x%lx\n",
+		pr_warn("mcu base address fallback to 0x%lx\n",
 				MCU_BASE_V1);
 	}
 
@@ -560,8 +572,9 @@ pintc_of_init(struct device_node *pintc, struct device_node *parent)
 	return pintc_of_init_common(pintc, parent, false);
 }
 
-IRQCHIP_DECLARE(sw64_pintc, "sw64,pintc", pintc_of_init);
-IRQCHIP_DECLARE(sw64_pintc_legacy, "sw64,sw6_irq_controller", pintc_of_init);
+IRQCHIP_DECLARE(sunway_pintc, "sunway,pintc", pintc_of_init);
+IRQCHIP_DECLARE(sunway_pintc_legacy1, "sw64,pintc", pintc_of_init);
+IRQCHIP_DECLARE(sunway_pintc_legacy0, "sw64,sw6_irq_controller", pintc_of_init);
 
 static int __init
 pintc_vt_of_init(struct device_node *pintc, struct device_node *parent)
@@ -569,8 +582,9 @@ pintc_vt_of_init(struct device_node *pintc, struct device_node *parent)
 	return pintc_of_init_common(pintc, parent, true);
 }
 
-IRQCHIP_DECLARE(sw64_pintc_vt, "sw64,pintc_vt", pintc_vt_of_init);
-IRQCHIP_DECLARE(sw64_pintc_vt_legacy, "sw64,sw6_irq_vt_controller", pintc_vt_of_init);
+IRQCHIP_DECLARE(sunway_pintc_vt, "sunway,pintc-vt", pintc_vt_of_init);
+IRQCHIP_DECLARE(sunway_pintc_vt_legacy1, "sw64,pintc_vt", pintc_vt_of_init);
+IRQCHIP_DECLARE(sunway_pintc_vt_legacy0, "sw64,sw6_irq_vt_controller", pintc_vt_of_init);
 #endif
 
 #ifdef CONFIG_ACPI
@@ -604,7 +618,7 @@ static int __init lpc_intc_parse_madt(union acpi_subtable_headers *header,
 
 	if ((lpc_intc->version == ACPI_MADT_SW_LPC_INTC_VERSION_NONE) ||
 		(lpc_intc->version >= ACPI_MADT_SW_LPC_INTC_VERSION_RESERVED)) {
-		pr_err(PREFIX "invalid LPC-INTC version\n");
+		pr_err("invalid LPC-INTC version\n");
 		return -EINVAL;
 	}
 
@@ -632,25 +646,25 @@ static int __init pintc_acpi_init_mcu(struct pintc_chip_data *chip_data,
 
 	/* Not yet supported */
 	if (chip_data->node > 0) {
-		pr_info(PREFIX "MCU version [%u] on node [%u] skipped\n",
+		pr_info("MCU version [%u] on node [%u] skipped\n",
 				chip_data->version, chip_data->node);
 		return 0;
 	}
 
 	if (!mcu->status) {
-		pr_info(PREFIX "MCU version [%u] on node [%u] disabled\n",
+		pr_info("MCU version [%u] on node [%u] disabled\n",
 				chip_data->version, chip_data->node);
 		return 0;
 	}
 
 	if (mcu->gsi_base != SW_PINTC_MCU_GSI_BASE) {
-		pr_err(PREFIX "invalid MCU GSI\n");
+		pr_err("invalid MCU GSI\n");
 		return -EINVAL;
 	}
 
 	handle = irq_domain_alloc_named_id_fwnode("PINTC-MCU", chip_data->node);
 	if (!handle) {
-		pr_err(PREFIX "failed to alloc fwnode\n");
+		pr_err("failed to alloc fwnode\n");
 		return -ENOMEM;
 	}
 
@@ -658,7 +672,7 @@ static int __init pintc_acpi_init_mcu(struct pintc_chip_data *chip_data,
 
 	chip_data->mcu_base = ioremap(mcu->address, mcu->size);
 	if (!chip_data->mcu_base) {
-		pr_err(PREFIX "failed to map mcu base address\n");
+		pr_err("failed to map mcu base address\n");
 		ret = -ENXIO;
 		goto out_acpi_free_fwnode;
 	}
@@ -669,7 +683,7 @@ static int __init pintc_acpi_init_mcu(struct pintc_chip_data *chip_data,
 
 	ret = sw64_add_gsi_domain_map(mcu->gsi_base, mcu->gsi_count, handle);
 	if (ret) {
-		pr_info(PREFIX "failed to add GSI map\n");
+		pr_info("failed to add GSI map\n");
 		goto out_acpi_free_mcu_domain;
 	}
 
@@ -692,7 +706,7 @@ static int __init pintc_acpi_init_fault(struct pintc_chip_data *chip_data,
 		struct acpi_madt_sw_sub_pintc *fault)
 {
 	if (!fault->status) {
-		pr_info(PREFIX "Fault version [%u] on node [%u] disabled\n",
+		pr_info("Fault version [%u] on node [%u] disabled\n",
 				chip_data->version, chip_data->node);
 		return 0;
 	}
@@ -700,11 +714,11 @@ static int __init pintc_acpi_init_fault(struct pintc_chip_data *chip_data,
 	/* Fault share the same base address with MCU currently */
 	chip_data->mcu_base = ioremap(fault->address, fault->size);
 	if (!chip_data->mcu_base) {
-		pr_err(PREFIX "failed to map fault base address\n");
+		pr_err("failed to map fault base address\n");
 		return -ENXIO;
 	}
 
-	pr_info(PREFIX "Fault version [%u] on node [%u] initialized\n",
+	pr_info("Fault version [%u] on node [%u] initialized\n",
 			chip_data->version, chip_data->node);
 
 	return 0;
@@ -720,7 +734,7 @@ int __init pintc_acpi_init(struct irq_domain *parent,
 	enabled = is_pintc_enabled(pintc->flags);
 	virtual = is_pintc_virtual(pintc->flags);
 
-	pr_info(PREFIX "version [%u] on node [%u] (%s) %s\n",
+	pr_info("version [%u] on node [%u] (%s) %s\n",
 			pintc->version, pintc->node,
 			virtual ? "virtual" : "physical",
 			enabled ? "found" : "disabled");
@@ -729,7 +743,7 @@ int __init pintc_acpi_init(struct irq_domain *parent,
 		return 0;
 
 	if (pintc_sub_type_check(pintc)) {
-		pr_err(PREFIX "invalid sub type\n");
+		pr_err("invalid sub type\n");
 		return -EINVAL;
 	}
 
@@ -749,7 +763,7 @@ int __init pintc_acpi_init(struct irq_domain *parent,
 
 	chip_data->pintc_base = ioremap(pintc->address, pintc->size);
 	if (!chip_data->pintc_base) {
-		pr_err(PREFIX "failed to map pintc base address\n");
+		pr_err("failed to map pintc base address\n");
 		ret = -ENXIO;
 		goto out_acpi_free_chip_data;
 	}
