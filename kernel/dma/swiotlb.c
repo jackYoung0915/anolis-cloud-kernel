@@ -301,7 +301,7 @@ swiotlb_init(int verbose)
 	 * Reserve the memory below 4G is not enough for such scenario.
 	 * Remove the limitation here. (XEN can also get benefit)
 	 */
-	if (swiotlb_any)
+	if (swiotlb_any || bytes >= SZ_2G)
 		tlb = memblock_alloc(bytes, PAGE_SIZE);
 	else
 		/* Get IO TLB memory from the low pages */
