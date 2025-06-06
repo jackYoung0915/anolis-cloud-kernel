@@ -106,6 +106,31 @@ late_initcall(fail_futex_debugfs);
 
 #endif /* CONFIG_FAIL_FUTEX */
 
+static bool per_numa_node_futex = true;
+static int __init setup_per_numa_node_futex(char *str)
+{
+	int ret = 0;
+
+	if (!str)
+		goto out;
+
+	if (!strcmp(str, "enable")) {
+		per_numa_node_futex = true;
+		ret = 1;
+	} else if (!strcmp(str, "disable")) {
+		per_numa_node_futex = false;
+		ret = 1;
+	}
+
+out:
+	if (!ret)
+		pr_warn("Unable to parse per_numa_node_futex=\n");
+
+	return ret;
+}
+__setup("per_numa_node_futex=", setup_per_numa_node_futex);
+
+
 /**
  * futex_hash - Return the hash bucket in the global hash
  * @key:	Pointer to the futex key for which the hash is calculated
@@ -117,7 +142,8 @@ struct futex_hash_bucket *futex_hash(union futex_key *key)
 {
 	int idx;
 
-	if (key->both.offset & (FUT_OFF_MMSHARED | FUT_OFF_INODE))
+	if (!per_numa_node_futex ||
+			(key->both.offset & (FUT_OFF_MMSHARED | FUT_OFF_INODE)))
 		idx = MAX_NUMNODES;
 	else
 		idx = READ_ONCE(current->group_leader->futex_nid);
@@ -248,7 +274,8 @@ int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
 	if (unlikely(should_fail_futex(fshared)))
 		return -EFAULT;
 
-	if (READ_ONCE(current->group_leader->futex_nid) == NUMA_NO_NODE) {
+	if (per_numa_node_futex &&
+			READ_ONCE(current->group_leader->futex_nid) == NUMA_NO_NODE) {
 		int id = numa_node_id();
 
 		cmpxchg(&current->group_leader->futex_nid, NUMA_NO_NODE, id);
@@ -1172,20 +1199,27 @@ static int __init futex_init(void)
 #if CONFIG_BASE_SMALL
 	futex_hashsize = 16;
 #else
-	futex_hashsize = 256 * num_possible_cpus();
-	futex_hashsize /= num_possible_nodes();
-	/* 32 is larger than 16 and not that too much */
-	futex_hashsize = max(32, futex_hashsize);
-	futex_hashsize = roundup_pow_of_two(futex_hashsize);
+	if (per_numa_node_futex) {
+		futex_hashsize = 256 * num_possible_cpus();
+		futex_hashsize /= num_possible_nodes();
+		/* 32 is larger than 16 and not that too much */
+		futex_hashsize = max(32, futex_hashsize);
+		futex_hashsize = roundup_pow_of_two(futex_hashsize);
+	} else {
+		futex_hashsize = roundup_pow_of_two(256 * num_possible_cpus());
+	}
 #endif
 
-	for_each_node(nid)
-		futex_queues[nid] = alloc_futex_hash("private futex",
-						     nid, futex_hashsize);
+	if (per_numa_node_futex) {
+		for_each_node(nid)
+			futex_queues[nid] = alloc_futex_hash("private futex",
+							     nid, futex_hashsize);
+	}
 
 	/*
-	 * For shared futex, it could be accessed from different processes.
-	 * Can not use per-process index for futex hash. Use global hash table.
+	 * For shared futex or if per numa node futex is disabled, futex hash
+	 * table could be accessed from different processes.Can not use
+	 * per-process index for futex hash. Use global hash table instead.
 	 */
 	futex_queues[MAX_NUMNODES] = alloc_futex_hash("shared futex", NUMA_NO_NODE,
 						      futex_hashsize);
