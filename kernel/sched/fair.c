@@ -549,7 +549,8 @@ static int se_is_idle(struct sched_entity *se)
 
 int task_is_idle(struct task_struct *p)
 {
-	return task_has_idle_policy(p) || cfs_rq_is_idle(group_cfs_rq(&p->se));
+	return (p->sched_class == &fair_sched_class) &&
+		(task_has_idle_policy(p) || cfs_rq_is_idle(cfs_rq_of(&p->se)));
 }
 
 static __always_inline
