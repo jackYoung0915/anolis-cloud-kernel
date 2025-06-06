@@ -33,7 +33,7 @@
  * Node Identifiers[10:8]
  */
 static u32 nodes_per_socket = 1;
-u16 invlpgb_count_max __ro_after_init;
+u16 invlpgb_count_max __ro_after_init = 1;
 
 
 static inline int rdmsrl_amd_safe(unsigned msr, unsigned long long *p)
