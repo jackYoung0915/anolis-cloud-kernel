@@ -369,12 +369,12 @@ out_readunlock:
  */
 void async_fork_fixup_vma(struct vm_area_struct *mpnt)
 {
-	if (unlikely(READ_ONCE(mpnt->async_fork_vma)))
+	if (unlikely(READ_ONCE(mpnt->async_fork_vma))) {
 		async_fork_copy_vma(mpnt->vm_mm->async_fork_mm, NULL, mpnt);
-
 #ifdef CONFIG_ARM64
-	flush_tlb_range(mpnt, mpnt->vm_start, mpnt->vm_end);
+		flush_tlb_range(mpnt, mpnt->vm_start, mpnt->vm_end);
 #endif
+	}
 }
 
 /*
