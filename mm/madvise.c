@@ -35,6 +35,16 @@
 
 #include "internal.h"
 
+static bool reclaim_pt;
+
+static int __init setup_reclaim_pt(char *str)
+{
+	reclaim_pt = true;
+
+	return 1;
+}
+__setup("reclaim_pt", setup_reclaim_pt);
+
 struct madvise_walk_private {
 	struct mmu_gather *tlb;
 	bool pageout;
@@ -50,11 +60,12 @@ static int madvise_need_mmap_write(int behavior)
 	switch (behavior) {
 	case MADV_REMOVE:
 	case MADV_WILLNEED:
-	case MADV_DONTNEED:
 	case MADV_COLD:
 	case MADV_PAGEOUT:
 	case MADV_FREE:
 		return 0;
+	case MADV_DONTNEED:
+		return reclaim_pt ? 1 : 0;
 	default:
 		/* be safe, default to 1. list exceptions explicitly */
 		return 1;
@@ -760,16 +771,6 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
  * An interface that causes the system to free clean pages and flush
  * dirty pages is already available as msync(MS_INVALIDATE).
  */
-static bool reclaim_pt;
-
-static int __init setup_reclaim_pt(char *str)
-{
-	reclaim_pt = true;
-
-	return 1;
-}
-__setup("reclaim_pt", setup_reclaim_pt);
-
 static long madvise_dontneed_single_vma(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end)
 {
