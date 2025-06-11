@@ -1,0 +1,15 @@
+* Wed Jun 11 2025 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-18.1_rc1%%DIST%%]
+- x86/resctrl: Move mbm_cfg_mask to struct rdt_resource (James Morse)
+- x86/resctrl: Read supported bandwidth sources from CPUID (Babu Moger)
+- x86/resctrl: Remove hard-coded memory bandwidth limit (Babu Moger)
+- anolis: x86/resctrl: bugfix for mbm_{total,local}_bytes_config init. (Qinyun Tan)
+- anolis: swiotlb: allocate swiotlb at high address when size >= 2G (Zelin Deng)
+- anolis: efi/libstub: should redefine for_each_set_bitrange_from (Zelin Deng)
+- anolis: x86: fix rapl_cpu_offline with correct dieid on AMD/Hygon (Xingrui Yi)
+- anolis: mm: fix khugepaged collapse memcg count (Kaihao Bai)
+- anolis: mm: Fix invalidate_inode_pages2_range() with THP refcounting (Weilin Tong)
+- ipvs: Always clear ipvs_property flag in skb_scrub_packet() (Philo Lu)
+- anolis: file: re-add ksys_close (Joseph Qi)
+- anolis: toa: Add a new type support (Philo Lu)
+- psi: Fix psi state corruption when schedule() races with cgroup move (Johannes Weiner)
+
