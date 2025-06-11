@@ -59,6 +59,15 @@ function do_rpmbuild() {
 		build_opts="$build_opts --with debuginfo --with tools --with doc --with perf"
 	fi
 
+	if [ "_${DIST_CROSS_COMPILE}" != "_" ]; then
+	    build_opts="$build_opts --with cross"
+	    TARGET=riscv64
+	else
+	    build_opts="$build_opts --without cross"
+	    TARGET=$(uname -m)
+	fi
+
+
     # launch a new shell to clear current environment variables passed by Makefile
 	 rpmbuild \
 		--define "%_smp_mflags -j$(nproc)" \
@@ -66,7 +75,7 @@ function do_rpmbuild() {
 		--define "%_topdir ${DIST_RPMBUILDDIR_OUTPUT}" \
 		${build_opts} \
 		${CMD} ${DIST_RPMBUILDDIR_OUTPUT}/SPECS/kernel.spec \
-		--target=$(uname -m) || exit 1
+		--target ${TARGET} || exit 1
 }
 
 function output() {
@@ -78,7 +87,7 @@ function output() {
 
 	mkdir -p ${DIST_OUTPUT}/${targetdir}
 
-	cp ${DIST_RPMBUILDDIR_OUTPUT}/RPMS/$(uname -m)/*.rpm ${DIST_OUTPUT}/${targetdir}/
+	cp ${DIST_RPMBUILDDIR_OUTPUT}/RPMS/${TARGET}/*.rpm ${DIST_OUTPUT}/${targetdir}/
 
 	# copy srpm packages if and only if they exist.
 	if [ -f ${DIST_RPMBUILDDIR_OUTPUT}/SRPMS/*.rpm ]; then
