@@ -51,6 +51,8 @@ examples:
 	@echo '    DIST_BUILD_MODE=devel DIST_BUILD_EXTRA=base DIST_BUILD_ARM64_64K=Y make dist-rpms'
 	@echo '- diy build with basic rpm packages'
 	@echo '    DIST_BUILD_MODE=diy BUILD_DIY="your_diy_name" DIST_BUILD_EXTRA=base make dist-rpms'
+	@echo '- cross compile for riscv'
+	@echo '    DIST_BUILD_MODE=nightly DIST_BUILD_EXTRA=base DIST_CROSS_COMPILE=riscv64-linux-gnu- make dist-rpms'
 
 	@echo ''
 	@echo 'Kernel Version Examples:'
@@ -91,6 +93,7 @@ help:
 	@echo '                             - diy build. kernel version: $(DIST_KERNELVERSION)-$(DIST_DIY_PKGRELEASEVERION), with srpm'
 	@echo '    DIST_BUILD_NUMBER    - the build number for unofficial build, eg: 1/2'
 	@echo '    DIST_DIY             - the kernel version for diy build'
+	@echo '    DIST_CROSS_COMPILE   - the cross-compile tool chain, just for riscv, eg: riscv64-unknown-linux-gnu-'
 	@echo '    DIST_BUILD_VARIANT & DIST_BUILD_EXTRA & DIST_BUILD_ARM64_64K - see comments in buildpkg.sh'
 	@make -C configs/ dist-configs-help
 
