@@ -738,12 +738,12 @@ static void l3_mon_evt_init(struct rdt_resource *r)
 {
 	INIT_LIST_HEAD(&r->mon.evt_list);
 
-	if (resctrl_arch_is_mbm_total_enabled()) {
+	if (resctrl_arch_is_mbm_total_configurable()) {
 		mbm_total_event.configurable = true;
 		resctrl_file_fflags_init("mbm_total_bytes_config",
 					 RF_MON_INFO | RFTYPE_RES_CACHE);
 	}
-	if (resctrl_arch_is_mbm_local_enabled()) {
+	if (resctrl_arch_is_mbm_local_configurable()) {
 		mbm_local_event.configurable = true;
 		resctrl_file_fflags_init("mbm_local_bytes_config",
 					 RF_MON_INFO | RFTYPE_RES_CACHE);
