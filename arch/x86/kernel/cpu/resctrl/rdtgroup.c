@@ -396,8 +396,8 @@ int resctrl_arch_mbm_config_write_domain(void *rdt_resource, void *dom, u32 evti
 	u32 config_val;
 	int ret = 0;
 
-	/* mon_config cannot be more than the supported set of events */
-	if (val > MAX_EVT_CONFIG_BITS)
+	/* Value from user cannot be more than the supported set of events */
+	if ((val & r->mbm_cfg_mask) != val)
 		return -EINVAL;
 
 	/*

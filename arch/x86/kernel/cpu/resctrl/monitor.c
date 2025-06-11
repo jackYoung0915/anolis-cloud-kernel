@@ -298,6 +298,14 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 		threshold = resctrl_rmid_realloc_limit / r->mon.num_rmid;
 	}
 
+	if (rdt_cpu_has(X86_FEATURE_BMEC)) {
+		u32 eax, ebx, ecx, edx;
+
+		/* Detect list of bandwidth sources that can be tracked */
+		cpuid_count(0x80000020, 3, &eax, &ebx, &ecx, &edx);
+		r->mbm_cfg_mask = ecx & MAX_EVT_CONFIG_BITS;
+	}
+
 	if (rdt_cpu_has(X86_FEATURE_ABMC)) {
 		r->mon.mbm_cntr_assignable = true;
 		/*
