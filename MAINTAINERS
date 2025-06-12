@@ -24069,3 +24069,10 @@ S:	Buried alive in reporters
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
 F:	*
 F:	*/
+
+SSSRAID SCSI/Raid DRIVERS
+M:      Qin Zhou <zhouqin@3snic.com>
+L:      linux-scsi@vger.kernel.org
+S:      Maintained
+F:      Documentation/scsi/sssraid.rst
+F:      drivers/scsi/sssraid/
