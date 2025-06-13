@@ -4501,6 +4501,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #endif
 	p->proxy_exec = false;
 	init_sched_mm_cid(p);
+#ifdef CONFIG_GROUP_BALANCER
+	p->soft_cpus_version = -1;
+#endif
 }
 
 DEFINE_STATIC_KEY_FALSE(sched_numa_balancing);
