@@ -43,7 +43,7 @@ struct group_balancer_sched_domain {
 	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
 	unsigned long					lower_interval;
-	CK_KABI_RESERVE(1)
+	CK_KABI_USE(1, unsigned long last_lower_timestamp)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -1530,28 +1530,46 @@ static bool tg_lower_level(struct task_group *tg)
 	if (!gb_sd)
 		goto fail;
 
+	raw_spin_lock(&gb_sd->lock);
+	if (!time_after(jiffies, gb_sd->last_lower_timestamp + gb_sd->lower_interval)) {
+		raw_spin_unlock(&gb_sd->lock);
+		goto fail;
+	} else {
+		gb_sd->last_lower_timestamp = jiffies;
+		raw_spin_unlock(&gb_sd->lock);
+	}
+
 	/*
 	 * The gb_sd may have some children, and the tasks of may spread across each child.
 	 * Lowering the level of tg is essentially a gathering task, so we will find a child
 	 * that contains the most load of tg to migrate tg to.
 	 */
 	for_each_gb_sd_child(child, gb_sd) {
-		child_load = gb_sd_load(gb_sd);
+		child_load = gb_sd_load(child);
 		total_load += child_load;
 
 		child_cap = gb_sd_capacity(child);
 		total_cap += child_cap;
 
-		tg_child_load = tg_gb_sd_load(tg, gb_sd);
-		if (tg_child_load > tg_dst_load) {
+		tg_child_load = tg_gb_sd_load(tg, child);
+		if (!dst || tg_child_load > tg_dst_load) {
 			dst = child;
 			tg_dst_load = tg_child_load;
 			dst_load = child_load;
 			dst_cap = child_cap;
+		} else if (tg_child_load == tg_dst_load) {
+			if (dst_load * child_cap > child_load * dst_cap) {
+				dst = child;
+				tg_dst_load = tg_child_load;
+				dst_load = child_load;
+				dst_cap = child_cap;
+			}
 		}
 		tg_load += tg_child_load;
 	}
 
+	if (tg_load == 0)
+		goto fail;
 	if (tg->specs_ratio > 100 * dst->span_weight)
 		goto fail;
 #ifdef CONFIG_NUMA
@@ -1573,6 +1591,9 @@ static bool tg_lower_level(struct task_group *tg)
 	src_load = total_load - dst_load;
 	src_imb = abs(src_load * dst_cap - dst_load * src_cap);
 	dst_imb = abs((src_load - migrate_load) * dst_cap - (dst_load + migrate_load) * src_cap);
+
+	if (dst_load * src_cap > src_load * dst_cap)
+		goto fail;
 
 	if (dst_imb > src_imb)
 		goto fail;
