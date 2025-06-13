@@ -28,6 +28,9 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/mm.h>
 #include <linux/sysfs.h>
+#ifdef CONFIG_PSWIOTLB
+#include <linux/pswiotlb.h>
+#endif
 
 #include "base.h"
 #include "power/power.h"
@@ -2459,6 +2462,11 @@ void device_initialize(struct device *dev)
 	INIT_LIST_HEAD(&dev->dev_msi_list);
 	dev->msi_last_list = &dev->msi_list;
 	dev->dev_msi_last_list = &dev->dev_msi_list;
+#endif
+#ifdef CONFIG_PSWIOTLB
+	if ((pswiotlb_force_disable != true) &&
+			is_phytium_ps_socs())
+		pswiotlb_dev_init(dev);
 #endif
 	INIT_LIST_HEAD(&dev->links.consumers);
 	INIT_LIST_HEAD(&dev->links.suppliers);
