@@ -1446,6 +1446,7 @@ void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
 	rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
 
 	tg->soft_cpus_allowed_ptr = gb_sd_span(gb_sd);
+	tg_inc_soft_cpus_version(tg);
 	if (enable)
 		walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
 
