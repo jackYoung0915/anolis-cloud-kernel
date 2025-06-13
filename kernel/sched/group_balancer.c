@@ -1624,7 +1624,7 @@ static struct task_group *gb_task_group(struct task_struct *p)
 	return task_group(p)->gb_tg;
 }
 
-void gb_task_tick(struct task_struct *p)
+void task_tick_gb(struct task_struct *p)
 {
 	struct task_group *tg = gb_task_group(p);
 
