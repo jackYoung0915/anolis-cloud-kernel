@@ -3616,6 +3616,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_SMP
 	p->wake_entry.u_flags = CSD_TYPE_TTWU;
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+	p->soft_cpus_version = -1;
+#endif
 }
 
 DEFINE_STATIC_KEY_FALSE(sched_numa_balancing);
