@@ -1025,6 +1025,15 @@ static int build_group_balancer_sched_domains(void)
 		ret = build_group_balancer_root_domain();
 		if (ret)
 			goto err_out;
+	} else {
+		cpumask_copy(gb_sd_span(group_balancer_root_domain), &root_cpumask);
+		group_balancer_root_domain->span_weight =
+			cpumask_weight(gb_sd_span(group_balancer_root_domain));
+		group_balancer_root_domain->lower_interval =
+			ilog2(group_balancer_root_domain->span_weight) *
+			group_balancer_root_domain->span_weight;
+		group_balancer_root_domain->free_tg_specs =
+			100 * group_balancer_root_domain->span_weight;
 	}
 
 	if (!zalloc_cpumask_var(&trial_cpumask, GFP_KERNEL)) {
