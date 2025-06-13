@@ -8172,7 +8172,12 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	 * Let's add the task's estimated utilization to the cfs_rq's
 	 * estimated utilization, before we update schedutil.
 	 */
-	util_est_enqueue(&rq->cfs, p);
+	for_each_sched_entity(se) {
+		cfs_rq = cfs_rq_of(se);
+		util_est_enqueue(cfs_rq, p);
+	}
+
+	se = &p->se;
 
 	/*
 	 * If in_iowait is set, the code below may not trigger any cpufreq
@@ -8294,7 +8299,12 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	int idle_h_nr_running = task_has_idle_policy(p);
 	bool was_sched_idle = sched_idle_rq(rq);
 
-	util_est_dequeue(&rq->cfs, p);
+	for_each_sched_entity(se) {
+		cfs_rq = cfs_rq_of(se);
+		util_est_dequeue(cfs_rq, p);
+	}
+
+	se = &p->se;
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
