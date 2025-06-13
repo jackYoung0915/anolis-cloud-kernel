@@ -774,7 +774,6 @@ static int move_group_balancer_sched_domain(struct group_balancer_sched_domain *
 	if (*is_first_child) {
 		*is_first_child = false;
 		new_parent->topology_name = child->topology_name;
-		new_parent->gb_flags = child->gb_flags;
 	}
 	cpumask_or(gb_sd_span(new_parent), gb_sd_span(child), gb_sd_span(new_parent));
 	list_del(&child->sibling);
@@ -946,6 +945,25 @@ out:
 	return;
 }
 
+static void set_group_balancer_sched_domain_flags(void)
+{
+	struct group_balancer_topology_level *tl;
+	struct group_balancer_sched_domain *gb_sd;
+	unsigned int l;
+	unsigned long gb_flags = 0;
+
+	for (l = NR_GROUP_BALANCER_TOPOLOGY - 1; l > 0; l--) {
+		tl = &default_topology[l];
+		if (list_empty(&tl->domains)) {
+			gb_flags |= tl->gb_flags;
+			continue;
+		}
+		for_each_topology_level_sibling(gb_sd, tl)
+			gb_sd->gb_flags = gb_flags;
+		gb_flags |= tl->gb_flags;
+	}
+}
+
 static int build_group_balancer_root_domain(void)
 {
 	struct group_balancer_sched_domain *root;
@@ -1025,7 +1043,6 @@ static int build_group_balancer_sched_domains(void)
 				list_del(&parent->topology_level_sibling);
 				list_add_tail(&parent->topology_level_sibling,
 					 &next_gb_tl->domains);
-				parent->gb_flags &= next_gb_tl->gb_flags;
 				continue;
 			}
 			cpumask_copy(trial_cpumask, gb_sd_span(parent));
@@ -1049,7 +1066,6 @@ static int build_group_balancer_sched_domains(void)
 				cpumask_copy(gb_sd_span(child), child_cpumask);
 				child->topology_name = next_gb_tl->topology_name;
 				list_add_tail(&child->topology_level_sibling, &next_gb_tl->domains);
-				child->gb_flags &= next_gb_tl->gb_flags;
 				add_to_tree(child, parent);
 			}
 		}
@@ -1228,6 +1244,7 @@ void sched_init_group_balancer_sched_domains(void)
 	else
 		pr_info("Group Balancer: Build group balancer sched domains successfully.\n");
 	set_group_balancer_sched_domain_depth();
+	set_group_balancer_sched_domain_flags();
 	write_unlock(&group_balancer_sched_domain_lock);
 	cpus_read_unlock();
 }
