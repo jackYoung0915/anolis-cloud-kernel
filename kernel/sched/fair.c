@@ -6972,8 +6972,13 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	 * Let's add the task's estimated utilization to the cfs_rq's
 	 * estimated utilization, before we update schedutil.
 	 */
-	if (!(p->se.sched_delayed && (task_on_rq_migrating(p) || (flags & ENQUEUE_RESTORE))))
-		util_est_enqueue(&rq->cfs, p);
+	if (!(p->se.sched_delayed && (task_on_rq_migrating(p) || (flags & ENQUEUE_RESTORE)))) {
+		for_each_sched_entity(se) {
+			cfs_rq = cfs_rq_of(se);
+			util_est_enqueue(cfs_rq, p);
+		}
+		se = &p->se;
+	}
 
 	if (flags & ENQUEUE_DELAYED) {
 		requeue_delayed_entity(se);
@@ -7217,8 +7222,16 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
  */
 static bool dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 {
-	if (!(p->se.sched_delayed && (task_on_rq_migrating(p) || (flags & DEQUEUE_SAVE))))
-		util_est_dequeue(&rq->cfs, p);
+	struct sched_entity *se = &p->se;
+
+	if (!(p->se.sched_delayed && (task_on_rq_migrating(p) || (flags & DEQUEUE_SAVE)))) {
+		struct cfs_rq *cfs_rq;
+
+		for_each_sched_entity(se) {
+			cfs_rq = cfs_rq_of(se);
+			util_est_dequeue(cfs_rq, p);
+		}
+	}
 
 	util_est_update(&rq->cfs, p, flags & DEQUEUE_SLEEP);
 	if (dequeue_entities(rq, &p->se, flags) < 0)
