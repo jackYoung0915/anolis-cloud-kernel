@@ -121,7 +121,7 @@ void em_dev_unregister_perf_domain(struct device *dev);
 static inline unsigned long em_cpu_energy(struct em_perf_domain *pd,
 				unsigned long max_util, unsigned long sum_util)
 {
-	unsigned long freq, scale_cpu;
+	unsigned long freq, ref_freq, scale_cpu;
 	struct em_perf_state *ps;
 	int i, cpu;
 
