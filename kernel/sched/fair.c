@@ -11670,6 +11670,24 @@ static int should_we_balance(struct lb_env *env)
 	return group_balance_cpu(sg) == env->dst_cpu;
 }
 
+#ifdef CONFIG_GROUP_BALANCER
+static inline bool gb_need_redo(struct lb_env *env)
+{
+	if (group_balancer_enabled())
+		return env->gb_need_redo;
+	return false;
+}
+
+static inline void unset_gb_need_redo(struct lb_env *env)
+{
+	if (group_balancer_enabled())
+		env->gb_need_redo = false;
+}
+#else
+static inline bool gb_need_redo(struct lb_env *env) { return false; }
+static inline void unset_gb_need_redo(struct lb_env *env) { }
+#endif
+
 /*
  * Check this_cpu to ensure it is balanced within domain. Attempt to move
  * tasks if there is an imbalance.
@@ -11694,6 +11712,9 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 		.cpus		= cpus,
 		.fbq_type	= all,
 		.tasks		= LIST_HEAD_INIT(env.tasks),
+#ifdef CONFIG_GROUP_BALANCER
+		.gb_need_redo	= true,
+#endif
 	};
 
 	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
@@ -11729,7 +11750,6 @@ redo:
 	/* Clear this flag as soon as we find a pullable task */
 	env.flags |= LBF_ALL_PINNED;
 	if (busiest->nr_running > 1) {
-		gb_load_balance(&env);
 		/*
 		 * Attempt to move tasks. If find_busiest_group has found
 		 * an imbalance but busiest->nr_running <= 1, the group is
@@ -11739,6 +11759,8 @@ redo:
 		env.loop_max  = min(sysctl_sched_nr_migrate, busiest->nr_running);
 
 more_balance:
+		if (!gb_need_redo(&env))
+			gb_load_balance(&env);
 		rq_lock_irqsave(busiest, &rf);
 		update_rq_clock(busiest);
 
@@ -11791,14 +11813,17 @@ more_balance:
 		 */
 		if ((env.flags & LBF_DST_PINNED) && env.imbalance > 0) {
 
-			/* Prevent to re-select dst_cpu via env's CPUs */
-			__cpumask_clear_cpu(env.dst_cpu, env.cpus);
+			if (!gb_need_redo(&env)) {
+				/* Prevent to re-select dst_cpu via env's CPUs */
+				__cpumask_clear_cpu(env.dst_cpu, env.cpus);
 
-			env.dst_rq	 = cpu_rq(env.new_dst_cpu);
-			env.dst_cpu	 = env.new_dst_cpu;
-			env.flags	&= ~LBF_DST_PINNED;
-			env.loop	 = 0;
-			env.loop_break	 = SCHED_NR_MIGRATE_BREAK;
+				env.dst_rq	 = cpu_rq(env.new_dst_cpu);
+				env.dst_cpu	 = env.new_dst_cpu;
+				env.flags	&= ~LBF_DST_PINNED;
+				env.loop	 = 0;
+				env.loop_break	 = SCHED_NR_MIGRATE_BREAK;
+			}
+			unset_gb_need_redo(&env);
 
 			/*
 			 * Go back to "more_balance" rather than "redo" since we
@@ -11819,6 +11844,11 @@ more_balance:
 
 		/* All tasks on this runqueue were pinned by CPU affinity */
 		if (unlikely(env.flags & LBF_ALL_PINNED)) {
+			if (env.imbalance > 0 && gb_need_redo(&env)) {
+				unset_gb_need_redo(&env);
+				cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
+				goto redo;
+			}
 			__cpumask_clear_cpu(cpu_of(busiest), cpus);
 			/*
 			 * Attempting to continue load balancing at the current
@@ -11835,6 +11865,11 @@ more_balance:
 			}
 			goto out_all_pinned;
 		}
+	}
+
+	if (env.imbalance > 0 && gb_need_redo(&env)) {
+		unset_gb_need_redo(&env);
+		goto redo;
 	}
 
 	if (!ld_moved) {
@@ -13063,6 +13098,7 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
 	check_update_overutilized_status(task_rq(curr));
 
 	task_tick_core(rq, curr);
+	task_tick_gb(curr);
 }
 
 /*
