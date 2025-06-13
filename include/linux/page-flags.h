@@ -202,6 +202,12 @@ enum pageflags {
 	/* For self-hosted memmap pages */
 	PG_vmemmap_self_hosted = PG_owner_priv_1,
 #endif
+#ifdef CONFIG_PSWIOTLB
+	/* check if pswiotlb is sync already */
+	PG_pswiotlbsync = PG_mappedtodisk,
+	/* check if the page is used for pswiotlb */
+	PG_pswiotlb = PG_dropbehind,
+#endif
 };
 
 #ifndef __GENERATING_BOUNDS_H
@@ -459,6 +465,11 @@ PAGEFLAG(SwapBacked, swapbacked, PF_NO_TAIL)
 	__CLEARPAGEFLAG(SwapBacked, swapbacked, PF_NO_TAIL)
 	__SETPAGEFLAG(SwapBacked, swapbacked, PF_NO_TAIL)
 
+#ifdef CONFIG_PSWIOTLB
+/* PSWIOTLB */
+PAGEFLAG(PswiotlbSync, pswiotlbsync, PF_ANY)
+PAGEFLAG(Pswiotlb, pswiotlb, PF_ANY)
+#endif
 /*
  * Private page markings that may be used by the filesystem that owns the page
  * for its own purposes.
