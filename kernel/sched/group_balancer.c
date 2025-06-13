@@ -12,6 +12,7 @@
 #include <linux/sched/isolation.h>
 
 struct gb_lb_env {
+	int					src_cpu;
 	struct group_balancer_sched_domain	*src;
 	struct group_balancer_sched_domain	*dst;
 	struct group_balancer_sched_domain	*gb_sd;
@@ -1761,57 +1762,89 @@ static struct group_balancer_sched_domain
 			struct task_group, gb_node) ; 1; });				\
 	     pos = n)
 
-static int gb_detach_task_groups(struct gb_lb_env *gb_env)
+static int
+gb_detach_task_groups_from_gb_sd(struct gb_lb_env *gb_env,
+				 struct group_balancer_sched_domain *gb_sd)
 {
-	struct group_balancer_sched_domain *gb_sd, *child;
 	struct task_group *tg, *n;
 	unsigned long load, util;
 	int detached = 0;
 
-	gb_sd = gb_env->gb_sd;
-	if (!gb_sd)
+	raw_spin_lock(&gb_sd->lock);
+	/* Try the task cgroups with little specs first. */
+	gb_for_each_tg_safe(tg, n, &gb_sd->task_groups) {
+		if (!time_after(jiffies, tg->leap_level_timestamp + 2 * gb_sd->lower_interval))
+			continue;
+		switch (gb_env->migration_type) {
+#ifdef CONFIG_GROUP_IDENTITY
+		case migrate_identity:
+			fallthrough;
+#endif
+		case migrate_load:
+			load = tg_gb_sd_load(tg, gb_sd);
+			if (load == 0)
+				continue;
+			if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
+				continue;
+			gb_env->imbalance -= load;
+			break;
+		case migrate_util:
+			util = tg_gb_sd_util(tg, gb_sd);
+			if (util == 0)
+				continue;
+			if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
+				continue;
+			gb_env->imbalance -= util;
+			break;
+		case migrate_task:
+			gb_env->imbalance = 0;
+			break;
+		/*TODO: Perfect strategy of migrate_misfit*/
+		case migrate_misfit:
+			gb_env->imbalance = 0;
+			break;
+		default:
+			break;
+		}
+		remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
+		rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
+		detached++;
+		if (gb_env->imbalance <= 0) {
+			raw_spin_unlock(&gb_sd->lock);
+			return detached;
+		}
+	}
+	raw_spin_unlock(&gb_sd->lock);
+	return detached;
+}
+
+static int gb_detach_task_groups(struct gb_lb_env *gb_env)
+{
+	struct group_balancer_sched_domain *parent, *child;
+	int detached = 0;
+
+	parent = gb_env->src;
+	if (!parent)
 		return 0;
 
-	for_each_gb_sd_child(child, gb_sd) {
-		raw_spin_lock(&child->lock);
-		/* Try the task cgroups with little specs first. */
-		gb_for_each_tg_safe(tg, n, &child->task_groups) {
-			switch (gb_env->migration_type) {
-#ifdef CONFIG_GROUP_IDENTITY
-			case migrate_identity:
-				fallthrough;
-#endif
-			case migrate_load:
-				load = max_t(unsigned long, tg_gb_sd_load(tg, gb_sd), 1);
-				if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
-					continue;
-				gb_env->imbalance -= load;
-				break;
-			case migrate_util:
-				util = tg_gb_sd_util(tg, gb_sd);
-				if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
-					continue;
-				gb_env->imbalance -= util;
-				break;
-			case migrate_task:
-				gb_env->imbalance = 0;
-				break;
-			/*TODO: Perfect strategy of migrate_misfit*/
-			case migrate_misfit:
-				gb_env->imbalance = 0;
-				break;
-			}
-			remove_tg_from_group_balancer_sched_domain_locked(tg, child, false);
-			rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
-			detached++;
-			if (gb_env->imbalance <= 0) {
-				raw_spin_unlock(&child->lock);
-				return detached;
-			}
-		}
-		raw_spin_unlock(&child->lock);
+down:
+	if (cpumask_test_cpu(gb_env->src_cpu, gb_sd_span(parent)))
+		detached += gb_detach_task_groups_from_gb_sd(gb_env, parent);
+	if (detached || gb_env->imbalance <= 0)
+		goto out;
+	for_each_gb_sd_child(child, parent) {
+		parent = child;
+		goto down;
+up:
+		continue;
 	}
-
+	if (parent == gb_env->src)
+		goto out;
+	child = parent;
+	parent = parent->parent;
+	if (parent)
+		goto up;
+out:
 	return detached;
 }
 
@@ -1889,6 +1922,7 @@ void gb_load_balance(struct lb_env *env)
 		goto unlock;
 
 	gb_env = (struct gb_lb_env){
+		.src_cpu		= env->src_cpu,
 		.src			= src,
 		.dst			= dst,
 		.gb_sd			= gb_sd,
