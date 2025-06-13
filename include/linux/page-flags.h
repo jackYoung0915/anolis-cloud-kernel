@@ -200,6 +200,12 @@ enum pageflags {
 	/* For self-hosted memmap pages */
 	PG_vmemmap_self_hosted = PG_owner_priv_1,
 #endif
+#ifdef CONFIG_PSWIOTLB
+	/* check if pswiotlb is sync already */
+	PG_pswiotlbsync = __NR_PAGEFLAGS + 1,
+	/* check if the page is used for pswiotlb */
+	PG_pswiotlb,
+#endif
 };
 
 #ifndef __GENERATING_BOUNDS_H
