@@ -31,10 +31,12 @@ void csv_release_to_contiguous(phys_addr_t pa, size_t size);
 uint32_t csv_get_smr_entry_shift(void);
 
 int csv3_issue_request_report(phys_addr_t paddr, size_t size);
+int csv3_issue_request_rtmr(void *req_buffer, size_t buffer_size);
 
 #else
 
 static inline int csv3_issue_request_report(phys_addr_t paddr, size_t size) { return -EIO; }
+static inline int csv3_issue_request_rtmr(void *req_buffer, size_t buffer_size) { return -ENODEV; }
 
 #endif	/* CONFIG_HYGON_CSV */
 
