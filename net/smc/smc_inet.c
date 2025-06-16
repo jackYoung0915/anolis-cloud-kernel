@@ -290,6 +290,9 @@ static int smc_inet_clcsock_sendmsg(struct socket *sock, struct msghdr *msg, siz
 
 	smc = smc_sk(sock->sk);
 
+	if (current_work() == &smc->smc_listen_work)
+		goto send;
+
 	/* smc_inet_clcsock_sendmsg only works for smc handshaking
 	 * fallback sendmsg should process by smc_inet_sendmsg.
 	 * see more details in smc_inet_sendmsg().
@@ -301,6 +304,7 @@ static int smc_inet_clcsock_sendmsg(struct socket *sock, struct msghdr *msg, siz
 	 * Therefore, we rely on the implementation of conenct_work() implementation, which
 	 * is locked always.
 	 */
+send:
 	return tcp_sendmsg_locked(sk, msg, len);
 }
 
