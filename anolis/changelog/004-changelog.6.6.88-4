@@ -1,0 +1,5 @@
+* Tue Jun 17 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [6.6.88-4%%DIST%%]
+- anolis: driver/cxl: detect and report cxl fatal event (Mengting Lu)
+- arm64/mm: Drop setting PTE_TYPE_PAGE in pte_mkcont() (Anshuman Khandual)
+- arm64/mm: Re-organize arch_make_huge_pte() (Anshuman Khandual)
+
