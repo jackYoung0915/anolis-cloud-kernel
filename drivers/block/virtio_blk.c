@@ -3179,7 +3179,11 @@ static int virtblk_probe(struct virtio_device *vdev)
 		goto out_cleanup_disk;
 
 	virtio_blk_dev_dbg_init(vblk);
-	WARN_ON(virtblk_cdev_add(vblk, &virtblk_chr_fops));
+
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	if (vblk->no_align)
+		WARN_ON(virtblk_cdev_add(vblk, &virtblk_chr_fops));
+#endif
 
 	return 0;
 
@@ -3210,7 +3214,10 @@ static void virtblk_remove(struct virtio_device *vdev)
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
 
-	virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	if (vblk->no_align)
+		virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
+#endif
 
 	del_gendisk(vblk->disk);
 	blk_mq_free_tag_set(&vblk->tag_set);
