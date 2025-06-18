@@ -1,0 +1,5 @@
+* Wed Jun 18 2025 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-19.1_rc1%%DIST%%]
+- anolis: virtio-blk: rename no_align to pt_enable (Ferry Meng)
+- anolis: virtio-blk: make chardev only exposed to specific devices (Ferry Meng)
+- anolis: net/smc: fix the issue of server fallback failure (Wen Gu)
+
