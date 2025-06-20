@@ -13,20 +13,6 @@
 
 #include <linux/types.h>
 
-/**
- * struct csv_guest_user_data_attestation - ATTESTATION command parameters
- *
- * @user_data: user specified data for the attestation report
- * @mnonce: user's random nonce
- * @hash: sm3 hash of the @user_data and @mnonce
- */
-struct csv_guest_user_data_attestation {
-	__u8 user_data[64];			/* In */
-	__u8 monce[16];				/* In */
-	__u8 hash[32];				/* In */
-} __packed;
-
-
 /* The CSV RTMR version in the kernel */
 #define CSV_RTMR_VERSION_MAX	1U
 #define CSV_RTMR_VERSION_MIN	1U
