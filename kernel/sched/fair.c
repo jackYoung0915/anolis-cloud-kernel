@@ -173,6 +173,7 @@ unsigned int sysctl_sched_id_book_cpu_nr_tries = 5;
  * Default: -1, units: ms
  */
 int sysctl_sched_expel_idle_balance_delay = -1;
+#endif
 /*
  *  In order to prevent scheduling errors in the case of ipi failure,
  *  __update_rq_on_expel() is called in function pick_next_task_fair(),
@@ -183,7 +184,6 @@ int sysctl_sched_expel_idle_balance_delay = -1;
  *  Default: 10, units: ms
  */
 unsigned int sysctl_sched_expel_update_interval = 10;
-#endif
 DEFINE_STATIC_KEY_FALSE(__group_identity_enabled);
 unsigned int sysctl_sched_group_indentity_enabled;
 /*
@@ -660,11 +660,12 @@ static inline bool id_load_balance(void)
 {
 	return sched_feat(ID_LOAD_BALANCE);
 }
-#ifdef CONFIG_SCHED_SMT
-static inline bool need_expel(int this_cpu)
+static inline bool need_expel(int this_cpu, bool *expel_by_smt_sibling)
 {
 	int cpu;
+	struct rq *rq = cpu_rq(this_cpu);
 
+#ifdef CONFIG_SCHED_SMT
 	/* Not yet booted up */
 	if (!cpu_smt_mask(this_cpu))
 		return false;
@@ -673,32 +674,43 @@ static inline bool need_expel(int this_cpu)
 		if (cpu == this_cpu)
 			continue;
 
-		if (cpu_rq(cpu)->smt_expeller)
+		if (cpu_rq(cpu)->smt_expeller) {
+			*expel_by_smt_sibling = true;
 			return true;
+		}
 	}
+#endif
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && rq->nr_high_running)
+		return true;
 
 	return false;
 }
 
 static inline void __update_rq_on_expel(struct rq *rq)
 {
-	bool ret = need_expel(rq->cpu);
+	bool expel_by_smt_sibling = false;
+	bool ret = need_expel(rq->cpu, &expel_by_smt_sibling);
 
+	if (ret != rq->on_expel)
+		rq->on_expel = ret;
+
+#ifdef CONFIG_SCHED_SMT
 	/*
-	 * Write 'on_expel' as less as possible since
+	 * Write 'expel_by_smt_sibling' as less as possible since
 	 * it's really hot.
 	 */
-	if (ret != rq->on_expel) {
+	if (expel_by_smt_sibling != rq->expel_by_smt_sibling) {
 		/* This function is called in atomic context, so no race with other writers */
 		write_seqcount_begin(&rq->expel_seq);
-		rq->on_expel = ret;
+		rq->expel_by_smt_sibling = expel_by_smt_sibling;
 		sched_update_tick_dependency(rq);
-		if (ret)
+		if (expel_by_smt_sibling)
 			rq->expel_start = __rq_clock_broken(rq);
 		else
 			rq->expel_sum += __rq_clock_broken(rq) - rq->expel_start;
 		write_seqcount_end(&rq->expel_seq);
 	}
+#endif
 }
 
 /*
@@ -738,6 +750,15 @@ inline bool rq_on_expel(struct rq *rq)
 		return false;
 
 	return __rq_on_expel(rq);
+}
+
+#ifdef CONFIG_SCHED_SMT
+bool rq_expel_by_smt_sibling(struct rq *rq)
+{
+	if (group_identity_disabled())
+		return false;
+
+	return rq->expel_by_smt_sibling;
 }
 
 /*
@@ -834,25 +855,7 @@ static inline bool expellee_only(struct rq *rq)
 	return false;
 }
 
-static inline bool need_expel(int this_cpu)
-{
-	return false;
-}
-
-static inline void __update_rq_on_expel(struct rq *rq)
-{
-}
-
-static inline void update_rq_on_expel(struct rq *rq)
-{
-}
-
-static inline bool __rq_on_expel(struct rq *rq)
-{
-	return false;
-}
-
-static inline bool rq_on_expel(struct rq *rq)
+static inline bool rq_expel_by_smt_sibling(struct rq *rq)
 {
 	return false;
 }
@@ -1926,25 +1929,10 @@ id_rb_first_cached(struct cfs_rq *cfs_rq)
 	 */
 	update_expel_spread(cfs_rq);
 
-	if (!sched_feat(ID_ABSOLUTE_EXPEL)) {
-		if ((s64)(cfs_rq->min_under_vruntime + get_expel_spread(cfs_rq) -
-			cfs_rq->min_vruntime) < 0) {
-			roots[0] = &cfs_rq->under_timeline;
-			roots[1] = &cfs_rq->tasks_timeline;
-		}
-	}
-
 	for (i = 0; i < 2; i++) {
 		left = rb_first_cached(roots[i]);
-		if (left) {
-			/* To prevent priority inversion once ID_ABSOLUTE_EXPEL
-			 * is turned off.
-			 */
-			if (sched_feat(ID_ABSOLUTE_EXPEL) &&
-			    !is_underclass(rb_entry(left, struct sched_entity, run_node)))
-				update_expel_start(cfs_rq, NULL);
+		if (left)
 			return left;
-		}
 	}
 
 	return NULL;
@@ -2324,6 +2312,11 @@ static inline bool __rq_on_expel(struct rq *rq)
 }
 
 static inline bool rq_on_expel(struct rq *rq)
+{
+	return false;
+}
+
+static inline bool rq_expel_by_smt_sibling(struct rq *rq)
 {
 	return false;
 }
@@ -6728,8 +6721,7 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		return;
 
 	delta = id_vruntime(curr) - id_vruntime(se);
-
-	if (delta < 0)
+	if (id_entity_before(curr, se))
 		return;
 
 	if (delta > cfs_prio_relative_gran(ideal_runtime, curr, se) ||
@@ -6812,6 +6804,9 @@ static void __push_expellee(struct rq *rq)
 			break;
 		if (!is_expellee_task(p))
 			continue;
+		/* Don't push current task. */
+		if (unlikely(p == rq->curr))
+			continue;
 		get_task_struct(p);
 		cpumask_clear(traversed_mask);
 		for_each_domain(cpu, sd) {
@@ -6873,7 +6868,7 @@ migrate:
 static inline bool should_push_expellee(struct rq *rq)
 {
 	return (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
-	    rq->nr_expel_immune < rq->cfs.h_nr_running);
+	    rq->nr_expel_immune < rq->cfs.h_nr_running && !rq->nr_high_running);
 }
 
 static inline void push_expellee(struct rq *rq)
@@ -6956,7 +6951,7 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		se = cfs_rq->last;
 	}
 
-	if (rq_on_expel(rq_of(cfs_rq)))
+	if (rq_expel_by_smt_sibling(rq_of(cfs_rq)))
 		update_expel_start(cfs_rq, se);
 
 	return se;
