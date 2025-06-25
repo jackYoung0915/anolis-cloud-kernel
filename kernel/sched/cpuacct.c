@@ -528,7 +528,7 @@ static inline void idle_start_update_expel_sum(struct sched_entity *se)
 		rq = se->my_q->rq;
 
 		__schedstat_add(se->expel_sum, rq->expel_sum - schedstat_val(se->expel_start));
-		if (rq_on_expel(rq))
+		if (rq_expel_by_smt_sibling(rq))
 			__schedstat_add(se->expel_sum, __rq_clock_broken(rq) -
 				max(schedstat_val(se->expel_start_ts), rq->expel_start));
 		__schedstat_set(se->expel_start_ts, 0);
@@ -567,7 +567,7 @@ static inline u64 get_cpu_expel_sum(struct sched_entity *se, int cpu)
 				rq_seq = read_seqcount_begin(&rq->expel_seq);
 				cpu_expel_sum += rq->expel_sum -
 					schedstat_val(se->expel_start);
-				if (rq_on_expel(rq))
+				if ((rq_expel_by_smt_sibling(rq)))
 					cpu_expel_sum += __rq_clock_broken(rq) -
 					max(rq->expel_start, schedstat_val(se->expel_start_ts));
 			} while (read_seqcount_retry(&rq->expel_seq, rq_seq));
