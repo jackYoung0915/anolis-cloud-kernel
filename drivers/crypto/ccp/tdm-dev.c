@@ -316,7 +316,7 @@ static int tdm_get_cmd_context_hash(uint32_t flag, uint8_t *hash)
 #if IS_BUILTIN(CONFIG_CRYPTO_DEV_CCP_DD)
 	struct module *p_module = NULL;
 #elif IS_ENABLED(CONFIG_KALLSYMS)
-	char symbol_buf[128] = {0};
+	char symbol_buf[KSYM_NAME_LEN] = {0};
 	int symbol_len = 0;
 	char *symbol_begin = NULL;
 	char *symbol_end = NULL;
@@ -684,8 +684,7 @@ int psp_create_measure_task(struct addr_range_info *range, struct measure_data *
 		}
 
 		paddr_range_info->count = info_index;
-		addr_range_info_len = paddr_range_info->count * sizeof(struct addr_info) +
-			sizeof(struct addr_range_info);
+		addr_range_info_len = paddr_range_info->count * sizeof(struct addr_info);
 	} else {
 		/*check if physics address valid*/
 		ret = tdm_verify_phy_addr_valid(range);
@@ -693,8 +692,7 @@ int psp_create_measure_task(struct addr_range_info *range, struct measure_data *
 			pr_err("range address is abnormal!\n");
 			goto end;
 		}
-		addr_range_info_len = range->count * sizeof(struct addr_info) +
-			sizeof(struct addr_range_info);
+		addr_range_info_len = range->count * sizeof(struct addr_info);
 	}
 
 	tdm_cmdresp_data = kzalloc(TDM_C2P_CMD_SIZE, GFP_KERNEL);
@@ -717,10 +715,14 @@ int psp_create_measure_task(struct addr_range_info *range, struct measure_data *
 		goto free_cmdresp;
 	}
 
-	if (flag & TASK_CREATE_VADDR)
-		memcpy(&create_cmd->range_info, paddr_range_info, addr_range_info_len);
-	else
-		memcpy(&create_cmd->range_info, range, addr_range_info_len);
+	if (flag & TASK_CREATE_VADDR) {
+		create_cmd->range_info.count = paddr_range_info->count;
+		memcpy(&create_cmd->range_info.addr[0], &paddr_range_info->addr[0],
+			addr_range_info_len);
+	} else {
+		create_cmd->range_info.count = range->count;
+		memcpy(&create_cmd->range_info.addr[0], &range->addr[0], addr_range_info_len);
+	}
 
 	ret = tdm_do_cmd(0, (void *)create_cmd, &error);
 	if (ret && ret != -EIO) {
@@ -1319,7 +1321,7 @@ int tdm_get_report(uint32_t task_id, struct task_selection_2b *selection,
 		*length = needed_length;
 		ret = -DYN_ERR_SIZE_SMALL;
 	} else {
-		memcpy(report_buffer, report_resp, needed_length);
+		memcpy(report_buffer, (uint8_t *)report_resp, needed_length);
 	}
 
 free_cmdresp:
