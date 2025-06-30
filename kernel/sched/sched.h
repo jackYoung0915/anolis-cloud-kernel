@@ -819,9 +819,10 @@ static inline void clear_task_identity(struct task_struct *p)
 		update_identity(NULL, p, 0);
 }
 #ifdef CONFIG_SCHED_SMT
-extern bool rq_on_expel(struct rq *rq);
+extern bool rq_expel_by_smt_sibling(struct rq *rq);
 extern void task_tick_gi(struct rq *rq);
 #else
+static inline bool rq_expel_by_smt_sibling(struct rq *rq) { return false; }
 static inline void task_tick_gi(struct rq *rq) { }
 #endif
 #else
@@ -1335,6 +1336,7 @@ struct rq {
 	bool			smt_expeller;
 	bool			smt_expellee;
 	bool			on_expel;
+	bool			expel_by_smt_sibling;
 	bool			gi_enabled;
 	u64			high_exec_sum;
 	u64			under_exec_sum;
