@@ -1763,6 +1763,22 @@ bool shmem_hpage_pmd_enabled(void)
 	return false;
 }
 
+int shmem_allowable_huge_highest_order(void)
+{
+	unsigned long orders;
+
+	if (shmem_huge == SHMEM_HUGE_DENY)
+		return 0;
+
+	orders = READ_ONCE(huge_shmem_orders_always) | READ_ONCE(huge_shmem_orders_madvise)
+		 | READ_ONCE(huge_shmem_orders_within_size);
+
+	if (shmem_huge != SHMEM_HUGE_NEVER)
+		orders |= READ_ONCE(huge_shmem_orders_inherit);
+
+	return orders == 0 ? 0 : fls(orders) - 1;
+}
+
 unsigned long shmem_allowable_huge_orders(struct inode *inode,
 				struct vm_area_struct *vma, pgoff_t index,
 				loff_t write_end, bool shmem_huge_force)
