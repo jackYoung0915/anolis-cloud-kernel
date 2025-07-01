@@ -2607,6 +2607,25 @@ static int khugepaged(void *none)
 	return 0;
 }
 
+static int anon_allowable_huge_highest_order(void)
+{
+	unsigned long orders = READ_ONCE(huge_anon_orders_always) |
+			       READ_ONCE(huge_anon_orders_madvise);
+
+	if (hugepage_global_enabled())
+		orders |= READ_ONCE(huge_anon_orders_inherit);
+
+	return orders == 0 ? 0 : fls(orders) - 1;
+}
+
+static unsigned long min_thp_pageblock_nr_pages(void)
+{
+	int anon_highest_order = anon_allowable_huge_highest_order();
+	int shmem_highest_order = shmem_allowable_huge_highest_order();
+
+	return min(1UL << max(anon_highest_order, shmem_highest_order), pageblock_nr_pages);
+}
+
 static void set_recommended_min_free_kbytes(void)
 {
 	struct zone *zone;
@@ -2629,16 +2648,16 @@ static void set_recommended_min_free_kbytes(void)
 		nr_zones++;
 	}
 
-	/* Ensure 2 pageblocks are free to assist fragmentation avoidance */
-	recommended_min = pageblock_nr_pages * nr_zones * 2;
+	/* Ensure 2 * min_thp_pageblocks are free to assist fragmentation avoidance */
+	recommended_min = min_thp_pageblock_nr_pages() * nr_zones * 2;
 
 	/*
-	 * Make sure that on average at least two pageblocks are almost free
+	 * Make sure that on average at least two min_thp_pageblocks are almost free
 	 * of another type, one for a migratetype to fall back to and a
 	 * second to avoid subsequent fallbacks of other types There are 3
 	 * MIGRATE_TYPES we care about.
 	 */
-	recommended_min += pageblock_nr_pages * nr_zones *
+	recommended_min += min_thp_pageblock_nr_pages() * nr_zones *
 			   MIGRATE_PCPTYPES * MIGRATE_PCPTYPES;
 
 	/* don't ever allow to reserve more than 5% of the lowmem */
