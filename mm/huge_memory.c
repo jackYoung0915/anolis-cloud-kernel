@@ -578,6 +578,14 @@ static ssize_t file_enabled_store(struct kobject *kobj,
 	}
 
 	spin_unlock(&huge_file_orders_lock);
+
+	if (ret > 0) {
+		int err;
+
+		err = start_stop_khugepaged();
+		if (err)
+			ret = err;
+	}
 	return ret;
 }
 
