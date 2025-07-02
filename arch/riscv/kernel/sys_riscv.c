@@ -79,7 +79,7 @@ SYSCALL_DEFINE3(riscv_flush_icache, uintptr_t, start, uintptr_t, end,
 
 /*
  * The hwprobe interface, for allowing userspace to probe to see which features
- * are supported by the hardware.  See Documentation/riscv/hwprobe.rst for more
+ * are supported by the hardware.  See Documentation/arch/riscv/hwprobe.rst for more
  * details.
  */
 static void hwprobe_arch_id(struct riscv_hwprobe *pair,
@@ -145,24 +145,69 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 	for_each_cpu(cpu, cpus) {
 		struct riscv_isainfo *isainfo = &hart_isa[cpu];
 
-		if (riscv_isa_extension_available(isainfo->isa, ZBA))
-			pair->value |= RISCV_HWPROBE_EXT_ZBA;
-		else
-			missing |= RISCV_HWPROBE_EXT_ZBA;
+#define EXT_KEY(ext)									\
+	do {										\
+		if (__riscv_isa_extension_available(isainfo->isa, RISCV_ISA_EXT_##ext))	\
+			pair->value |= RISCV_HWPROBE_EXT_##ext;				\
+		else									\
+			missing |= RISCV_HWPROBE_EXT_##ext;				\
+	} while (false)
 
-		if (riscv_isa_extension_available(isainfo->isa, ZBB))
-			pair->value |= RISCV_HWPROBE_EXT_ZBB;
-		else
-			missing |= RISCV_HWPROBE_EXT_ZBB;
+		/*
+		 * Only use EXT_KEY() for extensions which can be exposed to userspace,
+		 * regardless of the kernel's configuration, as no other checks, besides
+		 * presence in the hart_isa bitmap, are made.
+		 */
+		EXT_KEY(ZBA);
+		EXT_KEY(ZBB);
+		EXT_KEY(ZBS);
+		EXT_KEY(ZICBOZ);
+		EXT_KEY(ZBC);
 
-		if (riscv_isa_extension_available(isainfo->isa, ZBS))
-			pair->value |= RISCV_HWPROBE_EXT_ZBS;
-		else
-			missing |= RISCV_HWPROBE_EXT_ZBS;
+		EXT_KEY(ZBKB);
+		EXT_KEY(ZBKC);
+		EXT_KEY(ZBKX);
+		EXT_KEY(ZKND);
+		EXT_KEY(ZKNE);
+		EXT_KEY(ZKNH);
+		EXT_KEY(ZKSED);
+		EXT_KEY(ZKSH);
+		EXT_KEY(ZKT);
+		EXT_KEY(ZIHINTNTL);
+
+		if (has_vector()) {
+			EXT_KEY(ZVBB);
+			EXT_KEY(ZVBC);
+			EXT_KEY(ZVKB);
+			EXT_KEY(ZVKG);
+			EXT_KEY(ZVKNED);
+			EXT_KEY(ZVKNHA);
+			EXT_KEY(ZVKNHB);
+			EXT_KEY(ZVKSED);
+			EXT_KEY(ZVKSH);
+			EXT_KEY(ZVKT);
+			EXT_KEY(ZVFH);
+			EXT_KEY(ZVFHMIN);
+		}
+
+		if (has_fpu()) {
+			EXT_KEY(ZFH);
+			EXT_KEY(ZFHMIN);
+			EXT_KEY(ZFA);
+		}
+#undef EXT_KEY
 	}
 
 	/* Now turn off reporting features if any CPU is missing it. */
 	pair->value &= ~missing;
+}
+
+static bool hwprobe_ext0_has(const struct cpumask *cpus, unsigned long ext)
+{
+	struct riscv_hwprobe pair;
+
+	hwprobe_isa_ext0(&pair, cpus);
+	return (pair.value & ext);
 }
 
 static u64 hwprobe_misaligned(const struct cpumask *cpus)
@@ -213,6 +258,12 @@ static void hwprobe_one_pair(struct riscv_hwprobe *pair,
 
 	case RISCV_HWPROBE_KEY_CPUPERF_0:
 		pair->value = hwprobe_misaligned(cpus);
+		break;
+
+	case RISCV_HWPROBE_KEY_ZICBOZ_BLOCK_SIZE:
+		pair->value = 0;
+		if (hwprobe_ext0_has(cpus, RISCV_HWPROBE_EXT_ZICBOZ))
+			pair->value = riscv_cboz_block_size;
 		break;
 
 	/*
