@@ -13,17 +13,22 @@
 #include <linux/time64.h>
 #include <linux/types.h>
 #include <linux/random.h>
+#include <linux/mm.h>
 
 /* Minimal region size.  Every damon_region is aligned by this. */
 #define DAMON_MIN_REGION	PAGE_SIZE
 /* Max priority score for DAMON-based operation schemes */
 #define DAMOS_MAX_SCORE		(99)
+DECLARE_STATIC_KEY_FALSE(numa_stat_enabled_key);
 
 /* Get a random number in [l, r) */
 static inline unsigned long damon_rand(unsigned long l, unsigned long r)
 {
 	return l + get_random_u32_below(r - l);
 }
+
+extern struct damon_ctx **dbgfs_ctxs;
+extern int dbgfs_nr_ctxs;
 
 /**
  * struct damon_addr_range - Represents an address region of [@start, @end).
@@ -42,6 +47,8 @@ struct damon_addr_range {
  * @nr_accesses:	Access frequency of this region.
  * @list:		List head for siblings.
  * @age:		Age of this region.
+ * @local:		Local numa node accesses.
+ * @remote:		Remote numa node accesses.
  *
  * @age is initially zero, increased for each aggregation interval, and reset
  * to zero again if the access frequency is significantly changed.  If two
@@ -57,6 +64,8 @@ struct damon_region {
 	unsigned int age;
 /* private: Internal value for age calculation. */
 	unsigned int last_nr_accesses;
+	unsigned long local;
+	unsigned long remote;
 };
 
 /**
@@ -65,6 +74,7 @@ struct damon_region {
  * @nr_regions:		Number of monitoring target regions of this target.
  * @regions_list:	Head of the monitoring target regions of this target.
  * @list:		List head for siblings.
+ * @target_lock:	Use damon_region lock to avoid race.
  *
  * Each monitoring context could have multiple targets.  For example, a context
  * for virtual memory address spaces could have multiple target processes.  The
@@ -74,8 +84,11 @@ struct damon_region {
 struct damon_target {
 	struct pid *pid;
 	unsigned int nr_regions;
+	unsigned int nr_init_regions;
+	struct damon_addr_range *init_regions;
 	struct list_head regions_list;
 	struct list_head list;
+	spinlock_t target_lock;
 };
 
 /**
@@ -549,6 +562,7 @@ struct damon_ctx {
 	struct completion kdamond_started;
 
 /* public: */
+	int need_flush;
 	struct task_struct *kdamond;
 	struct mutex kdamond_lock;
 
@@ -682,5 +696,19 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
 				unsigned long *start, unsigned long *end);
 
 #endif	/* CONFIG_DAMON */
+
+#ifdef CONFIG_DAMON_VADDR
+/*
+ * 't->id' should be the pointer to the relevant 'struct pid' having reference
+ * count.  Caller must put the returned task, unless it is NULL.
+ */
+#define damon_get_task_struct(t) \
+(get_pid_task((struct pid *)t->pid, PIDTYPE_PID))
+
+void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf);
+#else
+static inline void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf) { }
+
+#endif	/* CONFIG_DAMON_VADDR */
 
 #endif	/* _DAMON_H */

@@ -14,6 +14,7 @@
 #include <linux/page_idle.h>
 #include <linux/pagewalk.h>
 #include <linux/sched/mm.h>
+#include <linux/mm_inline.h>
 
 #include "ops-common.h"
 
@@ -22,14 +23,6 @@
 #define DAMON_MIN_REGION 1
 #endif
 
-/*
- * 't->pid' should be the pointer to the relevant 'struct pid' having reference
- * count.  Caller must put the returned task, unless it is NULL.
- */
-static inline struct task_struct *damon_get_task_struct(struct damon_target *t)
-{
-	return get_pid_task(t->pid, PIDTYPE_PID);
-}
 
 /*
  * Get the mm_struct of the given target
@@ -259,10 +252,12 @@ static void __damon_va_init_regions(struct damon_ctx *ctx,
 		sz = DAMON_MIN_REGION;
 
 	/* Set the initial three regions of the target */
+	spin_lock(&t->target_lock);
 	for (i = 0; i < 3; i++) {
 		r = damon_new_region(regions[i].start, regions[i].end);
 		if (!r) {
 			pr_err("%d'th init region creation failed\n", i);
+			spin_unlock(&t->target_lock);
 			return;
 		}
 		damon_add_region(r, t);
@@ -270,6 +265,7 @@ static void __damon_va_init_regions(struct damon_ctx *ctx,
 		nr_pieces = (regions[i].end - regions[i].start) / sz;
 		damon_va_evenly_split_region(t, r, nr_pieces);
 	}
+	spin_unlock(&t->target_lock);
 }
 
 /* Initialize '->regions_list' of every target (task) */
@@ -284,6 +280,45 @@ static void damon_va_init(struct damon_ctx *ctx)
 	}
 }
 
+static void damon_va_apply_init_regions(struct damon_target *t)
+{
+	struct damon_region *r, *next, *prev;
+	unsigned int i = 0;
+
+	/* Remove all regions */
+	damon_for_each_region_safe(r, next, t) {
+		damon_destroy_region(r, t);
+	}
+
+	for (i = 0; i < t->nr_init_regions; i++) {
+		struct damon_addr_range ar = t->init_regions[i];
+
+		r = damon_new_region(ar.start, ar.end);
+		if (!r) {
+			pr_err("allocating memory failed for new region: 0x%lx - 0x%lx\n",
+					ar.start, ar.end);
+			goto fail;
+		}
+		damon_add_region(r, t);
+		if (damon_nr_regions(t) > 1) {
+			prev = damon_prev_region(r);
+			if (prev->ar.end > r->ar.start) {
+				/*
+				 * Never happen! this case had been checked during
+				 * setting init_regions.
+				 */
+				goto fail;
+			}
+		}
+	}
+	return;
+
+fail:
+	damon_for_each_region_safe(r, next, t) {
+		damon_destroy_region(r, t);
+	}
+}
+
 /*
  * Update regions for current memory mappings
  */
@@ -293,13 +328,74 @@ static void damon_va_update(struct damon_ctx *ctx)
 	struct damon_target *t;
 
 	damon_for_each_target(t, ctx) {
+		/*
+		 * If init_regions have been set, updating new target
+		 * according to init_regions.
+		 */
+		if (t->nr_init_regions) {
+			spin_lock(&t->target_lock);
+			damon_va_apply_init_regions(t);
+			spin_unlock(&t->target_lock);
+
+			continue;
+		}
 		if (damon_va_three_regions(t, three_regions))
 			continue;
+		spin_lock(&t->target_lock);
 		damon_set_regions(t, three_regions, 3);
+		spin_unlock(&t->target_lock);
 	}
 }
 
-static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
+static bool damon_pmdp_mknone(pmd_t *pmd, struct mm_walk *walk, unsigned long addr)
+{
+	bool preserve_write;
+	pmd_t entry = *pmd;
+	int *flush_enalbe = walk->private;
+
+	if (is_huge_zero_pmd(entry) || pmd_protnone(entry))
+		return false;
+
+	if (pmd_present(entry)) {
+		preserve_write = pmd_write(entry);
+		entry = pmdp_invalidate(walk->vma, addr, pmd);
+		entry = pmd_modify(entry, PAGE_NONE);
+		if (preserve_write)
+			entry = pmd_mkwrite(entry, walk->vma);
+
+		set_pmd_at(walk->mm, addr, pmd, entry);
+		++*flush_enalbe;
+		return true;
+	}
+	return false;
+}
+
+static bool damon_ptep_mknone(pte_t *pte, struct mm_walk *walk, unsigned long addr)
+{
+	pte_t oldpte, ptent;
+	bool preserve_write;
+	int *flush_enalbe = walk->private;
+
+	oldpte = *pte;
+	if (pte_protnone(oldpte))
+		return false;
+
+	if (pte_present(oldpte)) {
+		preserve_write = pte_write(oldpte);
+		oldpte = ptep_modify_prot_start(walk->vma, addr, pte);
+		ptent = pte_modify(oldpte, PAGE_NONE);
+
+		if (preserve_write)
+			ptent = pte_mkwrite(ptent, walk->vma);
+
+		ptep_modify_prot_commit(walk->vma, addr, pte, oldpte, ptent);
+		++*flush_enalbe;
+		return true;
+	}
+	return false;
+}
+
+static int damon_va_pmd_entry(pmd_t *pmd, unsigned long addr,
 		unsigned long next, struct mm_walk *walk)
 {
 	pte_t *pte;
@@ -317,6 +413,9 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
 
 		if (pmd_trans_huge(pmde)) {
 			damon_pmdp_mkold(pmd, walk->vma, addr);
+			if (static_branch_unlikely(&numa_stat_enabled_key) &&
+					nr_online_nodes > 1)
+				damon_pmdp_mknone(pmd, walk, addr);
 			spin_unlock(ptl);
 			return 0;
 		}
@@ -328,10 +427,14 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	if (!pte_present(ptep_get(pte)))
-		goto out;
+	if (!pte_present(*pte)) {
+		pte_unmap_unlock(pte, ptl);
+		return 0;
+	}
 	damon_ptep_mkold(pte, walk->vma, addr);
-out:
+	if (static_branch_unlikely(&numa_stat_enabled_key) &&
+			nr_online_nodes > 1)
+		damon_ptep_mknone(pte, walk, addr);
 	pte_unmap_unlock(pte, ptl);
 	return 0;
 }
@@ -389,16 +492,17 @@ out:
 #define damon_mkold_hugetlb_entry NULL
 #endif /* CONFIG_HUGETLB_PAGE */
 
-static const struct mm_walk_ops damon_mkold_ops = {
-	.pmd_entry = damon_mkold_pmd_entry,
+static const struct mm_walk_ops damon_va_ops = {
+	.pmd_entry = damon_va_pmd_entry,
 	.hugetlb_entry = damon_mkold_hugetlb_entry,
 	.walk_lock = PGWALK_RDLOCK,
 };
 
-static void damon_va_mkold(struct mm_struct *mm, unsigned long addr)
+static void damon_va_check(struct damon_ctx *ctx, struct mm_struct *mm,
+			   unsigned long addr)
 {
 	mmap_read_lock(mm);
-	walk_page_range(mm, addr, addr + 1, &damon_mkold_ops, NULL);
+	walk_page_range(mm, addr, addr + 1, &damon_va_ops, &ctx->need_flush);
 	mmap_read_unlock(mm);
 }
 
@@ -406,12 +510,12 @@ static void damon_va_mkold(struct mm_struct *mm, unsigned long addr)
  * Functions for the access checking of the regions
  */
 
-static void __damon_va_prepare_access_check(struct mm_struct *mm,
+static void __damon_va_prepare_access_check(struct damon_ctx *ctx, struct mm_struct *mm,
 					struct damon_region *r)
 {
 	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
 
-	damon_va_mkold(mm, r->sampling_addr);
+	damon_va_check(ctx, mm, r->sampling_addr);
 }
 
 static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
@@ -421,11 +525,33 @@ static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
 	struct damon_region *r;
 
 	damon_for_each_target(t, ctx) {
+		ctx->need_flush = 0;
 		mm = damon_get_mm(t);
 		if (!mm)
 			continue;
+
+		if (static_branch_unlikely(&numa_stat_enabled_key) &&
+		    nr_online_nodes > 1) {
+			inc_tlb_flush_pending(mm);
+			ctx->need_flush = 1;
+		}
+
 		damon_for_each_region(r, t)
-			__damon_va_prepare_access_check(mm, r);
+			__damon_va_prepare_access_check(ctx, mm, r);
+
+		/*
+		 * We have to make sure that in some concurrent scenarios,
+		 * one core is doing numa sampling, but anthor core turns off it,
+		 * in this case, if we still use variable "numa_stat_enabled_key"
+		 * to check if it needs to be flushed, it will cause the flush_tlb_mm()
+		 * not be called.
+		 */
+		if (ctx->need_flush > 1)
+			flush_tlb_mm(mm);
+
+		if (ctx->need_flush)
+			dec_tlb_flush_pending(mm);
+
 		mmput(mm);
 	}
 }

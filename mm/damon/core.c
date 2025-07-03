@@ -121,7 +121,7 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
 {
 	struct damon_region *region;
 
-	region = kmem_cache_alloc(damon_region_cache, GFP_KERNEL);
+	region = kmem_cache_alloc(damon_region_cache, GFP_ATOMIC);
 	if (!region)
 		return NULL;
 
@@ -132,6 +132,8 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
 
 	region->age = 0;
 	region->last_nr_accesses = 0;
+	region->local = 0;
+	region->remote = 0;
 
 	return region;
 }
@@ -395,8 +397,11 @@ struct damon_target *damon_new_target(void)
 
 	t->pid = NULL;
 	t->nr_regions = 0;
+	t->nr_init_regions = 0;
+	t->init_regions = NULL;
 	INIT_LIST_HEAD(&t->regions_list);
 	INIT_LIST_HEAD(&t->list);
+	spin_lock_init(&t->target_lock);
 
 	return t;
 }
@@ -420,8 +425,11 @@ void damon_free_target(struct damon_target *t)
 {
 	struct damon_region *r, *next;
 
+	spin_lock(&t->target_lock);
 	damon_for_each_region_safe(r, next, t)
 		damon_free_region(r);
+	kfree(t->init_regions);
+	spin_unlock(&t->target_lock);
 	kfree(t);
 }
 
@@ -1127,6 +1135,8 @@ static void damon_merge_two_regions(struct damon_target *t,
 
 	l->nr_accesses = (l->nr_accesses * sz_l + r->nr_accesses * sz_r) /
 			(sz_l + sz_r);
+	l->remote = (l->remote * sz_l + r->remote * sz_r) / (sz_l + sz_r);
+	l->local = (l->local * sz_l + r->local * sz_r) / (sz_l + sz_r);
 	l->age = (l->age * sz_l + r->age * sz_r) / (sz_l + sz_r);
 	l->ar.end = r->ar.end;
 	damon_destroy_region(r, t);
@@ -1188,8 +1198,10 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
 	do {
 		nr_regions = 0;
 		damon_for_each_target(t, c) {
+			spin_lock(&t->target_lock);
 			damon_merge_regions_of(t, threshold, sz_limit);
 			nr_regions += damon_nr_regions(t);
+			spin_unlock(&t->target_lock);
 		}
 		threshold = max(1, threshold * 2);
 	} while (nr_regions > c->attrs.max_nr_regions &&
@@ -1216,6 +1228,8 @@ static void damon_split_region_at(struct damon_target *t,
 	new->age = r->age;
 	new->last_nr_accesses = r->last_nr_accesses;
 	new->nr_accesses = r->nr_accesses;
+	new->local = r->local;
+	new->remote = r->remote;
 
 	damon_insert_region(new, r, damon_next_region(r), t);
 }
@@ -1276,8 +1290,11 @@ static void kdamond_split_regions(struct damon_ctx *ctx)
 			nr_regions < ctx->attrs.max_nr_regions / 3)
 		nr_subregions = 3;
 
-	damon_for_each_target(t, ctx)
+	damon_for_each_target(t, ctx) {
+		spin_lock(&t->target_lock);
 		damon_split_regions_of(t, nr_subregions);
+		spin_unlock(&t->target_lock);
+	}
 
 	last_nr_regions = nr_regions;
 }
@@ -1501,8 +1518,10 @@ static int kdamond_fn(void *data)
 	}
 done:
 	damon_for_each_target(t, ctx) {
+		spin_lock(&t->target_lock);
 		damon_for_each_region_safe(r, next, t)
 			damon_destroy_region(r, t);
+		spin_unlock(&t->target_lock);
 	}
 
 	if (ctx->callback.before_terminate)
@@ -1520,6 +1539,13 @@ done:
 	if (!nr_running_ctxs && running_exclusive_ctxs)
 		running_exclusive_ctxs = false;
 	mutex_unlock(&damon_lock);
+
+	/*
+	 * when no kdamond threads are running, the
+	 * 'numa_stat_enabled_key' keeps default value.
+	 */
+	if (!nr_running_ctxs)
+		static_branch_disable(&numa_stat_enabled_key);
 
 	return 0;
 }
@@ -1595,6 +1621,73 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
 	addr_range.start = *start;
 	addr_range.end = *end;
 	return damon_set_regions(t, &addr_range, 1);
+}
+
+static struct damon_target *get_damon_target(struct task_struct *task)
+{
+	int i;
+	struct damon_target *t;
+
+	rcu_read_lock();
+	for (i = 0; i < READ_ONCE(dbgfs_nr_ctxs); i++) {
+		struct damon_ctx *ctx = rcu_dereference(dbgfs_ctxs[i]);
+
+		if (!ctx || !ctx->kdamond)
+			continue;
+		damon_for_each_target(t, dbgfs_ctxs[i]) {
+			struct task_struct *ts = damon_get_task_struct(t);
+
+			if (!ts)
+				continue;
+
+			if (ts->mm == task->mm) {
+				put_task_struct(ts);
+				rcu_read_unlock();
+				return t;
+			}
+			put_task_struct(ts);
+		}
+	}
+	rcu_read_unlock();
+
+	return NULL;
+}
+
+static struct damon_region *get_damon_region(struct damon_target *t, unsigned long addr)
+{
+	struct damon_region *r, *next;
+
+	if (!t || !addr)
+		return NULL;
+
+	damon_for_each_region_safe(r, next, t) {
+		if (r->ar.start <= addr && r->ar.end >= addr)
+			return r;
+	}
+
+	return NULL;
+}
+
+void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf)
+{
+	struct damon_target *t;
+	struct damon_region *r;
+
+	if (static_branch_unlikely(&numa_stat_enabled_key)
+		&& nr_online_nodes > 1) {
+		t = get_damon_target(current);
+		if (t) {
+			spin_lock(&t->target_lock);
+			r = get_damon_region(t, vmf->address);
+			if (r) {
+				if (page_nid == node_id)
+					r->local++;
+				else
+					r->remote++;
+			}
+			spin_unlock(&t->target_lock);
+		}
+	}
 }
 
 static int __init damon_init(void)
