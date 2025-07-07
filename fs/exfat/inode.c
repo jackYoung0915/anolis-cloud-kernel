@@ -362,12 +362,11 @@ static void exfat_write_failed(struct address_space *mapping, loff_t to)
 
 static int exfat_write_begin(struct file *file, struct address_space *mapping,
 		loff_t pos, unsigned int len,
-		struct page **pagep, void **fsdata)
+		struct folio **foliop, void **fsdata)
 {
 	int ret;
 
-	*pagep = NULL;
-	ret = cont_write_begin(file, mapping, pos, len, pagep, fsdata,
+	ret = cont_write_begin(file, mapping, pos, len, foliop, fsdata,
 			       exfat_get_block,
 			       &EXFAT_I(mapping->host)->i_size_ondisk);
 
@@ -379,13 +378,13 @@ static int exfat_write_begin(struct file *file, struct address_space *mapping,
 
 static int exfat_write_end(struct file *file, struct address_space *mapping,
 		loff_t pos, unsigned int len, unsigned int copied,
-		struct page *pagep, void *fsdata)
+		struct folio *folio, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	struct exfat_inode_info *ei = EXFAT_I(inode);
 	int err;
 
-	err = generic_write_end(file, mapping, pos, len, copied, pagep, fsdata);
+	err = generic_write_end(file, mapping, pos, len, copied, folio, fsdata);
 
 	if (ei->i_size_aligned < i_size_read(inode)) {
 		exfat_fs_error(inode->i_sb,

@@ -215,23 +215,23 @@ static void release_existing_page_budget(struct ubifs_info *c)
 }
 
 static int write_begin_slow(struct address_space *mapping,
-			    loff_t pos, unsigned len, struct page **pagep)
+			    loff_t pos, unsigned len, struct folio **foliop)
 {
 	struct inode *inode = mapping->host;
 	struct ubifs_info *c = inode->i_sb->s_fs_info;
 	pgoff_t index = pos >> PAGE_SHIFT;
 	struct ubifs_budget_req req = { .new_page = 1 };
 	int err, appending = !!(pos + len > inode->i_size);
-	struct page *page;
+	struct folio *folio;
 
 	dbg_gen("ino %lu, pos %llu, len %u, i_size %lld",
 		inode->i_ino, pos, len, inode->i_size);
 
 	/*
-	 * At the slow path we have to budget before locking the page, because
-	 * budgeting may force write-back, which would wait on locked pages and
-	 * deadlock if we had the page locked. At this point we do not know
-	 * anything about the page, so assume that this is a new page which is
+	 * At the slow path we have to budget before locking the folio, because
+	 * budgeting may force write-back, which would wait on locked folios and
+	 * deadlock if we had the folio locked. At this point we do not know
+	 * anything about the folio, so assume that this is a new folio which is
 	 * written to a hole. This corresponds to largest budget. Later the
 	 * budget will be amended if this is not true.
 	 */
@@ -243,42 +243,43 @@ static int write_begin_slow(struct address_space *mapping,
 	if (unlikely(err))
 		return err;
 
-	page = grab_cache_page_write_begin(mapping, index);
-	if (unlikely(!page)) {
+	folio = __filemap_get_folio(mapping, index, FGP_WRITEBEGIN,
+			mapping_gfp_mask(mapping));
+	if (IS_ERR(folio)) {
 		ubifs_release_budget(c, &req);
-		return -ENOMEM;
+		return PTR_ERR(folio);
 	}
 
-	if (!PageUptodate(page)) {
-		if (!(pos & ~PAGE_MASK) && len == PAGE_SIZE)
-			SetPageChecked(page);
+	if (!folio_test_uptodate(folio)) {
+		if (pos == folio_pos(folio) && len >= folio_size(folio))
+			folio_set_checked(folio);
 		else {
-			err = do_readpage(page);
+			err = do_readpage(&folio->page);
 			if (err) {
-				unlock_page(page);
-				put_page(page);
+				folio_unlock(folio);
+				folio_put(folio);
 				ubifs_release_budget(c, &req);
 				return err;
 			}
 		}
 	}
 
-	if (PagePrivate(page))
+	if (folio->private)
 		/*
-		 * The page is dirty, which means it was budgeted twice:
+		 * The folio is dirty, which means it was budgeted twice:
 		 *   o first time the budget was allocated by the task which
-		 *     made the page dirty and set the PG_private flag;
+		 *     made the folio dirty and set the private field;
 		 *   o and then we budgeted for it for the second time at the
 		 *     very beginning of this function.
 		 *
-		 * So what we have to do is to release the page budget we
+		 * So what we have to do is to release the folio budget we
 		 * allocated.
 		 */
 		release_new_page_budget(c);
-	else if (!PageChecked(page))
+	else if (!folio_test_checked(folio))
 		/*
-		 * We are changing a page which already exists on the media.
-		 * This means that changing the page does not make the amount
+		 * We are changing a folio which already exists on the media.
+		 * This means that changing the folio does not make the amount
 		 * of indexing information larger, and this part of the budget
 		 * which we have already acquired may be released.
 		 */
@@ -301,7 +302,7 @@ static int write_begin_slow(struct address_space *mapping,
 			ubifs_release_dirty_inode_budget(c, ui);
 	}
 
-	*pagep = page;
+	*foliop = folio;
 	return 0;
 }
 
@@ -416,7 +417,7 @@ static int allocate_budget(struct ubifs_info *c, struct page *page,
  */
 static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 			     loff_t pos, unsigned len,
-			     struct page **pagep, void **fsdata)
+			     struct folio **foliop, void **fsdata)
 {
 	struct inode *inode = mapping->host;
 	struct ubifs_info *c = inode->i_sb->s_fs_info;
@@ -424,7 +425,7 @@ static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 	pgoff_t index = pos >> PAGE_SHIFT;
 	int err, appending = !!(pos + len > inode->i_size);
 	int skipped_read = 0;
-	struct page *page;
+	struct folio *folio;
 
 	ubifs_assert(c, ubifs_inode(inode)->ui_size == inode->i_size);
 	ubifs_assert(c, !c->ro_media && !c->ro_mount);
@@ -433,13 +434,14 @@ static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 		return -EROFS;
 
 	/* Try out the fast-path part first */
-	page = grab_cache_page_write_begin(mapping, index);
-	if (unlikely(!page))
-		return -ENOMEM;
+	folio = __filemap_get_folio(mapping, index, FGP_WRITEBEGIN,
+			mapping_gfp_mask(mapping));
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
 
-	if (!PageUptodate(page)) {
+	if (!folio_test_uptodate(folio)) {
 		/* The page is not loaded from the flash */
-		if (!(pos & ~PAGE_MASK) && len == PAGE_SIZE) {
+		if (pos == folio_pos(folio) && len >= folio_size(folio)) {
 			/*
 			 * We change whole page so no need to load it. But we
 			 * do not know whether this page exists on the media or
@@ -449,19 +451,19 @@ static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 			 * media. Thus, we are setting the @PG_checked flag
 			 * here.
 			 */
-			SetPageChecked(page);
+			folio_set_checked(folio);
 			skipped_read = 1;
 		} else {
-			err = do_readpage(page);
+			err = do_readpage(&folio->page);
 			if (err) {
-				unlock_page(page);
-				put_page(page);
+				folio_unlock(folio);
+				folio_put(folio);
 				return err;
 			}
 		}
 	}
 
-	err = allocate_budget(c, page, ui, appending);
+	err = allocate_budget(c, &folio->page, ui, appending);
 	if (unlikely(err)) {
 		ubifs_assert(c, err == -ENOSPC);
 		/*
@@ -469,7 +471,7 @@ static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 		 * write all of it, then it is not up to date.
 		 */
 		if (skipped_read)
-			ClearPageChecked(page);
+			folio_clear_checked(folio);
 		/*
 		 * Budgeting failed which means it would have to force
 		 * write-back but didn't, because we set the @fast flag in the
@@ -481,10 +483,10 @@ static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 			ubifs_assert(c, mutex_is_locked(&ui->ui_mutex));
 			mutex_unlock(&ui->ui_mutex);
 		}
-		unlock_page(page);
-		put_page(page);
+		folio_unlock(folio);
+		folio_put(folio);
 
-		return write_begin_slow(mapping, pos, len, pagep);
+		return write_begin_slow(mapping, pos, len, foliop);
 	}
 
 	/*
@@ -493,9 +495,8 @@ static int ubifs_write_begin(struct file *file, struct address_space *mapping,
 	 * with @ui->ui_mutex locked if we are appending pages, and unlocked
 	 * otherwise. This is an optimization (slightly hacky though).
 	 */
-	*pagep = page;
+	*foliop = folio;
 	return 0;
-
 }
 
 /**
@@ -526,7 +527,7 @@ static void cancel_budget(struct ubifs_info *c, struct page *page,
 
 static int ubifs_write_end(struct file *file, struct address_space *mapping,
 			   loff_t pos, unsigned len, unsigned copied,
-			   struct page *page, void *fsdata)
+			   struct folio *folio, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	struct ubifs_inode *ui = ubifs_inode(inode);
@@ -535,47 +536,47 @@ static int ubifs_write_end(struct file *file, struct address_space *mapping,
 	int appending = !!(end_pos > inode->i_size);
 
 	dbg_gen("ino %lu, pos %llu, pg %lu, len %u, copied %d, i_size %lld",
-		inode->i_ino, pos, page->index, len, copied, inode->i_size);
+		inode->i_ino, pos, folio->index, len, copied, inode->i_size);
 
-	if (unlikely(copied < len && len == PAGE_SIZE)) {
+	if (unlikely(copied < len && !folio_test_uptodate(folio))) {
 		/*
-		 * VFS copied less data to the page that it intended and
+		 * VFS copied less data to the folio than it intended and
 		 * declared in its '->write_begin()' call via the @len
-		 * argument. If the page was not up-to-date, and @len was
-		 * @PAGE_SIZE, the 'ubifs_write_begin()' function did
+		 * argument. If the folio was not up-to-date,
+		 * the 'ubifs_write_begin()' function did
 		 * not load it from the media (for optimization reasons). This
-		 * means that part of the page contains garbage. So read the
-		 * page now.
+		 * means that part of the folio contains garbage. So read the
+		 * folio now.
 		 */
 		dbg_gen("copied %d instead of %d, read page and repeat",
 			copied, len);
-		cancel_budget(c, page, ui, appending);
-		ClearPageChecked(page);
+		cancel_budget(c, &folio->page, ui, appending);
+		folio_clear_checked(folio);
 
 		/*
 		 * Return 0 to force VFS to repeat the whole operation, or the
 		 * error code if 'do_readpage()' fails.
 		 */
-		copied = do_readpage(page);
+		copied = do_readpage(&folio->page);
 		goto out;
 	}
 
-	if (len == PAGE_SIZE)
-		SetPageUptodate(page);
+	if (len == folio_size(folio))
+		folio_mark_uptodate(folio);
 
-	if (!PagePrivate(page)) {
-		attach_page_private(page, (void *)1);
+	if (!folio->private) {
+		folio_attach_private(folio, (void *)1);
 		atomic_long_inc(&c->dirty_pg_cnt);
-		__set_page_dirty_nobuffers(page);
+		filemap_dirty_folio(mapping, folio);
 	}
 
 	if (appending) {
 		i_size_write(inode, end_pos);
 		ui->ui_size = end_pos;
 		/*
-		 * Note, we do not set @I_DIRTY_PAGES (which means that the
-		 * inode has dirty pages), this has been done in
-		 * '__set_page_dirty_nobuffers()'.
+		 * We do not set @I_DIRTY_PAGES (which means that
+		 * the inode has dirty pages), this was done in
+		 * filemap_dirty_folio().
 		 */
 		__mark_inode_dirty(inode, I_DIRTY_DATASYNC);
 		ubifs_assert(c, mutex_is_locked(&ui->ui_mutex));
@@ -583,8 +584,8 @@ static int ubifs_write_end(struct file *file, struct address_space *mapping,
 	}
 
 out:
-	unlock_page(page);
-	put_page(page);
+	folio_unlock(folio);
+	folio_put(folio);
 	return copied;
 }
 

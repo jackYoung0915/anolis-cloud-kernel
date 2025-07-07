@@ -479,7 +479,7 @@ static int ufs_read_folio(struct file *file, struct folio *folio)
 
 int ufs_prepare_chunk(struct page *page, loff_t pos, unsigned len)
 {
-	return __block_write_begin(page, pos, len, ufs_getfrag_block);
+	return __block_write_begin(page_folio(page), pos, len, ufs_getfrag_block);
 }
 
 static void ufs_truncate_blocks(struct inode *);
@@ -496,11 +496,11 @@ static void ufs_write_failed(struct address_space *mapping, loff_t to)
 
 static int ufs_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len,
-			struct page **pagep, void **fsdata)
+			struct folio **foliop, void **fsdata)
 {
 	int ret;
 
-	ret = block_write_begin(mapping, pos, len, pagep, ufs_getfrag_block);
+	ret = block_write_begin(mapping, pos, len, foliop, ufs_getfrag_block);
 	if (unlikely(ret))
 		ufs_write_failed(mapping, pos + len);
 
@@ -509,11 +509,11 @@ static int ufs_write_begin(struct file *file, struct address_space *mapping,
 
 static int ufs_write_end(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned copied,
-			struct page *page, void *fsdata)
+			struct folio *folio, void *fsdata)
 {
 	int ret;
 
-	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+	ret = generic_write_end(file, mapping, pos, len, copied, folio, fsdata);
 	if (ret < len)
 		ufs_write_failed(mapping, pos + len);
 	return ret;
