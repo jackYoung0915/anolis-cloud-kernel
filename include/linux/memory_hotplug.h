@@ -73,6 +73,9 @@ static inline void arch_refresh_nodedata(int nid, pg_data_t *pgdat)
 #endif /* CONFIG_HAVE_ARCH_NODEDATA_EXTENSION */
 
 #ifdef CONFIG_MEMORY_HOTPLUG
+#define MHP_PHASE_PREPARE	1
+#define MHP_PHASE_DEFERRED	2
+#define MHP_PHASE_DEFAULT	3
 /*
  * Return page for the valid pfn only if the page is online. All pfn
  * walkers which rely on the fully initialized page->flags and others
