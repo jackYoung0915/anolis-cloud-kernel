@@ -970,6 +970,7 @@ int liveupdate_get_token_outgoing(struct liveupdate_session *s,
 
 	return err;
 }
+EXPORT_SYMBOL_GPL(liveupdate_get_token_outgoing);
 
 /**
  * liveupdate_get_file_incoming - Retrieves a preserved file for in-kernel use.
