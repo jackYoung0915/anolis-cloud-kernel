@@ -65,6 +65,10 @@ struct memory_group {
 	};
 };
 
+/* Memory block defer state flags */
+#define MEM_SKIP_DEFER 0
+#define MEM_NEED_DEFER 1
+
 struct memory_block {
 	unsigned long start_section_nr;
 	unsigned long state;		/* serialized by the dev->lock */
@@ -76,6 +80,12 @@ struct memory_block {
 	 * lay at the beginning of the memory block.
 	 */
 	unsigned long nr_vmemmap_pages;
+	/*
+	 * Whether struct pages initialization and free pages
+	 * to buddy allocator needs to be deferred or not.
+	 */
+	atomic_t deferred_state;
+	struct zone *deferred_zone; /* zone for this defered block */
 	struct memory_group *group;	/* group (if any) for this block */
 	struct list_head group_next;	/* next block inside memory group */
 };
