@@ -873,6 +873,7 @@ struct zone {
 	atomic_long_t		vm_numa_stat[NR_VM_NUMA_STAT_ITEMS];
 
 	unsigned long reported_pages;
+	atomic_long_t deferred_pages;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -893,6 +894,11 @@ enum zone_flags {
 static inline unsigned long zone_managed_pages(struct zone *zone)
 {
 	return (unsigned long)atomic_long_read(&zone->managed_pages);
+}
+
+static inline unsigned long zone_deferred_pages(struct zone *zone)
+{
+	return (unsigned long)atomic_long_read(&zone->deferred_pages);
 }
 
 static inline unsigned long zone_cma_pages(struct zone *zone)
