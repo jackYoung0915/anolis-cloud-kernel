@@ -676,9 +676,13 @@ int vma_expand(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	bool remove_next = false;
 	struct vma_prepare vp;
 
+	async_fork_fixup_vma(vma);
+
 	vma_start_write(vma);
 	if (next && (vma != next) && (end == next->vm_end)) {
 		int ret;
+
+		async_fork_fixup_vma(next);
 
 		remove_next = true;
 		vma_start_write(next);
