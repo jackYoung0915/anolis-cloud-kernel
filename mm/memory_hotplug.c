@@ -660,6 +660,46 @@ static void __meminit resize_pgdat_range(struct pglist_data *pgdat, unsigned lon
 
 	pgdat->node_spanned_pages = max(start_pfn + nr_pages, old_end_pfn) - pgdat->node_start_pfn;
 }
+
+void __ref __move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
+				  unsigned long nr_pages, struct vmem_altmap *altmap,
+				  int migratetype, int phase)
+{
+	struct pglist_data *pgdat = zone->zone_pgdat;
+	int nid = pgdat->node_id;
+	unsigned long flags;
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE) {
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+		kidled_free_page_age(pgdat);
+#endif
+		clear_zone_contiguous(zone);
+
+		/* TODO Huh pgdat is irqsave while zone is not. It used to be like that before */
+		pgdat_resize_lock(pgdat, &flags);
+		zone_span_writelock(zone);
+		if (zone_is_empty(zone))
+			init_currently_empty_zone(zone, start_pfn, nr_pages);
+		resize_zone_range(zone, start_pfn, nr_pages);
+		zone_span_writeunlock(zone);
+		resize_pgdat_range(pgdat, start_pfn, nr_pages);
+		pgdat_resize_unlock(pgdat, &flags);
+	}
+
+	/*
+	 * TODO now we have a visible range of pages which are not associated
+	 * with their zone properly. Not nice but set_pfnblock_flags_mask
+	 * expects the zone spans the pfn range. All the pages in the range
+	 * are reserved so nobody should be touching them so we should be safe
+	 */
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED)
+		memmap_init_zone(nr_pages, nid, zone_idx(zone), start_pfn, 0,
+			 MEMINIT_HOTPLUG, altmap, migratetype);
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE)
+		set_zone_contiguous(zone);
+}
+
 /*
  * Associate the pfn range with the given zone, initializing the memmaps
  * and resizing the pgdat/zone data to span the added pages. After this
@@ -673,35 +713,8 @@ void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
 				  unsigned long nr_pages,
 				  struct vmem_altmap *altmap, int migratetype)
 {
-	struct pglist_data *pgdat = zone->zone_pgdat;
-	int nid = pgdat->node_id;
-	unsigned long flags;
-
-#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
-	kidled_free_page_age(pgdat);
-#endif
-	clear_zone_contiguous(zone);
-
-	/* TODO Huh pgdat is irqsave while zone is not. It used to be like that before */
-	pgdat_resize_lock(pgdat, &flags);
-	zone_span_writelock(zone);
-	if (zone_is_empty(zone))
-		init_currently_empty_zone(zone, start_pfn, nr_pages);
-	resize_zone_range(zone, start_pfn, nr_pages);
-	zone_span_writeunlock(zone);
-	resize_pgdat_range(pgdat, start_pfn, nr_pages);
-	pgdat_resize_unlock(pgdat, &flags);
-
-	/*
-	 * TODO now we have a visible range of pages which are not associated
-	 * with their zone properly. Not nice but set_pfnblock_flags_mask
-	 * expects the zone spans the pfn range. All the pages in the range
-	 * are reserved so nobody should be touching them so we should be safe
-	 */
-	memmap_init_zone(nr_pages, nid, zone_idx(zone), start_pfn, 0,
-			 MEMINIT_HOTPLUG, altmap, migratetype);
-
-	set_zone_contiguous(zone);
+	__move_pfn_range_to_zone(zone, start_pfn, nr_pages, altmap, migratetype,
+				 MHP_PHASE_DEFAULT);
 }
 
 struct auto_movable_stats {
