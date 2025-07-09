@@ -215,8 +215,8 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
  * bit 29: CPU has dirty data in D-cache (needs aliasing handling);
  * bit 0 - 29: remaining parts to complete this folio
  */
-#define EROFS_FOLIO_EIO		30
-#define EROFS_ONLINEPAGE_DIRTY	29
+#define EROFS_ONLINEFOLIO_EIO		30
+#define EROFS_ONLINEFOLIO_DIRTY		29
 
 void erofs_onlinefolio_init(struct folio *folio)
 {
@@ -240,18 +240,16 @@ void erofs_onlinefolio_end(struct folio *folio, int err, bool dirty)
 	do {
 		orig = atomic_read((atomic_t *)&folio->private);
 		DBG_BUGON(orig <= 0);
-		v = dirty << EROFS_ONLINEPAGE_DIRTY;
-		v |= (orig - 1) | (!!err << EROFS_FOLIO_EIO);
+		v = dirty << EROFS_ONLINEFOLIO_DIRTY;
+		v |= (orig - 1) | (!!err << EROFS_ONLINEFOLIO_EIO);
 	} while (atomic_cmpxchg((atomic_t *)&folio->private, orig, v) != orig);
 
-	if (v & (BIT(EROFS_ONLINEPAGE_DIRTY) - 1))
-		return;
-	if (v & (BIT(EROFS_FOLIO_EIO) - 1))
+	if (v & (BIT(EROFS_ONLINEFOLIO_DIRTY) - 1))
 		return;
 	folio->private = 0;
-	if (v & BIT(EROFS_ONLINEPAGE_DIRTY))
+	if (v & BIT(EROFS_ONLINEFOLIO_DIRTY))
 		flush_dcache_folio(folio);
-	folio_end_read(folio, !(v & BIT(EROFS_FOLIO_EIO)));
+	folio_end_read(folio, !(v & BIT(EROFS_ONLINEFOLIO_EIO)));
 }
 
 static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
