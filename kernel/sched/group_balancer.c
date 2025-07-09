@@ -45,8 +45,9 @@ struct group_balancer_sched_domain {
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
-	unsigned long					last_lower_timestamp;
+	unsigned long					last_balance_timestamp;
 	unsigned long					lower_interval;
+	unsigned int					imbalance_pct;
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -598,6 +599,7 @@ static inline struct group_balancer_sched_domain
 
 	raw_spin_lock_init(&new->lock);
 	new->task_groups = RB_ROOT;
+	new->imbalance_pct = 117;
 
 	return new;
 remove_kn:
@@ -1497,6 +1499,7 @@ void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
 		walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
 
 	check_task_group_leap_level(tg, gb_sd);
+	tg->adjust_level_timestamp = jiffies;
 }
 
 void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
@@ -1585,11 +1588,11 @@ static bool tg_lower_level(struct task_group *tg)
 		goto fail;
 
 	raw_spin_lock(&gb_sd->lock);
-	if (!time_after(jiffies, gb_sd->last_lower_timestamp + gb_sd->lower_interval)) {
+	if (!time_after(jiffies, gb_sd->last_balance_timestamp + gb_sd->lower_interval)) {
 		raw_spin_unlock(&gb_sd->lock);
 		goto fail;
 	} else {
-		gb_sd->last_lower_timestamp = jiffies;
+		gb_sd->last_balance_timestamp = jiffies;
 		raw_spin_unlock(&gb_sd->lock);
 	}
 
@@ -1801,7 +1804,7 @@ gb_detach_task_groups_from_gb_sd(struct gb_lb_env *gb_env,
 	raw_spin_lock(&gb_sd->lock);
 	/* Try the task cgroups with little specs first. */
 	gb_for_each_tg_safe(tg, n, &gb_sd->task_groups) {
-		if (!time_after(jiffies, tg->leap_level_timestamp + 2 * gb_sd->lower_interval))
+		if (!time_after(jiffies, tg->adjust_level_timestamp + 2 * gb_sd->lower_interval))
 			continue;
 		switch (gb_env->migration_type) {
 #ifdef CONFIG_GROUP_IDENTITY
@@ -1926,6 +1929,7 @@ void gb_load_balance(struct lb_env *env)
 	struct task_group *tg;
 	int gb_sd_status = 0;
 	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
+	unsigned long src_load, src_cap, dst_load, dst_cap;
 
 	if (!group_balancer_enabled())
 		return;
@@ -1947,6 +1951,17 @@ void gb_load_balance(struct lb_env *env)
 
 	gb_sd = find_matching_gb_sd(&src, &dst);
 	if (!gb_sd)
+		goto unlock;
+
+	if (!time_after(jiffies, gb_sd->last_balance_timestamp + 2 * gb_sd->lower_interval))
+		goto unlock;
+
+	src_load = gb_sd_load(src);
+	src_cap = gb_sd_capacity(src);
+	dst_load = gb_sd_load(dst);
+	dst_cap = gb_sd_capacity(dst);
+
+	if (dst_load * src_cap * gb_sd->imbalance_pct >= src_load * dst_cap * 100)
 		goto unlock;
 
 	gb_env = (struct gb_lb_env){
