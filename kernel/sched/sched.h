@@ -601,6 +601,7 @@ struct task_group {
 	bool			group_balancer;
 	bool			leap_level;
 	unsigned long		leap_level_timestamp;
+	unsigned long		adjust_level_timestamp;
 	raw_spinlock_t		gb_lock;
 #endif
 
