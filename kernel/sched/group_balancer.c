@@ -106,6 +106,20 @@ enum GROUP_BALANCER_TOPOLOGY_FLAGS {
 #endif
 };
 
+/* Mapping to the schedule domain. */
+unsigned long sched_domain_flags =
+#ifdef CONFIG_SCHED_SMT
+	BIT(GROUP_BALANCER_SMT) |
+#endif
+#ifdef CONFIG_SCHED_MC
+	BIT(GROUP_BALANCER_MC) |
+#endif
+	BIT(GROUP_BALANCER_DIE) |
+#ifdef CONFIG_NUMA
+	BIT(GROUP_BALANCER_NUMA) |
+#endif
+	BIT(GROUP_BALANCER_ROOT);
+
 struct group_balancer_topology_level {
 	sched_domain_mask_f	mask;
 	sched_domain_flags_f	sd_flags;
@@ -443,7 +457,6 @@ static ssize_t group_balancer_cpus_write(struct kernfs_open_file *of,
 	old_size_level = get_size_level(gb_sd);
 	cpumask_copy(gb_sd_span(gb_sd), new);
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
-	gb_sd->lower_interval = ilog2(gb_sd->span_weight) * gb_sd->span_weight;
 	new_size_level = get_size_level(gb_sd);
 	if (old_size_level != new_size_level) {
 		list_del(&gb_sd->size_level_sibling);
@@ -862,8 +875,13 @@ static int bi_divide_group_balancer_sched_domain(struct group_balancer_sched_dom
 				goto free_right_middle;
 		}
 
+		list_add_tail(&left_middle->topology_level_sibling, &gb_sd->topology_level_sibling);
 		add_to_tree(left_middle, gb_sd);
+		left_middle->lower_interval = gb_sd->lower_interval;
+		list_add_tail(&right_middle->topology_level_sibling,
+				&gb_sd->topology_level_sibling);
 		add_to_tree(right_middle, gb_sd);
+		right_middle->lower_interval = gb_sd->lower_interval;
 		/* Uniform naming format. "left" and "right" are temporary name. */
 		ret = kernfs_rename(left_middle->kn, gb_sd->kn, "domain0");
 		if (ret)
@@ -977,6 +995,7 @@ static int build_group_balancer_root_domain(void)
 	cpumask_copy(gb_sd_span(root), &root_cpumask);
 	list_add_tail(&root->topology_level_sibling, &default_topology[0].domains);
 	add_to_tree(root, NULL);
+	root->lower_interval = ilog2(root->span_weight) * root->span_weight;
 	group_balancer_root_domain = root;
 
 	return 0;
@@ -1044,6 +1063,9 @@ static int build_group_balancer_sched_domains(void)
 				list_del(&parent->topology_level_sibling);
 				list_add_tail(&parent->topology_level_sibling,
 					 &next_gb_tl->domains);
+				if (next_gb_tl->gb_flags & sched_domain_flags)
+					parent->lower_interval = ilog2(parent->span_weight) *
+								 parent->span_weight;
 				continue;
 			}
 			cpumask_copy(trial_cpumask, gb_sd_span(parent));
@@ -1068,6 +1090,11 @@ static int build_group_balancer_sched_domains(void)
 				child->topology_name = next_gb_tl->topology_name;
 				list_add_tail(&child->topology_level_sibling, &next_gb_tl->domains);
 				add_to_tree(child, parent);
+				if (next_gb_tl->gb_flags & sched_domain_flags)
+					child->lower_interval = ilog2(child->span_weight) *
+								child->span_weight;
+				else
+					child->lower_interval = parent->lower_interval;
 			}
 		}
 		rcu_read_unlock();
@@ -1156,6 +1183,7 @@ static int group_balancer_mkdir(struct kernfs_node *kn, const char *name, umode_
 	group_balancer_kn_lock_live(kn);
 	new = alloc_init_group_balancer_sched_domain(kn, name, mode);
 	add_to_tree(new, parent);
+	new->lower_interval = ilog2(new->span_weight) * new->span_weight;
 	group_balancer_kn_unlock(kn);
 	if (IS_ERR(new))
 		return PTR_ERR(new);
