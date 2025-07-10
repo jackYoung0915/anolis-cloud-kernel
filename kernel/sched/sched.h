@@ -149,6 +149,9 @@ struct lb_env {
 #ifdef CONFIG_GROUP_IDENTITY
 	bool			id_need_redo;
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+	bool			gb_need_redo;
+#endif
 };
 #endif
 
@@ -598,6 +601,7 @@ struct task_group {
 	bool			group_balancer;
 	bool			leap_level;
 	unsigned long		leap_level_timestamp;
+	unsigned long		adjust_level_timestamp;
 	raw_spinlock_t		gb_lock;
 #endif
 
@@ -4268,7 +4272,7 @@ extern void tg_specs_change(struct task_group *tg);
 extern unsigned long cfs_h_load(struct cfs_rq *cfs_rq);
 extern bool gb_cpu_overutilized(int cpu);
 extern void gb_load_balance(struct lb_env *env);
-extern void gb_task_tick(struct task_struct *p);
+extern void task_tick_gb(struct task_struct *p);
 #else
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
@@ -4280,6 +4284,6 @@ static inline void tg_specs_change(struct task_group *tg) { }
 #ifdef CONFIG_SMP
 static inline void gb_load_balance(struct lb_env *env) { }
 #endif
-static inline void gb_task_tick(struct task_struct *p) { }
+static inline void task_tick_gb(struct task_struct *p) { }
 #endif
 #endif /* _KERNEL_SCHED_SCHED_H */

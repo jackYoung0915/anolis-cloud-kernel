@@ -12,6 +12,7 @@
 #include <linux/sched/isolation.h>
 
 struct gb_lb_env {
+	int					src_cpu;
 	struct group_balancer_sched_domain	*src;
 	struct group_balancer_sched_domain	*dst;
 	struct group_balancer_sched_domain	*gb_sd;
@@ -44,7 +45,9 @@ struct group_balancer_sched_domain {
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
 	struct kernfs_node				*kn;
+	unsigned long					last_balance_timestamp;
 	unsigned long					lower_interval;
+	unsigned int					imbalance_pct;
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -103,6 +106,20 @@ enum GROUP_BALANCER_TOPOLOGY_FLAGS {
 	GROUP_BALANCER_SMT_FLAG		= BIT(GROUP_BALANCER_SMT),
 #endif
 };
+
+/* Mapping to the schedule domain. */
+unsigned long sched_domain_flags =
+#ifdef CONFIG_SCHED_SMT
+	BIT(GROUP_BALANCER_SMT) |
+#endif
+#ifdef CONFIG_SCHED_MC
+	BIT(GROUP_BALANCER_MC) |
+#endif
+	BIT(GROUP_BALANCER_DIE) |
+#ifdef CONFIG_NUMA
+	BIT(GROUP_BALANCER_NUMA) |
+#endif
+	BIT(GROUP_BALANCER_ROOT);
 
 struct group_balancer_topology_level {
 	sched_domain_mask_f	mask;
@@ -441,7 +458,6 @@ static ssize_t group_balancer_cpus_write(struct kernfs_open_file *of,
 	old_size_level = get_size_level(gb_sd);
 	cpumask_copy(gb_sd_span(gb_sd), new);
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
-	gb_sd->lower_interval = ilog2(gb_sd->span_weight) * gb_sd->span_weight;
 	new_size_level = get_size_level(gb_sd);
 	if (old_size_level != new_size_level) {
 		list_del(&gb_sd->size_level_sibling);
@@ -583,6 +599,7 @@ static inline struct group_balancer_sched_domain
 
 	raw_spin_lock_init(&new->lock);
 	new->task_groups = RB_ROOT;
+	new->imbalance_pct = 117;
 
 	return new;
 remove_kn:
@@ -773,7 +790,6 @@ static int move_group_balancer_sched_domain(struct group_balancer_sched_domain *
 	if (*is_first_child) {
 		*is_first_child = false;
 		new_parent->topology_name = child->topology_name;
-		new_parent->gb_flags = child->gb_flags;
 	}
 	cpumask_or(gb_sd_span(new_parent), gb_sd_span(child), gb_sd_span(new_parent));
 	list_del(&child->sibling);
@@ -861,8 +877,13 @@ static int bi_divide_group_balancer_sched_domain(struct group_balancer_sched_dom
 				goto free_right_middle;
 		}
 
+		list_add_tail(&left_middle->topology_level_sibling, &gb_sd->topology_level_sibling);
 		add_to_tree(left_middle, gb_sd);
+		left_middle->lower_interval = gb_sd->lower_interval;
+		list_add_tail(&right_middle->topology_level_sibling,
+				&gb_sd->topology_level_sibling);
 		add_to_tree(right_middle, gb_sd);
+		right_middle->lower_interval = gb_sd->lower_interval;
 		/* Uniform naming format. "left" and "right" are temporary name. */
 		ret = kernfs_rename(left_middle->kn, gb_sd->kn, "domain0");
 		if (ret)
@@ -945,6 +966,25 @@ out:
 	return;
 }
 
+static void set_group_balancer_sched_domain_flags(void)
+{
+	struct group_balancer_topology_level *tl;
+	struct group_balancer_sched_domain *gb_sd;
+	unsigned int l;
+	unsigned long gb_flags = 0;
+
+	for (l = NR_GROUP_BALANCER_TOPOLOGY - 1; l > 0; l--) {
+		tl = &default_topology[l];
+		if (list_empty(&tl->domains)) {
+			gb_flags |= tl->gb_flags;
+			continue;
+		}
+		for_each_topology_level_sibling(gb_sd, tl)
+			gb_sd->gb_flags = gb_flags;
+		gb_flags |= tl->gb_flags;
+	}
+}
+
 static int build_group_balancer_root_domain(void)
 {
 	struct group_balancer_sched_domain *root;
@@ -957,10 +997,13 @@ static int build_group_balancer_root_domain(void)
 	cpumask_copy(gb_sd_span(root), &root_cpumask);
 	list_add_tail(&root->topology_level_sibling, &default_topology[0].domains);
 	add_to_tree(root, NULL);
+	root->lower_interval = ilog2(root->span_weight) * root->span_weight;
 	group_balancer_root_domain = root;
 
 	return 0;
 }
+
+static void validate_topology_levels(void);
 
 /* BFS to build group balancer sched domain tree. */
 static int build_group_balancer_sched_domains(void)
@@ -972,6 +1015,8 @@ static int build_group_balancer_sched_domains(void)
 	struct group_balancer_sched_domain *parent, *n;
 	char *name = NULL;
 
+	update_group_balancer_root_cpumask();
+	validate_topology_levels();
 	/*
 	 * The group balancer sched domain is a tree.
 	 * If the root was not built on boot, build the root node first.
@@ -980,6 +1025,15 @@ static int build_group_balancer_sched_domains(void)
 		ret = build_group_balancer_root_domain();
 		if (ret)
 			goto err_out;
+	} else {
+		cpumask_copy(gb_sd_span(group_balancer_root_domain), &root_cpumask);
+		group_balancer_root_domain->span_weight =
+			cpumask_weight(gb_sd_span(group_balancer_root_domain));
+		group_balancer_root_domain->lower_interval =
+			ilog2(group_balancer_root_domain->span_weight) *
+			group_balancer_root_domain->span_weight;
+		group_balancer_root_domain->free_tg_specs =
+			100 * group_balancer_root_domain->span_weight;
 	}
 
 	if (!zalloc_cpumask_var(&trial_cpumask, GFP_KERNEL)) {
@@ -1020,7 +1074,9 @@ static int build_group_balancer_sched_domains(void)
 				list_del(&parent->topology_level_sibling);
 				list_add_tail(&parent->topology_level_sibling,
 					 &next_gb_tl->domains);
-				parent->gb_flags &= next_gb_tl->gb_flags;
+				if (next_gb_tl->gb_flags & sched_domain_flags)
+					parent->lower_interval = ilog2(parent->span_weight) *
+								 parent->span_weight;
 				continue;
 			}
 			cpumask_copy(trial_cpumask, gb_sd_span(parent));
@@ -1044,8 +1100,12 @@ static int build_group_balancer_sched_domains(void)
 				cpumask_copy(gb_sd_span(child), child_cpumask);
 				child->topology_name = next_gb_tl->topology_name;
 				list_add_tail(&child->topology_level_sibling, &next_gb_tl->domains);
-				child->gb_flags &= next_gb_tl->gb_flags;
 				add_to_tree(child, parent);
+				if (next_gb_tl->gb_flags & sched_domain_flags)
+					child->lower_interval = ilog2(child->span_weight) *
+								child->span_weight;
+				else
+					child->lower_interval = parent->lower_interval;
 			}
 		}
 		rcu_read_unlock();
@@ -1134,6 +1194,7 @@ static int group_balancer_mkdir(struct kernfs_node *kn, const char *name, umode_
 	group_balancer_kn_lock_live(kn);
 	new = alloc_init_group_balancer_sched_domain(kn, name, mode);
 	add_to_tree(new, parent);
+	new->lower_interval = ilog2(new->span_weight) * new->span_weight;
 	group_balancer_kn_unlock(kn);
 	if (IS_ERR(new))
 		return PTR_ERR(new);
@@ -1223,6 +1284,7 @@ void sched_init_group_balancer_sched_domains(void)
 	else
 		pr_info("Group Balancer: Build group balancer sched domains successfully.\n");
 	set_group_balancer_sched_domain_depth();
+	set_group_balancer_sched_domain_flags();
 	write_unlock(&group_balancer_sched_domain_lock);
 	cpus_read_unlock();
 }
@@ -1270,7 +1332,7 @@ cleanup_root:
 
 void update_group_balancer_root_cpumask(void)
 {
-	cpumask_copy(&root_cpumask, housekeeping_cpumask(HK_TYPE_DOMAIN));
+	cpumask_and(&root_cpumask, housekeeping_cpumask(HK_TYPE_DOMAIN), cpu_online_mask);
 }
 
 static int __init group_balancer_init(void)
@@ -1410,6 +1472,19 @@ check_task_group_leap_level(struct task_group *tg, struct group_balancer_sched_d
 	tg->leap_level = false;
 }
 
+void update_free_tg_specs(struct group_balancer_sched_domain *gb_sd, int specs)
+{
+	struct group_balancer_sched_domain *parent;
+
+	if (specs != -1) {
+		for (parent = gb_sd; parent; parent = parent->parent) {
+			raw_spin_lock(&parent->lock);
+			parent->free_tg_specs += specs;
+			raw_spin_unlock(&parent->lock);
+		}
+	}
+}
+
 /*
  * When we attach/detach a task group to/from a domain, we hold the read lock
  * group_balancer_sched_domain_lock first, and then hold gb_sd->lock.
@@ -1424,25 +1499,16 @@ void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
 						  struct group_balancer_sched_domain *gb_sd,
 						  bool enable)
 {
-	int specs = tg->specs_ratio;
-	struct group_balancer_sched_domain *parent;
-
 	tg->gb_sd = gb_sd;
 	rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
 
-	if (specs != -1) {
-		for (parent = gb_sd; parent; parent = parent->parent) {
-			raw_spin_lock(&parent->lock);
-			parent->free_tg_specs -= specs;
-			raw_spin_unlock(&parent->lock);
-		}
-	}
-
 	tg->soft_cpus_allowed_ptr = gb_sd_span(gb_sd);
+	tg_inc_soft_cpus_version(tg);
 	if (enable)
 		walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
 
 	check_task_group_leap_level(tg, gb_sd);
+	tg->adjust_level_timestamp = jiffies;
 }
 
 void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
@@ -1452,6 +1518,7 @@ void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
 	raw_spin_lock(&gb_sd->lock);
 	add_tg_to_group_balancer_sched_domain_locked(tg, gb_sd, enable);
 	raw_spin_unlock(&gb_sd->lock);
+	update_free_tg_specs(gb_sd, -tg->specs_ratio);
 }
 
 static void
@@ -1459,18 +1526,8 @@ remove_tg_from_group_balancer_sched_domain_locked(struct task_group *tg,
 						  struct group_balancer_sched_domain *gb_sd,
 						  bool disable)
 {
-	int specs = tg->specs_ratio;
-
 	tg->gb_sd = NULL;
 	rb_erase(&tg->gb_node, &gb_sd->task_groups);
-	if (specs != -1) {
-		for (; gb_sd; gb_sd = gb_sd->parent) {
-			raw_spin_lock(&gb_sd->lock);
-			gb_sd->free_tg_specs += specs;
-			raw_spin_unlock(&gb_sd->lock);
-		}
-	}
-
 	if (disable)
 		walk_tg_tree_from(tg, tg_unset_gb_tg_down, tg_nop, NULL);
 }
@@ -1484,6 +1541,7 @@ remove_tg_from_group_balancer_sched_domain(struct task_group *tg,
 	raw_spin_lock(&gb_sd->lock);
 	remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, disable);
 	raw_spin_unlock(&gb_sd->lock);
+	update_free_tg_specs(gb_sd, tg->specs_ratio);
 	read_unlock(&group_balancer_sched_domain_lock);
 }
 
@@ -1538,28 +1596,46 @@ static bool tg_lower_level(struct task_group *tg)
 	if (!gb_sd)
 		goto fail;
 
+	raw_spin_lock(&gb_sd->lock);
+	if (!time_after(jiffies, gb_sd->last_balance_timestamp + gb_sd->lower_interval)) {
+		raw_spin_unlock(&gb_sd->lock);
+		goto fail;
+	} else {
+		gb_sd->last_balance_timestamp = jiffies;
+		raw_spin_unlock(&gb_sd->lock);
+	}
+
 	/*
 	 * The gb_sd may have some children, and the tasks of may spread across each child.
 	 * Lowering the level of tg is essentially a gathering task, so we will find a child
 	 * that contains the most load of tg to migrate tg to.
 	 */
 	for_each_gb_sd_child(child, gb_sd) {
-		child_load = gb_sd_load(gb_sd);
+		child_load = gb_sd_load(child);
 		total_load += child_load;
 
 		child_cap = gb_sd_capacity(child);
 		total_cap += child_cap;
 
-		tg_child_load = tg_gb_sd_load(tg, gb_sd);
-		if (tg_child_load > tg_dst_load) {
+		tg_child_load = tg_gb_sd_load(tg, child);
+		if (!dst || tg_child_load > tg_dst_load) {
 			dst = child;
 			tg_dst_load = tg_child_load;
 			dst_load = child_load;
 			dst_cap = child_cap;
+		} else if (tg_child_load == tg_dst_load) {
+			if (dst_load * child_cap > child_load * dst_cap) {
+				dst = child;
+				tg_dst_load = tg_child_load;
+				dst_load = child_load;
+				dst_cap = child_cap;
+			}
 		}
 		tg_load += tg_child_load;
 	}
 
+	if (tg_load == 0)
+		goto fail;
 	if (tg->specs_ratio > 100 * dst->span_weight)
 		goto fail;
 #ifdef CONFIG_NUMA
@@ -1581,6 +1657,9 @@ static bool tg_lower_level(struct task_group *tg)
 	src_load = total_load - dst_load;
 	src_imb = abs(src_load * dst_cap - dst_load * src_cap);
 	dst_imb = abs((src_load - migrate_load) * dst_cap - (dst_load + migrate_load) * src_cap);
+
+	if (dst_load * src_cap > src_load * dst_cap)
+		goto fail;
 
 	if (dst_imb > src_imb)
 		goto fail;
@@ -1626,7 +1705,7 @@ static struct task_group *gb_task_group(struct task_struct *p)
 	return task_group(p)->gb_tg;
 }
 
-void gb_task_tick(struct task_struct *p)
+void task_tick_gb(struct task_struct *p)
 {
 	struct task_group *tg = gb_task_group(p);
 
@@ -1723,57 +1802,89 @@ static struct group_balancer_sched_domain
 			struct task_group, gb_node) ; 1; });				\
 	     pos = n)
 
-static int gb_detach_task_groups(struct gb_lb_env *gb_env)
+static int
+gb_detach_task_groups_from_gb_sd(struct gb_lb_env *gb_env,
+				 struct group_balancer_sched_domain *gb_sd)
 {
-	struct group_balancer_sched_domain *gb_sd, *child;
 	struct task_group *tg, *n;
 	unsigned long load, util;
 	int detached = 0;
 
-	gb_sd = gb_env->gb_sd;
-	if (!gb_sd)
+	raw_spin_lock(&gb_sd->lock);
+	/* Try the task cgroups with little specs first. */
+	gb_for_each_tg_safe(tg, n, &gb_sd->task_groups) {
+		if (!time_after(jiffies, tg->adjust_level_timestamp + 2 * gb_sd->lower_interval))
+			continue;
+		switch (gb_env->migration_type) {
+#ifdef CONFIG_GROUP_IDENTITY
+		case migrate_identity:
+			fallthrough;
+#endif
+		case migrate_load:
+			load = tg_gb_sd_load(tg, gb_sd);
+			if (load == 0)
+				continue;
+			if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
+				continue;
+			gb_env->imbalance -= load;
+			break;
+		case migrate_util:
+			util = tg_gb_sd_util(tg, gb_sd);
+			if (util == 0)
+				continue;
+			if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
+				continue;
+			gb_env->imbalance -= util;
+			break;
+		case migrate_task:
+			gb_env->imbalance = 0;
+			break;
+		/*TODO: Perfect strategy of migrate_misfit*/
+		case migrate_misfit:
+			gb_env->imbalance = 0;
+			break;
+		default:
+			break;
+		}
+		remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
+		rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
+		detached++;
+		if (gb_env->imbalance <= 0) {
+			raw_spin_unlock(&gb_sd->lock);
+			return detached;
+		}
+	}
+	raw_spin_unlock(&gb_sd->lock);
+	return detached;
+}
+
+static int gb_detach_task_groups(struct gb_lb_env *gb_env)
+{
+	struct group_balancer_sched_domain *parent, *child;
+	int detached = 0;
+
+	parent = gb_env->src;
+	if (!parent)
 		return 0;
 
-	for_each_gb_sd_child(child, gb_sd) {
-		raw_spin_lock(&child->lock);
-		/* Try the task cgroups with little specs first. */
-		gb_for_each_tg_safe(tg, n, &child->task_groups) {
-			switch (gb_env->migration_type) {
-#ifdef CONFIG_GROUP_IDENTITY
-			case migrate_identity:
-				fallthrough;
-#endif
-			case migrate_load:
-				load = max_t(unsigned long, tg_gb_sd_load(tg, gb_sd), 1);
-				if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
-					continue;
-				gb_env->imbalance -= load;
-				break;
-			case migrate_util:
-				util = tg_gb_sd_util(tg, gb_sd);
-				if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
-					continue;
-				gb_env->imbalance -= util;
-				break;
-			case migrate_task:
-				gb_env->imbalance = 0;
-				break;
-			/*TODO: Perfect strategy of migrate_misfit*/
-			case migrate_misfit:
-				gb_env->imbalance = 0;
-				break;
-			}
-			remove_tg_from_group_balancer_sched_domain_locked(tg, child, false);
-			rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
-			detached++;
-			if (gb_env->imbalance <= 0) {
-				raw_spin_unlock(&child->lock);
-				return detached;
-			}
-		}
-		raw_spin_unlock(&child->lock);
+down:
+	if (cpumask_test_cpu(gb_env->src_cpu, gb_sd_span(parent)))
+		detached += gb_detach_task_groups_from_gb_sd(gb_env, parent);
+	if (detached || gb_env->imbalance <= 0)
+		goto out;
+	for_each_gb_sd_child(child, parent) {
+		parent = child;
+		goto down;
+up:
+		continue;
 	}
-
+	if (parent == gb_env->src)
+		goto out;
+	child = parent;
+	parent = parent->parent;
+	if (parent)
+		goto up;
+out:
 	return detached;
 }
 
@@ -1827,6 +1938,7 @@ void gb_load_balance(struct lb_env *env)
 	struct task_group *tg;
 	int gb_sd_status = 0;
 	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
+	unsigned long src_load, src_cap, dst_load, dst_cap;
 
 	if (!group_balancer_enabled())
 		return;
@@ -1850,7 +1962,19 @@ void gb_load_balance(struct lb_env *env)
 	if (!gb_sd)
 		goto unlock;
 
+	if (!time_after(jiffies, gb_sd->last_balance_timestamp + 2 * gb_sd->lower_interval))
+		goto unlock;
+
+	src_load = gb_sd_load(src);
+	src_cap = gb_sd_capacity(src);
+	dst_load = gb_sd_load(dst);
+	dst_cap = gb_sd_capacity(dst);
+
+	if (dst_load * src_cap * gb_sd->imbalance_pct >= src_load * dst_cap * 100)
+		goto unlock;
+
 	gb_env = (struct gb_lb_env){
+		.src_cpu		= env->src_cpu,
 		.src			= src,
 		.dst			= dst,
 		.gb_sd			= gb_sd,
