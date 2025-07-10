@@ -931,7 +931,7 @@ static void ocfs2_write_failure(struct inode *inode,
 				ocfs2_jbd2_inode_add_write(wc->w_handle, inode,
 							   user_pos, user_len);
 
-			block_commit_write(tmppage, from, to);
+			block_commit_write(page_folio(tmppage), from, to);
 		}
 	}
 }
@@ -2033,7 +2033,8 @@ int ocfs2_write_end_nolock(struct address_space *mapping,
 				ocfs2_jbd2_inode_add_write(handle, inode,
 							   start_byte, length);
 			}
-			block_commit_write(tmppage, from, to);
+
+			block_commit_write(page_folio(tmppage), from, to);
 		}
 	}
 

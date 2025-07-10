@@ -994,7 +994,12 @@ int ext4_walk_page_buffers(handle_t *handle, struct inode *inode,
  */
 static int ext4_dirty_journalled_data(handle_t *handle, struct buffer_head *bh)
 {
-	folio_mark_dirty(bh->b_folio);
+	struct folio *folio = bh->b_folio;
+	struct inode *inode = folio->mapping->host;
+
+	/* only regular files have a_ops */
+	if (S_ISREG(inode->i_mode))
+		folio_mark_dirty(folio);
 	return ext4_handle_dirty_metadata(handle, NULL, bh);
 }
 
@@ -1028,7 +1033,7 @@ int do_journal_get_write_access(handle_t *handle, struct inode *inode,
 static int ext4_block_write_begin(struct folio *folio, loff_t pos, unsigned len,
 				  get_block_t *get_block)
 {
-	unsigned from = pos & (PAGE_SIZE - 1);
+	unsigned int from = offset_in_folio(folio, pos);
 	unsigned to = from + len;
 	struct inode *inode = folio->mapping->host;
 	unsigned block_start, block_end;
@@ -1041,8 +1046,7 @@ static int ext4_block_write_begin(struct folio *folio, loff_t pos, unsigned len,
 	int i;
 
 	BUG_ON(!folio_test_locked(folio));
-	BUG_ON(from > PAGE_SIZE);
-	BUG_ON(to > PAGE_SIZE);
+	BUG_ON(to > folio_size(folio));
 	BUG_ON(from > to);
 
 	head = folio_buffers(folio);
@@ -1137,6 +1141,7 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 	struct folio *folio;
 	pgoff_t index;
 	unsigned from, to;
+	fgf_t fgp = FGP_WRITEBEGIN;
 
 	if (unlikely(ext4_forced_shutdown(inode->i_sb)))
 		return -EIO;
@@ -1148,8 +1153,6 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 	 */
 	needed_blocks = ext4_writepage_trans_blocks(inode) + 1;
 	index = pos >> PAGE_SHIFT;
-	from = pos & (PAGE_SIZE - 1);
-	to = from + len;
 
 	if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA)) {
 		ret = ext4_try_to_write_inline_data(mapping, inode, pos, len,
@@ -1168,10 +1171,18 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 	 * the folio (if needed) without using GFP_NOFS.
 	 */
 retry_grab:
-	folio = __filemap_get_folio(mapping, index, FGP_WRITEBEGIN,
-					mapping_gfp_mask(mapping));
+	fgp |= fgf_set_order(len);
+	folio = __filemap_get_folio(mapping, index, fgp,
+				    mapping_gfp_mask(mapping));
 	if (IS_ERR(folio))
 		return PTR_ERR(folio);
+
+	if (pos + len > folio_pos(folio) + folio_size(folio))
+		len = folio_pos(folio) + folio_size(folio) - pos;
+
+	from = offset_in_folio(folio, pos);
+	to = from + len;
+
 	/*
 	 * The same as page allocation, we prealloc buffer heads before
 	 * starting the handle.
@@ -1927,7 +1938,7 @@ static int mpage_submit_folio(struct mpage_da_data *mpd, struct folio *folio)
 		len = size & (len - 1);
 	err = ext4_bio_write_folio(&mpd->io_submit, folio, len);
 	if (!err)
-		mpd->wbc->nr_to_write--;
+		mpd->wbc->nr_to_write -= folio_nr_pages(folio);
 
 	return err;
 }
@@ -2150,7 +2161,6 @@ static int mpage_map_and_submit_buffers(struct mpage_da_data *mpd)
 
 	start = mpd->map.m_lblk >> bpp_bits;
 	end = (mpd->map.m_lblk + mpd->map.m_len - 1) >> bpp_bits;
-	lblk = start << bpp_bits;
 	pblock = mpd->map.m_pblk;
 
 	folio_batch_init(&fbatch);
@@ -2161,6 +2171,7 @@ static int mpage_map_and_submit_buffers(struct mpage_da_data *mpd)
 		for (i = 0; i < nr; i++) {
 			struct folio *folio = fbatch.folios[i];
 
+			lblk = folio->index << bpp_bits;
 			err = mpage_process_folio(mpd, folio, &lblk, &pblock,
 						 &map_bh);
 			/*
@@ -2346,7 +2357,7 @@ update_disksize:
  */
 static int ext4_da_writepages_trans_blocks(struct inode *inode)
 {
-	int bpp = ext4_journal_blocks_per_page(inode);
+	int bpp = ext4_journal_blocks_per_folio(inode);
 
 	return ext4_meta_trans_blocks(inode,
 				MAX_WRITEPAGES_EXTENT_LEN + bpp - 1, bpp);
@@ -2382,7 +2393,7 @@ static int mpage_journal_page_buffers(handle_t *handle,
 	size_t len = folio_size(folio);
 
 	folio_clear_checked(folio);
-	mpd->wbc->nr_to_write--;
+	mpd->wbc->nr_to_write -= folio_nr_pages(folio);
 
 	if (folio_pos(folio) + len > size &&
 	    !ext4_verity_in_progress(inode))
@@ -2424,7 +2435,7 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 	ext4_lblk_t lblk;
 	struct buffer_head *head;
 	handle_t *handle = NULL;
-	int bpp = ext4_journal_blocks_per_page(mpd->inode);
+	int bpp = ext4_journal_blocks_per_folio(mpd->inode);
 
 	if (mpd->wbc->sync_mode == WB_SYNC_ALL || mpd->wbc->tagged_writepages)
 		tag = PAGECACHE_TAG_TOWRITE;
@@ -2910,6 +2921,7 @@ static int ext4_da_write_begin(struct file *file, struct address_space *mapping,
 	struct folio *folio;
 	pgoff_t index;
 	struct inode *inode = mapping->host;
+	fgf_t fgp = FGP_WRITEBEGIN;
 
 	if (unlikely(ext4_forced_shutdown(inode->i_sb)))
 		return -EIO;
@@ -2934,10 +2946,14 @@ static int ext4_da_write_begin(struct file *file, struct address_space *mapping,
 	}
 
 retry:
-	folio = __filemap_get_folio(mapping, index, FGP_WRITEBEGIN,
-			mapping_gfp_mask(mapping));
+	fgp |= fgf_set_order(len);
+	folio = __filemap_get_folio(mapping, index, fgp,
+				    mapping_gfp_mask(mapping));
 	if (IS_ERR(folio))
 		return PTR_ERR(folio);
+
+	if (pos + len > folio_pos(folio) + folio_size(folio))
+		len = folio_pos(folio) + folio_size(folio) - pos;
 
 #ifdef CONFIG_FS_ENCRYPTION
 	ret = ext4_block_write_begin(folio, pos, len, ext4_da_get_block_prep);
@@ -3030,7 +3046,7 @@ static int ext4_da_do_write_end(struct address_space *mapping,
 		unsigned long end;
 
 		i_size_write(inode, new_i_size);
-		end = (new_i_size - 1) & (PAGE_SIZE - 1);
+		end = offset_in_folio(folio, new_i_size - 1);
 		if (copied && ext4_da_should_update_i_disksize(folio, end)) {
 			ext4_update_i_disksize(inode, new_i_size);
 			disksize_changed = true;
@@ -3659,9 +3675,7 @@ void ext4_set_aops(struct inode *inode)
 static int __ext4_block_zero_page_range(handle_t *handle,
 		struct address_space *mapping, loff_t from, loff_t length)
 {
-	ext4_fsblk_t index = from >> PAGE_SHIFT;
-	unsigned offset = from & (PAGE_SIZE-1);
-	unsigned blocksize, pos;
+	unsigned int offset, blocksize, pos;
 	ext4_lblk_t iblock;
 	struct inode *inode = mapping->host;
 	struct buffer_head *bh;
@@ -3676,13 +3690,14 @@ static int __ext4_block_zero_page_range(handle_t *handle,
 
 	blocksize = inode->i_sb->s_blocksize;
 
-	iblock = index << (PAGE_SHIFT - inode->i_sb->s_blocksize_bits);
+	iblock = folio->index << (PAGE_SHIFT - inode->i_sb->s_blocksize_bits);
 
 	bh = folio_buffers(folio);
 	if (!bh)
 		bh = folio_create_empty_buffers(folio, blocksize, 0);
 
 	/* Find the buffer that contains "offset" */
+	offset = offset_in_folio(folio, from);
 	pos = blocksize;
 	while (offset >= pos) {
 		bh = bh->b_this_page;
@@ -4742,6 +4757,23 @@ error:
 	return -EFSCORRUPTED;
 }
 
+bool ext4_should_enable_large_folio(struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+
+	if (!S_ISREG(inode->i_mode))
+		return false;
+	if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA ||
+	    ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
+		return false;
+	if (ext4_has_feature_verity(sb))
+		return false;
+	if (ext4_has_feature_encrypt(sb))
+		return false;
+
+	return true;
+}
+
 struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 			  ext4_iget_flags flags, const char *function,
 			  unsigned int line)
@@ -5054,6 +5086,9 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 		ret = -EFSCORRUPTED;
 		goto bad_inode;
 	}
+	if (ext4_should_enable_large_folio(inode))
+		mapping_set_large_folios(inode->i_mapping);
+
 	ret = check_igot_inode(inode, flags, function, line);
 	/*
 	 * -ESTALE here means there is nothing inherently wrong with the inode,
@@ -5736,18 +5771,16 @@ static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
 	int ret;
 
 	/*
-	 * How many index blocks need to touch to map @lblocks logical blocks
-	 * to @pextents physical extents?
+	 * How many index and lead blocks need to touch to map @lblocks
+	 * logical blocks to @pextents physical extents?
 	 */
 	idxblocks = ext4_index_trans_blocks(inode, lblocks, pextents);
-
-	ret = idxblocks;
 
 	/*
 	 * Now let's see how many group bitmaps and group descriptors need
 	 * to account
 	 */
-	groups = idxblocks + pextents;
+	groups = idxblocks;
 	gdpblocks = groups;
 	if (groups > ngroups)
 		groups = ngroups;
@@ -5755,7 +5788,7 @@ static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
 		gdpblocks = EXT4_SB(inode->i_sb)->s_gdb_count;
 
 	/* bitmaps and block group descriptor blocks */
-	ret += groups + gdpblocks;
+	ret = idxblocks + groups + gdpblocks;
 
 	/* Blocks for super block, inode, quota and xattr blocks */
 	ret += EXT4_META_TRANS_BLOCKS(inode->i_sb);
@@ -5775,7 +5808,7 @@ static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
  */
 int ext4_writepage_trans_blocks(struct inode *inode)
 {
-	int bpp = ext4_journal_blocks_per_page(inode);
+	int bpp = ext4_journal_blocks_per_folio(inode);
 	int ret;
 
 	ret = ext4_meta_trans_blocks(inode, bpp, bpp);

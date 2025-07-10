@@ -272,12 +272,11 @@ int generic_write_end(struct file *, struct address_space *,
 				loff_t, unsigned len, unsigned copied,
 				struct folio *, void *);
 void folio_zero_new_buffers(struct folio *folio, size_t from, size_t to);
-void clean_page_buffers(struct page *page);
 int cont_write_begin(struct file *, struct address_space *, loff_t,
 			unsigned, struct folio **, void **,
 			get_block_t *, loff_t *);
 int generic_cont_expand_simple(struct inode *inode, loff_t size);
-void block_commit_write(struct page *page, unsigned int from, unsigned int to);
+void block_commit_write(struct folio *folio, size_t from, size_t to);
 int block_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf,
 				get_block_t get_block);
 sector_t generic_block_bmap(struct address_space *, sector_t, get_block_t *);
