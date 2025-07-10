@@ -484,6 +484,18 @@ config VIRT_PLAT_DEV
           which created for the Qemu emulated device to implement virtual MSI
           direct injection.
 
+config CMN700_CACHE_SCAN
+	tristate "ARM CMN700 cache scanning support"
+        depends on ARM64
+        default n
+	help
+	  Mitigate ARM CMN700 performance erratum 3688582.  Enable this
+	  configuration option to add a misc device.  When requested, it calls
+	  into the firmware to collect the problematic addresses and flush the
+	  corresponding cache lines to mitigate the erratum.
+
+	  If unsure, say N.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
