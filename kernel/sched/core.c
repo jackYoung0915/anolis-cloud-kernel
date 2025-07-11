@@ -3378,10 +3378,10 @@ static int migrate_swap_stop(void *data)
 	if (task_cpu(arg->src_task) != arg->src_cpu)
 		return -EAGAIN;
 
-	if (!cpumask_test_cpu(arg->dst_cpu, arg->src_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg->dst_cpu, task_allowed_cpu(arg->src_task)))
 		return -EAGAIN;
 
-	if (!cpumask_test_cpu(arg->src_cpu, arg->dst_task->cpus_ptr))
+	if (!cpumask_test_cpu(arg->src_cpu, task_allowed_cpu(arg->dst_task)))
 		return -EAGAIN;
 
 	__migrate_swap_task(arg->src_task, arg->dst_cpu);
