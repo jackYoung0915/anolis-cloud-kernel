@@ -14396,6 +14396,14 @@ void free_fair_sched_group(struct task_group *tg)
 
 	destroy_cfs_bandwidth(tg_cfs_bandwidth(tg));
 
+#ifdef CONFIG_GROUP_BALANCER
+	if (tg_group_balancer_enabled(tg)) {
+		raw_spin_lock(&tg->gb_lock);
+		detach_tg_from_group_balancer_sched_domain(tg, true);
+		raw_spin_unlock(&tg->gb_lock);
+	}
+#endif
+
 #ifdef CONFIG_GROUP_IDENTITY
 	/*
 	 * When cgroup is created failed, the refcount should be rollback.
