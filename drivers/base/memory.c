@@ -198,8 +198,22 @@ static int memory_block_online(struct memory_block *mem)
 		if (ret)
 			return ret;
 	}
-
-	ret = online_pages(start_pfn + nr_vmemmap_pages,
+	/*
+	 * Defer struct pages initialization and defer freeing pages to buddy
+	 * allocator starting from at least the second memory block of the zone,
+	 * as rebuilding the zone is not required from that point onwards.
+	 */
+	if (parallel_hotplug_ratio &&
+	    start_pfn + nr_vmemmap_pages >=
+		    zone->zone_start_pfn +
+			    (memory_block_size_bytes() >> PAGE_SHIFT)) {
+		ret = __online_pages(start_pfn + nr_vmemmap_pages,
+				     nr_pages - nr_vmemmap_pages, zone,
+				     mem->group, MHP_PHASE_PREPARE);
+		atomic_set(&mem->deferred_state, MEM_NEED_DEFER);
+		mem->deferred_zone = zone;
+	} else
+		ret = online_pages(start_pfn + nr_vmemmap_pages,
 			   nr_pages - nr_vmemmap_pages, zone, mem->group);
 	if (ret) {
 		if (nr_vmemmap_pages)
@@ -286,7 +300,9 @@ static int memory_block_change_state(struct memory_block *mem,
 		mem->state = MEM_GOING_OFFLINE;
 
 	ret = memory_block_action(mem, to_state);
-	mem->state = ret ? from_state_req : to_state;
+	mem->state =
+		(ret || atomic_read(&mem->deferred_state) == MEM_NEED_DEFER) ?
+			from_state_req : to_state;
 
 	return ret;
 }
@@ -675,6 +691,8 @@ static int init_memory_block(unsigned long block_id, unsigned long state,
 	mem->state = state;
 	mem->nid = NUMA_NO_NODE;
 	mem->nr_vmemmap_pages = nr_vmemmap_pages;
+	atomic_set(&mem->deferred_state, MEM_SKIP_DEFER);
+	mem->deferred_zone = NULL;
 	INIT_LIST_HEAD(&mem->group_next);
 
 	if (group) {

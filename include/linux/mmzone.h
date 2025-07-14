@@ -873,6 +873,7 @@ struct zone {
 	atomic_long_t		vm_numa_stat[NR_VM_NUMA_STAT_ITEMS];
 
 	unsigned long reported_pages;
+	atomic_long_t deferred_pages;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -893,6 +894,11 @@ enum zone_flags {
 static inline unsigned long zone_managed_pages(struct zone *zone)
 {
 	return (unsigned long)atomic_long_read(&zone->managed_pages);
+}
+
+static inline unsigned long zone_deferred_pages(struct zone *zone)
+{
+	return (unsigned long)atomic_long_read(&zone->deferred_pages);
 }
 
 static inline unsigned long zone_cma_pages(struct zone *zone)
@@ -1046,6 +1052,13 @@ typedef struct pglist_data {
 	 * Nests above zone->lock and zone->span_seqlock
 	 */
 	spinlock_t node_size_lock;
+#endif
+#ifdef CONFIG_MEMORY_HOTPLUG
+	/*
+	 * This workqueue is used to handle deferred pages
+	 * initialization of hotplugged memory.
+	 */
+	struct workqueue_struct *deferred_hotplug_wq;
 #endif
 	unsigned long node_start_pfn;
 	unsigned long node_present_pages; /* total number of physical pages */

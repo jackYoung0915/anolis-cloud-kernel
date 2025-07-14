@@ -122,6 +122,13 @@ bool skip_set_contiguous __read_mostly;
 module_param(skip_set_contiguous, bool, 0644);
 MODULE_PARM_DESC(skip_set_contiguous, "Do not set zone contiguous when online/offline pages");
 
+unsigned int parallel_hotplug_ratio __read_mostly;
+EXPORT_SYMBOL_GPL(parallel_hotplug_ratio);
+module_param(parallel_hotplug_ratio, uint, 0644);
+MODULE_PARM_DESC(parallel_hotplug_ratio,
+		"Set the ratio of parallel hotplug workers to the number of CPUs on "
+		"the node, with values constrained between 0 and 100. Default: 0");
+
 /*
  * memory_hotplug.auto_movable_numa_aware: consider numa node stats
  */
@@ -660,6 +667,46 @@ static void __meminit resize_pgdat_range(struct pglist_data *pgdat, unsigned lon
 
 	pgdat->node_spanned_pages = max(start_pfn + nr_pages, old_end_pfn) - pgdat->node_start_pfn;
 }
+
+void __ref __move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
+				  unsigned long nr_pages, struct vmem_altmap *altmap,
+				  int migratetype, int phase)
+{
+	struct pglist_data *pgdat = zone->zone_pgdat;
+	int nid = pgdat->node_id;
+	unsigned long flags;
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE) {
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+		kidled_free_page_age(pgdat);
+#endif
+		clear_zone_contiguous(zone);
+
+		/* TODO Huh pgdat is irqsave while zone is not. It used to be like that before */
+		pgdat_resize_lock(pgdat, &flags);
+		zone_span_writelock(zone);
+		if (zone_is_empty(zone))
+			init_currently_empty_zone(zone, start_pfn, nr_pages);
+		resize_zone_range(zone, start_pfn, nr_pages);
+		zone_span_writeunlock(zone);
+		resize_pgdat_range(pgdat, start_pfn, nr_pages);
+		pgdat_resize_unlock(pgdat, &flags);
+	}
+
+	/*
+	 * TODO now we have a visible range of pages which are not associated
+	 * with their zone properly. Not nice but set_pfnblock_flags_mask
+	 * expects the zone spans the pfn range. All the pages in the range
+	 * are reserved so nobody should be touching them so we should be safe
+	 */
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED)
+		memmap_init_zone(nr_pages, nid, zone_idx(zone), start_pfn, 0,
+			 MEMINIT_HOTPLUG, altmap, migratetype);
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE)
+		set_zone_contiguous(zone);
+}
+
 /*
  * Associate the pfn range with the given zone, initializing the memmaps
  * and resizing the pgdat/zone data to span the added pages. After this
@@ -673,35 +720,8 @@ void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
 				  unsigned long nr_pages,
 				  struct vmem_altmap *altmap, int migratetype)
 {
-	struct pglist_data *pgdat = zone->zone_pgdat;
-	int nid = pgdat->node_id;
-	unsigned long flags;
-
-#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
-	kidled_free_page_age(pgdat);
-#endif
-	clear_zone_contiguous(zone);
-
-	/* TODO Huh pgdat is irqsave while zone is not. It used to be like that before */
-	pgdat_resize_lock(pgdat, &flags);
-	zone_span_writelock(zone);
-	if (zone_is_empty(zone))
-		init_currently_empty_zone(zone, start_pfn, nr_pages);
-	resize_zone_range(zone, start_pfn, nr_pages);
-	zone_span_writeunlock(zone);
-	resize_pgdat_range(pgdat, start_pfn, nr_pages);
-	pgdat_resize_unlock(pgdat, &flags);
-
-	/*
-	 * TODO now we have a visible range of pages which are not associated
-	 * with their zone properly. Not nice but set_pfnblock_flags_mask
-	 * expects the zone spans the pfn range. All the pages in the range
-	 * are reserved so nobody should be touching them so we should be safe
-	 */
-	memmap_init_zone(nr_pages, nid, zone_idx(zone), start_pfn, 0,
-			 MEMINIT_HOTPLUG, altmap, migratetype);
-
-	set_zone_contiguous(zone);
+	__move_pfn_range_to_zone(zone, start_pfn, nr_pages, altmap, migratetype,
+				 MHP_PHASE_DEFAULT);
 }
 
 struct auto_movable_stats {
@@ -713,7 +733,8 @@ static void auto_movable_stats_account_zone(struct auto_movable_stats *stats,
 					    struct zone *zone)
 {
 	if (zone_idx(zone) == ZONE_MOVABLE) {
-		stats->movable_pages += zone->present_pages;
+		stats->movable_pages +=
+			zone->present_pages + zone_deferred_pages(zone);
 	} else {
 		stats->kernel_early_pages += zone->present_early_pages;
 #ifdef CONFIG_CMA
@@ -979,6 +1000,33 @@ struct zone *zone_for_pfn_range(int online_type, int nid,
 	return default_zone_for_pfn(nid, start_pfn, nr_pages);
 }
 
+void __adjust_present_page_count(struct page *page, struct memory_group *group,
+			       long nr_pages, struct zone *zone, int phase)
+{
+	const bool movable = zone_idx(zone) == ZONE_MOVABLE;
+	unsigned long flags;
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED) {
+		/*
+		 * We only support onlining/offlining/adding/removing of complete
+		 * memory blocks; therefore, either all is either early or hotplugged.
+		 */
+		if (early_section(__pfn_to_section(page_to_pfn(page))))
+			zone->present_early_pages += nr_pages;
+		zone->present_pages += nr_pages;
+		pgdat_resize_lock(zone->zone_pgdat, &flags);
+		zone->zone_pgdat->node_present_pages += nr_pages;
+		pgdat_resize_unlock(zone->zone_pgdat, &flags);
+	}
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE) {
+		if (group && movable)
+			group->present_movable_pages += nr_pages;
+		else if (group && !movable)
+			group->present_kernel_pages += nr_pages;
+	}
+}
+
 /*
  * This function should only be called by memory_block_{online,offline},
  * and {online,offline}_pages.
@@ -987,24 +1035,8 @@ void adjust_present_page_count(struct page *page, struct memory_group *group,
 			       long nr_pages)
 {
 	struct zone *zone = page_zone(page);
-	const bool movable = zone_idx(zone) == ZONE_MOVABLE;
-	unsigned long flags;
 
-	/*
-	 * We only support onlining/offlining/adding/removing of complete
-	 * memory blocks; therefore, either all is either early or hotplugged.
-	 */
-	if (early_section(__pfn_to_section(page_to_pfn(page))))
-		zone->present_early_pages += nr_pages;
-	zone->present_pages += nr_pages;
-	pgdat_resize_lock(zone->zone_pgdat, &flags);
-	zone->zone_pgdat->node_present_pages += nr_pages;
-	pgdat_resize_unlock(zone->zone_pgdat, &flags);
-
-	if (group && movable)
-		group->present_movable_pages += nr_pages;
-	else if (group && !movable)
-		group->present_kernel_pages += nr_pages;
+	__adjust_present_page_count(page, group, nr_pages, zone, MHP_PHASE_DEFAULT);
 }
 
 int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
@@ -1053,14 +1085,16 @@ void mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages)
 	kasan_remove_zero_shadow(__va(PFN_PHYS(pfn)), PFN_PHYS(nr_pages));
 }
 
-int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
-		       struct zone *zone, struct memory_group *group)
+int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
+		       struct zone *zone, struct memory_group *group,
+			   int phase)
 {
 	unsigned long flags;
 	int need_zonelists_rebuild = 0;
 	const int nid = zone_to_nid(zone);
 	int ret;
 	struct memory_notify arg;
+	bool need_lock = phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE;
 
 	/*
 	 * {on,off}lining is constrained to full memory sections (or more
@@ -1074,10 +1108,19 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 			 !IS_ALIGNED(pfn + nr_pages, PAGES_PER_SECTION)))
 		return -EINVAL;
 
-	mem_hotplug_begin();
+	if (need_lock)
+		mem_hotplug_begin();
 
 	/* associate pfn range with the zone */
-	move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE);
+	__move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE, phase);
+
+	if (phase == MHP_PHASE_PREPARE) {
+		__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages,
+					    zone, phase);
+		atomic_long_add(nr_pages, &zone->deferred_pages);
+		mem_hotplug_done();
+		return 0;
+	}
 
 	arg.start_pfn = pfn;
 	arg.nr_pages = nr_pages;
@@ -1107,7 +1150,10 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 	}
 
 	online_pages_range(pfn, nr_pages);
-	adjust_present_page_count(pfn_to_page(pfn), group, nr_pages);
+
+	__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages, zone, phase);
+	if (phase == MHP_PHASE_DEFERRED)
+		atomic_long_sub(nr_pages, &zone->deferred_pages);
 
 	node_states_set_node(nid, &arg);
 	if (need_zonelists_rebuild)
@@ -1134,7 +1180,9 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 	writeback_set_ratelimit();
 
 	memory_notify(MEM_ONLINE, &arg);
-	mem_hotplug_done();
+
+	if (need_lock)
+		mem_hotplug_done();
 	return 0;
 
 failed_addition:
@@ -1143,9 +1191,142 @@ failed_addition:
 		 (((unsigned long long) pfn + nr_pages) << PAGE_SHIFT) - 1);
 	memory_notify(MEM_CANCEL_ONLINE, &arg);
 	remove_pfn_range_from_zone(zone, pfn, nr_pages);
-	mem_hotplug_done();
+	if (need_lock)
+		mem_hotplug_done();
 	return ret;
 }
+
+int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
+		       struct zone *zone, struct memory_group *group)
+{
+	return __online_pages(pfn, nr_pages, zone, group, MHP_PHASE_DEFAULT);
+}
+
+static int deferred_memory_block_online_pages(struct memory_block *mem,
+					      void *arg)
+{
+	unsigned long start_pfn, nr_pages;
+	unsigned long nr_vmemmap_pages;
+	struct zone *zone;
+	int ret;
+
+	/* Continue if struct pages initialization need to be deferred */
+	if (memhp_default_online_type == MMOP_OFFLINE ||
+	    mem->state == MEM_ONLINE || !mem->deferred_zone ||
+	    atomic_cmpxchg(&mem->deferred_state, MEM_NEED_DEFER,
+			   MEM_SKIP_DEFER) != MEM_NEED_DEFER)
+		return 0;
+
+	zone = mem->deferred_zone;
+	mem->deferred_zone = NULL;
+
+	start_pfn = section_nr_to_pfn(mem->start_section_nr);
+	nr_pages = memory_block_size_bytes() >> PAGE_SHIFT;
+	nr_vmemmap_pages = mem->nr_vmemmap_pages;
+
+	ret = __online_pages(start_pfn + nr_vmemmap_pages,
+			     nr_pages - nr_vmemmap_pages, zone, mem->group,
+			     MHP_PHASE_DEFERRED);
+	if (ret) {
+		if (nr_vmemmap_pages)
+			mhp_deinit_memmap_on_memory(start_pfn,
+						    nr_vmemmap_pages);
+		return ret;
+	}
+
+	mem->state = MEM_ONLINE;
+	return 0;
+}
+
+struct deferred_walk_memory_blocks_work {
+	struct work_struct work;
+	u64 start;
+	u64 size;
+	int ret;
+};
+
+static void deferred_walk_memory_blocks_worker(struct work_struct *work)
+{
+	struct deferred_walk_memory_blocks_work *w = container_of(
+		work, struct deferred_walk_memory_blocks_work, work);
+
+	w->ret = walk_memory_blocks(w->start, w->size, NULL,
+				 deferred_memory_block_online_pages);
+}
+
+int __ref deferred_online_memory(int nid, u64 start, u64 size)
+{
+	struct pglist_data *pgdat = NODE_DATA(nid);
+	int i, ret = 0;
+	struct workqueue_struct *wq;
+	struct deferred_walk_memory_blocks_work *ws, *w;
+	const struct cpumask *cpumask;
+	u64 chunk_start = start;
+	u64 chunk_size, chunk_num, chunk_remain;
+
+	if (!parallel_hotplug_ratio)
+		return -EINVAL;
+
+	wq = pgdat->deferred_hotplug_wq;
+	if (!wq) {
+		pr_warn("Deferred hotplug work queue is not initialized for node %d\n",
+			nid);
+		goto sequential;
+	}
+
+	cpumask = cpumask_of_node(nid);
+	/*
+	 * The number of parallel workers (chunk_num) should be less than
+	 * or equal to the maximum number of CPUs on the node.
+	 * And the memory size handled by each worker needs to be aligned
+	 * with the memory block size.
+	 */
+	chunk_num =
+		max_t(uint, 1,
+		      max_t(uint, cpumask_weight(cpumask), 1) *
+			      min_t(uint, parallel_hotplug_ratio, 100) / 100);
+	chunk_size = ALIGN(size / chunk_num, memory_block_size_bytes());
+	chunk_num = size / chunk_size;
+	chunk_remain = size % chunk_size;
+
+	if (chunk_num == 1)
+		goto sequential;
+
+	ws = kmalloc_array_node(chunk_num, sizeof(*ws), GFP_KERNEL, nid);
+	if (!ws)
+		goto sequential;
+
+	for (i = 0; i < chunk_num; i++) {
+		w = ws + i;
+		INIT_WORK(&w->work, deferred_walk_memory_blocks_worker);
+		w->start = chunk_start;
+		if (i == chunk_num - 1)
+			w->size = chunk_size + chunk_remain;
+		else
+			w->size = chunk_size;
+		chunk_start += w->size;
+		queue_work_node(nid, wq, &w->work);
+	}
+
+	flush_workqueue(wq);
+
+	for (i = 0; i < chunk_num; i++) {
+		w = ws + i;
+		if (w->ret) {
+			ret = w->ret;
+			pr_err("Deferred online memory failed for node %d, start: %#llx, size: %#llx, ret: %d\n",
+			       nid, w->start, w->size, ret);
+			break;
+		}
+	}
+	kfree(ws);
+	return ret;
+
+sequential:
+	return walk_memory_blocks(start, size, NULL,
+				 deferred_memory_block_online_pages);
+}
+EXPORT_SYMBOL_GPL(deferred_online_memory);
 #endif /* CONFIG_MEMORY_HOTPLUG_SPARSE */
 
 static void reset_node_present_pages(pg_data_t *pgdat)
@@ -1156,6 +1337,14 @@ static void reset_node_present_pages(pg_data_t *pgdat)
 		z->present_pages = 0;
 
 	pgdat->node_present_pages = 0;
+}
+
+static void reset_node_deferred_pages(pg_data_t *pgdat)
+{
+	struct zone *z;
+
+	for (z = pgdat->node_zones; z < pgdat->node_zones + MAX_NR_ZONES; z++)
+		atomic_long_set(&z->deferred_pages, 0);
 }
 
 /* we are OK calling __meminit stuff here - we have CONFIG_MEMORY_HOTPLUG */
@@ -1188,6 +1377,7 @@ static pg_data_t __ref *hotadd_init_pgdat(int nid)
 	 */
 	reset_node_managed_pages(pgdat);
 	reset_node_present_pages(pgdat);
+	reset_node_deferred_pages(pgdat);
 
 	return pgdat;
 }
