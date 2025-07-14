@@ -10165,6 +10165,7 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 		return -EINVAL;
 
 	write_lock(&group_balancer_lock);
+	raw_spin_lock(&tg->gb_lock);
 	old = tg->group_balancer;
 
 	if (old == new)
@@ -10182,6 +10183,7 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 	}
 	tg->group_balancer = new;
 out:
+	raw_spin_unlock(&tg->gb_lock);
 	write_unlock(&group_balancer_lock);
 	return retval;
 }

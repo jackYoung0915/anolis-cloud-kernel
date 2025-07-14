@@ -4255,6 +4255,11 @@ static inline void tg_inc_soft_cpus_version(struct task_group *tg)
 		tg->soft_cpus_version = 0;
 }
 
+static inline bool tg_group_balancer_enabled(struct task_group *tg)
+{
+	return tg->group_balancer;
+}
+
 extern void sched_init_group_balancer_sched_domains(void);
 extern void sched_clear_group_balancer_sched_domains(void);
 extern void tg_set_specs_ratio(struct task_group *tg);
