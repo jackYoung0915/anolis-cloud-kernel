@@ -142,7 +142,7 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 	struct bdev_handle *bdev_handle;
 	struct file *file;
 
-	dis = erofs_read_metabuf(buf, sb, *pos, true);
+	dis = erofs_read_metabuf(buf, sb, *pos);
 	if (IS_ERR(dis))
 		return PTR_ERR(dis);
 
@@ -259,7 +259,7 @@ static int erofs_read_superblock(struct super_block *sb)
 	void *data;
 	int ret;
 
-	data = erofs_read_metabuf(&buf, sb, 0, true);
+	data = erofs_read_metabuf(&buf, sb, 0);
 	if (IS_ERR(data)) {
 		erofs_err(sb, "cannot read erofs superblock");
 		return PTR_ERR(data);
