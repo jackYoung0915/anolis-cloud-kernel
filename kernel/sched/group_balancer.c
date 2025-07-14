@@ -1528,6 +1528,7 @@ remove_tg_from_group_balancer_sched_domain_locked(struct task_group *tg,
 {
 	tg->gb_sd = NULL;
 	rb_erase(&tg->gb_node, &gb_sd->task_groups);
+	RB_CLEAR_NODE(&tg->gb_node);
 	if (disable)
 		walk_tg_tree_from(tg, tg_unset_gb_tg_down, tg_nop, NULL);
 }
@@ -1712,7 +1713,7 @@ void task_tick_gb(struct task_struct *p)
 	if (!group_balancer_enabled())
 		return;
 
-	if (!tg || !tg->group_balancer)
+	if (!tg || !tg_group_balancer_enabled(tg))
 		return;
 
 	if (!raw_spin_trylock(&tg->gb_lock))
