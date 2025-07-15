@@ -1215,6 +1215,8 @@ static const __initconst struct x86_cpu_id cpu_vuln_whitelist[] = {
 
 /* CPU is affected by SRSO */
 #define SRSO		BIT(5)
+/* CPU is affected by Transient Scheduler Attacks */
+#define TSA		BIT(10)
 
 static const struct x86_cpu_id cpu_vuln_blacklist[] __initconst = {
 	VULNBL_INTEL_STEPPINGS(IVYBRIDGE,	X86_STEPPING_ANY,		SRBDS),
@@ -1248,7 +1250,7 @@ static const struct x86_cpu_id cpu_vuln_blacklist[] __initconst = {
 	VULNBL_AMD(0x16, RETBLEED),
 	VULNBL_AMD(0x17, RETBLEED | SRSO),
 	VULNBL_HYGON(0x18, RETBLEED | SRSO),
-	VULNBL_AMD(0x19, SRSO),
+	VULNBL_AMD(0x19, SRSO | TSA),
 	{}
 };
 
@@ -1366,6 +1368,16 @@ static void __init cpu_set_bug_bits(struct cpuinfo_x86 *c)
 	if (!cpu_has(c, X86_FEATURE_SRSO_NO)) {
 		if (cpu_matches(cpu_vuln_blacklist, SRSO))
 			setup_force_cpu_bug(X86_BUG_SRSO);
+	}
+
+	if (c->x86_vendor == X86_VENDOR_AMD) {
+		if (!cpu_has(c, X86_FEATURE_TSA_SQ_NO) ||
+		    !cpu_has(c, X86_FEATURE_TSA_L1_NO)) {
+			if (cpu_matches(cpu_vuln_blacklist, TSA) ||
+			    /* Enable bug on Zen guests to allow for live migration. */
+			    (cpu_has(c, X86_FEATURE_HYPERVISOR) && cpu_has(c, X86_FEATURE_ZEN)))
+				setup_force_cpu_bug(X86_BUG_TSA);
+		}
 	}
 
 	if (cpu_matches(cpu_vuln_whitelist, NO_MELTDOWN))
