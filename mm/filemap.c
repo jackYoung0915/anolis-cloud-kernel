@@ -2897,7 +2897,8 @@ put_folios:
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
 
-			filemap_end_dropbehind_read(mapping, folio);
+			if (last_pos >= folio_pos(folio) + folio_size(folio))
+				filemap_end_dropbehind_read(mapping, folio);
 			folio_put(folio);
 		}
 		folio_batch_init(&fbatch);
