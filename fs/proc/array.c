@@ -595,7 +595,7 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	rcu_read_lock();
 	if (in_rich_container(current)) {
 		init_tsk = task_active_pid_ns(current)->child_reaper;
-		start_time -= nsec_to_clock_t(init_tsk->start_boottime);
+		start_time -= nsec_to_clock_t(timens_add_boottime_ns(init_tsk->start_boottime));
 	}
 	rcu_read_unlock();
 
