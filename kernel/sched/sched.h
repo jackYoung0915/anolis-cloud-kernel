@@ -1524,6 +1524,7 @@ DECLARE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
 #define raw_rq()		raw_cpu_ptr(&runqueues)
 
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p);
 struct sched_group;
 #ifdef CONFIG_SCHED_CORE
 enum sched_cookie_flags {
@@ -1660,7 +1661,7 @@ static inline bool sched_group_cookie_match(struct rq *rq,
 	if (!sched_core_enabled(rq))
 		return true;
 
-	for_each_cpu_and(cpu, sched_group_span(group), p->cpus_ptr) {
+	for_each_cpu_and(cpu, sched_group_span(group), task_allowed_cpu(p)) {
 		if (sched_core_cookie_match(cpu_rq(cpu), p))
 			return true;
 	}
@@ -2840,7 +2841,7 @@ extern void set_cpus_allowed_common(struct task_struct *p, struct affinity_conte
 static inline bool task_allowed_on_cpu(struct task_struct *p, int cpu)
 {
 	/* When not in the task's cpumask, no point in looking further. */
-	if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+	if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)))
 		return false;
 
 	/* Can @cpu run a user thread? */
@@ -4258,6 +4259,11 @@ static inline void tg_inc_soft_cpus_version(struct task_group *tg)
 	tg->soft_cpus_version++;
 	if (unlikely(tg->soft_cpus_version < 0))
 		tg->soft_cpus_version = 0;
+}
+
+static inline bool tg_group_balancer_enabled(struct task_group *tg)
+{
+	return tg->group_balancer;
 }
 
 extern void sched_init_group_balancer_sched_domains(void);

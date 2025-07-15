@@ -11895,7 +11895,7 @@ more_balance:
 			 * if the curr task on busiest CPU can't be
 			 * moved to this_cpu:
 			 */
-			if (!cpumask_test_cpu(this_cpu, busiest->curr->cpus_ptr)) {
+			if (!cpumask_test_cpu(this_cpu, task_allowed_cpu(busiest->curr))) {
 				raw_spin_rq_unlock_irqrestore(busiest, flags);
 				goto out_one_pinned;
 			}
@@ -13394,6 +13394,13 @@ void free_fair_sched_group(struct task_group *tg)
 {
 	int i;
 
+#ifdef CONFIG_GROUP_BALANCER
+	if (tg_group_balancer_enabled(tg)) {
+		raw_spin_lock(&tg->gb_lock);
+		detach_tg_from_group_balancer_sched_domain(tg, true);
+		raw_spin_unlock(&tg->gb_lock);
+	}
+#endif
 	for_each_possible_cpu(i) {
 		if (tg->cfs_rq)
 			kfree(tg->cfs_rq[i]);
