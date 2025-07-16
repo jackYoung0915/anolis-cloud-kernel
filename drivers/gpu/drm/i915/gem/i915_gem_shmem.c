@@ -654,9 +654,8 @@ i915_gem_object_create_shmem_from_data(struct drm_i915_private *dev_priv,
 {
 	struct drm_i915_gem_object *obj;
 	struct file *file;
-	const struct address_space_operations *aops;
-	loff_t pos;
-	int err;
+	loff_t pos = 0;
+	ssize_t err;
 
 	GEM_WARN_ON(IS_DGFX(dev_priv));
 	obj = i915_gem_object_create_shmem(dev_priv, round_up(size, PAGE_SIZE));
@@ -666,29 +665,15 @@ i915_gem_object_create_shmem_from_data(struct drm_i915_private *dev_priv,
 	GEM_BUG_ON(obj->write_domain != I915_GEM_DOMAIN_CPU);
 
 	file = obj->base.filp;
-	aops = file->f_mapping->a_ops;
-	pos = 0;
-	do {
-		unsigned int len = min_t(typeof(size), size, PAGE_SIZE);
-		struct folio *folio;
-		void *fsdata;
+	err = kernel_write(file, data, size, &pos);
 
-		err = aops->write_begin(file, file->f_mapping, pos, len,
-					&folio, &fsdata);
-		if (err < 0)
-			goto fail;
+	if (err < 0)
+		goto fail;
 
-		memcpy_to_folio(folio, offset_in_folio(folio, pos), data, len);
-
-		err = aops->write_end(file, file->f_mapping, pos, len, len,
-				      folio, fsdata);
-		if (err < 0)
-			goto fail;
-
-		size -= len;
-		data += len;
-		pos += len;
-	} while (size);
+	if (err != size) {
+		err = -EIO;
+		goto fail;
+	}
 
 	return obj;
 
