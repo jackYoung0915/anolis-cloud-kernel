@@ -247,7 +247,8 @@ void nilfs_write_failed(struct address_space *mapping, loff_t to)
 	}
 }
 
-static int nilfs_write_begin(struct file *file, struct address_space *mapping,
+static int nilfs_write_begin(const struct kiocb *iocb,
+			     struct address_space *mapping,
 			     loff_t pos, unsigned len,
 			     struct folio **foliop, void **fsdata)
 
@@ -266,7 +267,8 @@ static int nilfs_write_begin(struct file *file, struct address_space *mapping,
 	return err;
 }
 
-static int nilfs_write_end(struct file *file, struct address_space *mapping,
+static int nilfs_write_end(const struct kiocb *iocb,
+			   struct address_space *mapping,
 			   loff_t pos, unsigned len, unsigned copied,
 			   struct folio *folio, void *fsdata)
 {
@@ -277,7 +279,7 @@ static int nilfs_write_end(struct file *file, struct address_space *mapping,
 
 	nr_dirty = nilfs_page_count_clean_buffers(&folio->page, start,
 						  start + copied);
-	copied = generic_write_end(file, mapping, pos, len, copied, folio,
+	copied = generic_write_end(iocb, mapping, pos, len, copied, folio,
 				   fsdata);
 	nilfs_set_file_dirty(inode, nr_dirty);
 	err = nilfs_transaction_commit(inode->i_sb);

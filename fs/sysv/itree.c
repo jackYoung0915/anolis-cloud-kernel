@@ -479,7 +479,7 @@ static void sysv_write_failed(struct address_space *mapping, loff_t to)
 	}
 }
 
-static int sysv_write_begin(struct file *file, struct address_space *mapping,
+static int sysv_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len,
 			struct folio **foliop, void **fsdata)
 {
