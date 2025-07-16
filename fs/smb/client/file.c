@@ -3191,13 +3191,13 @@ retry_write:
 	return rc;
 }
 
-static int cifs_write_end(struct file *file, struct address_space *mapping,
+static int cifs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned copied,
 			struct folio *folio, void *fsdata)
 {
 	int rc;
 	struct inode *inode = mapping->host;
-	struct cifsFileInfo *cfile = file->private_data;
+	struct cifsFileInfo *cfile = iocb->ki_filp->private_data;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(cfile->dentry->d_sb);
 	struct page *page = &folio->page;
 	__u32 pid;
@@ -4920,10 +4920,11 @@ bool is_size_safe_to_change(struct cifsInodeInfo *cifsInode, __u64 end_of_file,
 		return true;
 }
 
-static int cifs_write_begin(struct file *file, struct address_space *mapping,
+static int cifs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len,
 			struct folio **foliop, void **fsdata)
 {
+	struct file *file = iocb->ki_filp;
 	int oncethru = 0;
 	pgoff_t index = pos >> PAGE_SHIFT;
 	loff_t offset = pos & (PAGE_SIZE - 1);
