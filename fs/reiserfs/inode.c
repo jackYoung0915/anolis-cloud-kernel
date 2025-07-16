@@ -2739,7 +2739,7 @@ static void reiserfs_truncate_failed_write(struct inode *inode)
 	reiserfs_truncate_file(inode, 0);
 }
 
-static int reiserfs_write_begin(struct file *file,
+static int reiserfs_write_begin(const struct kiocb *iocb,
 				struct address_space *mapping,
 				loff_t pos, unsigned len,
 				struct folio **foliop, void **fsdata)
@@ -2867,7 +2867,7 @@ static sector_t reiserfs_aop_bmap(struct address_space *as, sector_t block)
 	return generic_block_bmap(as, block, reiserfs_bmap);
 }
 
-static int reiserfs_write_end(struct file *file, struct address_space *mapping,
+static int reiserfs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			      loff_t pos, unsigned len, unsigned copied,
 			      struct folio *folio, void *fsdata)
 {
