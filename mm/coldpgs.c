@@ -1982,6 +1982,12 @@ static int __init reclaim_coldpgs_init(void)
 	if (mem_cgroup_disabled())
 		return -ENXIO;
 
+	if (lru_gen_enabled()) {
+		pr_warn("%s: Failed to load coldpgs due to MGLRU enabled\n",
+			__func__);
+		return -EPERM;
+	}
+
 	/* Resolve symbols required by the driver */
 	ret = reclaim_coldpgs_resolve_symbols();
 	if (ret)
