@@ -3061,6 +3061,9 @@ static ssize_t admin_timeout_show(struct device *dev, struct device_attribute *a
 {
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
 
+	if (!ctrl->admin_tagset)
+		return -EIO;
+
 	return sysfs_emit(buf, "%u\n", ctrl->admin_tagset->timeout / HZ);
 }
 
@@ -3071,6 +3074,9 @@ static ssize_t admin_timeout_store(struct device *dev,
 	int ret;
 	unsigned int timeout;
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	if (!ctrl->admin_tagset)
+		return -EIO;
 
 	ret = kstrtouint(buf, 10, &timeout);
 	if (ret < 0 || timeout == 0)
@@ -3088,6 +3094,9 @@ static ssize_t io_timeout_show(struct device *dev, struct device_attribute *attr
 {
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
 
+	if (!ctrl->tagset)
+		return -EIO;
+
 	return sysfs_emit(buf, "%u\n", ctrl->tagset->timeout / HZ);
 }
 
@@ -3099,6 +3108,9 @@ static ssize_t io_timeout_store(struct device *dev,
 	unsigned int timeout;
 	struct nvme_ns *ns;
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	if (!ctrl->tagset)
+		return -EIO;
 
 	ret = kstrtouint(buf, 10, &timeout);
 	if (ret < 0 || timeout == 0)
@@ -4555,7 +4567,12 @@ EXPORT_SYMBOL_GPL(nvme_unfreeze);
 int nvme_wait_freeze_timeout(struct nvme_ctrl *ctrl)
 {
 	struct nvme_ns *ns;
-	long timeout = ctrl->tagset->timeout;
+	long timeout;
+
+	if (ctrl->tagset)
+		timeout = ctrl->tagset->timeout;
+	else
+		timeout = NVME_IO_TIMEOUT;
 
 	down_read(&ctrl->namespaces_rwsem);
 	list_for_each_entry(ns, &ctrl->namespaces, list) {
