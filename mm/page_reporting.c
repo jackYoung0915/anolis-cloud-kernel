@@ -148,6 +148,21 @@ page_reporting_drain(struct page_reporting_dev_info *prdev,
 	sg_init_table(sgl, nents);
 }
 
+static unsigned long suitable_free_pages(struct zone *zone)
+{
+	int order;
+	unsigned long free_pages = 0;
+
+	for (order = page_reporting_order; order < MAX_ORDER; order++) {
+		unsigned long blocks;
+
+		blocks = zone->free_area[order].nr_free;
+		free_pages += blocks << order;
+	}
+
+	return free_pages;
+}
+
 /*
  * The page reporting cycle consists of 4 stages, fill, report, drain, and
  * idle. We will cycle through the first 3 stages until we cannot obtain a
@@ -173,7 +188,7 @@ page_reporting_cycle(struct page_reporting_dev_info *prdev, struct zone *zone,
 	if (list_empty(list))
 		return err;
 
-	threshold = zone_managed_pages(zone)  * reporting_factor / 100;
+	threshold = suitable_free_pages(zone) * reporting_factor / 100;
 	spin_lock_irq(&zone->lock);
 
 	/*
@@ -290,7 +305,7 @@ page_reporting_process_zone(struct page_reporting_dev_info *prdev,
 	unsigned long watermark, threshold;
 	int err = 0;
 
-	threshold = zone_managed_pages(zone) * reporting_factor / 100;
+	threshold = suitable_free_pages(zone) * reporting_factor / 100;
 	if (zone->reported_pages >= threshold && atomic64_read(&nr_reclaim_pages) <= 0)
 		return err;
 
