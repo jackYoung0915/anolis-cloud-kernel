@@ -2432,7 +2432,10 @@ static bool __nvme_disable_io_queues(struct nvme_dev *dev, u8 opcode)
 	unsigned long timeout;
 
 retry:
-	timeout = dev->ctrl.admin_q->rq_timeout;
+	if (dev->ctrl.admin_q)
+		timeout = dev->ctrl.admin_q->rq_timeout;
+	else
+		timeout = ADMIN_TIMEOUT;
 	while (nr_queues > 0) {
 		if (nvme_delete_queue(&dev->queues[nr_queues], opcode))
 			break;
