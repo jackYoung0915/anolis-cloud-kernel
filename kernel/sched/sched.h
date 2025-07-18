@@ -1542,6 +1542,7 @@ struct rq {
 
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
+	bool			group_balancer_enabled;
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -3705,6 +3706,7 @@ extern void sched_dynamic_update(int mode);
 
 #ifdef CONFIG_GROUP_BALANCER
 extern bool group_balancer_enabled(void);
+extern bool group_balancer_rq_enabled(struct rq *rq);
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
 	if (group_balancer_enabled()) {
@@ -3746,7 +3748,10 @@ extern unsigned long cfs_h_load(struct cfs_rq *cfs_rq);
 extern bool gb_cpu_overutilized(int cpu);
 extern void gb_load_balance(struct lb_env *env);
 extern void task_tick_gb(struct task_struct *p);
+extern void util_est_reenqueue_all(void);
+extern void util_est_clear_all(void);
 #else
+static inline bool group_balancer_rq_enabled(struct rq *rq) { return false; }
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
 	return p->cpus_ptr;
