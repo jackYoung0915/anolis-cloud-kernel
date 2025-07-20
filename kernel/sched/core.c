@@ -99,10 +99,17 @@ static void group_balancer_enable(void)
 {
 	sched_init_group_balancer_sched_domains();
 	static_branch_enable(&__group_balancer_enabled);
+	/*
+	 * Ensure all previous instances of raw_spin_rq_*lock() have finished
+	 * and future ones will observe group_balancer_enabled().
+	 */
+	synchronize_rcu();
+	util_est_reenqueue_all();
 }
 
 static void group_balancer_disable(void)
 {
+	util_est_clear_all();
 	static_branch_disable(&__group_balancer_enabled);
 	sched_clear_group_balancer_sched_domains();
 }
@@ -110,6 +117,11 @@ static void group_balancer_disable(void)
 bool group_balancer_enabled(void)
 {
 	return static_branch_unlikely(&__group_balancer_enabled);
+}
+
+bool group_balancer_rq_enabled(struct rq *rq)
+{
+	return static_branch_unlikely(&__group_balancer_enabled) && rq->group_balancer_enabled;
 }
 
 int sched_group_balancer_enable_handler(struct ctl_table *table, int write,

@@ -6038,6 +6038,64 @@ static inline void util_est_dequeue(struct cfs_rq *cfs_rq,
 	trace_sched_util_est_cfs_tp(cfs_rq);
 }
 
+#ifdef CONFIG_GROUP_BALANCER
+void util_est_reenqueue_all(void)
+{
+	int cpu;
+	struct rq *rq;
+	struct rq_flags rf;
+	struct cfs_rq *cfs_rq;
+	struct sched_entity *se;
+	struct task_struct *p;
+
+	cpus_read_lock();
+	for_each_online_cpu(cpu) {
+		rq = cpu_rq(cpu);
+		rq_lock_irqsave(rq, &rf);
+		list_for_each_entry(p, &rq->cfs_tasks, se.group_node) {
+			se = &p->se;
+			for_each_sched_entity(se) {
+				cfs_rq = cfs_rq_of(se);
+				if (cfs_rq != &rq->cfs)
+					util_est_enqueue(cfs_rq, p);
+			}
+		}
+		rq->group_balancer_enabled = true;
+		rq_unlock_irqrestore(rq, &rf);
+	}
+	cpus_read_unlock();
+}
+
+static int tg_util_est_clear_down(struct task_group *tg, void *data)
+{
+	int cpu;
+	struct rq *rq;
+	struct rq_flags rf;
+	struct cfs_rq *cfs_rq;
+
+	if (tg == &root_task_group)
+		return 0;
+
+	cpus_read_lock();
+	for_each_online_cpu(cpu) {
+		rq = cpu_rq(cpu);
+		cfs_rq = tg->cfs_rq[cpu];
+		rq_lock_irqsave(rq, &rf);
+		WRITE_ONCE(cfs_rq->avg.util_est.enqueued, 0);
+		rq->group_balancer_enabled = false;
+		rq_unlock_irqrestore(rq, &rf);
+	}
+	cpus_read_unlock();
+
+	return 0;
+}
+
+void util_est_clear_all(void)
+{
+	walk_tg_tree_from(&root_task_group, tg_util_est_clear_down, tg_nop, NULL);
+}
+#endif
+
 #define UTIL_EST_MARGIN (SCHED_CAPACITY_SCALE / 100)
 
 /*
@@ -8221,12 +8279,15 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	 * Let's add the task's estimated utilization to the cfs_rq's
 	 * estimated utilization, before we update schedutil.
 	 */
-	for_each_sched_entity(se) {
-		cfs_rq = cfs_rq_of(se);
-		util_est_enqueue(cfs_rq, p);
+	if (group_balancer_rq_enabled(rq)) {
+		for_each_sched_entity(se) {
+			cfs_rq = cfs_rq_of(se);
+			util_est_enqueue(cfs_rq, p);
+		}
+		se = &p->se;
+	} else {
+		util_est_enqueue(&rq->cfs, p);
 	}
-
-	se = &p->se;
 
 	/*
 	 * If in_iowait is set, the code below may not trigger any cpufreq
@@ -8351,12 +8412,15 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	int idle_h_nr_running = task_has_idle_policy(p);
 	bool was_sched_idle = sched_idle_rq(rq);
 
-	for_each_sched_entity(se) {
-		cfs_rq = cfs_rq_of(se);
-		util_est_dequeue(cfs_rq, p);
+	if (group_balancer_rq_enabled(rq)) {
+		for_each_sched_entity(se) {
+			cfs_rq = cfs_rq_of(se);
+			util_est_dequeue(cfs_rq, p);
+		}
+		se = &p->se;
+	} else {
+		util_est_dequeue(&rq->cfs, p);
 	}
-
-	se = &p->se;
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
