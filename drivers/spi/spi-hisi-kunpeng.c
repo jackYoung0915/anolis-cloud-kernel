@@ -164,8 +164,8 @@ static int hisi_spi_debugfs_init(struct hisi_spi *hs)
 
 	struct spi_controller *master;
 
-	master = container_of(hs->dev, struct spi_controller, dev);
-	snprintf(name, 32, "hisi_spi%d", master->bus_num);
+	master = hs->dev->driver_data;
+	snprintf(name, 32, "hisi_spi%d", host->bus_num);
 	hs->debugfs = debugfs_create_dir(name, NULL);
 	if (!hs->debugfs)
 		return -ENOMEM;
