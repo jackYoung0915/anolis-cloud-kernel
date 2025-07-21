@@ -137,6 +137,7 @@ int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
 
 	trace_erofs_map_blocks_enter(inode, map, 0);
 	map->m_deviceid = 0;
+	map->m_flags = 0;
 	if (map->m_la >= inode->i_size)
 		goto out;
 
