@@ -7059,6 +7059,9 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	for_each_node(node)
 		free_mem_cgroup_per_node_info(memcg, node);
 	kfree(memcg->vmstats);
+#ifdef CONFIG_RECLAIM_COLDPGS
+	free_percpu(memcg->coldpgs_stats);
+#endif
 	free_percpu(memcg->vmstats_percpu);
 	free_percpu(memcg->exstat_cpu);
 #ifdef CONFIG_MEMSLI
