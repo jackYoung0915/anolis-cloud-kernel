@@ -49,6 +49,7 @@ struct erofs_device_info {
 	char *path;
 	struct erofs_fscache *fscache;
 	struct block_device *bdev;
+	struct file *file;
 	struct dax_device *dax_dev;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *blobfile;
@@ -71,17 +72,6 @@ struct erofs_dev_context {
 
 	unsigned int extra_devices;
 	bool flatdev;
-};
-
-struct erofs_fs_context {
-	struct erofs_mount_opts opt;
-	struct erofs_dev_context *devs;
-	char *fsid;
-	char *domain_id;
-#ifdef CONFIG_EROFS_FS_RAFS_V6
-	char *bootstrap_path;
-	char *blob_dir_path;
-#endif
 };
 
 /* all filesystem-wide lz4 configurations */
@@ -126,6 +116,7 @@ struct erofs_sb_info {
 	struct erofs_sb_lz4_info lz4;
 	struct inode *packed_inode;
 #endif	/* CONFIG_EROFS_FS_ZIP */
+	struct file *fdev;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct path blob_dir;
 	struct file *bootstrap;
@@ -175,6 +166,7 @@ struct erofs_sb_info {
 #define EROFS_MOUNT_POSIX_ACL		0x00000020
 #define EROFS_MOUNT_DAX_ALWAYS		0x00000040
 #define EROFS_MOUNT_DAX_NEVER		0x00000080
+#define EROFS_MOUNT_DIRECT_IO		0x00000100
 
 #define EROFS_MOUNT_BLOB_MMAP_PIN	0x80000000
 
@@ -189,6 +181,11 @@ static inline bool erofs_is_rafsv6_mode(struct super_block *sb)
 #else
 	return false;
 #endif
+}
+
+static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
+{
+	return IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) && sbi->fdev;
 }
 
 static inline bool erofs_is_fscache_mode(struct super_block *sb)
@@ -217,8 +214,11 @@ enum erofs_kmap_type {
 };
 
 struct erofs_buf {
+#ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct iomap iomap;
 	struct address_space *mapping;
+#endif
+	struct inode *inode;
 	struct page *page;
 	void *base;
 	enum erofs_kmap_type kmap_type;
@@ -331,7 +331,8 @@ struct page *erofs_grab_cache_page_nowait(struct address_space *mapping,
 
 extern const struct super_operations erofs_sops;
 
-extern const struct address_space_operations erofs_raw_access_aops;
+extern const struct address_space_operations erofs_aops;
+extern const struct address_space_operations erofs_fileio_aops;
 extern const struct address_space_operations z_erofs_aops;
 
 enum {
@@ -399,9 +400,7 @@ struct erofs_map_dev {
 	struct erofs_fscache *m_fscache;
 	struct block_device *m_bdev;
 	struct dax_device *m_daxdev;
-#ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *m_fp;
-#endif
 	erofs_off_t m_pa;
 	unsigned int m_deviceid;
 };
@@ -411,8 +410,9 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 			  erofs_off_t *offset, int *lengthp);
 void erofs_unmap_metabuf(struct erofs_buf *buf);
 void erofs_put_metabuf(struct erofs_buf *buf);
-void *erofs_bread(struct erofs_buf *buf, struct inode *inode,
-		  erofs_blk_t blkaddr, enum erofs_kmap_type type);
+void *erofs_bread(struct erofs_buf *buf, erofs_blk_t blkaddr,
+		  enum erofs_kmap_type type);
+void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb);
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
 			 erofs_blk_t blkaddr, enum erofs_kmap_type type);
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *dev);
@@ -433,6 +433,9 @@ extern const struct inode_operations erofs_generic_iops;
 extern const struct inode_operations erofs_symlink_iops;
 extern const struct inode_operations erofs_fast_symlink_iops;
 
+void erofs_onlinepage_init(struct page *page);
+void erofs_onlinepage_split(struct page *page);
+void erofs_onlinepage_end(struct page *page, int err);
 struct inode *erofs_iget(struct super_block *sb, erofs_nid_t nid);
 int erofs_getattr(const struct path *path, struct kstat *stat,
 		  u32 request_mask, unsigned int query_flags);
