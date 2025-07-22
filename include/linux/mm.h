@@ -1929,6 +1929,88 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
+#ifdef CONFIG_KIDLED
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+static inline int kidled_get_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	u8 *age, age_val;
+
+	rcu_read_lock();
+	age = rcu_dereference(pgdat->node_folio_age);
+
+	if (unlikely(!age)) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
+
+	age += (pfn - pgdat->node_start_pfn);
+	age_val = *age;
+	rcu_read_unlock();
+	return age_val;
+}
+
+static inline int kidled_inc_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	u8 *age, age_val;
+
+	rcu_read_lock();
+	age = rcu_dereference(pgdat->node_folio_age);
+	if (unlikely(!age)) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
+
+	age += (pfn - pgdat->node_start_pfn);
+	age_val = ++*age;
+	rcu_read_unlock();
+
+	return age_val;
+}
+
+static inline void kidled_set_folio_age(pg_data_t *pgdat,
+					unsigned long pfn, int val)
+{
+	u8 *age;
+
+	rcu_read_lock();
+	age = rcu_dereference(pgdat->node_folio_age);
+	if (unlikely(!age)) {
+		rcu_read_unlock();
+		return;
+	}
+
+	age += (pfn - pgdat->node_start_pfn);
+	*age = val;
+	rcu_read_unlock();
+}
+#else
+static inline int kidled_get_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	struct folio *folio = pfn_folio(pfn);
+
+	return (folio->flags >> KIDLED_AGE_PGSHIFT) & KIDLED_AGE_MASK;
+}
+
+extern int kidled_inc_folio_age(pg_data_t *pgdat, unsigned long pfn);
+extern void kidled_set_folio_age(pg_data_t *pgdat, unsigned long pfn, int val);
+#endif /* KIDLED_AGE_NOT_IN_PAGE_FLAGS */
+#else  /* !CONFIG_KIDLED */
+static inline int kidled_get_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	return -EINVAL;
+}
+
+static inline int kidled_inc_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	return -EINVAL;
+}
+
+static inline void kidled_set_folio_age(pg_data_t *pgdat,
+					unsigned long pfn, int val)
+{
+}
+#endif /* CONFIG_KIDLED */
+
 /**
  * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
  * @folio: The folio.

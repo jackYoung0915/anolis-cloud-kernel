@@ -1077,7 +1077,9 @@ static inline bool zone_is_empty(struct zone *zone)
  * sets it, so none of the operations on it need to be atomic.
  */
 
-/* Page flags: | [SECTION] | [NODE] | ZONE | [LAST_CPUPID] | ... | FLAGS | */
+/* Page flags: | [SECTION] | [NODE] | ZONE | [LAST_CPUPID] | [KIDLED_AGE] or [LRU_GEN] |
+ * ... | FLAGS |
+ */
 #define SECTIONS_PGOFF		((sizeof(unsigned long)*8) - SECTIONS_WIDTH)
 #define NODES_PGOFF		(SECTIONS_PGOFF - NODES_WIDTH)
 #define ZONES_PGOFF		(NODES_PGOFF - ZONES_WIDTH)
@@ -1085,6 +1087,7 @@ static inline bool zone_is_empty(struct zone *zone)
 #define KASAN_TAG_PGOFF		(LAST_CPUPID_PGOFF - KASAN_TAG_WIDTH)
 #define LRU_GEN_PGOFF		(KASAN_TAG_PGOFF - LRU_GEN_WIDTH)
 #define LRU_REFS_PGOFF		(LRU_GEN_PGOFF - LRU_REFS_WIDTH)
+#define KIDLED_AGE_PGOFF	(KASAN_TAG_PGOFF - KIDLED_AGE_WIDTH)
 
 /*
  * Define the bit shifts to access each section.  For non-existent
@@ -1096,6 +1099,7 @@ static inline bool zone_is_empty(struct zone *zone)
 #define ZONES_PGSHIFT		(ZONES_PGOFF * (ZONES_WIDTH != 0))
 #define LAST_CPUPID_PGSHIFT	(LAST_CPUPID_PGOFF * (LAST_CPUPID_WIDTH != 0))
 #define KASAN_TAG_PGSHIFT	(KASAN_TAG_PGOFF * (KASAN_TAG_WIDTH != 0))
+#define KIDLED_AGE_PGSHIFT	(KIDLED_AGE_PGOFF * (KIDLED_AGE_WIDTH != 0))
 
 /* NODE:ZONE or SECTION:ZONE is used to ID a zone for the buddy allocator */
 #ifdef NODE_NOT_IN_PAGE_FLAGS
@@ -1336,6 +1340,23 @@ typedef struct pglist_data {
 	unsigned long node_present_pages; /* total number of physical pages */
 	unsigned long node_spanned_pages; /* total size of physical page
 					     range, including holes */
+#ifdef CONFIG_KIDLED
+	/*
+	 * Michel Lespinasse's patch allocates idle age through vmalloc(),
+	 * this makes code easy, we borrowed it.
+	 *
+	 * However it'll lead memory overhead (1/4096 of node_spanned_pages),
+	 * especially when there exist large memory holes. Another better
+	 * way is to store the 8 bits page age in page's flag field, that is
+	 * the default choice if unused bits in page's flag is enough.
+	 * And it'll fallback to this vmalloc() way if flag's bits are
+	 * scarce. See KIDLED_AGE_NOT_IN_PAGE_FLAGS in page-flags-layout.h
+	 * for more details.
+	 */
+	unsigned long node_idle_scan_pfn;
+	u8 *node_folio_age;
+#endif
+
 	int node_id;
 	wait_queue_head_t kswapd_wait;
 	wait_queue_head_t pfmemalloc_wait;
@@ -2101,6 +2122,13 @@ void sparse_init(void);
 #define pfn_in_present_section pfn_valid
 #define subsection_map_init(_pfn, _nr_pages) do {} while (0)
 #endif /* CONFIG_SPARSEMEM */
+
+/* Indicate coldpgs is enabled or not */
+extern bool coldpgs_enabled;
+static inline bool is_coldpgs_enabled(void)
+{
+	return coldpgs_enabled;
+}
 
 #endif /* !__GENERATING_BOUNDS.H */
 #endif /* !__ASSEMBLY__ */
