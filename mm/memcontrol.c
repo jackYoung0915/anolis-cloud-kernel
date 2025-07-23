@@ -7061,6 +7061,9 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	for_each_node(node)
 		free_mem_cgroup_per_node_info(memcg, node);
 	kfree(memcg->vmstats);
+#ifdef CONFIG_RECLAIM_COLDPGS
+	free_percpu(memcg->coldpgs_stats);
+#endif
 	free_percpu(memcg->vmstats_percpu);
 	free_percpu(memcg->exstat_cpu);
 #ifdef CONFIG_MEMSLI
@@ -7124,6 +7127,13 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
 		statc->parent = parent ? pstatc : NULL;
 		statc->vmstats = memcg->vmstats;
 	}
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	init_rwsem(&memcg->coldpgs_control.rwsem);
+	memcg->coldpgs_stats = alloc_percpu(struct reclaim_coldpgs_stats);
+	if (!memcg->coldpgs_stats)
+		goto fail;
+#endif
 
 	for_each_node(node)
 		if (alloc_mem_cgroup_per_node_info(memcg, node))
