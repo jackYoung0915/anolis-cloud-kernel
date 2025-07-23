@@ -30,6 +30,7 @@
 #include <linux/cgroup.h>
 
 #include <asm/efi.h>
+#include <asm/early_ioremap.h>
 #include <asm/mmu_context.h>
 #include <asm/sw64_init.h>
 #include <asm/timer.h>
@@ -687,6 +688,9 @@ setup_arch(char **cmdline_p)
 	trap_init();
 
 	early_paging_init();
+#ifdef CONFIG_GENERIC_EARLY_IOREMAP
+	early_ioremap_setup();
+#endif
 
 	jump_label_init();
 
@@ -743,6 +747,10 @@ setup_arch(char **cmdline_p)
 
 	if (acpi_disabled)
 		device_tree_init();
+
+#ifdef CONFIG_GENERIC_EARLY_IOREMAP
+	early_ioremap_reset();
+#endif
 
 	setup_smp();
 
