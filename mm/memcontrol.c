@@ -97,7 +97,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(int_active_memcg);
 static bool cgroup_memory_nosocket __ro_after_init;
 
 /* Kernel memory accounting disabled? */
-static bool cgroup_memory_nokmem __ro_after_init;
+bool cgroup_memory_nokmem __ro_after_init;
 
 #ifdef CONFIG_MEMSLI
 /* Cgroup memory SLI disabled? */
@@ -3226,6 +3226,10 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 	unsigned long memcg_data;
 	void *vec;
 
+	/* extra allocate an special pointer for cold slab */
+	if (kidled_available_slab(slab_folio(slab), s))
+		objects += 1;
+
 	gfp &= ~OBJCGS_CLEAR_MASK;
 	vec = kcalloc_node(objects, sizeof(struct obj_cgroup *), gfp,
 			   slab_nid(slab));
@@ -3262,7 +3266,7 @@ struct mem_cgroup *mem_cgroup_from_obj_folio(struct folio *folio, void *p)
 	 * Memcg membership data for each individual object is saved in
 	 * slab->memcg_data.
 	 */
-	if (folio_test_slab(folio)) {
+	if (folio_test_slab(folio) && !page_has_slab_age(folio_slab(folio))) {
 		struct obj_cgroup **objcgs;
 		struct slab *slab;
 		unsigned int off;
@@ -4329,9 +4333,9 @@ static ssize_t mem_cgroup_reset(struct kernfs_open_file *of, char *buf,
 static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 {
 	struct mem_cgroup *iter, *memcg = mem_cgroup_from_css(seq_css(m));
-	struct kidled_scan_period scan_period, period;
+	struct kidled_scan_control scan_control;
 	struct idle_page_stats *stats, *cache;
-	unsigned long scans;
+	unsigned long page_scans, slab_scans;
 	bool has_hierarchy = !!seq_cft(m)->private;
 	bool no_buckets = false;
 	int i, j, t;
@@ -4343,41 +4347,72 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 
 	down_read(&memcg->idle_stats_rwsem);
 	*stats = memcg->idle_stats[memcg->idle_stable_idx];
-	scans = memcg->idle_scans;
-	scan_period = memcg->scan_period;
+	page_scans = memcg->idle_page_scans;
+	slab_scans = memcg->idle_slab_scans;
+	scan_control = memcg->scan_control;
 	up_read(&memcg->idle_stats_rwsem);
 
 	/* Nothing will be outputed with invalid buckets */
 	if (KIDLED_IS_BUCKET_INVALID(stats->buckets)) {
 		no_buckets = true;
-		scans = 0;
+		page_scans = 0;
+		slab_scans = 0;
 		goto output;
 	}
 
 	/* Zeroes will be output with mismatched scan period */
-	if (!kidled_is_scan_period_equal(&scan_period)) {
+	if (!kidled_is_scan_period_equal(&scan_control)) {
 		memset(&stats->count, 0, sizeof(stats->count));
-		scan_period = kidled_get_current_scan_period();
-		scans = 0;
+		scan_control = kidled_get_current_scan_control();
+		page_scans = 0;
+		slab_scans = 0;
 		goto output;
+	}
+
+	/* Zeroes will be output with mismatched scan type */
+	if (!kidled_is_scan_target_equal(&scan_control)) {
+		bool page_disabled = false;
+		bool slab_disabled = false;
+
+		kidled_get_reset_type(&scan_control, &page_disabled, &slab_disabled);
+		if (slab_disabled) {
+			memset(&stats->count[KIDLE_SLAB], 0,
+			       sizeof(stats->count[KIDLE_SLAB]));
+			slab_scans = 0;
+		}
+		if (page_disabled) {
+			int i;
+
+			for (i = 0; i < KIDLE_NR_TYPE - 1; i++) {
+				memset(&stats->count[i], 0, sizeof(stats->count[i]));
+				page_scans = 0;
+			}
+		}
+	} else {
+		if (kidled_has_slab_target_only(&scan_control) && page_scans != 0)
+			page_scans = 0;
+		if (kidled_has_page_target_only(&scan_control) && slab_scans != 0)
+			slab_scans = 0;
 	}
 
 	if (has_hierarchy) {
 		for_each_mem_cgroup_tree(iter, memcg) {
+			struct kidled_scan_control scan_control;
+
 			/* The root memcg was just accounted */
 			if (iter == memcg)
 				continue;
 
 			down_read(&iter->idle_stats_rwsem);
 			*cache = iter->idle_stats[iter->idle_stable_idx];
-			period = memcg->scan_period;
+			scan_control = memcg->scan_control;
 			up_read(&iter->idle_stats_rwsem);
 
 			/*
 			 * Skip to account if the scan period is mismatched
 			 * or buckets are invalid.
 			 */
-			if (!kidled_is_scan_period_equal(&period) ||
+			if (!kidled_is_scan_period_equal(&scan_control) ||
 			    KIDLED_IS_BUCKET_INVALID(cache->buckets))
 				continue;
 
@@ -4406,8 +4441,9 @@ static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
 
 output:
 	seq_printf(m, "# version: %s\n", KIDLED_VERSION);
-	seq_printf(m, "# scans: %lu\n", scans);
-	seq_printf(m, "# scan_period_in_seconds: %u\n", scan_period.duration);
+	seq_printf(m, "# page_scans: %lu\n", page_scans);
+	seq_printf(m, "# slab_scans: %lu\n", slab_scans);
+	seq_printf(m, "# scan_period_in_seconds: %u\n", scan_control.duration);
 	seq_puts(m, "# buckets: ");
 	if (no_buckets) {
 		seq_puts(m, "no valid bucket available\n");
@@ -4431,9 +4467,10 @@ output:
 	seq_puts(m, "#  / _----=> swap/file\n");
 	seq_puts(m, "# | / _---=> evict/unevict\n");
 	seq_puts(m, "# || / _--=> inactive/active\n");
-	seq_puts(m, "# ||| /\n");
+	seq_puts(m, "# ||| / _-=> slab\n");
+	seq_puts(m, "# |||| /\n");
 
-	seq_printf(m, "# %-8s", "||||");
+	seq_printf(m, "# %-8s", "|||||");
 	for (i = 0; i < j; i++) {
 		char region[20];
 
@@ -4453,16 +4490,19 @@ output:
 	for (t = 0; t < KIDLE_NR_TYPE; t++) {
 		char kidled_type_str[5];
 
-		kidled_type_str[0] = t & KIDLE_DIRTY   ? 'd' : 'c';
-		kidled_type_str[1] = t & KIDLE_FILE    ? 'f' : 's';
-		kidled_type_str[2] = t & KIDLE_UNEVICT ? 'u' : 'e';
-		kidled_type_str[3] = t & KIDLE_ACTIVE  ? 'a' : 'i';
-		kidled_type_str[4] = '\0';
+		if (t & KIDLE_SLAB)
+			memcpy(kidled_type_str, "slab", 5);
+		else {
+			kidled_type_str[0] = t & KIDLE_DIRTY   ? 'd' : 'c';
+			kidled_type_str[1] = t & KIDLE_FILE    ? 'f' : 's';
+			kidled_type_str[2] = t & KIDLE_UNEVICT ? 'u' : 'e';
+			kidled_type_str[3] = t & KIDLE_ACTIVE  ? 'a' : 'i';
+			kidled_type_str[4] = '\0';
+		}
 		seq_printf(m, "  %-8s", kidled_type_str);
 
 		for (i = 0; i < j; i++) {
-			seq_printf(m, " %14lu",
-				   stats->count[t][i] << PAGE_SHIFT);
+			seq_printf(m, " %14lu", stats->count[t][i]);
 		}
 
 		seq_puts(m, "\n");
@@ -4526,7 +4566,8 @@ static ssize_t mem_cgroup_idle_page_stats_write(struct kernfs_open_file *of,
 	 * holding any read side locks.
 	 */
 	KIDLED_MARK_BUCKET_INVALID(unstable_stats->buckets);
-	memcg->idle_scans = 0;
+	memcg->idle_page_scans = 0;
+	memcg->idle_slab_scans = 0;
 	up_write(&memcg->idle_stats_rwsem);
 
 	return nbytes;
@@ -7743,7 +7784,7 @@ static int mem_cgroup_move_account(struct page *page,
 	ret = 0;
 	nid = folio_nid(folio);
 
-	kidled_mem_cgroup_move_stats(from, to, folio, nr_pages);
+	kidled_mem_cgroup_move_stats(from, to, folio, nr_pages << PAGE_SHIFT);
 
 	local_irq_disable();
 	mem_cgroup_charge_statistics(to, nr_pages);

@@ -32,6 +32,7 @@
 #include <linux/bit_spinlock.h>
 #include <linux/rculist_bl.h>
 #include <linux/list_lru.h>
+#include <linux/kidled.h>
 #include "internal.h"
 #include "mount.h"
 
@@ -1288,6 +1289,52 @@ long prune_dcache_sb(struct super_block *sb, struct shrink_control *sc)
 	return freed;
 }
 
+#ifdef CONFIG_KIDLED
+/*
+ * It will takes a lot of time in spin_trylock and spin_unlock when
+ * scanning the slab. I remove the lock operation directly even if
+ * it can bring in some inaccuracy in statistics. Meanwhile, it is
+ * safe because the dentry will not be released when lru lock is hold.
+ */
+static enum lru_status dentry_lru_cold_count(struct list_head *item,
+			struct list_lru_one *lru, spinlock_t *lru_lock, void *arg)
+{
+	struct dentry *dentry = container_of(item, struct dentry, d_lru);
+	static int dentry_size;
+	u16 dentry_age = kidled_get_slab_age(dentry);
+
+	/* avoid an object to scan twice in an round */
+	if (dentry_age &&
+	    kidled_is_slab_scanned(dentry_age, kidled_scan_rounds))
+		goto out;
+
+	if (READ_ONCE(dentry->d_lockref.count) ||
+	    (dentry->d_flags & DCACHE_REFERENCED)) {
+		if (dentry_age)
+			kidled_set_slab_age(dentry, 0);
+		goto out;
+	}
+
+	kidled_clear_slab_scanned(dentry);
+	if (unlikely(!dentry_size))
+		dentry_size = ksize(dentry);
+	dentry_age = kidled_inc_slab_age(dentry);
+	kidled_mem_cgroup_slab_account(dentry, dentry_age, dentry_size);
+	kidled_mark_slab_scanned(dentry, kidled_scan_rounds);
+out:
+	return LRU_ROTATE_DELAY;
+}
+
+void cold_dcache_sb(struct super_block *sb, struct shrink_control *sc)
+{
+	unsigned long nr_to_walk = sc->nr_to_scan;
+
+	list_lru_walk_node(&sb->s_dentry_lru, sc->nid,
+			   dentry_lru_cold_count,
+			   NULL, &nr_to_walk);
+}
+#endif
+
 static enum lru_status dentry_lru_isolate_shrink(struct list_head *item,
 		struct list_lru_one *lru, spinlock_t *lru_lock, void *arg)
 {
@@ -1810,6 +1857,7 @@ static struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 
 	dentry->d_lockref.count = 1;
 	dentry->d_flags = 0;
+	kidled_set_slab_age(dentry, 0);
 	spin_lock_init(&dentry->d_lock);
 	seqcount_spinlock_init(&dentry->d_seq, &dentry->d_lock);
 	dentry->d_inode = NULL;

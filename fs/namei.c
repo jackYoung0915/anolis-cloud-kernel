@@ -41,6 +41,7 @@
 #include <linux/bitops.h>
 #include <linux/init_task.h>
 #include <linux/uaccess.h>
+#include <linux/kidled.h>
 
 #include "internal.h"
 #include "mount.h"
@@ -858,10 +859,14 @@ out_dput:
 
 static inline int d_revalidate(struct dentry *dentry, unsigned int flags)
 {
+	int status = 1;
+
 	if (unlikely(dentry->d_flags & DCACHE_OP_REVALIDATE))
-		return dentry->d_op->d_revalidate(dentry, flags);
-	else
-		return 1;
+		status = dentry->d_op->d_revalidate(dentry, flags);
+	/* Reset the age when lookuping the dentry successfully */
+	if (status > 0 && kidled_get_slab_age(dentry))
+		kidled_set_slab_age(dentry, 0);
+	return status;
 }
 
 /**

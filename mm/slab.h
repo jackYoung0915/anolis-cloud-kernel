@@ -101,7 +101,7 @@ struct slab {
 #endif
 
 	atomic_t __page_refcount;
-#ifdef CONFIG_MEMCG
+#if defined(CONFIG_MEMCG) || defined(CONFIG_KIDLED)
 	unsigned long memcg_data;
 #endif
 };
@@ -402,6 +402,38 @@ static inline enum node_stat_item cache_vmstat_idx(struct kmem_cache *s)
 		NR_SLAB_RECLAIMABLE_B : NR_SLAB_UNRECLAIMABLE_B;
 }
 
+#ifdef CONFIG_KIDLED
+static inline bool kidled_available_slab(struct folio *folio, struct kmem_cache *s)
+{
+#ifdef CONFIG_KFENCE
+	/* Do not monitor kfence memory. */
+	if (unlikely(PageKfence(&folio->page)))
+		return false;
+#endif
+	if (!strcmp(s->name, "inode_cache") ||
+	    !strcmp(s->name, "ext4_inode_cache") ||
+	    !strcmp(s->name, "dentry"))
+		return true;
+	return false;
+}
+
+/* cold slab will need the special condition */
+static inline bool kidled_kmem_enabled(void)
+{
+	return !cgroup_memory_nokmem;
+}
+#else
+static inline bool kidled_available_slab(struct folio *folio, struct kmem_cache *s)
+{
+	return false;
+}
+
+static inline bool kidled_kmem_enabled(void)
+{
+	return memcg_kmem_online();
+}
+#endif
+
 #ifdef CONFIG_SLUB_DEBUG
 #ifdef CONFIG_SLUB_DEBUG_ON
 DECLARE_STATIC_KEY_TRUE(slub_debug_enabled);
@@ -452,7 +484,8 @@ static inline struct obj_cgroup **slab_objcgs(struct slab *slab)
 
 	VM_BUG_ON_PAGE(memcg_data && !(memcg_data & MEMCG_DATA_OBJCGS),
 							slab_page(slab));
-	VM_BUG_ON_PAGE(memcg_data & MEMCG_DATA_KMEM, slab_page(slab));
+	VM_BUG_ON_PAGE((memcg_data & MEMCG_DATA_FLAGS_MASK) != MEMCG_DATA_KMEM,
+		       slab_page(slab));
 
 	return (struct obj_cgroup **)(memcg_data & ~MEMCG_DATA_FLAGS_MASK);
 }
@@ -462,8 +495,16 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 void mod_objcg_state(struct obj_cgroup *objcg, struct pglist_data *pgdat,
 		     enum node_stat_item idx, int nr);
 
-static inline void memcg_free_slab_cgroups(struct slab *slab)
+static inline void memcg_free_slab_cgroups(struct slab *slab, struct kmem_cache *s)
 {
+	unsigned int objects = objs_per_slab(s, slab);
+
+	if (kidled_available_slab(slab_folio(slab), s)) {
+		/* In case fail to allocate memory for cold slab */
+		if (likely(slab_objcgs(slab)))
+			kfree(slab_objcgs(slab)[objects]);
+	}
+
 	kfree(slab_objcgs(slab));
 	slab->memcg_data = 0;
 }
@@ -602,7 +643,7 @@ static inline int memcg_alloc_slab_cgroups(struct slab *slab,
 	return 0;
 }
 
-static inline void memcg_free_slab_cgroups(struct slab *slab)
+static inline void memcg_free_slab_cgroups(struct slab *slab, struct kmem_cache *s)
 {
 }
 
@@ -651,8 +692,12 @@ static __always_inline void account_slab(struct slab *slab, int order,
 static __always_inline void unaccount_slab(struct slab *slab, int order,
 					   struct kmem_cache *s)
 {
-	if (memcg_kmem_online())
-		memcg_free_slab_cgroups(slab);
+	if (kidled_kmem_enabled())
+		memcg_free_slab_cgroups(slab, s);
+	else {
+		if (page_has_slab_age(slab))
+			kidled_free_slab_age(slab);
+	}
 
 	mod_node_page_state(slab_pgdat(slab), cache_vmstat_idx(s),
 			    -(PAGE_SIZE << order));

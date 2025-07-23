@@ -437,6 +437,10 @@ extern unsigned long mem_cgroup_shrink_node(struct mem_cgroup *mem,
 						pg_data_t *pgdat,
 						unsigned long *nr_scanned);
 extern unsigned long shrink_all_memory(unsigned long nr_pages);
+#ifdef CONFIG_KIDLED
+extern void kidled_scan_slab(int nid, struct mem_cgroup *memcg,
+			     struct kidled_scan_control scan_control);
+#endif
 extern int vm_swappiness;
 long remove_mapping(struct address_space *mapping, struct folio *folio);
 

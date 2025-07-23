@@ -483,8 +483,9 @@ struct mem_cgroup {
 
 #ifdef CONFIG_KIDLED
 	struct rw_semaphore idle_stats_rwsem;
-	unsigned long idle_scans;
-	struct kidled_scan_period scan_period;
+	unsigned long idle_page_scans;
+	unsigned long idle_slab_scans;
+	struct kidled_scan_control scan_control;
 	int idle_stable_idx;
 	struct idle_page_stats idle_stats[KIDLED_STATS_NR_TYPE];
 #endif
@@ -520,8 +521,10 @@ enum page_memcg_data_flags {
 	MEMCG_DATA_OBJCGS = (1UL << 0),
 	/* page has been accounted as a non-slab kernel page */
 	MEMCG_DATA_KMEM = (1UL << 1),
+	/* page->memcg_data is a pointer to the slab age  */
+	MEMCG_DATA_SLAB_AGE = (1UL << 2),
 	/* the next bit after the last actual flag */
-	__NR_MEMCG_DATA_FLAGS  = (1UL << 2),
+	__NR_MEMCG_DATA_FLAGS  = (1UL << 3),
 };
 
 #define MEMCG_DATA_FLAGS_MASK (__NR_MEMCG_DATA_FLAGS - 1)
@@ -673,7 +676,7 @@ static inline struct mem_cgroup *folio_memcg_check(struct folio *folio)
 	 */
 	unsigned long memcg_data = READ_ONCE(folio->memcg_data);
 
-	if (memcg_data & MEMCG_DATA_OBJCGS)
+	if ((memcg_data & MEMCG_DATA_OBJCGS) || (memcg_data & MEMCG_DATA_SLAB_AGE))
 		return NULL;
 
 	if (memcg_data & MEMCG_DATA_KMEM) {

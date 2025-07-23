@@ -19,6 +19,7 @@
 #include <linux/buffer_head.h> /* for inode_has_buffers */
 #include <linux/ratelimit.h>
 #include <linux/list_lru.h>
+#include <linux/kidled.h>
 #include <linux/iversion.h>
 #include <trace/events/writeback.h>
 #include "internal.h"
@@ -162,6 +163,7 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_flags = 0;
+	kidled_set_slab_age(inode, 0);
 	atomic64_set(&inode->i_sequence, 0);
 	atomic_set(&inode->i_count, 1);
 	inode->i_op = &empty_iops;
@@ -928,6 +930,58 @@ long prune_icache_sb(struct super_block *sb, struct shrink_control *sc)
 	return freed;
 }
 
+#ifdef CONFIG_KIDLED
+/*
+ * The implementation of principle is similar to the dentry. It will
+ * takes a lot of time in spin_lock/spin_unlock. it is useless that
+ * we only want to know the real free slab.
+ */
+static enum lru_status inode_lru_cold_count(struct list_head *item,
+					    struct list_lru_one *lru, spinlock_t *lock, void *arg)
+{
+	struct inode *inode = container_of(item, struct inode, i_lru);
+	static int inode_size;
+	u16 inode_age = kidled_get_slab_age(inode);
+
+	if (inode_age &&
+	    kidled_is_slab_scanned(inode_age, kidled_scan_rounds))
+		goto out;
+
+	if (atomic_read(&inode->i_count) ||
+	    (inode->i_state & I_REFERENCED)) {
+		if (unlikely(inode_age))
+			kidled_set_slab_age(inode, 0);
+		goto out;
+	}
+
+	if (inode->i_data.nrpages ||
+	    !list_empty(&inode->i_data.private_list)) {
+		if (unlikely(inode_age))
+			kidled_set_slab_age(inode, 0);
+		goto out;
+	}
+
+	kidled_clear_slab_scanned(inode);
+	if (unlikely(!inode_size))
+		inode_size = ksize(inode);
+	inode_age = kidled_inc_slab_age(inode);
+	kidled_mem_cgroup_slab_account(inode, inode_age, inode_size);
+	kidled_mark_slab_scanned(inode, kidled_scan_rounds);
+out:
+	return LRU_ROTATE_DELAY;
+}
+
+void cold_icache_sb(struct super_block *sb,
+		    struct shrink_control *sc)
+{
+	unsigned long nr_to_walk = sc->nr_to_scan;
+
+	list_lru_walk_node(&sb->s_inode_lru, sc->nid,
+			   inode_lru_cold_count, NULL,
+			   &nr_to_walk);
+}
+#endif
+
 static void __wait_on_freeing_inode(struct inode *inode);
 /*
  * Called with the inode lock held.
@@ -1533,6 +1587,10 @@ again:
 		if (unlikely(inode_unhashed(inode))) {
 			iput(inode);
 			goto again;
+		} else {
+			/* reset its age if it has already had an age */
+			if (kidled_get_slab_age(inode))
+				kidled_set_slab_age(inode, 0);
 		}
 	}
 	return inode;
@@ -1563,6 +1621,10 @@ again:
 		if (unlikely(inode_unhashed(inode))) {
 			iput(inode);
 			goto again;
+		} else {
+			/* reset its age if it has already had an age */
+			if (kidled_get_slab_age(inode))
+				kidled_set_slab_age(inode, 0);
 		}
 	}
 	return inode;

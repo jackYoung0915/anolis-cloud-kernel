@@ -7,18 +7,29 @@ kidled
 Introduction
 ============
 
-kidled uses a kernel thread to scan the pages on LRU list, and supports to
-output statistics for each memory cgroup (process is not supported yet).
-kidled scans pages round to round indexed by pfn, and will try to finish each
-round in a fixed duration which is named as scan period. Of course, users can
-set the scan period whose unit is seconds. Each page has an attribute named
-as 'idle age', which represents how long the page is kept in idle state, the
-age's unit is in one scan period. The idle aging information (field) consumes
+kidled uses a kernel thread to scan the pages and slab objects on LRU list
+respectively, and supports to output statistics for each memory cgroup
+(process is not supported yet). Kidled scans pages round to round indexed
+by pfn, but scan slab objects is different.  Slab lru list is not stable as
+time goes, hence we regards the first accessed slab lru size as the real
+size that kidled should scan the numbers of the specified slab in a round.
+Kidled scanning will try to finish each round in a fixed duration which
+is named as scan period. Of course, users can set the scan period whose
+unit is seconds. Scanned objects has an attribute named as 'idle age',
+which represents how long the object is kept in idle state, the age's unit
+is in one scan period. The idle aging information (field) of the page consumes
 one byte, which is stored in dynamically allocated array, tied with the NUMA
-node or flags field of page descriptor (struct page). So the maximal age is
-255. kidled eventually shows the histogram statistics through memory cgroup
-files (``memory.idle_page_stats``). The statistics could be used to evaluate
-the working-set size of that memory cgroup or the hierarchy.
+node or flags field of page descriptor (struct page). Meanwhile, Slab objects
+use two bytes to store the information, its lower bytes to store the idle aging
+information and upper bytes to make an mark to avoid accessing an object more
+than one time. So the maximal age is 255. kidled eventually shows the histogram
+statistics through memory cgroup files (``memory.idle_page_stats``). The statistics
+could be used to evaluate the working-set size of that memory cgroup or the hierarchy.
+
+Especially, we add a switch to control whether slab scan or not. That isolate
+page scan and slab scan effectively to avoid too many slab objects interfering
+with page scan. Because it is important for us to reap cold userspace page, which
+reclaim more memory at the lower cost.
 
 Note: The implementation of kidled had referred to Michel Lespinasse's patch:
 https://lore.kernel.org/lkml/20110922161448.91a2e2b2.akpm@google.com/T/
@@ -63,7 +74,25 @@ Here are their functions:
    statistics, but it won't be very odd due to the duration are the same at
    least.
 
-* ``memory.idle_page_stats.local`` (memory cgroup v1/v2)
+* ``/sys/kernel/mm/kidled/scan_target``
+
+  It controls which type kidled will scan, there are three kinds of type
+  could be selected: scan page only, scan slab only, scan both page and
+  slab. The users can enable them as follows. Other value will be invalid.
+
+  To scan user page only
+        echo 1 > ``/sys/kernel/mm/kidled/scan_target``
+  To scan slab only
+        echo 2 > ``/sys/kernel/mm/kidled/scan_target``
+  Both scan page and slab
+        echo 3 > ``/sys/kernel/mm/kidled/scan_target``
+
+  By default, kidled will not scan slab because the cpu load will very
+  high if the system has a lot of reclaimable slabs. But we need to enable
+  it when userspace pages have been reclaimed and a lot of reclaimable
+  slabs is in the system. We'd better mark and reclaim the cold slab in
+  front of the memory reclaim triggered by allocating memory request.
+
 
   It shows histogram of idle statistics for the corresponding memory cgroup.
 
@@ -77,7 +106,8 @@ Here are their functions:
 
   ----------------------------- snapshot start -----------------------------
   # version: 1.0
-  # scans: 1380
+  # page_scans: 92
+  # slab_scans: 92
   # scan_period_in_seconds: 120
   # buckets: 1,2,5,15,30,60,120,240
   #
@@ -85,27 +115,30 @@ Here are their functions:
   #  / _----=> swap/file
   # | / _---=> evict/unevict
   # || / _--=> inactive/active
-  # ||| /
-  # ||||              [1,2)          [2,5)         [5,15)        [15,30)        [30,60)       [60,120)      [120,240)     [240,+inf)
-      csei                  0              0              0              0              0              0              0              0
-      dsei                  0              0         442368          49152              0          49152         212992        7741440
-      cfei               4096         233472        1171456        1032192          28672          65536         122880      147550208
-      dfei                  0              0           4096          20480           4096              0          12288          12288
-      csui                  0              0              0              0              0              0              0              0
-      dsui                  0              0              0              0              0              0              0              0
-      cfui                  0              0              0              0              0              0              0              0
-      dfui                  0              0              0              0              0              0              0              0
-      csea              77824         331776        1216512        1069056         217088         372736         327680       33284096
-      dsea                  0              0              0              0              0              0              0         139264
-      cfea               4096          57344         606208       13144064          53248         135168        1683456       48357376
-      dfea                  0              0              0              0              0              0              0              0
-      csua                  0              0              0              0              0              0              0              0
-      dsua                  0              0              0              0              0              0              0              0
-      cfua                  0              0              0              0              0              0              0              0
-      dfua                  0              0              0              0              0              0              0              0
+  # ||| / _-=> slab
+  # |||| /
+  # |||||              [1,2)          [2,5)         [5,15)        [15,30)        [30,60)       [60,120)      [120,240)     [240,+inf)
+    csei                  0              0              0              0              0              0              0              0
+    dsei                  0          16384              0              0              0         360448              0              0
+    cfei             774144        3624960        1744896        1298432       20676608      161087488              0              0
+    dfei                  0              0          16384              0          24576              0              0              0
+    csui                  0              0              0              0              0              0              0              0
+    dsui                  0              0              0              0              0              0              0              0
+    cfui                  0              0              0              0              0              0              0              0
+    dfui                  0              0              0              0              0              0              0              0
+    csea             278528        3510272         389120         872448         806912       22716416              0              0
+    dsea                  0          12288              0              0              0         196608              0              0
+    cfea            1298432       12115968        3510272       10518528       78409728     1503793152              0              0
+    dfea                  0              0              0              0              0           4096              0              0
+    csua                  0              0              0              0              0              0              0              0
+    dsua                  0              0              0              0              0              0              0              0
+    cfua                  0              0              0              0              0              0              0              0
+    dfua                  0              0              0              0              0              0              0              0
+    slab               2704            832          15600          20800          70720      763819160              0              0
   ----------------------------- snapshot end -----------------------------
 
-  ``scans`` means how many rounds current cgroup has been scanned.
+  ``page_scans`` means how many rounds current cgroup's pagecache has been scanned.
+  ``slab_scans`` means how many rounds current cgroup's slab has been scanned.
   ``scan_period_in_seconds`` means kidled will take how long to finish
   one round. ``buckets`` is to allow scripts parsing easily. The table
   shows how many bytes are in idle state, the row is indexed by idle
@@ -132,7 +165,8 @@ Here are their functions:
   $ sudo bash -c "echo '' > /sys/fs/cgroup/memory/test/memory.idle_page_stats"
   $ cat /sys/fs/cgroup/memory/test/memory.idle_page_stats
   # version: 1.0
-  # scans: 0
+  # page_scans: 0
+  # slab_scans: 0
   # scan_period_in_seconds: 1
   # buckets: no valid bucket available
   ----------------------------- snapshot end -----------------------------

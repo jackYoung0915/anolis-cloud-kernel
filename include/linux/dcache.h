@@ -113,6 +113,7 @@ struct dentry {
 	 	struct rcu_head d_rcu;
 	} d_u;
 
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 } __randomize_layout;
