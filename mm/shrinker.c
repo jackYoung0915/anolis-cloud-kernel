@@ -422,12 +422,12 @@ static void kidled_scan_slab_memcg(int nid, struct mem_cgroup *memcg,
 	if (!mem_cgroup_online(memcg))
 		return;
 
+again:
 	rcu_read_lock();
 	info = rcu_dereference(memcg->nodeinfo[nid]->shrinker_info);
 	if (unlikely(!info))
 		goto out;
 
-again:
 	if (index < shrinker_id_to_index(info->map_nr_max)) {
 		struct shrinker_info_unit *unit;
 
