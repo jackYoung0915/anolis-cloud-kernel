@@ -468,8 +468,13 @@ static void __inode_add_lru(struct inode *inode, bool rotate)
 
 	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_inc(nr_unused);
-	else if (rotate)
+	else if (rotate) {
 		inode->i_state |= I_REFERENCED;
+#ifdef CONFIG_KIDLED
+		/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
+		inode->i_state |= I_KIDLED_YOUNG;
+#endif
+	}
 }
 
 /*
@@ -947,10 +952,19 @@ static enum lru_status inode_lru_cold_count(struct list_head *item,
 	    kidled_is_slab_scanned(inode_age, kidled_scan_rounds))
 		goto out;
 
-	if (atomic_read(&inode->i_count) ||
-	    (inode->i_state & I_REFERENCED)) {
+	if (atomic_read(&inode->i_count)) {
 		if (unlikely(inode_age))
 			kidled_set_slab_age(inode, 0);
+		goto out;
+	}
+
+	if (inode->i_state & I_KIDLED_YOUNG) {
+		if (unlikely(inode_age))
+			kidled_set_slab_age(inode, 0);
+		if (spin_trylock(&inode->i_lock)) {
+			inode->i_state &= ~I_KIDLED_YOUNG;
+			spin_unlock(&inode->i_lock);
+		}
 		goto out;
 	}
 
@@ -979,6 +993,88 @@ void cold_icache_sb(struct super_block *sb,
 	list_lru_walk_node(&sb->s_inode_lru, sc->nid,
 			   inode_lru_cold_count, NULL,
 			   &nr_to_walk);
+}
+#endif
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+static inline bool valid_cold_inode_check(struct inode *inode)
+{
+	assert_spin_locked(&inode->i_lock);
+	if (atomic_read(&inode->i_count))
+		return false;
+	/*
+	 * Since RECLAIM_COLDPGS depends on KIDLED, check
+	 * I_KIDLED_YOUNG instead of I_REFERENCED.
+	 */
+	if (inode->i_state & I_KIDLED_YOUNG)
+		return false;
+	if (inode_has_buffers(inode))
+		return false;
+	if (inode->i_data.nrpages)
+		return false;
+
+	return true;
+}
+
+static __maybe_unused enum lru_status
+cold_inode_lru_isolate_reap(struct list_head *item,
+			    struct list_lru_one *lru,
+			    spinlock_t *lru_lock, void *arg)
+{
+	struct kidled_slab_param *s_param = (struct kidled_slab_param *)arg;
+	unsigned long threshold = s_param->threshold;
+	struct list_head *freeable = s_param->freeable;
+	struct inode *inode;
+	u8 __maybe_unused inode_age;
+
+	inode = container_of(item, struct inode, i_lru);
+	if (!spin_trylock(&inode->i_lock))
+		return LRU_SKIP;
+
+	if (!valid_cold_inode_check(inode))
+		goto out;
+
+	inode_age = kidled_get_slab_age(inode);
+	if (inode_age >= threshold) {
+		inode->i_state |= I_FREEING;
+		list_lru_isolate_move(lru, &inode->i_lru, freeable);
+		this_cpu_dec(nr_unused);
+		spin_unlock(&inode->i_lock);
+		return LRU_REMOVED;
+	}
+
+out:
+	spin_unlock(&inode->i_lock);
+	return LRU_ROTATE;
+}
+
+static inline unsigned long get_inode_size(struct list_head *head)
+{
+	struct inode *inode;
+
+	if (list_empty(head))
+		return 0;
+	inode = list_first_entry(head, struct inode, i_lru);
+	return ksize(inode);
+}
+
+unsigned long shrink_cold_icache(struct super_block *sb,
+				    struct shrink_control *sc)
+{
+	unsigned long nr_reclaimed = 0;
+	LIST_HEAD(dispose);
+	static unsigned long inode_size;
+	struct kidled_slab_param s_param;
+
+	s_param.threshold = sc->threshold;
+	s_param.freeable = &dispose;
+	nr_reclaimed = list_lru_walk_node(&sb->s_inode_lru, sc->nid,
+					  cold_inode_lru_isolate_reap,
+					  &s_param, &sc->nr_to_scan);
+	if (unlikely(!inode_size))
+		inode_size = get_inode_size(&dispose);
+	dispose_list(&dispose);
+	return nr_reclaimed * inode_size;
 }
 #endif
 

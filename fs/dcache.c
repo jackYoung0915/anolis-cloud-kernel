@@ -686,10 +686,18 @@ static inline bool retain_dentry(struct dentry *dentry)
 
 	/* retain; LRU fodder */
 	dentry->d_lockref.count--;
-	if (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST)))
+	if (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST))) {
 		d_lru_add(dentry);
-	else if (unlikely(!(dentry->d_flags & DCACHE_REFERENCED)))
+		return true;
+	}
+
+	if (unlikely(!(dentry->d_flags & DCACHE_REFERENCED)))
 		dentry->d_flags |= DCACHE_REFERENCED;
+#ifdef CONFIG_KIDLED
+	/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
+	if (unlikely(!(dentry->d_flags & DCACHE_KIDLED_YOUNG)))
+		dentry->d_flags |= DCACHE_KIDLED_YOUNG;
+#endif
 	return true;
 }
 
@@ -1308,10 +1316,19 @@ static enum lru_status dentry_lru_cold_count(struct list_head *item,
 	    kidled_is_slab_scanned(dentry_age, kidled_scan_rounds))
 		goto out;
 
-	if (READ_ONCE(dentry->d_lockref.count) ||
-	    (dentry->d_flags & DCACHE_REFERENCED)) {
+	if (READ_ONCE(dentry->d_lockref.count)) {
 		if (dentry_age)
 			kidled_set_slab_age(dentry, 0);
+		goto out;
+	}
+
+	if (dentry->d_flags & DCACHE_KIDLED_YOUNG) {
+		if (dentry_age)
+			kidled_set_slab_age(dentry, 0);
+		if (spin_trylock(&dentry->d_lock)) {
+			dentry->d_flags &= ~DCACHE_KIDLED_YOUNG;
+			spin_unlock(&dentry->d_lock);
+		}
 		goto out;
 	}
 
@@ -1332,6 +1349,86 @@ void cold_dcache_sb(struct super_block *sb, struct shrink_control *sc)
 	list_lru_walk_node(&sb->s_dentry_lru, sc->nid,
 			   dentry_lru_cold_count,
 			   NULL, &nr_to_walk);
+}
+#endif
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+static inline bool valid_cold_dentry_check(struct dentry *dentry)
+{
+	assert_spin_locked(&dentry->d_lock);
+	if (dentry->d_lockref.count)
+		return false;
+	/*
+	 * Since RECLAIM_COLDPGS depends on KIDLED, check
+	 * DCACHE_KIDLED_YOUNG instead of DCACHE_REFERENCED.
+	 */
+	if (dentry->d_flags & DCACHE_KIDLED_YOUNG)
+		return false;
+
+	return true;
+}
+
+static __maybe_unused enum lru_status
+cold_dentry_lru_isolate_reap(struct list_head *item,
+			     struct list_lru_one *lru,
+			     spinlock_t *lru_lock, void *arg)
+{
+	struct dentry *dentry = container_of(item, struct dentry, d_lru);
+	struct kidled_slab_param *s_param = (struct kidled_slab_param *)arg;
+	struct list_head *freeable = s_param->freeable;
+	unsigned int threshold = s_param->threshold;
+	u8 dentry_age = kidled_get_slab_age(dentry);
+
+	if (!spin_trylock(&dentry->d_lock))
+		return LRU_SKIP;
+
+	if (!valid_cold_dentry_check(dentry))
+		goto out;
+
+	/*
+	 * We will reclaim the slab objects if their age are not
+	 * less than the specified threshold.
+	 */
+	if (dentry_age >= threshold) {
+		d_lru_shrink_move(lru, dentry, freeable);
+		spin_unlock(&dentry->d_lock);
+		return LRU_REMOVED;
+	}
+
+out:
+	spin_unlock(&dentry->d_lock);
+	return LRU_ROTATE;
+}
+
+static inline unsigned long get_dentry_size(struct list_head *head)
+{
+	struct dentry *dentry;
+
+	if (list_empty(head))
+		return 0;
+
+	dentry = list_first_entry(head, struct dentry, d_lru);
+	return ksize(dentry);
+}
+
+unsigned long shrink_cold_dcache(struct super_block *sb,
+				    struct shrink_control *sc)
+{
+	LIST_HEAD(dispose);
+	unsigned __maybe_unused long nr_reclaimed = 0;
+	static unsigned long dentry_size;
+	struct kidled_slab_param s_param;
+
+	s_param.threshold = sc->threshold;
+	s_param.freeable = &dispose;
+	nr_reclaimed =  list_lru_walk_node(&sb->s_dentry_lru, sc->nid,
+					   cold_dentry_lru_isolate_reap,
+					   &s_param, &sc->nr_to_scan);
+	if (unlikely(!dentry_size))
+		dentry_size = get_dentry_size(&dispose);
+
+	shrink_dentry_list(&dispose);
+	return dentry_size * nr_reclaimed;
 }
 #endif
 
