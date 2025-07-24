@@ -484,8 +484,7 @@ static inline struct obj_cgroup **slab_objcgs(struct slab *slab)
 
 	VM_BUG_ON_PAGE(memcg_data && !(memcg_data & MEMCG_DATA_OBJCGS),
 							slab_page(slab));
-	VM_BUG_ON_PAGE((memcg_data & MEMCG_DATA_FLAGS_MASK) != MEMCG_DATA_KMEM,
-		       slab_page(slab));
+	VM_BUG_ON_PAGE(memcg_data & MEMCG_DATA_KMEM, slab_page(slab));
 
 	return (struct obj_cgroup **)(memcg_data & ~MEMCG_DATA_FLAGS_MASK);
 }
