@@ -1,0 +1,10 @@
+* Thu Jul 24 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [6.6.88-4.2_rc1%%DIST%%]
+- virtio_net: correct netdev_tx_reset_queue() invocation point (Koichiro Den)
+- virtio_net: ensure netdev_tx_reset_queue is called on bind xsk for tx (Koichiro Den)
+- virtio_ring: add a func argument 'recycle_done' to virtqueue_reset() (Koichiro Den)
+- virtio_net: ensure netdev_tx_reset_queue is called on tx ring resize (Koichiro Den)
+- virtio_ring: add a func argument 'recycle_done' to virtqueue_resize() (Koichiro Den)
+- anolis: drivers/iommu: Fix the initialization failure issue of the iommu module (Xianglai Li)
+- anolis: iommu/loongarch: fix potential hung task when error occurred (Hongchen Zhang)
+- anolis: riscv: Fix map all memory to linear space without fixed map size (luohaiyang)
+
