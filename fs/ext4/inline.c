@@ -557,7 +557,7 @@ static int ext4_convert_inline_data_to_extent(struct address_space *mapping,
 		return 0;
 	}
 
-	needed_blocks = ext4_writepage_trans_blocks(inode);
+	needed_blocks = ext4_chunk_trans_extent(inode, 1);
 
 	ret = ext4_get_inode_loc(inode, &iloc);
 	if (ret)
@@ -601,10 +601,11 @@ retry:
 		goto out;
 
 	if (ext4_should_dioread_nolock(inode)) {
-		ret = __block_write_begin(folio, from, to,
-					  ext4_get_block_unwritten);
+		ret = ext4_block_write_begin(handle, folio, from, to,
+					     ext4_get_block_unwritten);
 	} else
-		ret = __block_write_begin(folio, from, to, ext4_get_block);
+		ret = ext4_block_write_begin(handle, folio, from, to,
+					     ext4_get_block);
 
 	if (!ret && ext4_should_journal_data(inode)) {
 		ret = ext4_walk_page_buffers(handle, inode,
@@ -856,8 +857,8 @@ static int ext4_da_convert_inline_data_to_extent(struct address_space *mapping,
 			goto out;
 	}
 
-	ret = __block_write_begin(folio, 0, inline_size,
-				  ext4_da_get_block_prep);
+	ret = ext4_block_write_begin(NULL, folio, 0, inline_size,
+				     ext4_da_get_block_prep);
 	if (ret) {
 		up_read(&EXT4_I(inode)->xattr_sem);
 		folio_unlock(folio);
@@ -1926,7 +1927,7 @@ int ext4_inline_data_truncate(struct inode *inode, int *has_inline)
 	};
 
 
-	needed_blocks = ext4_writepage_trans_blocks(inode);
+	needed_blocks = ext4_chunk_trans_extent(inode, 1);
 	handle = ext4_journal_start(inode, EXT4_HT_INODE, needed_blocks);
 	if (IS_ERR(handle))
 		return PTR_ERR(handle);
@@ -2041,7 +2042,7 @@ int ext4_convert_inline_data(struct inode *inode)
 			return 0;
 	}
 
-	needed_blocks = ext4_writepage_trans_blocks(inode);
+	needed_blocks = ext4_chunk_trans_extent(inode, 1);
 
 	iloc.bh = NULL;
 	error = ext4_get_inode_loc(inode, &iloc);
