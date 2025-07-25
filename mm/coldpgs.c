@@ -2152,16 +2152,23 @@ static int __init reclaim_coldpgs_init(void)
 	if (mem_cgroup_disabled())
 		return -ENXIO;
 
+	ret = -EINVAL;
 	if (lru_gen_enabled()) {
 		pr_warn("%s: Failed to load coldpgs due to MGLRU enabled\n",
 			__func__);
-		return -EPERM;
+		goto out;
+	}
+
+	if (!atomic_inc_and_test(&lru_gen_or_coldpgs)) {
+		pr_warn("%s: Failed to load coldpgs due to MGLRU enabling\n",
+			__func__);
+		goto out_dec;
 	}
 
 	/* Resolve symbols required by the driver */
 	ret = reclaim_coldpgs_resolve_symbols();
 	if (ret)
-		return ret;
+		goto out_dec;
 
 	/*
 	 * Initialize global control. The version is figured out from the
@@ -2172,7 +2179,7 @@ static int __init reclaim_coldpgs_init(void)
 	if (ret != 3 || major > U8_MAX || minor > U8_MAX || revision > U8_MAX) {
 		pr_warn("%s: Invalid version [%s] detected\n",
 			__func__, DRIVER_VERSION);
-		return -EINVAL;
+		goto out_dec;
 	}
 
 	init_rwsem(&global_control.rwsem);
@@ -2184,7 +2191,7 @@ static int __init reclaim_coldpgs_init(void)
 	if (ret) {
 		pr_warn("%s: Error %d to populate the sysfs files\n",
 			__func__, ret);
-		return ret;
+		goto out_dec;
 	}
 
 	/*
@@ -2202,13 +2209,18 @@ static int __init reclaim_coldpgs_init(void)
 	if (ret) {
 		pr_warn("%s: Error %d to populate the cgroup files\n",
 			__func__, ret);
-		sysfs_remove_group(mm_kobj, &reclaim_coldpgs_attr_group);
-		return ret;
+		goto out_remove;
 	}
 
 	pr_info("%s (%s) loaded\n", DRIVER_DESC, DRIVER_VERSION);
 
 	return 0;
+out_remove:
+	sysfs_remove_group(mm_kobj, &reclaim_coldpgs_attr_group);
+out_dec:
+	atomic_dec(&lru_gen_or_coldpgs);
+out:
+	return ret;
 }
 
 static void __exit reclaim_coldpgs_exit(void)
@@ -2217,6 +2229,7 @@ static void __exit reclaim_coldpgs_exit(void)
 	sysfs_remove_group(mm_kobj, &reclaim_coldpgs_attr_group);
 
 	pr_info("%s (%s) unloaded\n", DRIVER_DESC, DRIVER_VERSION);
+	atomic_dec(&lru_gen_or_coldpgs);
 }
 
 module_init(reclaim_coldpgs_init);
