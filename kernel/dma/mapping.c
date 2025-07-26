@@ -17,8 +17,12 @@
 #include "debug.h"
 #include "direct.h"
 #ifdef CONFIG_PSWIOTLB
+#ifdef __GENKSYMS__
+#include <linux/ck_kabi.h>
+#else
 #include "./phytium/pswiotlb-dma.h"
-#endif
+#endif /* __GENKSYMS */
+#endif /* CONFIG_PSWIOTLB */
 
 #if defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_DEVICE) || \
 	defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU) || \
