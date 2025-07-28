@@ -1176,7 +1176,16 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	 * Filter out the useless mode and flags.
 	 */
 	filter->mode &= FLAG_MODE(control->flags);
+	/*
+	 * TODO: mlocked page is not on any LRU in 6.6, in case coldpgs
+	 * scans empty LRU_UNEVICTABLE and gets incorrent ptr, mask the flag
+	 * temporarily, support it in future.
+	 */
 	filter->flags &= FLAG_MLOCK(control->flags);
+	if (filter->flags & FLAG_IGNORE_MLOCK) {
+		pr_warn_once("Coldpgs does't support mlock page reclaim, ignore the flag\n");
+		filter->flags &= ~FLAG_IGNORE_MLOCK;
+	}
 
 	/*
 	 * Figure out the eligible LRUs. Here we have a bitmap to track the
@@ -1213,6 +1222,9 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	 * It's pointless to scan the pages in unevictable LRU list without
 	 * reclaiming them. The pages in the unevictable LRU list won't be
 	 * iterated until the valid reclaim mode has been given.
+	 * FIXME: unevictable page won't be added into LRU_UNEVICTABLE,
+	 * page->mlock_count is used instead, scanning LRU_UNEVICTABLE can
+	 * cause kernel panic.
 	 */
 	if (!bitmap_empty(&bitmap, BITS_PER_LONG) &&
 	    reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_MLOCK))
@@ -1984,6 +1996,11 @@ static ssize_t reclaim_coldpgs_store_threshold(struct kobject *kobj,
 	 * double locking calls and simplify the code at least.
 	 */
 	down_write(&global_control.rwsem);
+	if (global_control.flags & FLAG_IGNORE_MLOCK) {
+		pr_err("Cannot reclaim mlock page right now, please change flags\n");
+		up_write(&global_control.rwsem);
+		return -EINVAL;
+	}
 	global_control.thresholds[THRESHOLD_BASE] = val;
 	filter.flags = global_control.flags;
 	filter.batch = global_control.batch;
