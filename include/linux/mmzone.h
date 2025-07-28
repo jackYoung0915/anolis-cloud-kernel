@@ -2124,11 +2124,7 @@ void sparse_init(void);
 #endif /* CONFIG_SPARSEMEM */
 
 /* Indicate coldpgs is enabled or not */
-extern bool coldpgs_enabled;
-static inline bool is_coldpgs_enabled(void)
-{
-	return coldpgs_enabled;
-}
+extern atomic_t lru_gen_or_coldpgs;
 
 #endif /* !__GENERATING_BOUNDS.H */
 #endif /* !__ASSEMBLY__ */

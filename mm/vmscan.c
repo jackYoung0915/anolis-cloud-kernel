@@ -5201,6 +5201,9 @@ static ssize_t enabled_show(struct kobject *kobj, struct kobj_attribute *attr, c
 	return sysfs_emit(buf, "0x%04x\n", caps);
 }
 
+atomic_t lru_gen_or_coldpgs = { .counter = -1 };
+EXPORT_SYMBOL(lru_gen_or_coldpgs);
+
 /* see Documentation/admin-guide/mm/multigen_lru.rst for details */
 static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 			     const char *buf, size_t len)
@@ -5221,6 +5224,13 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 		return -EINVAL;
 	}
 
+	if (!atomic_inc_and_test(&lru_gen_or_coldpgs)) {
+		atomic_dec(&lru_gen_or_coldpgs);
+		pr_warn("%s: Failed to enable mglru due to coldpgs enabling/enabled\n",
+			__func__);
+		return -EINVAL;
+	}
+
 	for (i = 0; i < NR_LRU_GEN_CAPS; i++) {
 		bool enabled = caps & BIT(i);
 
@@ -5231,6 +5241,8 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 		else
 			static_branch_disable(&lru_gen_caps[i]);
 	}
+
+	atomic_dec(&lru_gen_or_coldpgs);
 
 	return len;
 }
