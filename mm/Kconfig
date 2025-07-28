@@ -1389,7 +1389,7 @@ config PRE_OOM
 
 config RECLAIM_COLDPGS
 	tristate "Reclaim cold pages"
-	depends on MEMCG && KIDLED
+	depends on MEMCG && KIDLED && (X86_64 || ARM64)
 	default m
 	help
 	  This exports the interfaces allowing user application to reclaim
