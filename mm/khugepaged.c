@@ -126,6 +126,9 @@ struct collapse_control {
 
 	/* Last target selected in khugepaged_find_target_node() */
 	int last_target_node;
+
+	/* Only effective when direct hugetext is enabled. */
+	struct vm_area_struct *hugetext_direct_vma;
 };
 
 /**
@@ -2104,7 +2107,8 @@ static void retract_page_tables(struct address_space *mapping, pgoff_t pgoff)
  */
 static void collapse_file(struct mm_struct *mm,
 		struct file *file, pgoff_t start,
-		struct page **hpage, int node)
+		struct page **hpage, int node,
+		struct collapse_control *cc)
 {
 	struct address_space *mapping = file->f_mapping;
 	gfp_t gfp;
@@ -2120,7 +2124,10 @@ static void collapse_file(struct mm_struct *mm,
 	VM_BUG_ON(start & (HPAGE_PMD_NR - 1));
 
 	/* Only allocate from the target node */
-	gfp = alloc_hugepage_khugepaged_gfpmask() | __GFP_THISNODE;
+	if (cc->hugetext_direct_vma)
+		gfp = vma_thp_gfp_mask(cc->hugetext_direct_vma) | __GFP_THISNODE;
+	else
+		gfp = alloc_hugepage_khugepaged_gfpmask() | __GFP_THISNODE;
 
 	new_page = khugepaged_alloc_page(hpage, gfp, node);
 	if (!new_page) {
@@ -2533,7 +2540,7 @@ static void khugepaged_scan_file(struct mm_struct *mm, struct file *file,
 			result = SCAN_EXCEED_NONE_PTE;
 		} else {
 			node = khugepaged_find_target_node(cc);
-			collapse_file(mm, file, start, hpage, node);
+			collapse_file(mm, file, start, hpage, node, cc);
 		}
 	}
 
@@ -3550,6 +3557,7 @@ static void hugetext_try_file_collapse(struct callback_head *twork)
 		if (!cc)
 			goto out_mmdrop;
 		cc->last_target_node = NUMA_NO_NODE;
+		cc->hugetext_direct_vma = vma;
 		memset(cc->node_load, 0, sizeof(cc->node_load));
 		khugepaged_scan_file(mm, file, pgoff, &hpage, cc);
 		kfree(cc);
