@@ -154,7 +154,7 @@ static __maybe_unused void nbl_dev_notify_ipsec_hard_expire(void *priv, u16 src_
 	if (x) {
 		x->km.state = XFRM_STATE_EXPIRED;
 		hrtimer_start(&x->mtimer, 0, HRTIMER_MODE_REL_SOFT);
-		xfrm_state_put_sync(x);
+		xfrm_state_put(x);
 	}
 #endif
 }
