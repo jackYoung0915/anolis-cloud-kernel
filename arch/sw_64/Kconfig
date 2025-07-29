@@ -154,6 +154,7 @@ config SW64
 	select HAVE_CONTEXT_TRACKING
 	select HAVE_NMI
 	select HAVE_DMA_CONTIGUOUS
+	select CRYPTO_CRC32_SW64 if !SUBARCH_C3B
 
 config LOCKDEP_SUPPORT
 	def_bool y
