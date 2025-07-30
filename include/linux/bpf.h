@@ -203,6 +203,7 @@ struct bpf_map {
 	};
 	struct mutex freeze_mutex;
 	atomic64_t writecnt;
+	u64 cookie; /* write-once */
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
