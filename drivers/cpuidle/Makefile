@@ -37,3 +37,7 @@ obj-$(CONFIG_POWERNV_CPUIDLE)		+= cpuidle-powernv.o
 ###############################################################################
 # RISC-V drivers
 obj-$(CONFIG_LIGHT_CPUIDLE)          += cpuidle-light.o
+
+###############################################################################
+# SW64 drivers
+obj-$(CONFIG_SW64_CPUIDLE)		+= cpuidle-sw64.o
