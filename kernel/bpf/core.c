@@ -1838,6 +1838,9 @@ bool bpf_prog_array_compatible(struct bpf_array *array,
 			       const struct bpf_prog *fp)
 {
 	bool ret;
+	struct bpf_prog_aux *aux = fp->aux;
+	enum bpf_cgroup_storage_type i;
+	u64 cookie;
 
 	if (fp->kprobe_override)
 		return false;
@@ -1850,10 +1853,23 @@ bool bpf_prog_array_compatible(struct bpf_array *array,
 		 */
 		array->aux->owner.type  = fp->type;
 		array->aux->owner.jited = fp->jited;
+		for_each_cgroup_storage_type(i) {
+			array->aux->owner.storage_cookie[i] =
+				aux->cgroup_storage[i] ?
+				aux->cgroup_storage[i]->cookie : 0;
+		}
 		ret = true;
 	} else {
 		ret = array->aux->owner.type  == fp->type &&
 		      array->aux->owner.jited == fp->jited;
+		for_each_cgroup_storage_type(i) {
+			if (!ret)
+				break;
+			cookie = aux->cgroup_storage[i] ?
+				aux->cgroup_storage[i]->cookie : 0;
+			ret = array->aux->owner.storage_cookie[i] == cookie ||
+				!cookie;
+		}
 	}
 	spin_unlock(&array->aux->owner.lock);
 	return ret;

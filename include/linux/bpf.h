@@ -1038,6 +1038,7 @@ struct bpf_array_aux {
 		spinlock_t lock;
 		enum bpf_prog_type type;
 		bool jited;
+		u64 storage_cookie[MAX_BPF_CGROUP_STORAGE_TYPE];
 	} owner;
 	/* Programs with direct jumps into programs part of this array. */
 	struct list_head poke_progs;
