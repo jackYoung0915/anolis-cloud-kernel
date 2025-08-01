@@ -110,6 +110,11 @@ static unsigned long (*my_node_page_state)(struct pglist_data *pgdat,
 static void (*my___mod_lruvec_state)(struct lruvec *,
 		enum node_stat_item, int val);
 
+static
+struct anon_vma *(*my_folio_lock_anon_vma_read)(struct folio *page,
+						struct rmap_walk_control *rwc);
+static int (*my_page_mapped_in_vma)(struct page *page,
+				    struct vm_area_struct *vma);
 static struct anon_vma_chain *
 (*my_anon_vma_interval_tree_iter_first)(struct rb_root_cached *root,
 					unsigned long first, unsigned long last);
@@ -296,6 +301,44 @@ static bool folio_is_exec(struct address_space *mapping,
 	return false;
 }
 
+static bool anon_folio_is_exec(struct folio *folio)
+{
+	struct vm_area_struct *vma;
+	struct anon_vma *av;
+	struct anon_vma_chain *vmac;
+	pgoff_t pgoff_start, pgoff_end;
+	bool ret = false;
+
+	if (unlikely(!folio_test_anon(folio) ||
+		     !folio_test_swapbacked(folio)))
+		return false;
+
+	av = my_folio_lock_anon_vma_read(folio, NULL);
+	if (av == NULL)
+		return false;
+
+	pgoff_start = folio_pgoff(folio);
+	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+	my_anon_vma_interval_tree_foreach(vmac,
+					  &av->rb_root,
+					   pgoff_start,
+					   pgoff_end) {
+		vma = vmac->vma;
+		/*
+		 * Once we get a vma in which this folio is mapping
+		 * with VM_EXEC flag, we regard the whole folio as
+		 * executable.
+		 */
+		if (vma->vm_flags & VM_EXEC) {
+			ret = true;
+			break;
+		}
+	}
+	anon_vma_unlock_read(av);
+
+	return ret;
+}
+
 /*
  * The function is called for twice to one specific folio, isolation and
  * reclaiming phrase separately. During the period of isolation, the folio's
@@ -378,6 +421,11 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 		/* Bail if there is no enough swap space */
 		if (my_mem_cgroup_get_nr_swap_pages(memcg) <
 		    folio_nr_pages(folio))
+			return false;
+
+		/* JIT may use executable anonymous page */
+		if (reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE) &&
+		    anon_folio_is_exec(folio))
 			return false;
 	}
 
@@ -2163,6 +2211,8 @@ static int __init reclaim_coldpgs_resolve_symbols(void)
 	reclaim_coldpgs_resolve_symbol(node_page_state);
 	reclaim_coldpgs_resolve_symbol(__mod_lruvec_state);
 
+	reclaim_coldpgs_resolve_symbol(folio_lock_anon_vma_read);
+	reclaim_coldpgs_resolve_symbol(page_mapped_in_vma);
 	reclaim_coldpgs_resolve_symbol(anon_vma_interval_tree_iter_first);
 	reclaim_coldpgs_resolve_symbol(anon_vma_interval_tree_iter_next);
 
