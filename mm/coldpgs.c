@@ -318,6 +318,10 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 	 * The folio should be in LRU list in isolation phrase, but
 	 * it should have been removed from LRU list in reclaim
 	 * phrase.
+	 *
+	 * validate_age is indicating isolation phase or reclaim phase.
+	 * Though even ignore_age bit is true, it still has to do this
+	 * check in isolation phase.
 	 */
 	if (validate_age && !folio_test_lru(folio))
 		return false;
@@ -394,7 +398,8 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 	 * for reclaim and no need to validate the page's age under the
 	 * circumstance.
 	 */
-	if (validate_age) {
+	if (validate_age &&
+	    !reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE)) {
 		age = kidled_get_folio_age(pgdat, folio_pfn(folio));
 		if (age < filter->threshold)
 			return false;
@@ -489,8 +494,9 @@ static int swapout_folio_to_zram(struct reclaim_coldpgs_filter *filter,
 	VM_BUG_ON(!folio_test_locked(folio));
 
 	/* Bail if zswap isn't preferred or the page isn't cold enough */
-	if (!filter->thresholds[THRESHOLD_NONROT] ||
-	    age > filter->thresholds[THRESHOLD_NONROT])
+	if (!reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE) &&
+	    (!filter->thresholds[THRESHOLD_NONROT] ||
+	    age > filter->thresholds[THRESHOLD_NONROT]))
 		return -ERANGE;
 
 	if (my_zswap_store(folio)) {
@@ -756,7 +762,11 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_pagecache_dropped = 0;
 	bool is_pagecache;
-	int age, nr_pages, batch, ret;
+	/*
+	 * age must be initialized in case ignore_age bit is set, as it
+	 * is going to be used by pageout().
+	 */
+	int age = 0, nr_pages, batch, ret;
 
 	while (!list_empty(list)) {
 		cond_resched();
@@ -771,9 +781,11 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 		nr_pages = folio_nr_pages(folio);
 		is_pagecache = folio_is_file_lru(folio) ? true : false;
 		mapping = folio_mapping(folio);
-		age = kidled_get_folio_age(pgdat, folio_pfn(folio));
-		if (age < 0)
-			goto keep_unlocked;
+		if (!reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE)) {
+			age = kidled_get_folio_age(pgdat, folio_pfn(folio));
+			if (age < 0)
+				goto keep_unlocked;
+		}
 
 		if (!folio_is_reclaimable(memcg, filter, pgdat, folio, false))
 			goto keep_unlocked;
@@ -1181,11 +1193,14 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	 * scans empty LRU_UNEVICTABLE and gets incorrent ptr, mask the flag
 	 * temporarily, support it in future.
 	 */
-	filter->flags &= FLAG_MLOCK(control->flags);
+	filter->flags &= FLAG_CTRL(control->flags);
 	if (filter->flags & FLAG_IGNORE_MLOCK) {
 		pr_warn_once("Coldpgs does't support mlock page reclaim, ignore the flag\n");
 		filter->flags &= ~FLAG_IGNORE_MLOCK;
 	}
+
+	if (reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE))
+		pr_debug("Ignoring age to reclaim unconditionally\n");
 
 	/*
 	 * Figure out the eligible LRUs. Here we have a bitmap to track the
@@ -1398,7 +1413,7 @@ static ssize_t reclaim_coldpgs_write_size(struct kernfs_open_file *of,
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
 	struct reclaim_coldpgs_control *control = &memcg->coldpgs_control;
-	unsigned long threshold, size;
+	unsigned long threshold, size, flags;
 	int ret;
 
 	buf = strstrip(buf);
@@ -1409,9 +1424,11 @@ static ssize_t reclaim_coldpgs_write_size(struct kernfs_open_file *of,
 	down_write(&control->rwsem);
 	threshold = control->threshold;
 	control->size = size;
+	flags = control->flags;
 	up_write(&control->rwsem);
 
-	if (threshold > 0 && size > 0)
+	if (size > 0 &&
+	    (threshold > 0 || (FLAG_CTRL(flags) & FLAG_IGNORE_AGE)))
 		reclaim_coldpgs_action(memcg, threshold, size);
 
 	return count;

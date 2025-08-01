@@ -5,9 +5,11 @@
 
 /* Correspond to global & memcg control flags */
 #define FLAG_IGNORE_MLOCK	0x1
+#define FLAG_IGNORE_AGE		0x2
 #define	FLAG_DROPPABLE(val)	((val) & 0xffffffff)
 #define	FLAG_MODE(val)		((val) >> 32 & 0x7)
-#define	FLAG_MLOCK(val)		((val) >> 35 & 0x1)
+/* Get mlock and ignore_age bits */
+#define	FLAG_CTRL(val)		((val) >> 35 & 0x3)
 
 enum {
 	RECLAIM_MODE_PGCACHE_OUT,
