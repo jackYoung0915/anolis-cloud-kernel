@@ -78,10 +78,11 @@ sysfs files include:
 
 * ``/sys/kernel/mm/coldpgs/flags``
 
-  Bitmask to specify the reclaim behaviours. Currently, bit#0 is used only. The
-  other bits have no effects on the reclaim behaviours.
+  Bitmask to specify the reclaim behaviours. Currently, bit#0, bit#1 is used
+  only. The other bits have no effects on the reclaim behaviours.
 
   Bit[0]: specify if the mlock'ed pages are eligible to be reclaimed.
+  Bit[1]: specify if the 0 age pages are eligible to be reclaimed.
 
 * ``/sys/kernel/mm/coldpgs/batch``
 
@@ -144,10 +145,14 @@ below:
 
   This 64bit field is divided as follows.
 
-                 FFFFFFF | 1 | 111 | FFFFFFFF
-                ----+----|-+-|--+--|-----+----|
-                    |      |    |        |
-                reserved mlock mode   coldness
+                 FFFFFF | 111 |     1     |  1  | 111 | FFFFFFFF
+                 ---+---|--+--|-----+-----|--+--|--+--|----+----|
+                    |      |        |     |     |     |
+                reserved  rsv  ignore_age  mlock  mode  coldness
+
+  ignore_age bit: Ignoring age of pages to reclaim unconditonally. With this
+  bit is set, memory.coldpgs.threshold is allowed to be 0 to reclaim pages
+  without checking pages' age.
 
 * ``memory.coldpgs.threshold``
 
