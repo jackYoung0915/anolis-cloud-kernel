@@ -643,9 +643,12 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 				  unsigned long limit, struct vfio_batch *batch)
 {
 	unsigned long pfn;
+	struct vm_area_struct *vma, *vma_cur;
 	struct mm_struct *mm = current->mm;
 	long ret, pinned = 0, lock_acct = 0;
 	bool rsvd;
+	u64 pa_start, pa_end;
+
 	dma_addr_t iova = vaddr - dma->vaddr + dma->iova;
 
 	/* This code path is only user initiated */
@@ -660,6 +663,10 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 	} else {
 		*pfn_base = 0;
 	}
+
+	mmap_read_lock(mm);
+	vma = find_vma_intersection(mm, vaddr, vaddr + 1);
+	mmap_read_unlock(mm);
 
 	while (npage) {
 		if (!batch->size) {
@@ -691,6 +698,12 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 		while (true) {
 			if (pfn != *pfn_base + pinned ||
 			    rsvd != is_invalid_reserved_pfn(pfn))
+				goto out;
+
+			mmap_read_lock(mm);
+			vma_cur = find_vma_intersection(mm, vaddr, vaddr + 1);
+			mmap_read_unlock(mm);
+			if (vma != vma_cur)
 				goto out;
 
 			/*
@@ -1602,6 +1615,14 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 				break;
 			}
 		}
+
+		mmap_read_lock(mm);
+
+		vma = find_vma_intersection(current->mm, start, start + 1);
+		if (vma && vma->vm_flags & VM_PFNMAP)
+			dma->prot |= IOMMU_MMIO;
+
+		mmap_read_unlock(mm);
 
 		/* Map it! */
 		ret = vfio_iommu_map(iommu, iova + dma->size, pfn, npage,
