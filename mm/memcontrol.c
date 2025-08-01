@@ -4752,6 +4752,10 @@ static const unsigned int memcg1_stats[] = {
 	WORKINGSET_REFAULT_ANON,
 	WORKINGSET_REFAULT_FILE,
 	MEMCG_SWAP,
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	MEMCG_ZSWAP_B,
+	MEMCG_ZSWAPPED,
+#endif
 };
 
 static const char *const memcg1_stat_names[] = {
@@ -4767,6 +4771,10 @@ static const char *const memcg1_stat_names[] = {
 	"workingset_refault_anon",
 	"workingset_refault_file",
 	"swap",
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	"zswap",
+	"zswapped",
+#endif
 };
 
 /* Universal VM events cgroup1 shows, original sort order */
@@ -10006,9 +10014,6 @@ bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
 	struct mem_cgroup *memcg, *original_memcg;
 	bool ret = true;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return true;
-
 	original_memcg = get_mem_cgroup_from_objcg(objcg);
 	for (memcg = original_memcg; !mem_cgroup_is_root(memcg);
 	     memcg = parent_mem_cgroup(memcg)) {
@@ -10049,9 +10054,6 @@ void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
-
 	VM_WARN_ON_ONCE(!(current->flags & PF_MEMALLOC));
 
 	/* PF_MEMALLOC context, charging must succeed */
@@ -10075,9 +10077,6 @@ void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
-
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
 
 	obj_cgroup_uncharge(objcg, size);
 
@@ -10134,6 +10133,22 @@ static struct cftype zswap_files[] = {
 	},
 	{ }	/* terminate */
 };
+
+/* We need it in v1 as well */
+static struct cftype zswap_files_legacy[] = {
+	{
+		.name = "zswap.current",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = zswap_current_read,
+	},
+	{
+		.name = "zswap.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = zswap_max_show,
+		.write = zswap_max_write,
+	},
+	{ }	/* terminate */
+};
 #endif /* CONFIG_MEMCG_KMEM && CONFIG_ZSWAP */
 
 static int __init mem_cgroup_swap_init(void)
@@ -10145,6 +10160,8 @@ static int __init mem_cgroup_swap_init(void)
 	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, memsw_files));
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files));
+	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys,
+					  zswap_files_legacy));
 #endif
 	return 0;
 }
