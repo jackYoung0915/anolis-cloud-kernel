@@ -76,6 +76,9 @@ static int (*my_cgroup_add_dfl_cftypes)(struct cgroup_subsys *,
 static int (*my_cgroup_add_legacy_cftypes)(struct cgroup_subsys *,
 	struct cftype *);
 static int (*my_cgroup_rm_cftypes)(struct cftype *);
+static int (*my_page_counter_memparse)(const char *buf, const char *max,
+				       unsigned long *nr_pages);
+static unsigned long (*my_memcg_page_state)(struct mem_cgroup *memcg, int idx);
 static int *my_vm_swappiness;
 static struct swap_info_struct **my_swap_info;
 static struct list_head *my_shrinker_list;
@@ -339,6 +342,39 @@ static bool anon_folio_is_exec(struct folio *folio)
 	return ret;
 }
 
+static inline bool reclaim_coldpgs_may_not_swap(struct mem_cgroup *memcg)
+{
+	struct mem_cgroup *m;
+	unsigned long max;
+	unsigned long swapped;
+	bool ret = false;
+
+	if (!css_tryget_online(&memcg->css))
+		return ret;
+
+	/* Do not care v2, it will be limited at add_to_swap() */
+	for (m = memcg; m != *my_root_mem_cgroup;
+	     m = parent_mem_cgroup(m)) {
+		max = READ_ONCE(m->reclaim_coldpgs_max);
+		if (max == PAGE_COUNTER_MAX)
+			continue;
+		if (max == 0) {
+			ret = true;
+			break;
+		}
+		swapped = my_memcg_page_state(m, MEMCG_SWAP) / PAGE_SIZE;
+		if (swapped < max)
+			continue;
+
+		ret = true;
+		break;
+	}
+
+	css_put(&memcg->css);
+
+	return ret;
+}
+
 /*
  * The function is called for twice to one specific folio, isolation and
  * reclaiming phrase separately. During the period of isolation, the folio's
@@ -421,6 +457,9 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 		/* Bail if there is no enough swap space */
 		if (my_mem_cgroup_get_nr_swap_pages(memcg) <
 		    folio_nr_pages(folio))
+			return false;
+
+		if (reclaim_coldpgs_may_not_swap(memcg))
 			return false;
 
 		/* JIT may use executable anonymous page */
@@ -2001,6 +2040,74 @@ static ssize_t reclaim_coldpgs_write_swapin(struct kernfs_open_file *of,
 	return ret ? -EIO : count;
 }
 
+static u64 reclaim_coldpgs_read_swap_current(struct cgroup_subsys_state *css,
+					     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return (u64)page_counter_read(&memcg->swap) * PAGE_SIZE;
+
+	return my_memcg_page_state(memcg, MEMCG_SWAP);
+}
+
+static inline
+int seq_puts_memcg_tunable(struct seq_file *m, unsigned long value)
+{
+	if (value == PAGE_COUNTER_MAX)
+		seq_puts(m, "max\n");
+	else
+		seq_printf(m, "%llu\n", (u64)value * PAGE_SIZE);
+
+	return 0;
+}
+
+static int reclaim_coldpgs_swap_max_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return seq_puts_memcg_tunable(m, READ_ONCE(memcg->swap.max));
+	else
+		return seq_puts_memcg_tunable(m,
+				READ_ONCE(memcg->reclaim_coldpgs_max));
+}
+
+static
+ssize_t reclaim_coldpgs_swap_max_write(struct kernfs_open_file *of,
+				       char *buf, size_t nbytes,
+				       loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned long max;
+	int err;
+
+	buf = strstrip(buf);
+	err = my_page_counter_memparse(buf, "max", &max);
+	if (err)
+		return err;
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys)) {
+		xchg(&memcg->swap.max, max);
+		return nbytes;
+	}
+
+	/*
+	 * For v1, memsw only reflicts swap usage, but it doesn't
+	 * limit swap out routines but affects oom routines during
+	 * alloc_page.
+	 */
+	memcg->reclaim_coldpgs_max = max;
+	if (READ_ONCE(memcg->memsw.max) != PAGE_COUNTER_MAX) {
+		max = READ_ONCE(memcg->memsw.max) -
+			READ_ONCE(memcg->memory.max);
+		memcg->reclaim_coldpgs_max = min_t(long, max,
+						   memcg->reclaim_coldpgs_max);
+	}
+
+	return nbytes;
+}
+
 static struct cftype reclaim_coldpgs_files[] = {
 	{ .name		= "coldpgs.threshold",
 	  .seq_show	= reclaim_coldpgs_read_threshold,
@@ -2021,6 +2128,17 @@ static struct cftype reclaim_coldpgs_files[] = {
 	{ .name		= "coldpgs.swapin",
 	  .seq_show	= reclaim_coldpgs_read_swapin,
 	  .write	= reclaim_coldpgs_write_swapin,
+	},
+	{
+	  .name		= "coldpgs.swap.current",
+	  .flags	= CFTYPE_NOT_ON_ROOT,
+	  .read_u64	= reclaim_coldpgs_read_swap_current,
+	},
+	{
+	  .name		= "coldpgs.swap.max",
+	  .flags	= CFTYPE_NOT_ON_ROOT,
+	  .seq_show	= reclaim_coldpgs_swap_max_show,
+	  .write	= reclaim_coldpgs_swap_max_write,
 	},
 	{ }	/* terminate */
 };
@@ -2221,6 +2339,8 @@ static int __init reclaim_coldpgs_resolve_symbols(void)
 	reclaim_coldpgs_resolve_symbol(destroy_large_folio);
 	reclaim_coldpgs_resolve_symbol(folio_putback_lru);
 	reclaim_coldpgs_resolve_symbol(zswap_store);
+	reclaim_coldpgs_resolve_symbol(page_counter_memparse);
+	reclaim_coldpgs_resolve_symbol(memcg_page_state);
 #ifdef CONFIG_ARM64
 	reclaim_coldpgs_resolve_symbol(mte_save_tags);
 #endif
