@@ -315,6 +315,9 @@ struct mem_cgroup {
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	unsigned long zswap_max;
 #endif
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	unsigned long reclaim_coldpgs_max;
+#endif
 
 	unsigned long soft_limit;
 
