@@ -7245,6 +7245,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	memcg->zswap_max = PAGE_COUNTER_MAX;
 #endif
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	memcg->reclaim_coldpgs_max = PAGE_COUNTER_MAX;
+#endif
 	page_counter_set_high(&memcg->swap, PAGE_COUNTER_MAX);
 #ifdef CONFIG_TEXT_UNEVICTABLE
 	memcg->unevictable_percent = 100;
