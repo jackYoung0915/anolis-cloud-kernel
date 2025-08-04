@@ -823,6 +823,14 @@
 	.orc_unwind : AT(ADDR(.orc_unwind) - LOAD_OFFSET) {		\
 		BOUNDED_SECTION_BY(.orc_unwind, _orc_unwind)		\
 	}								\
+	. = ALIGN(4);							\
+	.init.orc_unwind_ip : AT(ADDR(.init.orc_unwind_ip) - LOAD_OFFSET) { \
+		BOUNDED_SECTION_BY(.init.orc_unwind_ip, _init_orc_unwind_ip) \
+	}								\
+	. = ALIGN(2);							\
+	.init.orc_unwind : AT(ADDR(.init.orc_unwind) - LOAD_OFFSET) {	\
+		BOUNDED_SECTION_BY(.init.orc_unwind, _init_orc_unwind)	\
+	}								\
 	text_size = _etext - _stext;					\
 	. = ALIGN(4);							\
 	.orc_lookup : AT(ADDR(.orc_lookup) - LOAD_OFFSET) {		\
