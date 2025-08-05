@@ -128,4 +128,3 @@ obj-y			+= xlnx/
 obj-$(CONFIG_DRM_PHYTIUM) += phytium/
 obj-$(CONFIG_DRM_VERISILICON) += verisilicon/
 obj-$(CONFIG_DRM_INSPUR)  += inspur/
-obj-$(CONFIG_HYDCU_FIXUP_HEADER) += hygon/hydcu-fixup-header/
