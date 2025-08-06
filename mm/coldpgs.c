@@ -76,6 +76,9 @@ static int (*my_cgroup_add_dfl_cftypes)(struct cgroup_subsys *,
 static int (*my_cgroup_add_legacy_cftypes)(struct cgroup_subsys *,
 	struct cftype *);
 static int (*my_cgroup_rm_cftypes)(struct cftype *);
+static int (*my_page_counter_memparse)(const char *buf, const char *max,
+				       unsigned long *nr_pages);
+static unsigned long (*my_memcg_page_state)(struct mem_cgroup *memcg, int idx);
 static int *my_vm_swappiness;
 static struct swap_info_struct **my_swap_info;
 static struct list_head *my_shrinker_list;
@@ -110,6 +113,11 @@ static unsigned long (*my_node_page_state)(struct pglist_data *pgdat,
 static void (*my___mod_lruvec_state)(struct lruvec *,
 		enum node_stat_item, int val);
 
+static
+struct anon_vma *(*my_folio_lock_anon_vma_read)(struct folio *page,
+						struct rmap_walk_control *rwc);
+static int (*my_page_mapped_in_vma)(struct page *page,
+				    struct vm_area_struct *vma);
 static struct anon_vma_chain *
 (*my_anon_vma_interval_tree_iter_first)(struct rb_root_cached *root,
 					unsigned long first, unsigned long last);
@@ -296,6 +304,77 @@ static bool folio_is_exec(struct address_space *mapping,
 	return false;
 }
 
+static bool anon_folio_is_exec(struct folio *folio)
+{
+	struct vm_area_struct *vma;
+	struct anon_vma *av;
+	struct anon_vma_chain *vmac;
+	pgoff_t pgoff_start, pgoff_end;
+	bool ret = false;
+
+	if (unlikely(!folio_test_anon(folio) ||
+		     !folio_test_swapbacked(folio)))
+		return false;
+
+	av = my_folio_lock_anon_vma_read(folio, NULL);
+	if (av == NULL)
+		return false;
+
+	pgoff_start = folio_pgoff(folio);
+	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+	my_anon_vma_interval_tree_foreach(vmac,
+					  &av->rb_root,
+					   pgoff_start,
+					   pgoff_end) {
+		vma = vmac->vma;
+		/*
+		 * Once we get a vma in which this folio is mapping
+		 * with VM_EXEC flag, we regard the whole folio as
+		 * executable.
+		 */
+		if (vma->vm_flags & VM_EXEC) {
+			ret = true;
+			break;
+		}
+	}
+	anon_vma_unlock_read(av);
+
+	return ret;
+}
+
+static inline bool reclaim_coldpgs_may_not_swap(struct mem_cgroup *memcg)
+{
+	struct mem_cgroup *m;
+	unsigned long max;
+	unsigned long swapped;
+	bool ret = false;
+
+	if (!css_tryget_online(&memcg->css))
+		return ret;
+
+	/* Do not care v2, it will be limited at add_to_swap() */
+	for (m = memcg; m != *my_root_mem_cgroup;
+	     m = parent_mem_cgroup(m)) {
+		max = READ_ONCE(m->reclaim_coldpgs_max);
+		if (max == PAGE_COUNTER_MAX)
+			continue;
+		if (max == 0) {
+			ret = true;
+			break;
+		}
+		swapped = my_memcg_page_state(m, MEMCG_SWAP) / PAGE_SIZE;
+		if (swapped < max)
+			continue;
+
+		ret = true;
+		break;
+	}
+
+	css_put(&memcg->css);
+
+	return ret;
+}
+
 /*
  * The function is called for twice to one specific folio, isolation and
  * reclaiming phrase separately. During the period of isolation, the folio's
@@ -318,6 +397,10 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 	 * The folio should be in LRU list in isolation phrase, but
 	 * it should have been removed from LRU list in reclaim
 	 * phrase.
+	 *
+	 * validate_age is indicating isolation phase or reclaim phase.
+	 * Though even ignore_age bit is true, it still has to do this
+	 * check in isolation phase.
 	 */
 	if (validate_age && !folio_test_lru(folio))
 		return false;
@@ -375,6 +458,14 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 		if (my_mem_cgroup_get_nr_swap_pages(memcg) <
 		    folio_nr_pages(folio))
 			return false;
+
+		if (reclaim_coldpgs_may_not_swap(memcg))
+			return false;
+
+		/* JIT may use executable anonymous page */
+		if (reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE) &&
+		    anon_folio_is_exec(folio))
+			return false;
 	}
 
 	/*
@@ -394,7 +485,8 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 	 * for reclaim and no need to validate the page's age under the
 	 * circumstance.
 	 */
-	if (validate_age) {
+	if (validate_age &&
+	    !reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE)) {
 		age = kidled_get_folio_age(pgdat, folio_pfn(folio));
 		if (age < filter->threshold)
 			return false;
@@ -489,8 +581,9 @@ static int swapout_folio_to_zram(struct reclaim_coldpgs_filter *filter,
 	VM_BUG_ON(!folio_test_locked(folio));
 
 	/* Bail if zswap isn't preferred or the page isn't cold enough */
-	if (!filter->thresholds[THRESHOLD_NONROT] ||
-	    age > filter->thresholds[THRESHOLD_NONROT])
+	if (!reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE) &&
+	    (!filter->thresholds[THRESHOLD_NONROT] ||
+	    age > filter->thresholds[THRESHOLD_NONROT]))
 		return -ERANGE;
 
 	if (my_zswap_store(folio)) {
@@ -756,7 +849,11 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_pagecache_dropped = 0;
 	bool is_pagecache;
-	int age, nr_pages, batch, ret;
+	/*
+	 * age must be initialized in case ignore_age bit is set, as it
+	 * is going to be used by pageout().
+	 */
+	int age = 0, nr_pages, batch, ret;
 
 	while (!list_empty(list)) {
 		cond_resched();
@@ -771,9 +868,11 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 		nr_pages = folio_nr_pages(folio);
 		is_pagecache = folio_is_file_lru(folio) ? true : false;
 		mapping = folio_mapping(folio);
-		age = kidled_get_folio_age(pgdat, folio_pfn(folio));
-		if (age < 0)
-			goto keep_unlocked;
+		if (!reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE)) {
+			age = kidled_get_folio_age(pgdat, folio_pfn(folio));
+			if (age < 0)
+				goto keep_unlocked;
+		}
 
 		if (!folio_is_reclaimable(memcg, filter, pgdat, folio, false))
 			goto keep_unlocked;
@@ -1181,11 +1280,14 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	 * scans empty LRU_UNEVICTABLE and gets incorrent ptr, mask the flag
 	 * temporarily, support it in future.
 	 */
-	filter->flags &= FLAG_MLOCK(control->flags);
+	filter->flags &= FLAG_CTRL(control->flags);
 	if (filter->flags & FLAG_IGNORE_MLOCK) {
 		pr_warn_once("Coldpgs does't support mlock page reclaim, ignore the flag\n");
 		filter->flags &= ~FLAG_IGNORE_MLOCK;
 	}
+
+	if (reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE))
+		pr_debug("Ignoring age to reclaim unconditionally\n");
 
 	/*
 	 * Figure out the eligible LRUs. Here we have a bitmap to track the
@@ -1305,6 +1407,19 @@ static void reclaim_coldpgs_action(struct mem_cgroup *memcg,
 	       sizeof(filter.thresholds));
 	up_read(&global_control.rwsem);
 
+	if (FLAG_CTRL(control->flags) & FLAG_IGNORE_AGE) {
+		/*
+		 * For user who wants to use ignore_age mode but do not want
+		 * impact on global setting, we make filter to be overwritten
+		 * by memcg's setting.
+		 */
+		pr_debug("Ignoring age mode, overwrite filter flags & mode\n");
+		down_read(&control->rwsem);
+		filter.flags = FLAG_CTRL(control->flags);
+		filter.mode = FLAG_MODE(control->flags);
+		up_read(&control->rwsem);
+	}
+
 	/*
 	 * The memory cgroup might have offlined subordinate memory cgroups,
 	 * whose cgroup files have been removed. It means there is no way to
@@ -1314,7 +1429,9 @@ static void reclaim_coldpgs_action(struct mem_cgroup *memcg,
 	 * but the amount isn't limited.
 	 */
 	for_each_memcg_tree(memcg, m) {
-		if (m != memcg && mem_cgroup_online(m))
+		if (m != memcg &&
+		    (mem_cgroup_online(m) &&
+		     !reclaim_coldpgs_has_flag(&filter, FLAG_IGNORE_AGE)))
 			continue;
 
 		if (m == memcg) {
@@ -1322,6 +1439,14 @@ static void reclaim_coldpgs_action(struct mem_cgroup *memcg,
 			reclaim_coldpgs_from_memcg(m, &filter);
 		} else {
 			filter.size = 0xFFFFFFFFFF;
+			/*
+			 * When subordinate memcgs are been reclaimed, use
+			 * their parent's reclaim setting is more reasonable.
+			 */
+			down_read(&control->rwsem);
+			m->coldpgs_control.flags = control->flags;
+			m->coldpgs_control.threshold = control->threshold;
+			up_read(&control->rwsem);
 			reclaim_coldpgs_from_memcg(m, &filter);
 		}
 	}
@@ -1398,7 +1523,7 @@ static ssize_t reclaim_coldpgs_write_size(struct kernfs_open_file *of,
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
 	struct reclaim_coldpgs_control *control = &memcg->coldpgs_control;
-	unsigned long threshold, size;
+	unsigned long threshold, size, flags;
 	int ret;
 
 	buf = strstrip(buf);
@@ -1409,9 +1534,11 @@ static ssize_t reclaim_coldpgs_write_size(struct kernfs_open_file *of,
 	down_write(&control->rwsem);
 	threshold = control->threshold;
 	control->size = size;
+	flags = control->flags;
 	up_write(&control->rwsem);
 
-	if (threshold > 0 && size > 0)
+	if (size > 0 &&
+	    (threshold > 0 || (FLAG_CTRL(flags) & FLAG_IGNORE_AGE)))
 		reclaim_coldpgs_action(memcg, threshold, size);
 
 	return count;
@@ -1936,6 +2063,74 @@ static ssize_t reclaim_coldpgs_write_swapin(struct kernfs_open_file *of,
 	return ret ? -EIO : count;
 }
 
+static u64 reclaim_coldpgs_read_swap_current(struct cgroup_subsys_state *css,
+					     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return (u64)page_counter_read(&memcg->swap) * PAGE_SIZE;
+
+	return my_memcg_page_state(memcg, MEMCG_SWAP);
+}
+
+static inline
+int seq_puts_memcg_tunable(struct seq_file *m, unsigned long value)
+{
+	if (value == PAGE_COUNTER_MAX)
+		seq_puts(m, "max\n");
+	else
+		seq_printf(m, "%llu\n", (u64)value * PAGE_SIZE);
+
+	return 0;
+}
+
+static int reclaim_coldpgs_swap_max_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return seq_puts_memcg_tunable(m, READ_ONCE(memcg->swap.max));
+	else
+		return seq_puts_memcg_tunable(m,
+				READ_ONCE(memcg->reclaim_coldpgs_max));
+}
+
+static
+ssize_t reclaim_coldpgs_swap_max_write(struct kernfs_open_file *of,
+				       char *buf, size_t nbytes,
+				       loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned long max;
+	int err;
+
+	buf = strstrip(buf);
+	err = my_page_counter_memparse(buf, "max", &max);
+	if (err)
+		return err;
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys)) {
+		xchg(&memcg->swap.max, max);
+		return nbytes;
+	}
+
+	/*
+	 * For v1, memsw only reflicts swap usage, but it doesn't
+	 * limit swap out routines but affects oom routines during
+	 * alloc_page.
+	 */
+	memcg->reclaim_coldpgs_max = max;
+	if (READ_ONCE(memcg->memsw.max) != PAGE_COUNTER_MAX) {
+		max = READ_ONCE(memcg->memsw.max) -
+			READ_ONCE(memcg->memory.max);
+		memcg->reclaim_coldpgs_max = min_t(long, max,
+						   memcg->reclaim_coldpgs_max);
+	}
+
+	return nbytes;
+}
+
 static struct cftype reclaim_coldpgs_files[] = {
 	{ .name		= "coldpgs.threshold",
 	  .seq_show	= reclaim_coldpgs_read_threshold,
@@ -1956,6 +2151,17 @@ static struct cftype reclaim_coldpgs_files[] = {
 	{ .name		= "coldpgs.swapin",
 	  .seq_show	= reclaim_coldpgs_read_swapin,
 	  .write	= reclaim_coldpgs_write_swapin,
+	},
+	{
+	  .name		= "coldpgs.swap.current",
+	  .flags	= CFTYPE_NOT_ON_ROOT,
+	  .read_u64	= reclaim_coldpgs_read_swap_current,
+	},
+	{
+	  .name		= "coldpgs.swap.max",
+	  .flags	= CFTYPE_NOT_ON_ROOT,
+	  .seq_show	= reclaim_coldpgs_swap_max_show,
+	  .write	= reclaim_coldpgs_swap_max_write,
 	},
 	{ }	/* terminate */
 };
@@ -2146,6 +2352,8 @@ static int __init reclaim_coldpgs_resolve_symbols(void)
 	reclaim_coldpgs_resolve_symbol(node_page_state);
 	reclaim_coldpgs_resolve_symbol(__mod_lruvec_state);
 
+	reclaim_coldpgs_resolve_symbol(folio_lock_anon_vma_read);
+	reclaim_coldpgs_resolve_symbol(page_mapped_in_vma);
 	reclaim_coldpgs_resolve_symbol(anon_vma_interval_tree_iter_first);
 	reclaim_coldpgs_resolve_symbol(anon_vma_interval_tree_iter_next);
 
@@ -2154,6 +2362,8 @@ static int __init reclaim_coldpgs_resolve_symbols(void)
 	reclaim_coldpgs_resolve_symbol(destroy_large_folio);
 	reclaim_coldpgs_resolve_symbol(folio_putback_lru);
 	reclaim_coldpgs_resolve_symbol(zswap_store);
+	reclaim_coldpgs_resolve_symbol(page_counter_memparse);
+	reclaim_coldpgs_resolve_symbol(memcg_page_state);
 #ifdef CONFIG_ARM64
 	reclaim_coldpgs_resolve_symbol(mte_save_tags);
 #endif
