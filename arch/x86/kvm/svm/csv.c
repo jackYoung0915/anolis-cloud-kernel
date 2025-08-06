@@ -1503,12 +1503,16 @@ static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
 			return -ENOMEM;
 
 		hva = __gfn_to_hva_memslot(slot, gfn);
-		npinned = pin_user_pages_fast(hva, 1, FOLL_WRITE | FOLL_LONGTERM, &page);
+
+		mmap_write_lock(current->mm);
+		npinned = pin_user_pages(hva, 1, FOLL_WRITE | FOLL_LONGTERM, &page, NULL);
 		if (npinned != 1) {
+			mmap_write_unlock(current->mm);
 			kmem_cache_free(csv->sp_slab, sp);
 			return -ENOMEM;
 		}
 
+		mmap_write_unlock(current->mm);
 		sp->page = page;
 		sp->gfn = gfn;
 		shared_page_insert(&csv->sp_mgr, sp);
@@ -1924,7 +1928,7 @@ static int csv_get_hygon_coco_extension(struct kvm *kvm)
 	size_t len = sizeof(uint32_t);
 	int ret = 0;
 
-	if (!kvm)
+	if (!kvm || !csv3_guest(kvm))
 		return 0;
 
 	csv = &to_kvm_svm_csv(kvm)->csv_info;
