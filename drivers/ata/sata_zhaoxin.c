@@ -14,56 +14,54 @@
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 
-#define DRV_NAME	"sata_zx"
-#define DRV_VERSION	"2.6.1"
+#define DRV_NAME "sata_zx"
+#define DRV_VERSION "2.6.1"
 
-#define PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL 9002
-#define PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL 9003
+#define PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL 0x9002
+#define PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL 0x9003
 
 enum board_ids_enum {
 	zx100s,
 };
 
 enum {
-	SATA_CHAN_ENAB		= 0x40, /* SATA channel enable */
-	SATA_INT_GATE		= 0x41, /* SATA interrupt gating */
-	SATA_NATIVE_MODE	= 0x42, /* Native mode enable */
-	PATA_UDMA_TIMING	= 0xB3, /* PATA timing for DMA/ cable detect */
-	PATA_PIO_TIMING		= 0xAB, /* PATA timing register */
+	SATA_CHAN_ENAB = 0x40, /* SATA channel enable */
+	SATA_INT_GATE = 0x41, /* SATA interrupt gating */
+	SATA_NATIVE_MODE = 0x42, /* Native mode enable */
+	PATA_UDMA_TIMING = 0xB3, /* PATA timing for DMA/ cable detect */
+	PATA_PIO_TIMING = 0xAB, /* PATA timing register */
 
-	PORT0			= (1 << 1),
-	PORT1			= (1 << 0),
-	ALL_PORTS		= PORT0 | PORT1,
+	PORT0 = (1 << 1),
+	PORT1 = (1 << 0),
+	ALL_PORTS = PORT0 | PORT1,
 
-	NATIVE_MODE_ALL		= (1 << 7) | (1 << 6) | (1 << 5) | (1 << 4),
+	NATIVE_MODE_ALL = (1 << 7) | (1 << 6) | (1 << 5) | (1 << 4),
 
-	SATA_EXT_PHY		= (1 << 6), /* 0==use PATA, 1==ext phy */
+	SATA_EXT_PHY = (1 << 6), /* 0==use PATA, 1==ext phy */
 };
 
 static int zx_init_one(struct pci_dev *pdev, const struct pci_device_id *ent);
 static int zx_scr_read(struct ata_link *link, unsigned int scr, u32 *val);
 static int zx_scr_write(struct ata_link *link, unsigned int scr, u32 val);
-static int zx_hardreset(struct ata_link *link, unsigned int *class,
-				unsigned long deadline);
+static int zx_hardreset(struct ata_link *link, unsigned int *class, unsigned long deadline);
 
 static void zx_tf_load(struct ata_port *ap, const struct ata_taskfile *tf);
 
 static const struct pci_device_id zx_pci_tbl[] = {
 	{ PCI_VDEVICE(ZHAOXIN, PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL), zx100s },
 	{ PCI_VDEVICE(ZHAOXIN, PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL), zx100s },
-
-	{ }	/* terminate list */
+	{} /* terminate list */
 };
 
 static struct pci_driver zx_pci_driver = {
-	.name			= DRV_NAME,
-	.id_table		= zx_pci_tbl,
-	.probe			= zx_init_one,
+	.name = DRV_NAME,
+	.id_table = zx_pci_tbl,
+	.probe = zx_init_one,
 #ifdef CONFIG_PM_SLEEP
-	.suspend		= ata_pci_device_suspend,
-	.resume			= ata_pci_device_resume,
+	.suspend = ata_pci_device_suspend,
+	.resume = ata_pci_device_resume,
 #endif
-	.remove			= ata_pci_remove_one,
+	.remove = ata_pci_remove_one,
 };
 
 static struct scsi_host_template zx_sht = {
@@ -71,28 +69,26 @@ static struct scsi_host_template zx_sht = {
 };
 
 static struct ata_port_operations zx_base_ops = {
-	.inherits		= &ata_bmdma_port_ops,
-	.sff_tf_load		= zx_tf_load,
+	.inherits = &ata_bmdma_port_ops,
+	.sff_tf_load = zx_tf_load,
 };
 
 static struct ata_port_operations zx_ops = {
-	.inherits		= &zx_base_ops,
-	.hardreset		= zx_hardreset,
-	.scr_read		= zx_scr_read,
-	.scr_write		= zx_scr_write,
+	.inherits = &zx_base_ops,
+	.hardreset = zx_hardreset,
+	.scr_read = zx_scr_read,
+	.scr_write = zx_scr_write,
 };
 
 static struct ata_port_info zx100s_port_info = {
-	.flags		= ATA_FLAG_SATA | ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	.mwdma_mask	= ATA_MWDMA2,
-	.udma_mask	= ATA_UDMA6,
-	.port_ops	= &zx_ops,
+	.flags = ATA_FLAG_SATA | ATA_FLAG_SLAVE_POSS,
+	.pio_mask = ATA_PIO4,
+	.mwdma_mask = ATA_MWDMA2,
+	.udma_mask = ATA_UDMA6,
+	.port_ops = &zx_ops,
 };
 
-
-static int zx_hardreset(struct ata_link *link, unsigned int *class,
-				unsigned long deadline)
+static int zx_hardreset(struct ata_link *link, unsigned int *class, unsigned long deadline)
 {
 	int rc;
 
@@ -109,16 +105,15 @@ static int zx_hardreset(struct ata_link *link, unsigned int *class,
 			tmprc = ata_sff_wait_ready(link, deadline);
 		}
 		if (tmprc)
-			ata_link_err(link, "COMRESET failed for wait (errno=%d)\n",
-					rc);
+			ata_link_err(link, "COMRESET failed for wait (errno=%d)\n", rc);
 		else
 			ata_link_err(link, "wait for bsy success\n");
 
-		ata_link_err(link, "COMRESET success (errno=%d) ap=%d link %d\n",
-					rc, link->ap->port_no, link->pmp);
+		ata_link_err(link, "COMRESET success (errno=%d) ap=%d link %d\n", rc,
+			     link->ap->port_no, link->pmp);
 	} else {
-		ata_link_err(link, "COMRESET failed (errno=%d) ap=%d link %d\n",
-					rc, link->ap->port_no, link->pmp);
+		ata_link_err(link, "COMRESET failed (errno=%d) ap=%d link %d\n", rc,
+			     link->ap->port_no, link->pmp);
 	}
 	return rc;
 }
@@ -142,13 +137,13 @@ static int zx_scr_read(struct ata_link *link, unsigned int scr, u32 *val)
 		v |= raw & 0x30;
 
 		/* read the IPM field, bit2 and 3 of the config byte */
-		v |= ((ipm_tbl[(raw >> 2) & 0x3])<<8);
+		v |= ((ipm_tbl[(raw >> 2) & 0x3]) << 8);
 		break;
 
 	case SCR_ERROR:
 		/* devices other than 5287 uses 0xA8 as base */
 		WARN_ON(pdev->device != PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL &&
-				pdev->device != PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL);
+			pdev->device != PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL);
 		pci_write_config_byte(pdev, 0x42, slot);
 		pci_read_config_dword(pdev, 0xA8, &v);
 		break;
@@ -184,7 +179,7 @@ static int zx_scr_write(struct ata_link *link, unsigned int scr, u32 val)
 	case SCR_ERROR:
 		/* devices PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL uses 0xA8 as base */
 		WARN_ON(pdev->device != PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL &&
-				pdev->device != PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL);
+			pdev->device != PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL);
 		pci_write_config_byte(pdev, 0x42, slot);
 		pci_write_config_dword(pdev, 0xA8, val);
 		return 0;
@@ -196,9 +191,7 @@ static int zx_scr_write(struct ata_link *link, unsigned int scr, u32 val)
 		/* set the IPM field */
 		v |= ((val >> 8) & 0x3) << 2;
 
-
 		pci_write_config_byte(pdev, 0xA4 + slot, v);
-
 
 		return 0;
 
@@ -206,7 +199,6 @@ static int zx_scr_write(struct ata_link *link, unsigned int scr, u32 val)
 		return -EINVAL;
 	}
 }
-
 
 /**
  *	zx_tf_load - send taskfile registers to host controller
@@ -223,7 +215,7 @@ static void zx_tf_load(struct ata_port *ap, const struct ata_taskfile *tf)
 {
 	struct ata_taskfile ttf;
 
-	if (tf->ctl != ap->last_ctl)  {
+	if (tf->ctl != ap->last_ctl) {
 		ttf = *tf;
 		ttf.flags |= ATA_TFLAG_DEVICE;
 		tf = &ttf;
@@ -280,13 +272,12 @@ static void zx_configure(struct pci_dev *pdev, int board_id)
 
 	pci_read_config_byte(pdev, PCI_INTERRUPT_LINE, &tmp8);
 	dev_info(&pdev->dev, "routed to hard irq line %d\n",
-		 (int) (tmp8 & 0xf0) == 0xf0 ? 0 : tmp8 & 0x0f);
+		 (int)(tmp8 & 0xf0) == 0xf0 ? 0 : tmp8 & 0x0f);
 
 	/* make sure SATA channels are enabled */
 	pci_read_config_byte(pdev, SATA_CHAN_ENAB, &tmp8);
 	if ((tmp8 & ALL_PORTS) != ALL_PORTS) {
-		dev_dbg(&pdev->dev, "enabling SATA channels (0x%x)\n",
-			(int)tmp8);
+		dev_dbg(&pdev->dev, "enabling SATA channels (0x%x)\n", (int)tmp8);
 		tmp8 |= ALL_PORTS;
 		pci_write_config_byte(pdev, SATA_CHAN_ENAB, tmp8);
 	}
@@ -294,8 +285,7 @@ static void zx_configure(struct pci_dev *pdev, int board_id)
 	/* make sure interrupts for each channel sent to us */
 	pci_read_config_byte(pdev, SATA_INT_GATE, &tmp8);
 	if ((tmp8 & ALL_PORTS) != ALL_PORTS) {
-		dev_dbg(&pdev->dev, "enabling SATA channel interrupts (0x%x)\n",
-			(int) tmp8);
+		dev_dbg(&pdev->dev, "enabling SATA channel interrupts (0x%x)\n", (int)tmp8);
 		tmp8 |= ALL_PORTS;
 		pci_write_config_byte(pdev, SATA_INT_GATE, tmp8);
 	}
@@ -303,9 +293,7 @@ static void zx_configure(struct pci_dev *pdev, int board_id)
 	/* make sure native mode is enabled */
 	pci_read_config_byte(pdev, SATA_NATIVE_MODE, &tmp8);
 	if ((tmp8 & NATIVE_MODE_ALL) != NATIVE_MODE_ALL) {
-		dev_dbg(&pdev->dev,
-			"enabling SATA channel native mode (0x%x)\n",
-			(int) tmp8);
+		dev_dbg(&pdev->dev, "enabling SATA channel native mode (0x%x)\n", (int)tmp8);
 		tmp8 |= NATIVE_MODE_ALL;
 		pci_write_config_byte(pdev, SATA_NATIVE_MODE, tmp8);
 	}
@@ -316,14 +304,14 @@ static int zx_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	unsigned int i;
 	int rc;
 	struct ata_host *host = NULL;
-	int board_id = (int) ent->driver_data;
+	int board_id = (int)ent->driver_data;
 	const unsigned int *bar_sizes;
 	int legacy_mode = 0;
 
 	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	if (pdev->device == PCI_DEVICE_ID_ZHAOXIN_DUAL_CHANNEL ||
-		pdev->device == PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL) {
+	    pdev->device == PCI_DEVICE_ID_ZHAOXIN_SING_CHANNEL) {
 		if ((pdev->class >> 8) == PCI_CLASS_STORAGE_IDE) {
 			u8 tmp8, mask;
 
@@ -354,9 +342,7 @@ static int zx_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 			if (bar_sizes[i] == 0)
 				continue;
 
-			dev_err(&pdev->dev,
-				"invalid PCI BAR %u (sz 0x%llx, val 0x%llx)\n",
-				i,
+			dev_err(&pdev->dev, "invalid PCI BAR %u (sz 0x%llx, val 0x%llx)\n", i,
 				(unsigned long long)pci_resource_start(pdev, i),
 				(unsigned long long)pci_resource_len(pdev, i));
 
@@ -377,8 +363,7 @@ static int zx_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	zx_configure(pdev, board_id);
 
 	pci_set_master(pdev);
-	return ata_host_activate(host, pdev->irq, ata_bmdma_interrupt,
-				 IRQF_SHARED, &zx_sht);
+	return ata_host_activate(host, pdev->irq, ata_bmdma_interrupt, IRQF_SHARED, &zx_sht);
 }
 
 module_pci_driver(zx_pci_driver);
