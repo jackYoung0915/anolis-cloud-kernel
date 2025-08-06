@@ -4935,6 +4935,10 @@ static const unsigned int memcg1_stats[] = {
 	WORKINGSET_RESTORE_ANON,
 	WORKINGSET_RESTORE_FILE,
 	WORKINGSET_NODERECLAIM,
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	NR_FILE_THPS,
+	NR_SHMEM_THPS,
+#endif
 };
 
 static const char *const memcg1_stat_names[] = {
@@ -4955,6 +4959,10 @@ static const char *const memcg1_stat_names[] = {
 	"workingset_restore_anon",
 	"workingset_restore_file",
 	"workingset_nodereclaim",
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	"file_thp",
+	"shmem_thp",
+#endif
 };
 
 /* Universal VM events cgroup1 shows, original sort order */
