@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#ifndef NOLIBC
-#include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys.h>
-#endif
+#include <linux/kexec.h>
 
 /* from arch/x86/include/asm/setup.h */
 #define COMMAND_LINE_SIZE	2048
 
-/* from include/linux/kexex.h */
-#define KEXEC_FILE_NO_INITRAMFS	0x00000004
-
-#define KHO_FINILIZE "/debugfs/kho/out/finalize"
+#define KHO_FINALIZE "/debugfs/kho/out/finalize"
 #define KERNEL_IMAGE "/kernel"
 
 static int mount_filesystems(void)
@@ -29,7 +24,7 @@ static int kho_enable(void)
 	const char enable[] = "1";
 	int fd;
 
-	fd = open(KHO_FINILIZE, O_RDWR);
+	fd = open(KHO_FINALIZE, O_RDWR);
 	if (fd < 0)
 		return -1;
 
