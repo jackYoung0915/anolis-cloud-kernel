@@ -3736,6 +3736,7 @@ ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,
 		rq->wake_avg_idle = rq->avg_idle / 2;
 
 		rq->idle_stamp = 0;
+		update_sched_idle_avg(rq, delta);
 	}
 #endif
 }
@@ -8632,6 +8633,9 @@ void __init sched_init(void)
 		rq->wake_stamp = jiffies;
 		rq->wake_avg_idle = rq->avg_idle;
 		rq->max_idle_balance_cost = sysctl_sched_migration_cost;
+		rq->idle_exec_stamp = 0;
+		rq->idle_exec_sum = 0;
+		rq->avg_sched_idle = rq->avg_idle;
 
 		INIT_LIST_HEAD(&rq->cfs_tasks);
 
