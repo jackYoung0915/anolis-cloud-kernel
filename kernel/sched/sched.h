@@ -114,9 +114,7 @@ enum migration_type {
 	migrate_util,
 	migrate_task,
 	migrate_misfit,
-#ifdef CONFIG_GROUP_IDENTITY
 	migrate_identity
-#endif
 };
 
 /*
@@ -212,9 +210,7 @@ struct lb_env {
 	enum fbq_type		fbq_type;
 	enum migration_type	migration_type;
 	struct list_head	tasks;
-#ifdef CONFIG_GROUP_IDENTITY
 	bool			id_need_redo;
-#endif
 #ifdef CONFIG_GROUP_BALANCER
 	bool			gb_need_redo;
 #endif
@@ -1547,6 +1543,7 @@ struct rq {
 	struct group_balancer_sched_domain *gb_sd;
 #endif
 	bool			booked;
+	bool			pulled;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
