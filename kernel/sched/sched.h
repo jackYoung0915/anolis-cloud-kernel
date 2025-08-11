@@ -368,6 +368,9 @@ static inline int task_has_dl_policy(struct task_struct *p)
 }
 
 extern int task_is_idle(struct task_struct *p);
+#ifdef CONFIG_SMP
+extern void update_sched_idle_avg(struct rq *rq, u64 delta);
+#endif
 
 #define cap_scale(v, s) ((v)*(s) >> SCHED_CAPACITY_SHIFT)
 
@@ -1435,6 +1438,9 @@ struct rq {
 #endif
 	u64			idle_stamp;
 	u64			avg_idle;
+	u64			idle_exec_stamp;
+	u64			idle_exec_sum;
+	u64			avg_sched_idle;
 
 	unsigned long		wake_stamp;
 	u64			wake_avg_idle;

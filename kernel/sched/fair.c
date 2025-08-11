@@ -1287,6 +1287,38 @@ s64 update_curr_common(struct rq *rq)
 	return delta_exec;
 }
 
+#ifdef CONFIG_SMP
+/*
+ * Here we maintain the knob for idle saver, which is the
+ * average of idle + idle task execution time.
+ *
+ * Thus more the idle task running, higher the knob, more
+ * chance for idle task to get the idle CPU.
+ */
+void update_sched_idle_avg(struct rq *rq, u64 delta)
+{
+	s64 diff;
+	u64 max = 2*rq->max_idle_balance_cost;
+
+	delta += rq->idle_exec_sum - rq->idle_exec_stamp;
+	diff = delta - rq->avg_sched_idle;
+	rq->avg_sched_idle += diff >> 3;
+
+	if (rq->avg_sched_idle > max)
+		rq->avg_sched_idle = max;
+
+	rq->idle_exec_stamp = rq->idle_exec_sum;
+}
+
+static inline void id_update_exec(struct rq *rq, u64 delta_exec)
+{
+	if (task_is_idle(rq->curr))
+		rq->idle_exec_sum += delta_exec;
+}
+#else
+static inline void id_update_exec(struct rq *rq, u64 delta_exec) { }
+#endif
+
 /*
  * Update the current task's runtime statistics.
  */
@@ -1308,8 +1340,10 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	resched = update_deadline(cfs_rq, curr);
 	update_min_vruntime(cfs_rq);
 
-	if (entity_is_task(curr))
+	if (entity_is_task(curr)) {
 		update_curr_task(task_of(curr), delta_exec);
+		id_update_exec(rq_of(cfs_rq), delta_exec);
+	}
 
 	account_cfs_rq_runtime(cfs_rq, delta_exec);
 	update_exec_raw(cfs_rq, curr);
