@@ -1310,6 +1310,14 @@ void update_sched_idle_avg(struct rq *rq, u64 delta)
 	rq->idle_exec_stamp = rq->idle_exec_sum;
 }
 
+static u64 get_avg_idle(struct rq *rq)
+{
+	if (sched_feat(ID_LOAD_BALANCE))
+		return rq->avg_sched_idle;
+	else
+		return rq->avg_idle;
+}
+
 static inline void id_update_exec(struct rq *rq, u64 delta_exec)
 {
 	if (task_is_idle(rq->curr))
@@ -8953,11 +8961,13 @@ preempt:
 	resched_curr(rq);
 }
 
-static struct task_struct *pick_task_fair(struct rq *rq)
+static struct task_struct *__pick_task_fair(struct rq *rq)
 {
 	struct sched_entity *se;
 	struct cfs_rq *cfs_rq;
 
+	if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(rq) && !rq->pulled)
+		return NULL;
 again:
 	cfs_rq = &rq->cfs;
 	if (!cfs_rq->nr_queued)
@@ -8980,6 +8990,14 @@ again:
 	return task_of(se);
 }
 
+static struct task_struct *pick_task_fair(struct rq *rq)
+{
+	if (sched_feat(ID_LOAD_BALANCE))
+		rq->pulled = false;
+
+	return __pick_task_fair(rq);
+}
+
 static void __set_next_task_fair(struct rq *rq, struct task_struct *p, bool first);
 static void set_next_task_fair(struct rq *rq, struct task_struct *p, bool first);
 
@@ -8990,8 +9008,10 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 	struct task_struct *p;
 	int new_tasks;
 
+	if (sched_feat(ID_LOAD_BALANCE))
+		rq->pulled = false;
 again:
-	p = pick_task_fair(rq);
+	p = __pick_task_fair(rq);
 	if (!p)
 		goto idle;
 	se = &p->se;
@@ -9043,7 +9063,7 @@ simple:
 	return p;
 
 idle:
-	if (!rf)
+	if (!rf && (!sched_feat(ID_LOAD_BALANCE) || rq->pulled))
 		return NULL;
 
 	new_tasks = newidle_balance(rq, rf);
@@ -9053,12 +9073,22 @@ idle:
 	 * possible for any higher priority task to appear. In that case we
 	 * must re-start the pick_next_entity() loop.
 	 */
-	if (new_tasks < 0)
+	if (new_tasks < 0 && (!sched_feat(ID_LOAD_BALANCE) || rq->pulled))
 		return RETRY_TASK;
 
-	if (new_tasks > 0)
+	if (new_tasks > 0) {
+		rq->pulled = true;
 		goto again;
+	}
 
+	/*
+	 * We haven't pull any other tasks, but there are still idle tasks in rq,
+	 * so pick again to avoid starving.
+	 */
+	if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(rq) && !rq->pulled) {
+		rq->pulled = true;
+		goto again;
+	}
 	/*
 	 * rq is about to be idle, check if we need to update the
 	 * lost_idle_time of clock_pelt
@@ -9656,6 +9686,14 @@ static int detach_tasks(struct lb_env *env)
 
 		prev_imbalance = env->imbalance;
 		switch (env->migration_type) {
+		case migrate_identity:
+			if (sched_feat(ID_LOAD_BALANCE) && env->id_need_redo) {
+				if (sched_idle_rq(env->src_rq))
+					break;
+				if (task_is_idle(p))
+					goto next;
+			}
+			fallthrough;
 		case migrate_load:
 			/*
 			 * Depending of the number of CPUs and tasks and the
@@ -11598,6 +11636,8 @@ static struct rq *find_busiest_queue(struct lb_env *env,
 			continue;
 
 		switch (env->migration_type) {
+		case migrate_identity:
+			fallthrough;
 		case migrate_load:
 			/*
 			 * When comparing with load imbalance, use cpu_load()
@@ -11828,6 +11868,18 @@ static inline bool gb_need_redo(struct lb_env *env) { return false; }
 static inline void unset_gb_need_redo(struct lb_env *env) { }
 #endif
 
+static inline bool id_need_redo(struct lb_env *env)
+{
+	if (sched_feat(ID_LOAD_BALANCE))
+		return env->id_need_redo;
+	return false;
+}
+
+static inline void unset_id_need_redo(struct lb_env *env)
+{
+	if (sched_feat(ID_LOAD_BALANCE))
+		env->id_need_redo = false;
+}
 /*
  * Check this_cpu to ensure it is balanced within domain. Attempt to move
  * tasks if there is an imbalance.
@@ -11842,6 +11894,8 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 	struct rq *busiest;
 	struct rq_flags rf;
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(load_balance_mask);
+	int type = sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(this_rq) && !this_rq->pulled ?
+		migrate_identity : migrate_load;
 	struct lb_env env = {
 		.sd		= sd,
 		.dst_cpu	= this_cpu,
@@ -11855,6 +11909,8 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 #ifdef CONFIG_GROUP_BALANCER
 		.gb_need_redo	= true,
 #endif
+		.id_need_redo	= true,
+		.migration_type	= type,
 	};
 
 	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
@@ -12012,8 +12068,9 @@ more_balance:
 		}
 	}
 
-	if (env.imbalance > 0 && gb_need_redo(&env)) {
+	if (env.imbalance > 0 && (gb_need_redo(&env) || id_need_redo(&env))) {
 		unset_gb_need_redo(&env);
+		unset_id_need_redo(&env);
 		goto redo;
 	}
 
@@ -12399,6 +12456,9 @@ static inline int find_new_ilb(void)
 
 		if (idle_cpu(ilb))
 			return ilb;
+
+		if (sched_feat(ID_LOAD_BALANCE) && sched_idle_cpu(ilb))
+			return ilb;
 	}
 
 	return nr_cpu_ids;
@@ -12731,7 +12791,8 @@ static void _nohz_idle_balance(struct rq *this_rq, unsigned int flags)
 	 * chance for other idle cpu to pull load.
 	 */
 	for_each_cpu_wrap(balance_cpu,  nohz.idle_cpus_mask, this_cpu+1) {
-		if (!idle_cpu(balance_cpu))
+		if (!idle_cpu(balance_cpu) &&
+		    (!sched_feat(ID_LOAD_BALANCE) || !sched_idle_cpu(balance_cpu)))
 			continue;
 
 		/*
@@ -12804,7 +12865,7 @@ static bool nohz_idle_balance(struct rq *this_rq, enum cpu_idle_type idle)
 
 	this_rq->nohz_idle_balance = 0;
 
-	if (idle != CPU_IDLE)
+	if (idle != CPU_IDLE && (!sched_feat(ID_LOAD_BALANCE) || !sched_idle_rq(this_rq)))
 		return false;
 
 	_nohz_idle_balance(this_rq, flags);
@@ -12842,7 +12903,7 @@ static void nohz_newidle_balance(struct rq *this_rq)
 		return;
 
 	/* Will wake up very soon. No time for doing anything else*/
-	if (this_rq->avg_idle < sysctl_sched_migration_cost)
+	if (get_avg_idle(this_rq) < sysctl_sched_migration_cost)
 		return;
 
 	/* Don't need to update blocked load of idle CPUs*/
@@ -12923,7 +12984,7 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 	sd = rcu_dereference_check_sched_domain(this_rq->sd);
 
 	if (!READ_ONCE(this_rq->rd->overload) ||
-	    (sd && this_rq->avg_idle < sd->max_newidle_lb_cost)) {
+	    (sd && get_avg_idle(this_rq) < sd->max_newidle_lb_cost)) {
 
 		if (sd)
 			update_next_balance(sd, &next_balance);
@@ -12945,7 +13006,11 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 
 		update_next_balance(sd, &next_balance);
 
-		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
+		/* We wanna pull non-idle tasks to idle task only cpu. */
+		if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(this_rq) && !this_rq->pulled)
+			continue;
+
+		if (get_avg_idle(this_rq) < curr_cost + sd->max_newidle_lb_cost)
 			break;
 
 		if (sd->flags & SD_BALANCE_NEWIDLE) {
