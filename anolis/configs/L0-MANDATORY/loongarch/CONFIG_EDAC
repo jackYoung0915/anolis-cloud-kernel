@@ -1,1 +1,1 @@
-# CONFIG_EDAC is not set
+CONFIG_EDAC=y
