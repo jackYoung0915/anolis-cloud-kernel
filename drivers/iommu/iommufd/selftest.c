@@ -228,9 +228,15 @@ const struct iommu_dirty_ops dirty_ops = {
 
 static const struct iommu_ops mock_ops;
 
-static struct iommu_domain *mock_domain_alloc_paging(struct device *dev)
+static struct iommu_domain *mock_domain_alloc(unsigned int iommu_domain_type)
 {
 	struct mock_iommu_domain *mock;
+
+	if (iommu_domain_type == IOMMU_DOMAIN_BLOCKED)
+		return &mock_blocking_domain;
+
+	if (iommu_domain_type != IOMMU_DOMAIN_UNMANAGED)
+		return NULL;
 
 	mock = kzalloc(sizeof(*mock), GFP_KERNEL);
 	if (!mock)
@@ -239,7 +245,7 @@ static struct iommu_domain *mock_domain_alloc_paging(struct device *dev)
 	mock->domain.geometry.aperture_end = MOCK_APERTURE_LAST;
 	mock->domain.pgsize_bitmap = MOCK_IO_PAGE_SIZE;
 	mock->domain.ops = mock_ops.default_domain_ops;
-	mock->domain.type = IOMMU_DOMAIN_UNMANAGED;
+	mock->domain.type = iommu_domain_type;
 	xa_init(&mock->pfns);
 	return &mock->domain;
 }
@@ -258,7 +264,7 @@ mock_domain_alloc_user(struct device *dev, u32 flags)
 	    (mdev->flags & MOCK_FLAGS_DEVICE_NO_DIRTY))
 		return ERR_PTR(-EOPNOTSUPP);
 
-	domain = mock_domain_alloc_paging(NULL);
+	domain = mock_domain_alloc(IOMMU_DOMAIN_UNMANAGED);
 	if (domain && !(mdev->flags & MOCK_FLAGS_DEVICE_NO_DIRTY))
 		domain->dirty_ops = &dirty_ops;
 	if (!domain)
@@ -411,11 +417,10 @@ static const struct iommu_ops mock_ops = {
 	 * because it is zero.
 	 */
 	.default_domain = &mock_blocking_domain,
-	.blocked_domain = &mock_blocking_domain,
 	.owner = THIS_MODULE,
 	.pgsize_bitmap = MOCK_IO_PAGE_SIZE,
 	.hw_info = mock_domain_hw_info,
-	.domain_alloc_paging = mock_domain_alloc_paging,
+	.domain_alloc = mock_domain_alloc,
 	.domain_alloc_user = mock_domain_alloc_user,
 	.capable = mock_domain_capable,
 	.device_group = generic_device_group,
