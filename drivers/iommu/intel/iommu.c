@@ -2473,7 +2473,7 @@ static int dmar_domain_attach_device(struct dmar_domain *domain,
 	if (sm_supported(iommu) && !dev_is_real_dma_subdevice(dev)) {
 		/* Setup the PASID entry for requests without PASID: */
 		if (hw_pass_through && domain_type_is_si(domain))
-			ret = intel_pasid_setup_pass_through(iommu,
+			ret = intel_pasid_setup_pass_through(iommu, domain,
 					dev, IOMMU_NO_PASID);
 		else if (domain->use_first_level)
 			ret = domain_setup_first_level(iommu, domain, dev,
@@ -4860,7 +4860,8 @@ static int intel_iommu_set_dev_pasid(struct iommu_domain *domain,
 		goto out_free;
 
 	if (domain_type_is_si(dmar_domain))
-		ret = intel_pasid_setup_pass_through(iommu, dev, pasid);
+		ret = intel_pasid_setup_pass_through(iommu, dmar_domain,
+						     dev, pasid);
 	else if (dmar_domain->use_first_level)
 		ret = domain_setup_first_level(iommu, dmar_domain,
 					       dev, pasid);
