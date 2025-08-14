@@ -1520,7 +1520,7 @@ out:
 	if (rc == MIGRATEPAGE_SUCCESS) {
 		putback_active_hugepage(hpage);
 		if (reason == MR_CONTIG_RANGE)
-			replace_or_wait_free_huge_page(hpage);
+			replace_free_huge_page(hpage);
 	} else if (rc != -EAGAIN && rc != MIGRATEPAGE_SUCCESS)
 		list_move_tail(&hpage->lru, ret);
 

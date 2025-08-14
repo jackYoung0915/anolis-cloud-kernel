@@ -741,7 +741,7 @@ static inline int hstate_index(struct hstate *h)
 extern int dissolve_free_huge_page(struct page *page);
 extern int dissolve_free_huge_pages(unsigned long start_pfn,
 				    unsigned long end_pfn);
-extern void replace_or_wait_free_huge_page(struct page *page);
+extern void replace_free_huge_page(struct page *page);
 
 #ifdef CONFIG_ARCH_ENABLE_HUGEPAGE_MIGRATION
 #ifndef arch_hugetlb_migration_supported
@@ -996,7 +996,7 @@ static inline int dissolve_free_huge_pages(unsigned long start_pfn,
 	return 0;
 }
 
-static inline void replace_or_wait_free_huge_page(struct page *page)
+static inline void replace_free_huge_page(struct page *page)
 {
 }
 
