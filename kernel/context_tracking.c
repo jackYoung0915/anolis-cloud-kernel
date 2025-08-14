@@ -29,6 +29,7 @@ DEFINE_STATIC_KEY_FALSE(context_tracking_key);
 EXPORT_SYMBOL_GPL(context_tracking_key);
 
 DEFINE_PER_CPU(struct context_tracking, context_tracking);
+DEFINE_PER_CPU(struct sys_tracking, sys_tracking);
 EXPORT_SYMBOL_GPL(context_tracking);
 
 static noinstr bool context_tracking_recursion_enter(void)
@@ -103,6 +104,16 @@ void noinstr __context_tracking_enter(enum ctx_state state)
 }
 EXPORT_SYMBOL_GPL(__context_tracking_enter);
 
+void noinstr __sys_tracking_enter(enum sys_state state)
+{
+	if (!is_sys_aware_enabled())
+		return;
+
+	if (__this_cpu_read(sys_tracking.state) != state)
+		__this_cpu_write(sys_tracking.state, state);
+}
+EXPORT_SYMBOL_GPL(__sys_tracking_enter);
+
 void context_tracking_enter(enum ctx_state state)
 {
 	unsigned long flags;
@@ -124,6 +135,22 @@ void context_tracking_enter(enum ctx_state state)
 }
 NOKPROBE_SYMBOL(context_tracking_enter);
 EXPORT_SYMBOL_GPL(context_tracking_enter);
+
+void sys_tracking_enter(enum sys_state state)
+{
+	unsigned long flags;
+
+	if (!is_sys_aware_enabled())
+		return;
+
+	if (in_interrupt())
+		return;
+	local_irq_save(flags);
+	__sys_tracking_enter(state);
+	local_irq_restore(flags);
+}
+NOKPROBE_SYMBOL(sys_tracking_enter);
+EXPORT_SYMBOL_GPL(sys_tracking_enter);
 
 void context_tracking_user_enter(void)
 {
@@ -168,6 +195,16 @@ void noinstr __context_tracking_exit(enum ctx_state state)
 }
 EXPORT_SYMBOL_GPL(__context_tracking_exit);
 
+void noinstr __sys_tracking_exit(enum sys_state state)
+{
+	if (!is_sys_aware_enabled())
+		return;
+
+	if (__this_cpu_read(sys_tracking.state) == state)
+		__this_cpu_write(sys_tracking.state, ST_KERNEL);
+}
+EXPORT_SYMBOL_GPL(__sys_tracking_exit);
+
 void context_tracking_exit(enum ctx_state state)
 {
 	unsigned long flags;
@@ -181,6 +218,22 @@ void context_tracking_exit(enum ctx_state state)
 }
 NOKPROBE_SYMBOL(context_tracking_exit);
 EXPORT_SYMBOL_GPL(context_tracking_exit);
+
+void sys_tracking_exit(enum sys_state state)
+{
+	unsigned long flags;
+
+	if (!is_sys_aware_enabled())
+		return;
+
+	if (in_interrupt())
+		return;
+	local_irq_save(flags);
+	__sys_tracking_exit(state);
+	local_irq_restore(flags);
+}
+NOKPROBE_SYMBOL(sys_tracking_exit);
+EXPORT_SYMBOL_GPL(sys_tracking_exit);
 
 void context_tracking_user_exit(void)
 {

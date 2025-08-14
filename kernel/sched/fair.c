@@ -21,7 +21,7 @@
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
 #include "sched.h"
-
+#include <linux/context_tracking_state.h>
 /*
  * Targeted preemption latency for CPU-bound tasks:
  *
@@ -1056,6 +1056,33 @@ static inline int get_id_book_cpu_nr_tries(void)
 	return 0;
 }
 
+bool is_sys_aware_enabled(void)
+{
+	return sched_feat(ID_SYS_AWARE);
+}
+EXPORT_SYMBOL_GPL(is_sys_aware_enabled);
+
+#if defined(CONFIG_PREEMPT) || !defined(CONFIG_CONTEXT_TRACKING)
+static inline bool is_cpu_in_sys_mode(int cpu)
+{
+	return false;
+}
+#else
+static inline bool is_cpu_in_sys_mode(int cpu)
+{
+	if (!is_sys_aware_enabled())
+		return false;
+
+	if (!cpu_online(cpu))
+		return false;
+
+	if (cpu_rq(cpu)->curr == cpu_rq(cpu)->idle)
+		return false;
+
+	return per_cpu(sys_tracking.state, cpu) == ST_KERNEL;
+}
+#endif
+
 static noinline bool
 id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 {
@@ -1107,6 +1134,10 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 
 	/* CPU full of underclass is idle for highclass */
 	if (!is_idle) {
+
+		if (is_highclass_task(p) && is_cpu_in_sys_mode(cpu))
+			return false;
+
 		/*
 		 * For ID_LOAD_BALANCE, CPU full of underclass is also idle
 		 * for normal.
@@ -2353,7 +2384,14 @@ id_wake_affine(struct task_struct *p, int this_cpu, int prev_cpu)
 {
 	return true;
 }
-
+bool is_sys_aware_enabled(void)
+{
+	return false;
+}
+static inline bool is_cpu_in_sys_mode(int cpu)
+{
+	return false;
+}
 static inline bool
 id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 {

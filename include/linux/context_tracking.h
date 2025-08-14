@@ -16,22 +16,31 @@ extern void context_tracking_cpu_set(int cpu);
 /* Called with interrupts disabled.  */
 extern void __context_tracking_enter(enum ctx_state state);
 extern void __context_tracking_exit(enum ctx_state state);
+extern void __sys_tracking_enter(enum sys_state state);
+extern void __sys_tracking_exit(enum sys_state state);
 
+extern void sys_tracking_enter(enum sys_state state);
+extern void sys_tracking_exit(enum sys_state state);
 extern void context_tracking_enter(enum ctx_state state);
 extern void context_tracking_exit(enum ctx_state state);
 extern void context_tracking_user_enter(void);
 extern void context_tracking_user_exit(void);
 
+extern bool is_sys_aware_enabled(void);
+
 static inline void user_enter(void)
 {
 	if (context_tracking_enabled())
 		context_tracking_enter(CONTEXT_USER);
-
+	if (is_sys_aware_enabled())
+		sys_tracking_enter(ST_USER);
 }
 static inline void user_exit(void)
 {
 	if (context_tracking_enabled())
 		context_tracking_exit(CONTEXT_USER);
+	if (is_sys_aware_enabled())
+		sys_tracking_exit(ST_USER);
 }
 
 /* Called with interrupts disabled.  */
@@ -39,12 +48,16 @@ static __always_inline void user_enter_irqoff(void)
 {
 	if (context_tracking_enabled())
 		__context_tracking_enter(CONTEXT_USER);
+	if (is_sys_aware_enabled())
+		__sys_tracking_enter(ST_USER);
 
 }
 static __always_inline void user_exit_irqoff(void)
 {
 	if (context_tracking_enabled())
 		__context_tracking_exit(CONTEXT_USER);
+	if (is_sys_aware_enabled())
+		__sys_tracking_exit(ST_USER);
 }
 
 static inline enum ctx_state exception_enter(void)
@@ -61,11 +74,33 @@ static inline enum ctx_state exception_enter(void)
 	return prev_ctx;
 }
 
+static inline enum sys_state st_exception_enter(void)
+{
+	enum sys_state prev_sys;
+
+	if (!is_sys_aware_enabled())
+		return 0;
+
+	prev_sys = this_cpu_read(sys_tracking.state);
+	if (prev_sys != ST_KERNEL)
+		sys_tracking_exit(prev_sys);
+
+	return prev_sys;
+}
+
 static inline void exception_exit(enum ctx_state prev_ctx)
 {
 	if (context_tracking_enabled()) {
 		if (prev_ctx != CONTEXT_KERNEL)
 			context_tracking_enter(prev_ctx);
+	}
+}
+
+static inline void st_exception_exit(enum sys_state prev_sys)
+{
+	if (is_sys_aware_enabled()) {
+		if (prev_sys != ST_KERNEL)
+			sys_tracking_enter(prev_sys);
 	}
 }
 
@@ -82,14 +117,22 @@ static __always_inline enum ctx_state ct_state(void)
 	return context_tracking_enabled() ?
 		this_cpu_read(context_tracking.state) : CONTEXT_DISABLED;
 }
+static __always_inline enum sys_state sys_state(void)
+{
+	return is_sys_aware_enabled() ?
+		this_cpu_read(sys_tracking.state) : ST_DISABLED;
+}
 #else
 static inline void user_enter(void) { }
 static inline void user_exit(void) { }
 static inline void user_enter_irqoff(void) { }
 static inline void user_exit_irqoff(void) { }
 static inline enum ctx_state exception_enter(void) { return 0; }
+static inline enum sys_state st_exception_enter(void) { return 0; }
 static inline void exception_exit(enum ctx_state prev_ctx) { }
+static inline void st_exception_exit(enum sys_state prev_sys) { }
 static inline enum ctx_state ct_state(void) { return CONTEXT_DISABLED; }
+static inline enum sys_state sys_state(void) { return ST_DISABLED; }
 #endif /* !CONFIG_CONTEXT_TRACKING */
 
 #define CT_WARN_ON(cond) WARN_ON(context_tracking_enabled() && (cond))
@@ -115,6 +158,9 @@ static __always_inline void guest_enter_irqoff(void)
 	if (context_tracking_enabled())
 		__context_tracking_enter(CONTEXT_GUEST);
 
+	if (is_sys_aware_enabled())
+		__sys_tracking_enter(ST_GUEST);
+
 	/* KVM does not hold any references to rcu protected data when it
 	 * switches CPU into a guest mode. In fact switching to a guest mode
 	 * is very similar to exiting to userspace from rcu point of view. In
@@ -133,6 +179,9 @@ static __always_inline void context_tracking_guest_exit(void)
 {
 	if (context_tracking_enabled())
 		__context_tracking_exit(CONTEXT_GUEST);
+
+	if (is_sys_aware_enabled())
+		__sys_tracking_exit(ST_GUEST);
 }
 
 static __always_inline void vtime_account_guest_exit(void)
