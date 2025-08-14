@@ -2515,7 +2515,7 @@ int isolate_or_dissolve_huge_page(struct page *page, struct list_head *list)
 	return ret;
 }
 
-void replace_or_wait_free_huge_page(struct page *page)
+void replace_free_huge_page(struct page *page)
 {
 	struct hstate *h;
 	struct page *head;
@@ -2528,9 +2528,6 @@ void replace_or_wait_free_huge_page(struct page *page)
 		h = page_hstate(head);
 	} else {
 		spin_unlock_irq(&hugetlb_lock);
-
-		 /* Wait hugetlb pages to be released to buddy allocator */
-		flush_work(&free_hpage_work);
 		return;
 	}
 	spin_unlock_irq(&hugetlb_lock);
