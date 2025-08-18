@@ -6,4 +6,6 @@ ummu-y := ummu_main.o \
 	  queue.o \
 	  interrupt.o \
 	  cfg_table.o \
-	  flush.o
+	  flush.o  \
+	  ummu_impl.o \
+	  ummu_cfg_v1.o
