@@ -1123,6 +1123,13 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 	if (result != SCAN_SUCCEED)
 		goto out_nolock;
 
+	/*
+	 * Typically async fork is protected by holding mmap lock, hence
+	 * there's a special case when fork(2) syscall happens in collapsing
+	 * where mmap lock is unlocked temporarily.
+	 * Just like pmd check, mm->async_fork_mm has to be checked again
+	 * in case the special case has happened.
+	 */
 	mmap_read_lock(mm);
 	result = hugepage_vma_revalidate(mm, address, true, &vma, cc);
 	if (result != SCAN_SUCCEED) {
@@ -1131,7 +1138,7 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 	}
 
 	result = find_pmd_or_thp_or_none(mm, address, &pmd);
-	if (result != SCAN_SUCCEED) {
+	if (result != SCAN_SUCCEED || is_async_fork_mm(mm)) {
 		mmap_read_unlock(mm);
 		goto out_nolock;
 	}
@@ -1160,7 +1167,7 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 		goto out_up_write;
 	/* check if the pmd is still valid */
 	result = check_pmd_still_valid(mm, address, pmd);
-	if (result != SCAN_SUCCEED)
+	if (result != SCAN_SUCCEED || is_async_fork_mm(mm))
 		goto out_up_write;
 
 	vma_start_write(vma);
@@ -2379,6 +2386,13 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, int *result,
 	spin_unlock(&khugepaged_mm_lock);
 
 	mm = slot->mm;
+
+	/* Don't scan processes in the state of async fork. */
+	if (is_async_fork_mm(mm)) {
+		vma = NULL;
+		goto breakouterloop_mmap_lock;
+	}
+
 	/*
 	 * Don't wait for semaphore (to avoid long wait times).  Just move to
 	 * the next mm on the list.
@@ -2386,12 +2400,6 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, int *result,
 	vma = NULL;
 	if (unlikely(!mmap_read_trylock(mm)))
 		goto breakouterloop_mmap_lock;
-
-#ifdef CONFIG_ASYNC_FORK
-	/* Don't scan processes in the state of async fork. */
-	if (mm->async_fork_mm)
-		vma = NULL;
-#endif
 
 	progress++;
 	if (unlikely(hpage_collapse_test_exit(mm)))

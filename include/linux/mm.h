@@ -4318,6 +4318,11 @@ int async_fork_cpr_fast(struct vm_area_struct *vma,
 void async_fork_cpr_rest(void);
 void async_fork_cpr_done(struct mm_struct *mm, bool recover,
 			 bool locked);
+/* Should be called with mmap lock held */
+static inline bool is_async_fork_mm(struct mm_struct *mm)
+{
+	return mm && READ_ONCE(mm->async_fork_mm);
+}
 #else
 static inline void async_fork_cpr_bind(struct mm_struct *oldmm,
 				       struct mm_struct *mm, int err)
@@ -4340,6 +4345,10 @@ static inline void async_fork_fixup_pmd(struct vm_area_struct *mpnt, pmd_t *pmd,
 }
 static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
 {
+}
+static inline bool is_async_fork_mm(struct mm_struct *mm)
+{
+	return false;
 }
 #endif
 
