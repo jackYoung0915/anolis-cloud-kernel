@@ -3551,6 +3551,10 @@ static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
 	if (async_fork_staging())
 		__async_fork_fixup_vma(mpnt);
 }
+static inline bool is_async_fork_mm(struct mm_struct *mm)
+{
+	return mm && READ_ONCE(mm->async_fork_mm);
+}
 #else
 static inline bool async_fork_enabled(void)
 {
@@ -3587,6 +3591,10 @@ static inline void async_fork_fixup_pmd(struct vm_area_struct *mpnt,
 }
 static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
 {
+}
+static inline bool is_async_fork_mm(struct mm_struct *mm)
+{
+	return false;
 }
 #endif
 
