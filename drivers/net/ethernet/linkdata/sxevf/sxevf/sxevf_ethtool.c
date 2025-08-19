@@ -503,24 +503,26 @@ static u32 sxevf_get_rss_hash_key_size(struct net_device *netdev)
 	return SXEVF_RSS_HASH_KEY_SIZE;
 }
 
-static int sxevf_get_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rxfh)
+static int sxevf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			  u8 *hfunc)
 {
 	int err = 0;
 	struct sxevf_adapter *adapter = netdev_priv(netdev);
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
 
-	if (!rxfh->indir && !rxfh->key) {
-		LOG_DEBUG_BDF("param err, indir=%p, key=%p\n", rxfh->indir, rxfh->key);
+	if (!indir && !key) {
+		LOG_DEBUG_BDF("param err, indir=%p, key=%p\n", indir, key);
 		return 0;
 	}
 
 	spin_lock_bh(&adapter->mbx_lock);
-	if (rxfh->indir)
-		err = sxevf_redir_tbl_get(&adapter->hw, adapter->rx_ring_ctxt.num, rxfh->indir);
+	if (indir)
+		err = sxevf_redir_tbl_get(&adapter->hw, adapter->rx_ring_ctxt.num, indir);
 
-	if (!err && rxfh->key)
-		err = sxevf_rss_hash_key_get(&adapter->hw, rxfh->key);
+	if (!err && key)
+		err = sxevf_rss_hash_key_get(&adapter->hw, key);
 
 	spin_unlock_bh(&adapter->mbx_lock);
 

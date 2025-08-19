@@ -262,8 +262,8 @@ static void fxgmac_get_reta(struct fxgmac_pdata *pdata, u32 *indir)
 		indir[i] = pdata->rss_table[i] & rss_m;
 }
 
-static int fxgmac_get_rxfh(struct net_device *netdev,
-			   struct ethtool_rxfh_param *rxfh)
+static int fxgmac_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			   u8 *hfunc)
 {
 	struct fxgmac_pdata *pdata = netdev_priv(netdev);
 
@@ -271,25 +271,26 @@ static int fxgmac_get_rxfh(struct net_device *netdev,
 	 * ETH_RSS_HASH_XOR        __ETH_RSS_HASH(XOR)
 	 * ETH_RSS_HASH_CRC32      __ETH_RSS_HASH(CRC32)
 	 */
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
-	DPRINTK("fxmac, get_rxfh for hash function\n");
+	if (hfunc) {
+		*hfunc = ETH_RSS_HASH_TOP;
+		DPRINTK("fxmac, get_rxfh for hash function\n");
+	}
 
-	if (rxfh->indir) {
-		fxgmac_get_reta(pdata, rxfh->indir);
+	if (indir) {
+		fxgmac_get_reta(pdata, indir);
 		DPRINTK("fxmac, get_rxfh for indirection tab\n");
 	}
 
-	if (rxfh->key) {
-		memcpy(rxfh->key, pdata->rss_key, fxgmac_get_rxfh_key_size(netdev));
+	if (key) {
+		memcpy(key, pdata->rss_key, fxgmac_get_rxfh_key_size(netdev));
 		DPRINTK("fxmac, get_rxfh  for hash key\n");
 	}
 
 	return 0;
 }
 
-static int fxgmac_set_rxfh(struct net_device *netdev,
-			   struct ethtool_rxfh_param *rxfh,
-			   struct netlink_ext_ack *extack)
+static int fxgmac_set_rxfh(struct net_device *netdev, const u32 *indir,
+			   const u8 *key, const u8 hfunc)
 {
 	struct fxgmac_pdata *pdata = netdev_priv(netdev);
 	struct fxgmac_hw_ops *hw_ops = &pdata->hw_ops;
@@ -298,13 +299,13 @@ static int fxgmac_set_rxfh(struct net_device *netdev,
 	int max_queues = FXGMAC_MAX_DMA_CHANNELS;
 
 	DPRINTK("fxmac, set_rxfh callin, indir=%lx, key=%lx, func=%02x\n",
-		(unsigned long)rxfh->indir, (unsigned long)rxfh->key, rxfh->hfunc);
+		(unsigned long)indir, (unsigned long)key, hfunc);
 
-	if (rxfh->hfunc)
+	if (hfunc)
 		return -EINVAL;
 
 	/* Fill out the redirection table */
-	if (rxfh->indir) {
+	if (indir) {
 #if FXGMAC_MSIX_CH0RXDIS_EN
 		max_queues = max_queues;
 		reta_entries = reta_entries;
@@ -314,19 +315,19 @@ static int fxgmac_set_rxfh(struct net_device *netdev,
 #else
 		/* double check user input. */
 		for (i = 0; i < reta_entries; i++)
-			if (rxfh->indir[i] >= max_queues)
+			if (indir[i] >= max_queues)
 				return -EINVAL;
 
 		for (i = 0; i < reta_entries; i++)
-			pdata->rss_table[i] = rxfh->indir[i];
+			pdata->rss_table[i] = indir[i];
 
 		hw_ops->write_rss_lookup_table(pdata);
 #endif
 	}
 
 	/* Fill out the rss hash key */
-	if (FXGMAC_RSS_HASH_KEY_LINUX && rxfh->key)
-		hw_ops->set_rss_hash_key(pdata, rxfh->key);
+	if (FXGMAC_RSS_HASH_KEY_LINUX && key)
+		hw_ops->set_rss_hash_key(pdata, key);
 
 	return 0;
 }
