@@ -1221,23 +1221,25 @@ static void sxe_rss_redir_tbl_get(struct sxe_adapter *adapter, u32 *indir)
 		indir[i] = adapter->rss_indir_tbl[i] & rss_m;
 }
 
-static int sxe_get_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rxfh)
+static int sxe_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			u8 *hfunc)
 {
 	struct sxe_adapter *adapter = netdev_priv(netdev);
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
 
-	if (rxfh->indir)
-		sxe_rss_redir_tbl_get(adapter, rxfh->indir);
+	if (indir)
+		sxe_rss_redir_tbl_get(adapter, indir);
 
-	if (rxfh->key)
-		memcpy(rxfh->key, adapter->rss_key, sxe_get_rxfh_key_size(netdev));
+	if (key)
+		memcpy(key, adapter->rss_key, sxe_get_rxfh_key_size(netdev));
 
 	return 0;
 }
 
-static int sxe_set_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rxfh,
-			struct netlink_ext_ack *extack)
+static int sxe_set_rxfh(struct net_device *netdev, const u32 *redir,
+			const u8 *key, const u8 hfunc)
 {
 	u16 i, max_queues;
 	struct sxe_adapter *adapter = netdev_priv(netdev);
@@ -1246,33 +1248,33 @@ static int sxe_set_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rx
 	struct sxe_hw *hw = &adapter->hw;
 
 	LOG_DEBUG_BDF("rss=%u, tbl_entries=%u\n", rss, tbl_entries);
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE && rxfh->hfunc != ETH_RSS_HASH_TOP) {
-		LOG_ERROR_BDF("sxe unsupport hfunc[%d]\n", rxfh->hfunc);
-		return -EOPNOTSUPP;
+	if (hfunc) {
+		LOG_ERROR_BDF("sxe unsupport hfunc[%d]\n", hfunc);
+		return -EINVAL;
 	}
 
-	if (rxfh->indir) {
+	if (redir) {
 		max_queues = min_t(int, adapter->rx_ring_ctxt.num, rss);
 
 		if ((adapter->cap & SXE_SRIOV_ENABLE) && max_queues < 2)
 			max_queues = 2;
 
 		for (i = 0; i < tbl_entries; i++) {
-			if (rxfh->indir[i] >= max_queues) {
+			if (redir[i] >= max_queues) {
 				LOG_ERROR_BDF("indir[%u]=%u > max_que=%u\n", i,
-					      rxfh->indir[i], max_queues);
+					      redir[i], max_queues);
 				return -EINVAL;
 			}
 		}
 
 		for (i = 0; i < tbl_entries; i++)
-			adapter->rss_indir_tbl[i] = rxfh->indir[i];
+			adapter->rss_indir_tbl[i] = redir[i];
 
 		hw->dbu.ops->rss_redir_tbl_set_all(hw, adapter->rss_indir_tbl);
 	}
 
-	if (rxfh->key) {
-		memcpy(adapter->rss_key, rxfh->key, sxe_get_rxfh_key_size(netdev));
+	if (key) {
+		memcpy(adapter->rss_key, key, sxe_get_rxfh_key_size(netdev));
 		hw->dbu.ops->rss_key_set_all(hw, adapter->rss_key);
 	}
 

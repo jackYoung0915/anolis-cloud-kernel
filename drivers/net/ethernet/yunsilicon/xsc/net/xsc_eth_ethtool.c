@@ -898,47 +898,46 @@ static u32 xsc_get_rxfh_indir_size(struct net_device *netdev)
 	return XSC_INDIR_RQT_SIZE;
 }
 
-static int xsc_get_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rxfh)
+static int xsc_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key, u8 *hfunc)
 {
 	struct xsc_adapter *priv = netdev_priv(netdev);
 	struct xsc_rss_params *rss = &priv->rss_params;
 
-	if (rxfh->indir)
-		memcpy(rxfh->indir, rss->indirection_rqt,
+	if (indir)
+		memcpy(indir, rss->indirection_rqt,
 		       sizeof(rss->indirection_rqt));
 
-	if (rxfh->key)
-		memcpy(rxfh->key, rss->toeplitz_hash_key,
+	if (key)
+		memcpy(key, rss->toeplitz_hash_key,
 		       sizeof(rss->toeplitz_hash_key));
 
-	if (rxfh->hfunc)
-		rxfh->hfunc = rss->hfunc;
+	if (hfunc)
+		*hfunc = rss->hfunc;
 
 	return 0;
 }
 
-static int xsc_set_rxfh(struct net_device *dev, struct ethtool_rxfh_param *rxfh,
-			struct netlink_ext_ack *extack)
+static int xsc_set_rxfh(struct net_device *dev, const u32 *indir, const u8 *key, const u8 hfunc)
 {
 	struct xsc_adapter *priv = netdev_priv(dev);
 	struct xsc_rss_params *rss = &priv->rss_params;
 	u32 refresh = 0;
 	int err = 0;
 
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_XOR &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    hfunc != ETH_RSS_HASH_XOR &&
+	    hfunc != ETH_RSS_HASH_TOP)
 		return -EINVAL;
 
 	mutex_lock(&priv->state_lock);
 
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE && rxfh->hfunc != rss->hfunc) {
-		rss->hfunc = rxfh->hfunc;
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != rss->hfunc) {
+		rss->hfunc = hfunc;
 		refresh |= BIT(XSC_RSS_HASH_FUNC_UPDATE);
 	}
 
-	if (rxfh->key) {
-		memcpy(rss->toeplitz_hash_key, rxfh->key, sizeof(rss->toeplitz_hash_key));
+	if (key) {
+		memcpy(rss->toeplitz_hash_key, key, sizeof(rss->toeplitz_hash_key));
 		if (rss->hfunc == ETH_RSS_HASH_TOP)
 			refresh |= BIT(XSC_RSS_HASH_KEY_UPDATE);
 	}
