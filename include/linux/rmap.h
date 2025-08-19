@@ -103,6 +103,7 @@ enum ttu_flags {
 					 * do a final flush if necessary */
 	TTU_RMAP_LOCKED		= 0x80,	/* do not grab rmap lock:
 					 * caller holds it */
+	TTU_ZEROPAGE		= 0x100,/* unmap zero pages of the same offset */
 };
 
 #ifdef CONFIG_MMU
@@ -638,6 +639,7 @@ int folio_referenced(struct folio *, int is_locked,
 
 void try_to_migrate(struct folio *folio, enum ttu_flags flags);
 void try_to_unmap(struct folio *, enum ttu_flags flags);
+void try_to_unmap_zero_folio(struct folio *folio, enum ttu_flags flags);
 
 int make_device_exclusive_range(struct mm_struct *mm, unsigned long start,
 				unsigned long end, struct page **pages,
@@ -647,6 +649,8 @@ int make_device_exclusive_range(struct mm_struct *mm, unsigned long start,
 #define PVMW_SYNC		(1 << 0)
 /* Look for migration entries rather than present PTEs */
 #define PVMW_MIGRATION		(1 << 1)
+/* Avoid extra judgement of zeropage */
+#define PVMW_ZEROPAGE		(1 << 2)
 
 struct page_vma_mapped_walk {
 	unsigned long pfn;
@@ -762,6 +766,11 @@ static inline int folio_referenced(struct folio *folio, int is_locked,
 }
 
 static inline void try_to_unmap(struct folio *folio, enum ttu_flags flags)
+{
+}
+
+static inline void try_to_unmap_zero_folio(struct folio *folio,
+					   enum ttu_flags flags)
 {
 }
 

@@ -5242,6 +5242,10 @@ static vm_fault_t __do_fault(struct vm_fault *vmf)
 		return poisonret;
 	}
 
+	/* Do not lock the zero page */
+	if (unlikely(is_zero_page(vmf->page)))
+		return ret;
+
 	if (unlikely(!(ret & VM_FAULT_LOCKED)))
 		lock_page(vmf->page);
 	else
@@ -5344,6 +5348,69 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 	return VM_FAULT_FALLBACK;
 }
 #endif
+
+/**
+ * set_zero_pte - Set zero page PTE to point to pages in a folio.
+ */
+vm_fault_t set_zero_pte(struct vm_fault *vmf, struct folio *folio,
+		struct page *page, unsigned int nr, unsigned long addr)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct folio *new_folio;
+	bool uffd_wp = vmf_orig_pte_uffd_wp(vmf);
+	bool write = vmf->flags & FAULT_FLAG_WRITE;
+	bool prefault = !in_range(vmf->address, addr, nr * PAGE_SIZE);
+	pte_t entry;
+
+	flush_icache_pages(vma, page, nr);
+	entry = mk_pte(page, vma->vm_page_prot);
+
+	if (prefault && arch_wants_old_prefaulted_pte())
+		entry = pte_mkold(entry);
+	else
+		entry = pte_sw_mkyoung(entry);
+
+	if (write)
+		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+	if (unlikely(uffd_wp))
+		entry = pte_mkuffd_wp(entry);
+
+	/*
+	 * If it's zero page, vmf->ptl should be held to avoid other VMAs that share
+	 * the same xarray do the same page fault simultaneously, which may
+	 * leads to wrong semantic of MMAP_PRIVATE.
+	 *
+	 * E.g:
+	 *          MMAP_PRIVATE                         MMAP_SHARED
+	 *          do_read_fault
+	 *						do_shared_fault
+	 *	    check pagecache
+	 *						   alloc_page
+	 *						add_to_pagecache
+	 *					      try_to_unmap_zeropage
+	 *		set_pte
+	 *
+	 * In this scenario, zero page can not be unmapped.
+	 * If found the page cache entry here, corresponding page cache
+	 * has been set. Thus retry it to get the valid page cache not
+	 * the zero page.
+	 */
+	new_folio = filemap_get_entry(vma->vm_file->f_mapping, vmf->pgoff);
+
+	if (new_folio) {
+		folio_put(new_folio);
+		return VM_FAULT_RETRY;
+	}
+
+	entry = pte_mkspecial(entry);
+
+	set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr);
+
+	/* no need to invalidate: a not-present page won't be cached */
+	update_mmu_cache_range(vmf, vma, addr, vmf->pte, nr);
+
+	return 0;
+}
 
 /**
  * set_pte_range - Set a range of PTEs to point to pages in a folio.
@@ -5507,11 +5574,15 @@ fallback:
 		goto fallback;
 	}
 
-	folio_ref_add(folio, nr_pages - 1);
-	set_pte_range(vmf, folio, page, nr_pages, addr);
-	type = is_cow ? MM_ANONPAGES : mm_counter_file(page);
-	add_mm_counter(vma->vm_mm, type, nr_pages);
-	ret = 0;
+	if (likely(!is_zero_page(vmf->page))) {
+		folio_ref_add(folio, nr_pages - 1);
+		set_pte_range(vmf, folio, page, nr_pages, addr);
+		type = is_cow ? MM_ANONPAGES : mm_counter_file(page);
+		add_mm_counter(vma->vm_mm, type, nr_pages);
+		ret = 0;
+	} else {
+		ret = set_zero_pte(vmf, folio, page, nr_pages, addr);
+	}
 
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
@@ -5661,6 +5732,8 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 #endif
 
 	ret |= finish_fault(vmf);
+	if (unlikely(is_zero_folio(folio)))
+		return ret;
 	folio_unlock(folio);
 #ifdef CONFIG_DUPTEXT
 	if (d_folio) {
@@ -5711,8 +5784,10 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 	__folio_mark_uptodate(folio);
 
 	ret |= finish_fault(vmf);
-	unlock_page(vmf->page);
-	put_page(vmf->page);
+	if (unlikely(!is_zero_page(vmf->page))) {
+		unlock_page(vmf->page);
+		put_page(vmf->page);
+	}
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		goto uncharge_out;
 	return ret;
