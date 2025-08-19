@@ -1911,24 +1911,27 @@ static u32 iavf_get_rxfh_indir_size(struct net_device *netdev)
 /**
  * iavf_get_rxfh - get the rx flow hash indirection table
  * @netdev: network interface device structure
- * @rxfh: pointer to param struct (indir, key, hfunc)
+ * @indir: indirection table
+ * @key: hash key
+ * @hfunc: hash function in use
  *
  * Reads the indirection table directly from the hardware. Always returns 0.
  **/
-static int iavf_get_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh)
+static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			 u8 *hfunc)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u16 i;
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
-	if (rxfh->key)
-		memcpy(rxfh->key, adapter->rss_key, adapter->rss_key_size);
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
+	if (key)
+		memcpy(key, adapter->rss_key, adapter->rss_key_size);
 
-	if (rxfh->indir)
+	if (indir)
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
-			rxfh->indir[i] = (u32)adapter->rss_lut[i];
+			indir[i] = (u32)adapter->rss_lut[i];
 
 	return 0;
 }
@@ -1936,34 +1939,33 @@ static int iavf_get_rxfh(struct net_device *netdev,
 /**
  * iavf_set_rxfh - set the rx flow hash indirection table
  * @netdev: network interface device structure
- * @rxfh: pointer to param struct (indir, key, hfunc)
- * @extack: extended ACK from the Netlink message
+ * @indir: indirection table
+ * @key: hash key
+ * @hfunc: hash function to use
  *
  * Returns -EINVAL if the table specifies an invalid queue id, otherwise
  * returns 0 after programming the table.
  **/
-static int iavf_set_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh,
-			 struct netlink_ext_ack *extack)
+static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
+			 const u8 *key, const u8 hfunc)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u16 i;
 
 	/* Only support toeplitz hash function */
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	if (!rxfh->key && !rxfh->indir)
+	if (!key && !indir)
 		return 0;
 
-	if (rxfh->key)
-		memcpy(adapter->rss_key, rxfh->key, adapter->rss_key_size);
+	if (key)
+		memcpy(adapter->rss_key, key, adapter->rss_key_size);
 
-	if (rxfh->indir) {
+	if (indir) {
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
-			adapter->rss_lut[i] = (u8)(rxfh->indir[i]);
+			adapter->rss_lut[i] = (u8)(indir[i]);
 	}
 
 	return iavf_config_rss(adapter);

@@ -2223,14 +2223,13 @@ static u32 nbl_dev_get_rxfh_key_size(struct net_device *netdev)
 	return serv_ops->get_rxfh_key_size(netdev);
 }
 
-static int nbl_dev_get_rxfh(struct net_device *netdev,
-			    struct ethtool_rxfh_param *rxfh)
+static int nbl_dev_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key, u8 *hfunc)
 {
 	struct nbl_adapter *adapter = NBL_NETDEV_TO_ADAPTER(netdev);
 	struct nbl_dev_mgt *dev_mgt = NBL_ADAPTER_TO_DEV_MGT(adapter);
 	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 
-	return serv_ops->get_rxfh(netdev, rxfh->indir, rxfh->key, &rxfh->hfunc);
+	return serv_ops->get_rxfh(netdev, indir, key, hfunc);
 }
 
 static u32 nbl_dev_get_msglevel(struct net_device *netdev)

@@ -5418,47 +5418,44 @@ static u32 virtnet_get_rxfh_indir_size(struct net_device *dev)
 	return ((struct virtnet_info *)netdev_priv(dev))->rss_indir_table_size;
 }
 
-static int virtnet_get_rxfh(struct net_device *dev,
-			    struct ethtool_rxfh_param *rxfh)
+static int virtnet_get_rxfh(struct net_device *dev, u32 *indir, u8 *key, u8 *hfunc)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i;
 
-	if (rxfh->indir) {
+	if (indir) {
 		for (i = 0; i < vi->rss_indir_table_size; ++i)
-			rxfh->indir[i] = vi->rss.indirection_table[i];
+			indir[i] = vi->rss.indirection_table[i];
 	}
 
-	if (rxfh->key)
-		memcpy(rxfh->key, vi->rss.key, vi->rss_key_size);
+	if (key)
+		memcpy(key, vi->rss.key, vi->rss_key_size);
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
 
 	return 0;
 }
 
-static int virtnet_set_rxfh(struct net_device *dev,
-			    struct ethtool_rxfh_param *rxfh,
-			    struct netlink_ext_ack *extack)
+static int virtnet_set_rxfh(struct net_device *dev, const u32 *indir, const u8 *key, const u8 hfunc)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
 	bool update = false;
 	int i;
 
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	if (rxfh->indir) {
+	if (indir) {
 		if (!vi->has_rss)
 			return -EOPNOTSUPP;
 
 		for (i = 0; i < vi->rss_indir_table_size; ++i)
-			vi->rss.indirection_table[i] = rxfh->indir[i];
+			vi->rss.indirection_table[i] = indir[i];
 		update = true;
 	}
 
-	if (rxfh->key) {
+	if (key) {
 		/* If either _F_HASH_REPORT or _F_RSS are negotiated, the
 		 * device provides hash calculation capabilities, that is,
 		 * hash_key is configured.
@@ -5466,7 +5463,7 @@ static int virtnet_set_rxfh(struct net_device *dev,
 		if (!vi->has_rss && !vi->has_rss_hash_report)
 			return -EOPNOTSUPP;
 
-		memcpy(vi->rss.key, rxfh->key, vi->rss_key_size);
+		memcpy(vi->rss.key, key, vi->rss_key_size);
 		update = true;
 	}
 
