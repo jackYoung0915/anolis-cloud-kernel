@@ -181,10 +181,21 @@ static int memory_block_online(struct memory_block *mem)
 	unsigned long nr_pages = PAGES_PER_SECTION * sections_per_block;
 	unsigned long nr_vmemmap_pages = mem->nr_vmemmap_pages;
 	struct zone *zone;
-	int ret;
+	int ret, phase = MHP_PHASE_DEFAULT;
 
 	zone = zone_for_pfn_range(mem->online_type, mem->nid, mem->group,
 				  start_pfn, nr_pages);
+
+	/*
+	 * Defer struct pages initialization and defer freeing pages to buddy
+	 * allocator starting from at least the second memory block of the zone,
+	 * as rebuilding the zone is not required from that point onwards.
+	 */
+	if (parallel_hotplug_ratio &&
+	    start_pfn + nr_vmemmap_pages >=
+		    zone->zone_start_pfn +
+			    (memory_block_size_bytes() >> PAGE_SHIFT))
+		phase = MHP_PHASE_PREPARE;
 
 	/*
 	 * Although vmemmap pages have a different lifecycle than the pages
@@ -194,30 +205,23 @@ static int memory_block_online(struct memory_block *mem)
 	 * belong to the same zone as the memory they backed.
 	 */
 	if (nr_vmemmap_pages) {
-		ret = mhp_init_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone);
+		ret = __mhp_init_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone, phase);
 		if (ret)
 			return ret;
 	}
-	/*
-	 * Defer struct pages initialization and defer freeing pages to buddy
-	 * allocator starting from at least the second memory block of the zone,
-	 * as rebuilding the zone is not required from that point onwards.
-	 */
-	if (parallel_hotplug_ratio &&
-	    start_pfn + nr_vmemmap_pages >=
-		    zone->zone_start_pfn +
-			    (memory_block_size_bytes() >> PAGE_SHIFT)) {
-		ret = __online_pages(start_pfn + nr_vmemmap_pages,
-				     nr_pages - nr_vmemmap_pages, zone,
-				     mem->group, MHP_PHASE_PREPARE);
+
+	ret = __online_pages(start_pfn + nr_vmemmap_pages,
+				nr_pages - nr_vmemmap_pages, zone,
+				mem->group, phase);
+
+	if (phase == MHP_PHASE_PREPARE) {
 		atomic_set(&mem->deferred_state, MEM_NEED_DEFER);
 		mem->deferred_zone = zone;
-	} else
-		ret = online_pages(start_pfn + nr_vmemmap_pages,
-			   nr_pages - nr_vmemmap_pages, zone, mem->group);
+	}
+
 	if (ret) {
 		if (nr_vmemmap_pages)
-			mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages);
+			__mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages, phase);
 		return ret;
 	}
 
@@ -226,8 +230,8 @@ static int memory_block_online(struct memory_block *mem)
 	 * now already properly populated.
 	 */
 	if (nr_vmemmap_pages)
-		adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
-					  nr_vmemmap_pages);
+		__adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
+					nr_vmemmap_pages, zone, phase);
 
 	return ret;
 }
