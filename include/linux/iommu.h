@@ -754,7 +754,7 @@ struct iommu_ops {
 			 enum iommu_hw_info_type *type);
 
 	/* Domain allocation and freeing by the iommu driver */
-#if IS_ENABLED(CONFIG_FSL_PAMU)
+#if IS_ENABLED(CONFIG_FSL_PAMU) || IS_ENABLED(CONFIG_UB_UMMU)
 	struct iommu_domain *(*domain_alloc)(unsigned iommu_domain_type);
 #endif
 	struct iommu_domain *(*domain_alloc_identity)(struct device *dev);
@@ -787,6 +787,9 @@ struct iommu_ops {
 	bool (*is_attach_deferred)(struct device *dev);
 
 	/* Per device IOMMU features */
+	int (*dev_enable_feat)(struct device *dev, enum iommu_dev_features f);
+	int (*dev_disable_feat)(struct device *dev, enum iommu_dev_features f);
+
 	void (*page_response)(struct device *dev, struct iopf_fault *evt,
 			      struct iommu_page_response *msg);
 
