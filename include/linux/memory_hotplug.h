@@ -177,6 +177,10 @@ extern int add_one_highpage(struct page *page, int pfn, int bad_ppro);
 extern void adjust_present_page_count(struct page *page,
 				      struct memory_group *group,
 				      long nr_pages);
+extern void __adjust_present_page_count(struct page *page,
+				      struct memory_group *group,
+				      long nr_pages, struct zone *zone,
+				      int phase);
 /* VM interface that may be used by firmware interface */
 extern int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
 				     struct zone *zone);
