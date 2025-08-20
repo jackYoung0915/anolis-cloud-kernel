@@ -754,7 +754,7 @@ struct iommu_ops {
 			 enum iommu_hw_info_type *type);
 
 	/* Domain allocation and freeing by the iommu driver */
-#if IS_ENABLED(CONFIG_FSL_PAMU)
+#if IS_ENABLED(CONFIG_FSL_PAMU) || IS_ENABLED(CONFIG_UB_UMMU)
 	struct iommu_domain *(*domain_alloc)(unsigned iommu_domain_type);
 #endif
 	struct iommu_domain *(*domain_alloc_identity)(struct device *dev);
@@ -787,10 +787,15 @@ struct iommu_ops {
 	bool (*is_attach_deferred)(struct device *dev);
 
 	/* Per device IOMMU features */
+	int (*dev_enable_feat)(struct device *dev, enum iommu_dev_features f);
+	int (*dev_disable_feat)(struct device *dev, enum iommu_dev_features f);
+
 	void (*page_response)(struct device *dev, struct iopf_fault *evt,
 			      struct iommu_page_response *msg);
 
 	int (*def_domain_type)(struct device *dev);
+	void (*remove_dev_pasid)(struct device *dev, ioasid_t pasid,
+			  struct iommu_domain *domain);
 
 	size_t (*get_viommu_size)(struct device *dev,
 				  enum iommu_viommu_type viommu_type);
@@ -1366,6 +1371,9 @@ void iommu_for_each_dev(struct iommu_dev_iter *iter);
 extern struct mutex iommu_probe_device_lock;
 int iommu_probe_device(struct device *dev);
 
+int iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features f);
+int iommu_dev_disable_feature(struct device *dev, enum iommu_dev_features f);
+
 int iommu_device_use_default_domain(struct device *dev);
 void iommu_device_unuse_default_domain(struct device *dev);
 
@@ -1685,6 +1693,18 @@ static inline int iommu_fwspec_init(struct device *dev,
 
 static inline int iommu_fwspec_add_ids(struct device *dev, u32 *ids,
 				       int num_ids)
+{
+	return -ENODEV;
+}
+
+static inline int
+iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features feat)
+{
+	return -ENODEV;
+}
+
+static inline int
+iommu_dev_disable_feature(struct device *dev, enum iommu_dev_features feat)
 {
 	return -ENODEV;
 }
