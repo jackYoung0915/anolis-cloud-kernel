@@ -928,6 +928,7 @@ struct cfs_rq {
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 	unsigned long		nr_uninterruptible;
+	struct list_head	expel_list;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1544,6 +1545,7 @@ struct rq {
 #endif
 	bool			booked;
 	bool			pulled;
+	bool			on_expel;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
