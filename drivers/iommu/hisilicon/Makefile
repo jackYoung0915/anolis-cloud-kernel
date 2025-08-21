@@ -11,4 +11,5 @@ ummu-y := ummu_main.o \
 	  ummu_impl.o \
 	  ummu_cfg_v1.o \
 	  attribute.o \
+	  qos.o \
 	  logic_ummu/logic_ummu.o
