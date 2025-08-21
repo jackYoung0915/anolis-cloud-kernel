@@ -59,17 +59,6 @@
 
 #include "internal.h"
 
-bool __maybe_unused enable_brk_thp_aligned;
-
-static int __init parse_enable_brk_thp_aligned(char *str)
-{
-	enable_brk_thp_aligned = true;
-	pr_info("Enabling brk thp aligned\n");
-
-	return 0;
-}
-__setup("brk_thp_aligned", parse_enable_brk_thp_aligned);
-
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
 #endif
@@ -209,7 +198,6 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	bool populate;
 	bool downgraded = false;
 	LIST_HEAD(uf);
-	unsigned long __maybe_unused newbrk_aligned, oldbrk_aligned;
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
@@ -244,17 +232,6 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 
 	newbrk = PAGE_ALIGN(brk);
 	oldbrk = PAGE_ALIGN(mm->brk);
-
-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned) {
-		newbrk_aligned = ALIGN(brk, HPAGE_SIZE);
-
-		next = find_vma(mm, oldbrk);
-		if (next && next->vm_start <= oldbrk)
-			oldbrk_aligned = next->vm_end;
-		else
-			oldbrk_aligned = oldbrk;
-	}
-
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
 		goto success;
@@ -273,9 +250,6 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		 * mm->brk will be restored from origbrk.
 		 */
 		mm->brk = brk;
-		if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned)
-			oldbrk = oldbrk_aligned;
-
 		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, true);
 		if (ret < 0) {
 			mm->brk = origbrk;
@@ -286,14 +260,6 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto success;
 	}
 
-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned) {
-		if (newbrk <= oldbrk_aligned) {
-			mm->brk = brk;
-			goto success;
-		}
-		newbrk = newbrk_aligned;
-		oldbrk = oldbrk_aligned;
-	}
 	/* Check against existing mmap mappings. */
 	next = find_vma(mm, oldbrk);
 	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
