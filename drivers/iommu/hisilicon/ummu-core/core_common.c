@@ -21,6 +21,6 @@ EXPORT_SYMBOL_NS_GPL(global_device_lock, UMMU_CORE_INTERNAL);
 
 void setup_tdev_dma_ops(struct device *dev, bool coherent)
 {
-	arch_setup_dma_ops(dev, 0, U64_MAX, coherent);
+	arch_setup_dma_ops(dev, coherent);
 }
 EXPORT_SYMBOL_NS_GPL(setup_tdev_dma_ops, UMMU_CORE_INTERNAL);
