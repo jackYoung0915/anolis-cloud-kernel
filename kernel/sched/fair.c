@@ -927,6 +927,76 @@ struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
 	return __node_2_se(root);
 }
 
+static inline bool idle_only(struct sched_entity *se)
+{
+	struct cfs_rq *cfs_rq;
+
+	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+		return false;
+
+	if (entity_is_task(se))
+		return task_has_idle_policy(task_of(se));
+
+	cfs_rq = group_cfs_rq(se);
+	return cfs_rq->h_nr_runnable == cfs_rq->h_nr_idle;
+}
+
+static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags);
+
+static inline bool rq_on_expel(struct rq *rq)
+{
+	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+		return false;
+
+	return rq->on_expel;
+}
+
+static inline void check_idle_se(struct cfs_rq *cfs_rq)
+{
+	struct sched_entity *se, *tmp;
+
+	list_for_each_entry_safe(se, tmp, &cfs_rq->expel_list, expel_node) {
+		if (rq_on_expel(rq_of(cfs_rq)) && idle_only(se))
+			continue;
+
+		list_del_init(&se->expel_node);
+		place_entity(cfs_rq, se, 0);
+		__enqueue_entity(cfs_rq, se);
+	}
+}
+
+static inline struct rb_node *skip_idle_se(struct cfs_rq *cfs_rq)
+{
+	struct rb_node *left = rb_first_cached(&cfs_rq->tasks_timeline);
+
+	while (left) {
+		struct sched_entity *se =
+			rb_entry(left, struct sched_entity, run_node);
+
+		if (!idle_only(se))
+			break;
+
+		left = rb_next(&se->run_node);
+
+		__dequeue_entity(cfs_rq, se);
+		list_add_tail(&se->expel_node, &cfs_rq->expel_list);
+	}
+
+	return left;
+}
+
+static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
+{
+	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+		return rb_first_cached(&cfs_rq->tasks_timeline);
+
+	check_idle_se(cfs_rq);
+	if (rq_on_expel(rq_of(cfs_rq)))
+		return skip_idle_se(cfs_rq);
+
+	return rb_first_cached(&cfs_rq->tasks_timeline);
+}
+
 struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
 {
 	struct rb_node *left = rb_first_cached(&cfs_rq->tasks_timeline);
@@ -3924,8 +3994,6 @@ enqueue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 static inline void
 dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 #endif
-
-static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags);
 
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
@@ -8961,6 +9029,26 @@ preempt:
 	resched_curr(rq);
 }
 
+static inline bool need_expel(struct rq *rq)
+{
+	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+		return false;
+
+	return rq->cfs.h_nr_idle && rq->cfs.h_nr_runnable > rq->cfs.h_nr_idle;
+}
+
+static inline void update_rq_on_expel(struct rq *rq)
+{
+	bool ret;
+
+	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+		return;
+
+	ret = need_expel(rq);
+	if (ret != rq->on_expel)
+		rq->on_expel = ret;
+}
+
 static struct task_struct *__pick_task_fair(struct rq *rq)
 {
 	struct sched_entity *se;
@@ -9010,6 +9098,8 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 
 	if (sched_feat(ID_LOAD_BALANCE))
 		rq->pulled = false;
+
+	update_rq_on_expel(rq);
 again:
 	p = __pick_task_fair(rq);
 	if (!p)
@@ -13230,6 +13320,13 @@ bool cfs_prio_less(const struct task_struct *a, const struct task_struct *b,
 	cfs_rqa = &task_rq(a)->cfs;
 	cfs_rqb = &task_rq(b)->cfs;
 #endif
+	if (sched_feat(ID_ABSOLUTE_EXPEL)) {
+		bool a_is_idle = se_is_idle((struct sched_entity *)sea);
+		bool b_is_idle = se_is_idle((struct sched_entity *)seb);
+
+		if (a_is_idle != b_is_idle)
+			return a_is_idle > b_is_idle;
+	}
 
 	/*
 	 * Find delta after normalizing se's vruntime with its cfs_rq's
@@ -13517,6 +13614,7 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 #ifdef CONFIG_SMP
 	raw_spin_lock_init(&cfs_rq->removed.lock);
 #endif
+	INIT_LIST_HEAD(&cfs_rq->expel_list);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -13774,6 +13872,7 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	seqlock_init(&se->idle_seqlock);
 	spin_lock_init(&se->iowait_lock);
 	se->cg_idle_start = se->cg_init_time = cpu_clock(cpu);
+	INIT_LIST_HEAD(&se->expel_node);
 }
 
 static DEFINE_MUTEX(shares_mutex);
