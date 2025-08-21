@@ -72,7 +72,7 @@ static pte_t get_and_clear(struct mm_struct *mm,
 			unsigned long addr, pte_t *ptep,
 			unsigned long pgsize, unsigned long ncontig)
 {
-	pte_t orig_pte = huge_ptep_get(ptep);
+	pte_t orig_pte = huge_ptep_get(mm, addr, ptep);
 	unsigned long i;
 
 	for (i = 0; i < ncontig; i++, addr += pgsize, ptep++) {
@@ -285,7 +285,7 @@ pte_t huge_ptep_get_and_clear(struct mm_struct *mm,
 {
 	int ncontig;
 	size_t pgsize;
-	pte_t orig_pte = huge_ptep_get(ptep);
+	pte_t orig_pte = huge_ptep_get(mm, addr, ptep);
 
 	if (!pte_cont(orig_pte))
 		return ptep_get_and_clear(mm, addr, ptep);
@@ -309,15 +309,16 @@ pte_t huge_ptep_clear_flush(struct vm_area_struct *vma,
 	return get_clear_contig_flush(mm, addr, ptep, pgsize, ncontig);
 }
 
-static int __cont_access_flags_changed(pte_t *ptep, pte_t pte, int ncontig)
+static int __cont_access_flags_changed(struct mm_struct *mm,
+		 unsigned long addr, pte_t *ptep, pte_t pte, int ncontig)
 {
 	int i;
 
-	if (pte_write(pte) != pte_write(huge_ptep_get(ptep)))
+	if (pte_write(pte) != pte_write(huge_ptep_get(mm, addr, ptep)))
 		return 1;
 
 	for (i = 0; i < ncontig; i++) {
-		pte_t orig_pte = huge_ptep_get(ptep + i);
+		pte_t orig_pte = huge_ptep_get(mm, addr, ptep + i);
 
 		if (pte_dirty(pte) != pte_dirty(orig_pte))
 			return 1;
@@ -336,6 +337,7 @@ int huge_ptep_set_access_flags(struct vm_area_struct *vma,
 	int ncontig, i;
 	size_t pgsize = 0;
 	unsigned long pfn = pte_pfn(pte), dpfn;
+	struct mm_struct *mm = vma->vm_mm;
 	pgprot_t hugeprot;
 	pte_t orig_pte;
 
@@ -345,7 +347,7 @@ int huge_ptep_set_access_flags(struct vm_area_struct *vma,
 	ncontig = CONT_PMDS;
 	dpfn = PMD_SIZE >> PAGE_SHIFT;
 
-	if (!__cont_access_flags_changed(ptep, pte, ncontig))
+	if (!__cont_access_flags_changed(mm, addr, ptep, pte, ncontig))
 		return 0;
 
 	orig_pte = get_and_clear(vma->vm_mm, addr, ptep, pgsize, ncontig);
