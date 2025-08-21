@@ -9253,6 +9253,13 @@ static struct cftype memory_files[] = {
 		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
 	},
 #endif
+#ifdef CONFIG_PRE_OOM
+	{
+		.name = "pre_oom",
+		.write_u64 = memcg_pre_oom_write,
+		.read_u64 = memcg_pre_oom_read,
+	},
+#endif
 	{ }	/* terminate */
 };
 
