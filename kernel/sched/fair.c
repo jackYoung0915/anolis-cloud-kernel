@@ -1134,10 +1134,6 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle)
 
 	/* CPU full of underclass is idle for highclass */
 	if (!is_idle) {
-
-		if (is_highclass_task(p) && is_cpu_in_sys_mode(cpu))
-			return false;
-
 		/*
 		 * For ID_LOAD_BALANCE, CPU full of underclass is also idle
 		 * for normal.
@@ -8912,7 +8908,8 @@ static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_back
 		if (!group_identity_disabled()) {
 			if (idle || !is_seeker)
 				return cpu;
-			*id_backup = cpu;
+			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu))
+				*id_backup = cpu;
 		} else
 			return cpu;
 	}
