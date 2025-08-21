@@ -1036,6 +1036,7 @@ extern int iommu_attach_device(struct iommu_domain *domain,
 extern void iommu_detach_device(struct iommu_domain *domain,
 				struct device *dev);
 extern struct iommu_domain *iommu_get_domain_for_dev(struct device *dev);
+extern struct iommu_domain *iommu_get_domain_for_group(struct iommu_group *group);
 struct iommu_domain *iommu_driver_get_domain_for_dev(struct device *dev);
 extern struct iommu_domain *iommu_get_dma_domain(struct device *dev);
 extern size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
