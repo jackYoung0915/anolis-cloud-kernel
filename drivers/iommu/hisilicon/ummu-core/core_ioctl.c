@@ -132,9 +132,52 @@ mtx_unlock:
 	return ret;
 }
 
+static int ummu_dev_enable_feat(struct device *dev,
+				enum iommu_dev_features feat)
+{
+	struct ummu_master *master =
+		(struct ummu_master *)dev_iommu_priv_get(dev);
+
+	if (!master) {
+		pr_err("get invalid dev!\n");
+		return -ENODEV;
+	}
+
+	switch (feat) {
+	case IOMMU_DEV_FEAT_IOPF:
+		return -EOPNOTSUPP;
+	case IOMMU_DEV_FEAT_SVA:
+	case IOMMU_DEV_FEAT_KSVA:
+		return ummu_master_enable_sva(master, feat);
+	default:
+		return -EINVAL;
+	}
+}
+
+static int ummu_dev_disable_feat(struct device *dev,
+				 enum iommu_dev_features feat)
+{
+	struct ummu_master *master =
+		(struct ummu_master *)dev_iommu_priv_get(dev);
+
+	if (!master) {
+		pr_err("get invalid dev!\n");
+		return -ENODEV;
+	}
+
+	switch (feat) {
+	case IOMMU_DEV_FEAT_IOPF:
+		return -EOPNOTSUPP;
+	case IOMMU_DEV_FEAT_SVA:
+	case IOMMU_DEV_FEAT_KSVA:
+		return ummu_master_disable_sva(master, feat);
+	default:
+		return -EINVAL;
+	}
+}
+
 static int enable_dev_feat(struct device *dev)
 {
-#if 0 // TODO
 	int ret;
 
 	ret = ummu_dev_enable_feat(dev, IOMMU_DEV_FEAT_IOPF);
@@ -146,16 +189,13 @@ static int enable_dev_feat(struct device *dev)
 		(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_IOPF);
 		return ret;
 	}
-#endif
 	return 0;
 }
 
 static void disable_dev_feat(struct device *dev)
 {
-#if 0 // TODO
 	(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_SVA);
 	(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_IOPF);
-#endif
 }
 
 static void clear_tid_src(struct ktid_info *entry)
