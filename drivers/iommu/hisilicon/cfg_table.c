@@ -889,7 +889,14 @@ int ummu_write_tct_desc(struct ummu_device *ummu, struct ummu_domain_cfgs *cfgs,
 #ifdef __BIG_ENDIAN
 		      TCT_ENT0_ENDI |
 #endif
+		      (cfgs->btm_enabled ? 0 : TCT_ENT0_ASH) |
 		      FIELD_PREP(TCT_ENT0_ASID, tct_desc->asid) | TCT_ENT0_V;
+
+		if (cfgs->sva_mode == UMMU_MODE_DMA ||
+		    cfgs->sva_mode == UMMU_MODE_SVA_DISABLE_PTB)
+			val |= TCT_ENT0_EBIT_EN;
+		else
+			val &= ~TCT_ENT0_EBIT_EN;
 
 		if (ummu->cap.features & UMMU_FEAT_HA)
 			val |= TCT_ENT0_HAF;

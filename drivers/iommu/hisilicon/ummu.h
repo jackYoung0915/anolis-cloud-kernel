@@ -71,6 +71,14 @@ enum ummu_domain_stage {
 	UMMU_DOMAIN_S2,
 };
 
+enum ummu_sva_mode {
+	UMMU_MODE_DMA = 0,
+	UMMU_MODE_KSVA,
+	UMMU_MODE_SVA,
+	UMMU_MODE_SVA_DISABLE_PTB,
+	UMMU_MODE_END,
+};
+
 struct ummu_ll_queue {
 	union {
 		u64 val;
@@ -240,6 +248,7 @@ struct ummu_dev_impl_ops {
 struct ummu_domain_cfgs {
 	struct io_pgtable_ops *pgtbl_ops;
 	enum ummu_domain_stage stage;
+	enum ummu_sva_mode sva_mode;
 
 	u32 tecte_tag;
 
@@ -247,6 +256,7 @@ struct ummu_domain_cfgs {
 		struct ummu_s1_cfg	s1_cfg;
 		struct ummu_s2_cfg	s2_cfg;
 	};
+	bool btm_enabled : 1;
 };
 
 struct ummu_domain {
@@ -260,6 +270,10 @@ struct ummu_domain {
 struct ummu_master {
 	struct ummu_device	*ummu;
 	struct device		*dev;
+	bool			sva_enabled;
+	bool			ksva_enabled;
+	refcount_t		sva_ref;
+	refcount_t		ksva_ref;
 };
 
 static inline
