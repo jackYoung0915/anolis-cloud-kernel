@@ -35,6 +35,7 @@
 #include <linux/sched/mm.h>
 #include <linux/msi.h>
 #include <uapi/linux/iommufd.h>
+#include <ub/ubus/ubus.h>
 
 #include "dma-iommu.h"
 #include "iommu-priv.h"
@@ -198,6 +199,9 @@ static const struct bus_type * const iommu_buses[] = {
 #endif
 #ifdef CONFIG_CDX_BUS
 	&cdx_bus_type,
+#endif
+#ifdef CONFIG_UB_UBUS
+	&ub_bus_type,
 #endif
 };
 
