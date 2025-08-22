@@ -8,6 +8,7 @@
 #include <linux/module.h>
 #include <linux/dma-map-ops.h>
 
+#include "../sva.h"
 #include "ummu_core_priv.h"
 
 LIST_HEAD(core_device_list);
@@ -25,14 +26,46 @@ void setup_tdev_dma_ops(struct device *dev, bool coherent)
 }
 EXPORT_SYMBOL_NS_GPL(setup_tdev_dma_ops, UMMU_CORE_INTERNAL);
 
-int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f)
+int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features feat)
 {
-	return -EOPNOTSUPP;
+	struct ummu_master *master =
+		(struct ummu_master *)dev_iommu_priv_get(dev);
+
+	if (!master) {
+		pr_err("get invalid dev!\n");
+		return -ENODEV;
+	}
+
+	switch (feat) {
+	case IOMMU_DEV_FEAT_IOPF:
+		return -EOPNOTSUPP;
+	case IOMMU_DEV_FEAT_SVA:
+	case IOMMU_DEV_FEAT_KSVA:
+		return ummu_master_enable_sva(master, feat);
+	default:
+		return -EINVAL;
+	}
 }
 EXPORT_SYMBOL_GPL(ummu_dev_enable_feat);
 
-int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f)
+int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features feat)
 {
-	return -EOPNOTSUPP;
+	struct ummu_master *master =
+		(struct ummu_master *)dev_iommu_priv_get(dev);
+
+	if (!master) {
+		pr_err("get invalid dev!\n");
+		return -ENODEV;
+	}
+
+	switch (feat) {
+	case IOMMU_DEV_FEAT_IOPF:
+		return -EOPNOTSUPP;
+	case IOMMU_DEV_FEAT_SVA:
+	case IOMMU_DEV_FEAT_KSVA:
+		return ummu_master_disable_sva(master, feat);
+	default:
+		return -EINVAL;
+	}
 }
 EXPORT_SYMBOL_GPL(ummu_dev_disable_feat);
