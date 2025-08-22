@@ -54,6 +54,7 @@ struct ummu_tid_param {
 	enum ummu_mapt_mode mode;
 	enum tid_alloc_mode alloc_mode;
 	u32 assign_tid;
+	u32 domain_type;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -338,6 +339,18 @@ struct device *ummu_core_alloc_tdev(struct tdev_attr *attr, u32 *ptid);
  * Return: 0 on success or an error.
  */
 int ummu_core_free_tdev(struct device *dev);
+
+/**
+ * Get ummu_tid_type related to the tid.
+ * @dev: the ummu_core device tid belongs to.
+ * @tid: token id.
+ * @tid_type: out param, ummu_tid_type
+ *
+ * Return: 0 on success , others for an error.
+ */
+int ummu_core_get_tid_type(struct ummu_core_device *dev, u32 tid,
+			   u32 *tid_type);
+
 #else
 static inline int ummu_core_alloc_tid(struct ummu_core_device *dev,
 				      struct ummu_tid_param *drvdata,
@@ -372,6 +385,12 @@ static inline struct device *ummu_core_alloc_tdev(struct tdev_attr *attr, u32 *p
 }
 
 static inline int ummu_core_free_tdev(struct device *dev)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int ummu_core_get_tid_type(struct ummu_core_device *dev, u32 tid,
+					 u32 *tid_type)
 {
 	return -EOPNOTSUPP;
 }
