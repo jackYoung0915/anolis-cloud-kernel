@@ -298,6 +298,9 @@ enum ummu_device_config_type {
 	UMMU_MPAM = 0,
 };
 
+int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f);
+int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f);
+
 #if IS_ENABLED(CONFIG_UB_UMMU_CORE_DRIVER)
 extern const struct tid_ops *ummu_core_tid_ops[TID_OPS_MAX];
 #else
