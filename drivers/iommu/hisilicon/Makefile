@@ -21,3 +21,5 @@ ummu-y := ummu_main.o \
 	  attribute.o \
 	  logic_ummu/logic_ummu.o \
 	  iommu.o
+
+ummu-$(CONFIG_UB_UMMU_SVA) += sva.o
