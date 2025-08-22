@@ -351,7 +351,7 @@ struct iommu_iort_rmr_data {
  * @IOMMU_DEV_FEAT_KSVA: Shared Virtual Addresses of the kernel. When
  *			 enabled, %IOMMU_DEV_FEAT_IOPF must be disabled.
  *
- * Device drivers enable a feature using iommu_dev_enable_feature().
+ * Device drivers enable a feature using ummu_dev_enable_feat().
  */
 enum iommu_dev_features {
 	IOMMU_DEV_FEAT_SVA,
