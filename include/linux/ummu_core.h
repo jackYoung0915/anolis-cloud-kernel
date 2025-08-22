@@ -325,7 +325,10 @@ static inline void tdev_attr_init(struct tdev_attr *attr)
 
 #ifdef CONFIG_UB_UMMU_CORE
 int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f);
+<<<<<<< HEAD
 
+=======
+>>>>>>> 428d3629b6a1 (iommu/ummu: Add SVA API support to UMMU driver)
 int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f);
 
 /* EID API */
@@ -396,11 +399,6 @@ static inline int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_featur
 }
 
 static inline int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f)
-{
-	return -EOPNOTSUPP;
-}
-
-static inline int ummu_core_add_eid(guid_t *guid, eid_t eid, enum eid_type type)
 {
 	return -EOPNOTSUPP;
 }
