@@ -12,4 +12,6 @@
 extern struct iommu_ops ummu_iommu_ops;
 
 struct ummu_domain *ummu_domain_alloc_helper(void);
+int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f);
+int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f);
 #endif /* __UMMU_IOMMU_H__ */

@@ -17,6 +17,7 @@
 #include <linux/fs.h>
 #include <linux/property.h>
 
+#include "../iommu.h"
 #include "ummu_core_priv.h"
 
 #define MMAP_TYPE_MASK GENMASK(1, 0)
@@ -134,7 +135,6 @@ mtx_unlock:
 
 static int enable_dev_feat(struct device *dev)
 {
-#if 0 // TODO
 	int ret;
 
 	ret = ummu_dev_enable_feat(dev, IOMMU_DEV_FEAT_IOPF);
@@ -146,16 +146,13 @@ static int enable_dev_feat(struct device *dev)
 		(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_IOPF);
 		return ret;
 	}
-#endif
 	return 0;
 }
 
 static void disable_dev_feat(struct device *dev)
 {
-#if 0 // TODO
 	(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_SVA);
 	(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_IOPF);
-#endif
 }
 
 static void clear_tid_src(struct ktid_info *entry)
