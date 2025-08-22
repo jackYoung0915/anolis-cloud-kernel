@@ -16,6 +16,7 @@
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/property.h>
+#include <linux/iommu.h>
 
 #include "ummu_core_priv.h"
 
@@ -134,28 +135,24 @@ mtx_unlock:
 
 static int enable_dev_feat(struct device *dev)
 {
-#if 0 // TODO
 	int ret;
 
-	ret = ummu_dev_enable_feat(dev, IOMMU_DEV_FEAT_IOPF);
+	ret = iommu_dev_enable_feature(dev, IOMMU_DEV_FEAT_IOPF);
 	if (ret)
 		return ret;
 
-	ret = ummu_dev_enable_feat(dev, IOMMU_DEV_FEAT_SVA);
+	ret = iommu_dev_enable_feature(dev, IOMMU_DEV_FEAT_SVA);
 	if (ret) {
-		(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_IOPF);
+		(void)iommu_dev_disable_feature(dev, IOMMU_DEV_FEAT_IOPF);
 		return ret;
 	}
-#endif
 	return 0;
 }
 
 static void disable_dev_feat(struct device *dev)
 {
-#if 0 // TODO
-	(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_SVA);
-	(void)ummu_dev_disable_feat(dev, IOMMU_DEV_FEAT_IOPF);
-#endif
+	(void)iommu_dev_disable_feature(dev, IOMMU_DEV_FEAT_SVA);
+	(void)iommu_dev_disable_feature(dev, IOMMU_DEV_FEAT_IOPF);
 }
 
 static void clear_tid_src(struct ktid_info *entry)

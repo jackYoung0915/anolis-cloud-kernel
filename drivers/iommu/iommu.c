@@ -3334,6 +3334,56 @@ int iommu_fwspec_add_ids(struct device *dev, const u32 *ids, int num_ids)
 }
 EXPORT_SYMBOL_GPL(iommu_fwspec_add_ids);
 
+/*
+ * Per device IOMMU features.
+ */
+int iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features feat)
+{
+	struct ummu_master *master =
+		(struct ummu_master *)dev_iommu_priv_get(dev);
+
+	if (!master) {
+		pr_err("get invalid dev!\n");
+		return -ENODEV;
+	}
+
+	switch (feat) {
+	case IOMMU_DEV_FEAT_IOPF:
+		return -EOPNOTSUPP;
+	case IOMMU_DEV_FEAT_SVA:
+	case IOMMU_DEV_FEAT_KSVA:
+		return ummu_master_enable_sva(master, feat);
+	default:
+		return -EINVAL;
+	}
+}
+EXPORT_SYMBOL_GPL(iommu_dev_enable_feature);
+
+/*
+ * The device drivers should do the necessary cleanups before calling this.
+ */
+int iommu_dev_disable_feature(struct device *dev, enum iommu_dev_features feat)
+{
+	struct ummu_master *master =
+		(struct ummu_master *)dev_iommu_priv_get(dev);
+
+	if (!master) {
+		pr_err("get invalid dev!\n");
+		return -ENODEV;
+	}
+
+	switch (feat) {
+	case IOMMU_DEV_FEAT_IOPF:
+		return -EOPNOTSUPP;
+	case IOMMU_DEV_FEAT_SVA:
+	case IOMMU_DEV_FEAT_KSVA:
+		return ummu_master_disable_sva(master, feat);
+	default:
+		return -EINVAL;
+	}
+}
+EXPORT_SYMBOL_GPL(iommu_dev_disable_feature);
+
 static inline void *__iommu_group_restored_state(struct iommu_group *group)
 {
 	struct device *dev;
