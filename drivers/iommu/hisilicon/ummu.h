@@ -14,6 +14,12 @@
 #include <linux/init.h>
 
 extern struct platform_driver ummu_driver;
+extern const struct ummu_core_ops ummu_ops;
+extern const struct ummu_device_helper ummu_helper;
+
+#define MSI_IOVA_BASE 0x8000000
+#define MSI_IOVA_LENGTH 0x100000
+
 #define EID_HIGH_SZ_SHIFT 64
 
 /* target context table structures */
@@ -245,6 +251,8 @@ struct ummu_domain_cfgs {
 
 struct ummu_domain {
 	struct ummu_base_domain base_domain;
+	bool has_cfged;
+	bool dirty_tracking;
 	struct ummu_domain_cfgs cfgs;
 };
 
