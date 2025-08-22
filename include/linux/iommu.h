@@ -838,6 +838,7 @@ struct iommu_device {
 	struct fwnode_handle *fwnode;
 	struct device *dev;
 	struct iommu_group *singleton_group;
+	CK_KABI_FILL_HOLE(u32 min_pasids)
 	u32 max_pasids;
 	bool ready;
 
@@ -901,6 +902,8 @@ struct dev_iommu {
 #ifdef CONFIG_IOMMU_LIVEUPDATE
 	struct iommu_device_ser		*device_ser;
 #endif
+
+	u32 min_pasids;
 };
 
 int iommu_device_register(struct iommu_device *iommu,
