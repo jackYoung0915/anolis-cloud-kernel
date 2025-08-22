@@ -1639,7 +1639,9 @@ struct task_struct {
 	struct cpumask			cpus_allowed_alt;
 	int				soft_cpus_version;
 #endif
-	CK_KABI_RESERVE(1)
+
+	CK_KABI_REPLACE(CK_KABI_RESERVE(1), u8 il_weight)
+
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
