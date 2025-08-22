@@ -20,13 +20,13 @@ int cdma_alloc_dev_tid(struct cdma_dev *cdev)
 	};
 	int ret;
 
-	ret = ummu_dev_enable_feat(cdev->dev, IOMMU_DEV_FEAT_KSVA);
+	ret = iommu_dev_enable_feature(cdev->dev, IOMMU_DEV_FEAT_KSVA);
 	if (ret) {
 		dev_err(cdev->dev, "enable ksva failed, ret = %d.\n", ret);
 		return ret;
 	}
 
-	ret = ummu_dev_enable_feat(cdev->dev, IOMMU_DEV_FEAT_SVA);
+	ret = iommu_dev_enable_feature(cdev->dev, IOMMU_DEV_FEAT_SVA);
 	if (ret) {
 		dev_err(cdev->dev, "enable sva failed, ret = %d.\n", ret);
 		goto err_sva_enable_dev;
@@ -58,10 +58,10 @@ int cdma_alloc_dev_tid(struct cdma_dev *cdev)
 err_get_tid:
 	ummu_ksva_unbind_device(cdev->ksva);
 err_ksva_bind_device:
-	if (ummu_dev_disable_feat(cdev->dev, IOMMU_DEV_FEAT_SVA))
+	if (iommu_dev_disable_feature(cdev->dev, IOMMU_DEV_FEAT_SVA))
 		dev_warn(cdev->dev, "disable sva failed, ret = %d.\n", ret);
 err_sva_enable_dev:
-	if (ummu_dev_disable_feat(cdev->dev, IOMMU_DEV_FEAT_KSVA))
+	if (iommu_dev_disable_feature(cdev->dev, IOMMU_DEV_FEAT_KSVA))
 		dev_warn(cdev->dev, "disable ksva failed, ret = %d.\n", ret);
 
 	return ret;
@@ -79,11 +79,11 @@ void cdma_free_dev_tid(struct cdma_dev *cdev)
 
 	ummu_ksva_unbind_device(cdev->ksva);
 
-	ret = ummu_dev_disable_feat(cdev->dev, IOMMU_DEV_FEAT_SVA);
+	ret = iommu_dev_disable_feature(cdev->dev, IOMMU_DEV_FEAT_SVA);
 	if (ret)
 		dev_warn(cdev->dev, "disable sva failed, ret = %d.\n", ret);
 
-	ret = ummu_dev_disable_feat(cdev->dev, IOMMU_DEV_FEAT_KSVA);
+	ret = iommu_dev_disable_feature(cdev->dev, IOMMU_DEV_FEAT_KSVA);
 	if (ret)
 		dev_warn(cdev->dev, "disable ksva failed, ret = %d.\n", ret);
 }
