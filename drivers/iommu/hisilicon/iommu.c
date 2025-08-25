@@ -18,6 +18,7 @@
 
 #include "ummu.h"
 #include "flush.h"
+#include "interrupt.h"
 #include "logic_ummu/logic_ummu.h"
 #include "perm_queue.h"
 #include "page_table.h"
@@ -421,6 +422,9 @@ static void ummu_release_device(struct device *dev)
 	u32 tid;
 	int ret;
 
+	if (WARN_ON(ummu_master_sva_enabled(master)) && master->ummu->evtq.iopf)
+		iopf_queue_remove_device(master->ummu->evtq.iopf, dev);
+
 	ret = ummu_get_tid(dev, NULL, &tid);
 	if (ret || tid == UMMU_INVALID_TID)
 		return;
@@ -492,6 +496,7 @@ struct iommu_ops ummu_iommu_ops = {
 	.release_device = ummu_release_device,
 	.device_group = ummu_device_group,
 	.get_resv_regions = ummu_get_resv_regions,
+	.page_response = ummu_page_response,
 	.def_domain_type = ummu_def_domain_type,
 	.remove_dev_pasid = ummu_remove_dev_pasid,
 	.default_domain_ops = &default_domain_ops,
