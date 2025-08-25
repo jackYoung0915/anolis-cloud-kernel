@@ -3349,7 +3349,7 @@ int iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features feat)
 
 	switch (feat) {
 	case IOMMU_DEV_FEAT_IOPF:
-		return -EOPNOTSUPP;
+		return ummu_master_enable_iopf(master);
 	case IOMMU_DEV_FEAT_SVA:
 	case IOMMU_DEV_FEAT_KSVA:
 		return ummu_master_enable_sva(master, feat);
@@ -3374,7 +3374,7 @@ int iommu_dev_disable_feature(struct device *dev, enum iommu_dev_features feat)
 
 	switch (feat) {
 	case IOMMU_DEV_FEAT_IOPF:
-		return -EOPNOTSUPP;
+		return ummu_master_disable_iopf(master);
 	case IOMMU_DEV_FEAT_SVA:
 	case IOMMU_DEV_FEAT_KSVA:
 		return ummu_master_disable_sva(master, feat);

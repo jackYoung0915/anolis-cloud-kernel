@@ -18,6 +18,7 @@
 #include <linux/property.h>
 #include <linux/iommu.h>
 
+#include "../sva.h"
 #include "ummu_core_priv.h"
 
 #define MMAP_TYPE_MASK GENMASK(1, 0)
