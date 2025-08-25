@@ -1497,6 +1497,7 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ONE,
 	},
+	{ }
 };
 
 static __net_init int ipv4_sysctl_init_net(struct net *net)
