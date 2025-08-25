@@ -8,6 +8,7 @@
 #include <linux/interrupt.h>
 #include <linux/msi.h>
 
+#include "trace/trace.h"
 #include "ummu.h"
 #include "queue.h"
 #include "regs.h"
@@ -390,6 +391,8 @@ static irqreturn_t ummu_evtq_thread(int irq, void *dev)
 		while (!ummu_queue_remove_raw(q, evt)) {
 			ret = -1;
 			code = FIELD_GET(EVTQ_ENT0_CODE, evt[0]);
+			trace_ummu_event(dev_name(ummu->dev), code, evt, EVTQ_ENT_DWORDS);
+
 			tid = FIELD_GET(EVTQ_ENT0_TID, evt[0]);
 			evt_src = ummu_core_get_device(&ummu->core_dev, tid);
 
