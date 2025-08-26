@@ -9045,9 +9045,144 @@ static inline void update_rq_on_expel(struct rq *rq)
 		return;
 
 	ret = need_expel(rq);
-	if (ret != rq->on_expel)
+	if (ret != rq->on_expel) {
+		sched_update_tick_dependency(rq);
 		rq->on_expel = ret;
+	}
 }
+
+#ifdef CONFIG_SMP
+static DEFINE_PER_CPU(struct balance_callback, push_expellee_head);
+DEFINE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
+DEFINE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
+
+/*
+ * The minimum interval we push expellee tasks from tick.
+ * The default value is an experience value.
+ *
+ * Default: 6 msec, units: nanoseconds
+ */
+unsigned int sysctl_sched_push_expellee_interval = 6000000;
+static void __push_expellee(struct rq *rq)
+{
+	struct sched_domain *sd;
+	int cpu = cpu_of(rq);
+	struct task_struct *p, *tmp;
+	struct cpumask *traverse_mask = this_cpu_cpumask_var_ptr(push_expellee_traverse_mask);
+	struct cpumask *traversed_mask = this_cpu_cpumask_var_ptr(push_expellee_traversed_mask);
+
+	if (!sched_feat(ID_PUSH_EXPELLEE) || !rq_on_expel(rq))
+		return;
+
+	preempt_disable();
+	rcu_read_lock();
+	list_for_each_entry_safe(p, tmp, &rq->cfs_tasks, se.group_node) {
+		int backup_cpu = -1, dst_cpu = -1;
+		int min_nr_running = INT_MAX;
+		struct rq *dst_rq;
+
+		if (need_resched())
+			break;
+		if (!rq->cfs.h_nr_idle)
+			break;
+		if (!task_is_idle(p))
+			continue;
+		get_task_struct(p);
+		cpumask_clear(traversed_mask);
+		for_each_domain(cpu, sd) {
+			int i;
+
+			cpumask_andnot(traverse_mask, sched_domain_span(sd), traversed_mask);
+			cpumask_and(traverse_mask, traverse_mask, task_allowed_cpu(p));
+			for_each_cpu_wrap(i, traverse_mask, cpu) {
+				struct rq *tmp_rq = cpu_rq(i);
+
+				if (available_idle_cpu(i)) {
+					dst_cpu = i;
+					dst_rq = cpu_rq(dst_cpu);
+					/*
+					 * In case of lock competition, we use
+					 * raw_spin_rq_trylock() instead of
+					 * double_lock_balance().
+					 */
+					if (raw_spin_rq_trylock(dst_rq)) {
+						goto migrate;
+					} else {
+						dst_cpu = -1;
+						dst_rq = NULL;
+					}
+				} else if (!rq_on_expel(tmp_rq)) {
+					if (tmp_rq->nr_running < min_nr_running) {
+						backup_cpu = i;
+						min_nr_running = tmp_rq->nr_running;
+					}
+				}
+			}
+			cpumask_or(traversed_mask, traversed_mask, sched_domain_span(sd));
+		}
+
+		/* If there is no cpu we can migrate now, stop the loop to avoid overhead. */
+		if (dst_cpu == -1) {
+			if (backup_cpu == -1)
+				break;
+			dst_cpu = backup_cpu;
+			dst_rq = cpu_rq(dst_cpu);
+			if (!raw_spin_rq_trylock(dst_rq))
+				break;
+		}
+migrate:
+		dst_rq = cpu_rq(dst_cpu);
+		local_irq_disable();
+		double_rq_lock(rq, dst_rq);
+		update_rq_clock(rq);
+		set_task_cpu(p, dst_cpu);
+		activate_task(dst_rq, p, 0);
+		put_task_struct(p);
+		resched_curr(dst_rq);
+		raw_spin_rq_unlock(dst_rq);
+	}
+	rcu_read_unlock();
+	preempt_enable();
+	rq->last_push_expellee = __rq_clock_broken(rq);
+}
+
+static inline bool should_push_expellee(struct rq *rq)
+{
+	return (sched_feat(ID_ABSOLUTE_EXPEL) && sched_feat(ID_PUSH_EXPELLEE) &&
+		rq_on_expel(rq) && rq->cfs.h_nr_idle &&
+		(sched_feat(ID_PUSH_EXPELLEE_IGNORE_HIGHCLASS) || sched_idle_rq(rq)));
+}
+
+static inline void push_expellee(struct rq *rq)
+{
+	if (should_push_expellee(rq))
+		queue_balance_callback(rq, &per_cpu(push_expellee_head, rq->cpu),
+				       __push_expellee);
+}
+
+void task_tick_gi(struct rq *rq)
+{
+	if (should_push_expellee(rq) &&
+	    rq_clock(rq) - rq->last_push_expellee > sysctl_sched_push_expellee_interval)
+		resched_curr(rq);
+}
+#else
+static inline void push_expellee(struct rq *rq) { }
+#endif
+
+#if defined(CONFIG_NO_HZ_FULL) && defined(CONFIG_SMP)
+bool id_can_stop_tick(struct rq *rq)
+{
+	if (!sched_feat(ID_PUSH_EXPELLEE))
+		return true;
+	return !sched_idle_rq(rq);
+}
+#else
+bool id_can_stop_tick(struct rq *rq)
+{
+	return true;
+}
+#endif
 
 static struct task_struct *__pick_task_fair(struct rq *rq)
 {
@@ -9100,6 +9235,7 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 		rq->pulled = false;
 
 	update_rq_on_expel(rq);
+	push_expellee(rq);
 again:
 	p = __pick_task_fair(rq);
 	if (!p)
@@ -13408,6 +13544,7 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
 
 	task_tick_core(rq, curr);
 	task_tick_gb(curr);
+	task_tick_gi(rq);
 }
 
 /*
