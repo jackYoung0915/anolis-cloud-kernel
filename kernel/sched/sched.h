@@ -1544,6 +1544,7 @@ struct rq {
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
 #endif
+	u64			last_push_expellee;
 	bool			booked;
 	bool			pulled;
 	bool			on_expel;
@@ -3036,6 +3037,7 @@ extern void init_entity_runnable_average(struct sched_entity *se);
 extern void post_init_entity_util_avg(struct task_struct *p);
 
 #ifdef CONFIG_NO_HZ_FULL
+extern bool id_can_stop_tick(struct rq *rq);
 extern bool sched_can_stop_tick(struct rq *rq);
 extern int __init sched_tick_offload_init(void);
 
@@ -4391,5 +4393,10 @@ static inline void tg_specs_change(struct task_group *tg) { }
 static inline void gb_load_balance(struct lb_env *env) { }
 #endif
 static inline void task_tick_gb(struct task_struct *p) { }
+#endif
+#ifdef CONFIG_SMP
+extern void task_tick_gi(struct rq *rq);
+#else
+static inline void task_tick_gi(struct rq *rq) { }
 #endif
 #endif /* _KERNEL_SCHED_SCHED_H */

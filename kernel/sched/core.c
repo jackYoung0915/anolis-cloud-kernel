@@ -1347,6 +1347,9 @@ bool sched_can_stop_tick(struct rq *rq)
 			return false;
 	}
 
+	if (!id_can_stop_tick(rq))
+		return false;
+
 	return true;
 }
 #endif /* CONFIG_NO_HZ_FULL */
@@ -8499,6 +8502,11 @@ static struct kmem_cache *task_group_cache __read_mostly;
 DECLARE_PER_CPU(cpumask_var_t, group_balancer_mask);
 #endif
 
+#ifdef CONFIG_SMP
+DECLARE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
+DECLARE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
+#endif
+
 void __init sched_init(void)
 {
 	unsigned long ptr = 0;
@@ -8680,6 +8688,12 @@ void __init sched_init(void)
 #ifdef CONFIG_GROUP_BALANCER
 		zalloc_cpumask_var_node(
 			&per_cpu(group_balancer_mask, i), GFP_KERNEL, cpu_to_node(i));
+#endif
+#ifdef CONFIG_SMP
+		zalloc_cpumask_var_node(
+			&per_cpu(push_expellee_traverse_mask, i), GFP_KERNEL, cpu_to_node(i));
+		zalloc_cpumask_var_node(
+			&per_cpu(push_expellee_traversed_mask, i), GFP_KERNEL, cpu_to_node(i));
 #endif
 	}
 
