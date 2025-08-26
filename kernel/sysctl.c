@@ -2093,6 +2093,15 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif
+#ifdef CONFIG_SMP
+	{
+		.procname	= "sched_push_expellee_interval_ns",
+		.data		= &sysctl_sched_push_expellee_interval,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif
 #ifdef CONFIG_RICH_CONTAINER
 	{
 		.procname	= "rich_container_enable",
