@@ -41,4 +41,7 @@ extern int sched_group_balancer_enable_handler(struct ctl_table *table, int writ
 					       void __user *buffer, size_t *lenp,
 					       loff_t *ppos);
 #endif
+#ifdef CONFIG_SMP
+extern unsigned int sysctl_sched_push_expellee_interval;
+#endif
 #endif /* _LINUX_SCHED_SYSCTL_H */
