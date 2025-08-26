@@ -2673,7 +2673,7 @@ static void reclaim_wmark(struct mem_cgroup *memcg)
 	pre_oom_enter();
 	start = ktime_get_ns();
 	psi_memstall_enter(&pflags);
-	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, true);
+	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, MEMCG_RECLAIM_MAY_SWAP);
 	psi_memstall_leave(&pflags);
 	duration = ktime_get_ns() - start;
 	pre_oom_leave();
