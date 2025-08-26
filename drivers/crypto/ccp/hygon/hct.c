@@ -414,6 +414,17 @@ static int hct_iommu_alloc(struct pci_dev *pdev)
 	if (i == MCCP_DEV_MAX)
 		return -EINVAL;
 
+	if (!hct_data.domain) {
+		hct_data.domain = iommu_paging_domain_alloc(&pdev->dev);
+		if (IS_ERR(hct_data.domain))
+			return -ENOMEM;
+		hct_data.prot = IOMMU_READ | IOMMU_WRITE;
+		/* When the pasid value is 0 or 1, the address space overlaps with the host,
+		 * so the pasid needs to start from 2.
+		 */
+		hct_data.pasids[0] |= MCCP_PASID_MASK_BIT;
+	}
+
 	ret = iommu_attach_device(hct_data.domain, &pdev->dev);
 	if (ret) {
 		mutex_lock(&hct_data.lock);
@@ -2049,7 +2060,6 @@ static struct miscdevice hct_misc = {
 static int hct_share_init(void)
 {
 	int i;
-	int ret;
 
 	memset(&hct_data, 0x00, sizeof(hct_data));
 	mutex_init(&hct_data.lock);
@@ -2057,22 +2067,7 @@ static int hct_share_init(void)
 	for (i = 0; i < MCCP_DEV_MAX; i++)
 		mutex_init(&hct_data.iommu[i].lock);
 
-	ret = misc_register(&hct_misc);
-	if (!ret) {
-		hct_data.domain = iommu_domain_alloc(&pci_bus_type);
-		if (!hct_data.domain) {
-			pr_err("iommu domain alloc failed\n");
-			misc_deregister(&hct_misc);
-			return -ENOMEM;
-		}
-		hct_data.prot = IOMMU_READ | IOMMU_WRITE;
-	}
-
-	/* When the pasid value is 0 or 1, the address space overlaps with the host,
-	 * so the pasid needs to start from 2.
-	 */
-	hct_data.pasids[0] |= MCCP_PASID_MASK_BIT;
-	return ret;
+	return misc_register(&hct_misc);
 }
 
 static void hct_share_exit(void)
