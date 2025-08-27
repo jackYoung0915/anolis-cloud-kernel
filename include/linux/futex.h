@@ -69,7 +69,6 @@ static inline void futex_init_task(struct task_struct *tsk)
 	tsk->pi_state_cache = NULL;
 	tsk->futex_state = FUTEX_STATE_OK;
 	mutex_init(&tsk->futex_exit_mutex);
-	tsk->futex_nid = NUMA_NO_NODE;
 }
 
 void futex_exit_recursive(struct task_struct *tsk);
