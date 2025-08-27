@@ -4504,6 +4504,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_GROUP_BALANCER
 	p->soft_cpus_version = -1;
 #endif
+	INIT_LIST_HEAD(&p->se.expel_node);
 }
 
 DEFINE_STATIC_KEY_FALSE(sched_numa_balancing);
