@@ -100,7 +100,7 @@ function add_new_configs() {
 
 function refresh_configs() {
     echo "refresh configs"
-    sh ${SCRIPT_DIR}/update_configs.sh
+    bash ${SCRIPT_DIR}/update_configs.sh
 }
 
 CHECK_FOUND_FILE=0
