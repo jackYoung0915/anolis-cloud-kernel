@@ -203,13 +203,6 @@ enum pageflags {
 	/* Reuse PG_dirty to indicate whether the duplicate page is a master or slave */
 	PG_dup_slave = PG_dirty,
 #endif
-
-#ifdef CONFIG_PSWIOTLB
-	/* check if pswiotlb is sync already */
-	PG_pswiotlbsync = __NR_PAGEFLAGS + 1,
-	/* check if the page is used for pswiotlb */
-	PG_pswiotlb,
-#endif
 };
 
 #define PAGEFLAGS_MASK		((1UL << NR_PAGEFLAGS) - 1)
