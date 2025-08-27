@@ -5,7 +5,7 @@
 ARCH ?= $(shell uname -m 2>/dev/null || echo not)
 
 ifneq (,$(filter $(ARCH),riscv))
-RISCV_SUBTARGETS ?= abi hwprobe mm vector
+RISCV_SUBTARGETS ?= abi hwprobe mm vector sse
 else
 RISCV_SUBTARGETS :=
 endif
