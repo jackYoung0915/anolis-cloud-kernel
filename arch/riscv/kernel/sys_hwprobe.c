@@ -118,6 +118,9 @@ static void hwprobe_isa_ext0(struct riscv_hwprobe *pair,
 		EXT_KEY(ZAWRS);
 		EXT_KEY(ZICNTR);
 		EXT_KEY(ZIHPM);
+		EXT_KEY(ZAAMO);
+		EXT_KEY(ZALRSC);
+		EXT_KEY(ZABHA);
 
 		/*
 		 * All the following extensions must depend on the kernel
