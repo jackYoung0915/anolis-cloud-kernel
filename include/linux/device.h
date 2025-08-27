@@ -47,6 +47,9 @@ struct iommu_group;
 struct dev_pin_info;
 struct dev_iommu;
 struct msi_device_data;
+#ifdef CONFIG_PSWIOTLB
+struct p_io_tlb_mem;
+#endif
 
 /**
  * struct subsys_interface - interfaces to device functions
@@ -763,11 +766,6 @@ struct device {
 #ifdef CONFIG_SWIOTLB
 	struct io_tlb_mem *dma_io_tlb_mem;
 #endif
-#ifdef CONFIG_PSWIOTLB
-	struct p_io_tlb_mem *dma_p_io_tlb_mem;
-	bool dma_uses_p_io_tlb;
-	bool can_use_pswiotlb;
-#endif
 #ifdef CONFIG_SWIOTLB_DYNAMIC
 	struct list_head dma_io_tlb_pools;
 	spinlock_t dma_io_tlb_lock;
@@ -781,9 +779,6 @@ struct device {
 
 #ifdef CONFIG_NUMA
 	int		numa_node;	/* NUMA node this device is close to */
-#ifdef CONFIG_PSWIOTLB
-	int     local_node; /* NUMA node this device is really belong to */
-#endif
 #endif
 	dev_t			devt;	/* dev_t, creates the sysfs "dev" */
 	u32			id;	/* device instance */
@@ -815,10 +810,19 @@ struct device {
 #ifdef CONFIG_DMA_OPS_BYPASS
 	bool			dma_ops_bypass : 1;
 #endif
-
+#ifdef CONFIG_PSWIOTLB
+	CK_KABI_USE(1, struct p_io_tlb_mem *dma_p_io_tlb_mem)
+	CK_KABI_USE_SPLIT(2, bool dma_uses_p_io_tlb, bool can_use_pswiotlb)
+#ifdef CONFIG_NUMA
+	CK_KABI_USE(3, int local_node) /* NUMA node this device is really belong to */
+#else
+	CK_KABI_RESERVE(3)
+#endif /* CONFIG_NUMA */
+#else
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
+#endif /* CONFIG_PSWIOTLB */
 	CK_KABI_RESERVE(4)
 	CK_KABI_RESERVE(5)
 	CK_KABI_RESERVE(6)

@@ -31,6 +31,7 @@
 #include <linux/kconfig.h>
 #include <linux/compiler.h>
 #include <linux/stringify.h>
+#include <linux/args.h>
 
 /*
  * NOTE
