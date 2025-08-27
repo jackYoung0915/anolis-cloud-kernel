@@ -114,9 +114,7 @@ enum migration_type {
 	migrate_util,
 	migrate_task,
 	migrate_misfit,
-#ifdef CONFIG_GROUP_IDENTITY
 	migrate_identity
-#endif
 };
 
 /*
@@ -212,9 +210,7 @@ struct lb_env {
 	enum fbq_type		fbq_type;
 	enum migration_type	migration_type;
 	struct list_head	tasks;
-#ifdef CONFIG_GROUP_IDENTITY
 	bool			id_need_redo;
-#endif
 #ifdef CONFIG_GROUP_BALANCER
 	bool			gb_need_redo;
 #endif
@@ -368,6 +364,9 @@ static inline int task_has_dl_policy(struct task_struct *p)
 }
 
 extern int task_is_idle(struct task_struct *p);
+#ifdef CONFIG_SMP
+extern void update_sched_idle_avg(struct rq *rq, u64 delta);
+#endif
 
 #define cap_scale(v, s) ((v)*(s) >> SCHED_CAPACITY_SHIFT)
 
@@ -1436,6 +1435,9 @@ struct rq {
 #endif
 	u64			idle_stamp;
 	u64			avg_idle;
+	u64			idle_exec_stamp;
+	u64			idle_exec_sum;
+	u64			avg_sched_idle;
 
 	unsigned long		wake_stamp;
 	u64			wake_avg_idle;
@@ -1541,6 +1543,8 @@ struct rq {
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
 #endif
+	bool			booked;
+	bool			pulled;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)

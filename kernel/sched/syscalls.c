@@ -217,6 +217,13 @@ int idle_cpu(int cpu)
 	return 1;
 }
 
+static inline bool rq_booked(struct rq *rq)
+{
+	if (sched_feat(ID_BOOK_CPU))
+		return rq->booked;
+	return false;
+}
+
 /**
  * available_idle_cpu - is a given CPU idle for enqueuing work.
  * @cpu: the CPU in question.
@@ -226,6 +233,9 @@ int idle_cpu(int cpu)
 int available_idle_cpu(int cpu)
 {
 	if (!idle_cpu(cpu))
+		return 0;
+
+	if (rq_booked(cpu_rq(cpu)))
 		return 0;
 
 	if (vcpu_is_preempted(cpu))
