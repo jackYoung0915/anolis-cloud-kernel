@@ -512,7 +512,7 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 
 	r = resctrl_arch_get_resource(resid);
 	d = resctrl_arch_find_domain(r, domid);
-	if (IS_ERR_OR_NULL(d)) {
+	if (!d) {
 		ret = -ENOENT;
 		goto out;
 	}
