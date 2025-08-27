@@ -262,10 +262,9 @@ static __always_inline bool kvm_is_governed_feature(unsigned int x86_feature)
 static __always_inline void kvm_governed_feature_set(struct kvm_vcpu *vcpu,
 						     unsigned int x86_feature)
 {
-	BUILD_BUG_ON(!kvm_is_governed_feature(x86_feature));
+	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	__set_bit(kvm_governed_feature_index(x86_feature),
-		  vcpu->arch.governed_features.enabled);
+	vcpu->arch.cpu_caps[x86_leaf] |= __feature_bit(x86_feature);
 }
 
 static __always_inline void kvm_governed_feature_check_and_set(struct kvm_vcpu *vcpu,
@@ -278,10 +277,9 @@ static __always_inline void kvm_governed_feature_check_and_set(struct kvm_vcpu *
 static __always_inline bool guest_can_use(struct kvm_vcpu *vcpu,
 					  unsigned int x86_feature)
 {
-	BUILD_BUG_ON(!kvm_is_governed_feature(x86_feature));
+	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	return test_bit(kvm_governed_feature_index(x86_feature),
-			vcpu->arch.governed_features.enabled);
+	return vcpu->arch.cpu_caps[x86_leaf] & __feature_bit(x86_feature);
 }
 
 static inline bool kvm_vcpu_is_legal_cr3(struct kvm_vcpu *vcpu, unsigned long cr3)
