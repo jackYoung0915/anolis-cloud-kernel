@@ -1,1 +1,1 @@
-CONFIG_KVM=y
+CONFIG_KVM=m
