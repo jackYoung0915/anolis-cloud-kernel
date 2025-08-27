@@ -142,11 +142,15 @@ struct futex_hash_bucket *futex_hash(union futex_key *key)
 {
 	int idx;
 
-	if (!per_numa_node_futex ||
+	/*
+	 * if no MMU (key->private.mm is NULL), per NUMA node futex is
+	 * disabled, or shared futex, use global hash bucket index-MAX_NUMNODES.
+	 */
+	if (!IS_ENABLED(CONFIG_MMU) || !per_numa_node_futex ||
 			(key->both.offset & (FUT_OFF_MMSHARED | FUT_OFF_INODE)))
 		idx = MAX_NUMNODES;
 	else
-		idx = READ_ONCE(current->group_leader->futex_nid);
+		idx = READ_ONCE(key->private.mm->futex_nid);
 
 	u32 hash = jhash2((u32 *)key, offsetof(typeof(*key), both.offset) / 4,
 			  key->both.offset);
@@ -275,10 +279,10 @@ int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
 		return -EFAULT;
 
 	if (per_numa_node_futex &&
-			READ_ONCE(current->group_leader->futex_nid) == NUMA_NO_NODE) {
+			READ_ONCE(current->mm->futex_nid) == NUMA_NO_NODE) {
 		int id = numa_node_id();
 
-		cmpxchg(&current->group_leader->futex_nid, NUMA_NO_NODE, id);
+		cmpxchg(&current->mm->futex_nid, NUMA_NO_NODE, id);
 	}
 
 	/*
@@ -1210,19 +1214,23 @@ static int __init futex_init(void)
 	}
 #endif
 
-	if (per_numa_node_futex) {
+	/*
+	 * If !CONFIG_MMU or per numa node futex disabled, no need to allocate
+	 * per numa node hash table as global hash table will be used.
+	 */
+	if (IS_ENABLED(CONFIG_MMU) && per_numa_node_futex) {
 		for_each_node(nid)
 			futex_queues[nid] = alloc_futex_hash("private futex",
 							     nid, futex_hashsize);
 	}
 
 	/*
-	 * For shared futex or if per numa node futex is disabled, futex hash
-	 * table could be accessed from different processes.Can not use
+	 * For shared futex, NOMMU or if per numa node futex is disabled, futex
+	 * hash table could be accessed from different processes. Can not use
 	 * per-process index for futex hash. Use global hash table instead.
 	 */
-	futex_queues[MAX_NUMNODES] = alloc_futex_hash("shared futex", NUMA_NO_NODE,
-						      futex_hashsize);
+	futex_queues[MAX_NUMNODES] = alloc_futex_hash("global/shared futex",
+						      NUMA_NO_NODE, futex_hashsize);
 
 	return 0;
 }
