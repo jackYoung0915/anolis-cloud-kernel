@@ -114,14 +114,14 @@ static int set_cache_qos_cfg(int level, bool enable)
 		return -ENOMEM;
 
 	r_l = &rdt_resources_all[level].r_resctrl;
-	list_for_each_entry(d, &r_l->domains, list) {
+	list_for_each_entry(d, &r_l->domains, hdr.list) {
 		if (r_l->cache.arch_has_per_cpu_cfg)
 			/* Pick all the CPUs in the domain instance */
-			for_each_cpu(cpu, &d->cpu_mask)
+			for_each_cpu(cpu, &d->hdr.cpu_mask)
 				cpumask_set_cpu(cpu, cpu_mask);
 		else
 			/* Pick one CPU from each domain instance to update MSR */
-			cpumask_set_cpu(cpumask_any(&d->cpu_mask), cpu_mask);
+			cpumask_set_cpu(cpumask_any(&d->hdr.cpu_mask), cpu_mask);
 	}
 
 	/* Update QOS_CFG MSR on all the CPUs in cpu_mask */
@@ -334,8 +334,8 @@ static void _resctrl_abmc_enable(struct rdt_resource *r, bool enable)
 	 * Reset the architectural state so that reading of hardware
 	 * counter is not considered as an overflow in the next update.
 	 */
-	list_for_each_entry(d, &r->domains, list) {
-		on_each_cpu_mask(&d->cpu_mask,
+	list_for_each_entry(d, &r->domains, hdr.list) {
+		on_each_cpu_mask(&d->hdr.cpu_mask,
 				 resctrl_abmc_set_one_amd, &enable, 1);
 		resctrl_arch_reset_rmid_all(r, d);
 	}
@@ -431,7 +431,7 @@ int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
 		arch_mbm = &hw_dom->arch_mbm_local[rmid];
 	}
 
-	smp_call_function_any(&d->cpu_mask, rdtgroup_abmc_cfg, &abmc_cfg, 1);
+	smp_call_function_any(&d->hdr.cpu_mask, rdtgroup_abmc_cfg, &abmc_cfg, 1);
 
 	/*
 	 * Reset the architectural state so that reading of hardware
@@ -467,9 +467,9 @@ static int reset_all_ctrls(struct rdt_resource *r)
 	 * CBMs in all domains to the maximum mask value. Pick one CPU
 	 * from each domain to update the MSRs below.
 	 */
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->domains, hdr.list) {
 		hw_dom = resctrl_to_arch_dom(d);
-		cpumask_set_cpu(cpumask_any(&d->cpu_mask), cpu_mask);
+		cpumask_set_cpu(cpumask_any(&d->hdr.cpu_mask), cpu_mask);
 
 		for (i = 0; i < hw_res->num_closid; i++)
 			hw_dom->ctrl_val[i] = r->default_ctrl;
