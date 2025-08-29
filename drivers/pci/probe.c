@@ -19,6 +19,7 @@
 #include <linux/irqdomain.h>
 #include <linux/pm_runtime.h>
 #include <linux/bitfield.h>
+#include <acpi/acpi_numa.h>
 #include "pci.h"
 #ifdef CONFIG_PSWIOTLB
 #include <linux/pswiotlb.h>
@@ -2520,6 +2521,37 @@ static void pci_set_msi_domain(struct pci_dev *dev)
 	dev_set_msi_domain(&dev->dev, d);
 }
 
+static void get_gi_node_by_bdf(struct device *dev, unsigned int bdf)
+{
+	int nid;
+
+	for (nid = 0; nid < MAX_NUMNODES; nid++) {
+		if (node_to_bdf[nid] == bdf)
+			node_set(nid, dev->gi_node);
+	}
+}
+
+static unsigned int pci_bdf_to_int(struct device *device)
+{
+	struct pci_dev *dev = to_pci_dev(device);
+	int domain, bus, slot, func;
+
+	domain = pci_domain_nr(dev->bus);
+	bus = dev->bus->number;
+	slot = PCI_SLOT(dev->devfn);
+	func = PCI_FUNC(dev->devfn);
+
+	return (domain << 16) | (bus << 8) | (slot << 3) | func;
+}
+
+static void pci_set_gi_node(struct device *dev)
+{
+	unsigned int bdf_value;
+
+	bdf_value = pci_bdf_to_int(dev);
+	get_gi_node_by_bdf(dev, bdf_value);
+}
+
 void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 {
 	int ret;
@@ -2530,6 +2562,7 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 	dev->dev.release = pci_release_dev;
 
 	set_dev_node(&dev->dev, pcibus_to_node(bus));
+	pci_set_gi_node(&dev->dev);
 	dev->dev.dma_mask = &dev->dma_mask;
 	dev->dev.dma_parms = &dev->dma_parms;
 	dev->dev.coherent_dma_mask = 0xffffffffull;
