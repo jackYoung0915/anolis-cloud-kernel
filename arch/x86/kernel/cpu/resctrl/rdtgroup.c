@@ -95,9 +95,9 @@ static void l2_qos_cfg_update(void *arg)
 static int set_cache_qos_cfg(int level, bool enable)
 {
 	void (*update)(void *arg);
+	struct rdt_ctrl_domain *d;
 	struct rdt_resource *r_l;
 	cpumask_var_t cpu_mask;
-	struct rdt_domain *d;
 	int cpu;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -327,7 +327,7 @@ static void resctrl_abmc_set_one_amd(void *arg)
 
 static void _resctrl_abmc_enable(struct rdt_resource *r, bool enable)
 {
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 
 	/*
 	 * Hardware counters will reset after switching the monitor mode.
@@ -412,8 +412,8 @@ static void rdtgroup_abmc_cfg(void *info)
 int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
 			     u32 rmid, u32 cntr_id, u32 closid, bool assign)
 {
-	struct rdt_domain *d = dom;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_mon_domain *d = dom;
+	struct rdt_hw_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
 	union l3_qos_abmc_cfg abmc_cfg = { 0 };
 	struct arch_mbm_state *arch_mbm;
 
@@ -446,10 +446,10 @@ int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
 static int reset_all_ctrls(struct rdt_resource *r)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_ctrl_domain *hw_dom;
 	struct msr_param msr_param;
 	cpumask_var_t cpu_mask;
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 	int i;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -468,7 +468,7 @@ static int reset_all_ctrls(struct rdt_resource *r)
 	 * from each domain to update the MSRs below.
 	 */
 	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
-		hw_dom = resctrl_to_arch_dom(d);
+		hw_dom = resctrl_to_arch_ctrl_dom(d);
 		cpumask_set_cpu(cpumask_any(&d->hdr.cpu_mask), cpu_mask);
 
 		for (i = 0; i < hw_res->num_closid; i++)
@@ -493,8 +493,8 @@ void resctrl_arch_reset_resources(void)
 
 u32 resctrl_arch_event_config_get(void *dom, enum resctrl_event_id eventid)
 {
-	struct rdt_domain *d = dom;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_mon_domain *d = dom;
+	struct rdt_hw_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
 
 	switch (eventid) {
 	case QOS_L3_OCCUP_EVENT_ID:
@@ -515,7 +515,7 @@ u32 resctrl_arch_event_config_get(void *dom, enum resctrl_event_id eventid)
 void resctrl_arch_event_config_set(void *info)
 {
 	struct resctrl_mon_config_info *mon_info = info;
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_mon_domain *hw_dom;
 	unsigned int index;
 
 	index = mon_event_config_index_get(mon_info->evtid);
@@ -524,7 +524,7 @@ void resctrl_arch_event_config_set(void *info)
 
 	wrmsr(MSR_IA32_EVT_CFG_BASE + index, mon_info->mon_config, 0);
 
-	hw_dom = resctrl_to_arch_dom(mon_info->d);
+	hw_dom = resctrl_to_arch_mon_dom(mon_info->d);
 
 	switch (mon_info->evtid) {
 	case QOS_L3_OCCUP_EVENT_ID:
