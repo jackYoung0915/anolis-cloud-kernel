@@ -26,6 +26,9 @@ static int pxm_to_node_map[MAX_PXM_DOMAINS]
 static int node_to_pxm_map[MAX_NUMNODES]
 			= { [0 ... MAX_NUMNODES - 1] = PXM_INVAL };
 
+unsigned int node_to_bdf[MAX_NUMNODES]
+			= { [0 ... MAX_NUMNODES - 1] = NUMA_NO_NODE };
+
 unsigned char acpi_srat_revision __initdata;
 static int acpi_numa __initdata;
 
@@ -433,6 +436,20 @@ acpi_parse_gicc_affinity(union acpi_subtable_headers *header,
 }
 
 #if defined(CONFIG_X86) || defined(CONFIG_ARM64)
+static unsigned int get_bdf_from_srat_entry(
+		struct acpi_srat_generic_affinity *gi_affinity)
+{
+	unsigned int bdf;
+	int domain, bus, devfn;
+
+	domain = *(u16 *)(&gi_affinity->device_handle[0]);
+	bus = *(u8 *)(&gi_affinity->device_handle[2]);
+	devfn = *(u8 *)(&gi_affinity->device_handle[3]);
+
+	bdf = (domain << 16) | (bus << 8) | devfn;
+	return bdf;
+}
+
 static int __init
 acpi_parse_gi_affinity(union acpi_subtable_headers *header,
 		       const unsigned long end)
@@ -455,6 +472,7 @@ acpi_parse_gi_affinity(union acpi_subtable_headers *header,
 	}
 	node_set(node, numa_nodes_parsed);
 	node_set_state(node, N_GENERIC_INITIATOR);
+	node_to_bdf[node] = get_bdf_from_srat_entry(gi_affinity);
 
 	return 0;
 }

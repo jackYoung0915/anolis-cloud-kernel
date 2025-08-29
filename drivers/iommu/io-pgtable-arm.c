@@ -1278,16 +1278,16 @@ static int __init arm_lpae_do_selftests(void)
 	};
 
 	int i, j, pass = 0, fail = 0;
-	struct device dev;
+	struct device *dev = kmalloc(sizeof(struct device), GFP_KERNEL | __GFP_NOFAIL);
 	struct io_pgtable_cfg cfg = {
 		.tlb = &dummy_tlb_ops,
 		.oas = 48,
 		.coherent_walk = true,
-		.iommu_dev = &dev,
+		.iommu_dev = dev,
 	};
 
 	/* __arm_lpae_alloc_pages() merely needs dev_to_node() to work */
-	set_dev_node(&dev, NUMA_NO_NODE);
+	set_dev_node(dev, NUMA_NO_NODE);
 
 	for (i = 0; i < ARRAY_SIZE(pgsize); ++i) {
 		for (j = 0; j < ARRAY_SIZE(ias); ++j) {
@@ -1302,6 +1302,7 @@ static int __init arm_lpae_do_selftests(void)
 		}
 	}
 
+	kfree(dev);
 	pr_info("selftest: completed with %d PASS %d FAIL\n", pass, fail);
 	return fail ? -EFAULT : 0;
 }

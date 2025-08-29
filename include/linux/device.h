@@ -781,6 +781,7 @@ struct device {
 
 #ifdef CONFIG_NUMA
 	int		numa_node;	/* NUMA node this device is close to */
+	nodemask_t		gi_node;	/* GPU gi node the device is close to */
 #ifdef CONFIG_PSWIOTLB
 	int     local_node; /* NUMA node this device is really belong to */
 #endif
@@ -914,12 +915,19 @@ static inline void set_dev_node(struct device *dev, int node)
 {
 	dev->numa_node = node;
 }
+static inline void dev_gi_node_init(struct device *dev)
+{
+	dev->gi_node = NODE_MASK_NONE;
+}
 #else
 static inline int dev_to_node(struct device *dev)
 {
 	return NUMA_NO_NODE;
 }
 static inline void set_dev_node(struct device *dev, int node)
+{
+}
+static inline void dev_gi_node_init(struct device *dev)
 {
 }
 #endif

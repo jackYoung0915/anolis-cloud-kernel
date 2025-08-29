@@ -18,6 +18,7 @@ extern int acpi_map_pxm_to_node(int);
 extern unsigned char acpi_srat_revision;
 extern void disable_srat(void);
 
+extern unsigned int node_to_bdf[MAX_NUMNODES];
 extern void bad_srat(void);
 extern int srat_disabled(void);
 

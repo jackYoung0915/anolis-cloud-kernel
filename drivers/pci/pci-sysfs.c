@@ -361,6 +361,13 @@ static ssize_t numa_node_show(struct device *dev, struct device_attribute *attr,
 	return sysfs_emit(buf, "%d\n", dev->numa_node);
 }
 static DEVICE_ATTR_RW(numa_node);
+
+static ssize_t gi_node_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
+{
+	return sysfs_emit(buf, "%*pbl\n", nodemask_pr_args(&dev->gi_node));
+}
+static DEVICE_ATTR_RO(gi_node);
 #endif
 
 static ssize_t dma_mask_bits_show(struct device *dev,
@@ -626,6 +633,7 @@ static struct attribute *pci_dev_attrs[] = {
 	&dev_attr_modalias.attr,
 #ifdef CONFIG_NUMA
 	&dev_attr_numa_node.attr,
+	&dev_attr_gi_node.attr,
 #endif
 	&dev_attr_dma_mask_bits.attr,
 	&dev_attr_consistent_dma_mask_bits.attr,
