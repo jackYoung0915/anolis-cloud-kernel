@@ -72,7 +72,7 @@
  * On 64-bit architectures, the mcs_spinlock structure will be 16 bytes in
  * size and four of them will fit nicely in one 64-byte cacheline. For
  * pvqspinlock, however, we need more space for extra data. The same also
- * applies for the NUMA-aware variant of spinlocks (CNA). To accommodate
+ * applies for the NUMA/LLC-aware variant of spinlocks (CNA). To accommodate
  * that, we insert two more long words to pad it up to 32 bytes. IOW, only
  * two of them can fit in a cacheline in this case. That is OK as it is rare
  * to have more than 2 levels of slowpath nesting in actual use. We don't
@@ -81,7 +81,8 @@
  */
 struct qnode {
 	struct mcs_spinlock mcs;
-#if defined(CONFIG_PARAVIRT_SPINLOCKS) || defined(CONFIG_NUMA_AWARE_SPINLOCKS)
+#if defined(CONFIG_PARAVIRT_SPINLOCKS) || defined(CONFIG_NUMA_AWARE_SPINLOCKS) \
+	|| defined(CONFIG_LLC_AWARE_SPINLOCKS)
 	long reserved[2];
 #endif
 };
@@ -593,9 +594,10 @@ release:
 EXPORT_SYMBOL(queued_spin_lock_slowpath);
 
 /*
- * Generate the code for NUMA-aware spinlocks
+ * Generate the code for NUMA/LLC-aware spinlocks
  */
-#if !defined(_GEN_CNA_LOCK_SLOWPATH) && defined(CONFIG_NUMA_AWARE_SPINLOCKS)
+#if !defined(_GEN_CNA_LOCK_SLOWPATH) && \
+	(defined(CONFIG_NUMA_AWARE_SPINLOCKS) || defined(CONFIG_LLC_AWARE_SPINLOCKS))
 #define _GEN_CNA_LOCK_SLOWPATH
 
 #undef pv_init_node
