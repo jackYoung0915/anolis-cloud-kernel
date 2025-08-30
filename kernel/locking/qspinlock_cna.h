@@ -10,10 +10,10 @@
 #include <linux/random.h>
 
 /*
- * Implement a NUMA-aware version of MCS (aka CNA, or compact NUMA-aware lock).
+ * Implement a NUMA/LLC-aware version of MCS (aka CNA, or compact NUMA/LLC-aware lock).
  *
  * In CNA, spinning threads are organized in two queues, a primary queue for
- * threads running on the same NUMA node as the current lock holder, and a
+ * threads running on the same NUMA/LLC node as the current lock holder, and a
  * secondary queue for threads running on other nodes. Schematically, it
  * looks like this:
  *
@@ -36,16 +36,16 @@
  *
  * After acquiring the MCS lock and before acquiring the spinlock, the MCS lock
  * holder checks whether the next waiter in the primary queue (if exists) is
- * running on the same NUMA node. If it is not, that waiter is detached from the
+ * running on the same NUMA/LLC node. If it is not, that waiter is detached from the
  * main queue and moved into the tail of the secondary queue. This way, we
  * gradually filter the primary queue, leaving only waiters running on the same
- * preferred NUMA node. Note that certain priortized waiters (e.g., in
+ * preferred NUMA/LLC node. Note that certain priortized waiters (e.g., in
  * irq and nmi contexts) are excluded from being moved to the secondary queue.
  *
- * We change the NUMA node preference after a waiter at the head of the
+ * We change the NUMA/LLC node preference after a waiter at the head of the
  * secondary queue spins for a certain amount of time (1ms, by default).
  * We do that by flushing the secondary queue into the head of the primary queue,
- * effectively changing the preference to the NUMA node of the waiter at the head
+ * effectively changing the preference to the NUMA/LLC node of the waiter at the head
  * of the secondary queue at the time of the flush.
  *
  * For more details, see https://arxiv.org/abs/1810.05600.
@@ -60,19 +60,19 @@
 
 struct cna_node {
 	struct mcs_spinlock	mcs;
-	u16			numa_node;
-	u16			real_numa_node;
+	u16			locality_node;
+	u16			real_locality_node;
 	u32			encoded_tail;	/* self */
 	u64			start_time;
 };
 
-static ulong numa_spinlock_threshold_ns = 1000000;   /* 1ms, by default */
-module_param(numa_spinlock_threshold_ns, ulong, 0644);
+static ulong cna_spinlock_threshold_ns = 1000000;   /* 1ms, by default */
+module_param(cna_spinlock_threshold_ns, ulong, 0644);
 
 static inline bool intra_node_threshold_reached(struct cna_node *cn)
 {
 	u64 current_time = local_clock();
-	u64 threshold = cn->start_time + numa_spinlock_threshold_ns;
+	u64 threshold = cn->start_time + cna_spinlock_threshold_ns;
 
 	return current_time > threshold;
 }
@@ -105,16 +105,25 @@ static bool probably(unsigned int num_bits)
 	return s & ((1 << num_bits) - 1);
 }
 
+static int numa_spinlock_flag = -1;
+static int llc_spinlock_flag = -1;
+
 static void __init cna_init_nodes_per_cpu(unsigned int cpu)
 {
 	struct mcs_spinlock *base = per_cpu_ptr(&qnodes[0].mcs, cpu);
-	int numa_node = cpu_to_node(cpu);
-	int i;
+	int i, locality_node;
+
+	locality_node = cpu_to_node(cpu);
+
+#if defined(CONFIG_X86) && defined(CONFIG_LLC_AWARE_SPINLOCKS)
+	if (llc_spinlock_flag == 1)
+		locality_node = per_cpu(cpu_llc_id, cpu);
+#endif
 
 	for (i = 0; i < MAX_NODES; i++) {
 		struct cna_node *cn = (struct cna_node *)grab_mcs_node(base, i);
 
-		cn->real_numa_node = numa_node;
+		cn->real_locality_node = locality_node;
 		cn->encoded_tail = encode_tail(cpu, i);
 		/*
 		 * make sure @encoded_tail is not confused with other valid
@@ -147,7 +156,7 @@ static __always_inline void cna_init_node(struct mcs_spinlock *node)
 	bool priority = !in_task() || irqs_disabled() || rt_task(current);
 	struct cna_node *cn = (struct cna_node *)node;
 
-	cn->numa_node = priority ? CNA_PRIORITY_NODE : cn->real_numa_node;
+	cn->locality_node = priority ? CNA_PRIORITY_NODE : cn->real_locality_node;
 	cn->start_time = 0;
 }
 
@@ -270,23 +279,23 @@ static void cna_splice_next(struct mcs_spinlock *node,
 
 /*
  * cna_order_queue - check whether the next waiter in the main queue is on
- * the same NUMA node as the lock holder; if not, and it has a waiter behind
+ * the same NUMA/LLC node as the lock holder; if not, and it has a waiter behind
  * it in the main queue, move the former onto the secondary queue.
- * Returns 1 if the next waiter runs on the same NUMA node; 0 otherwise.
+ * Returns 1 if the next waiter runs on the same NUMA/LLC node; 0 otherwise.
  */
 static int cna_order_queue(struct mcs_spinlock *node)
 {
 	struct mcs_spinlock *next = READ_ONCE(node->next);
 	struct cna_node *cn = (struct cna_node *)node;
-	int numa_node, next_numa_node;
+	int locality_node, next_locality_node;
 
 	if (!next)
 		return 0;
 
-	numa_node = cn->numa_node;
-	next_numa_node = ((struct cna_node *)next)->numa_node;
+	locality_node = cn->locality_node;
+	next_locality_node = ((struct cna_node *)next)->locality_node;
 
-	if (next_numa_node != numa_node && next_numa_node != CNA_PRIORITY_NODE) {
+	if (next_locality_node != locality_node && next_locality_node != CNA_PRIORITY_NODE) {
 		struct mcs_spinlock *nnext = READ_ONCE(next->next);
 
 		if (nnext)
@@ -318,10 +327,10 @@ static __always_inline u32 cna_wait_head_or_lock(struct qspinlock *lock,
 	if (!cn->start_time || !intra_node_threshold_reached(cn)) {
 		/*
 		 * We are at the head of the wait queue, no need to use
-		 * the fake NUMA node ID.
+		 * the fake NUMA/LLC node ID.
 		 */
-		if (cn->numa_node == CNA_PRIORITY_NODE)
-			cn->numa_node = cn->real_numa_node;
+		if (cn->locality_node == CNA_PRIORITY_NODE)
+			cn->locality_node = cn->real_locality_node;
 
 		/*
 		 * Try and put the time otherwise spent spin waiting on
@@ -353,10 +362,10 @@ static inline void cna_lock_handoff(struct mcs_spinlock *node,
 			next = node->next;
 
 			/*
-			 * Pass over NUMA node id of primary queue, to maintain the
+			 * Pass over NUMA/LLC node id of primary queue, to maintain the
 			 * preference even if the next waiter is on a different node.
 			 */
-			((struct cna_node *)next)->numa_node = cn->numa_node;
+			((struct cna_node *)next)->locality_node = cn->locality_node;
 
 			((struct cna_node *)next)->start_time = cn->start_time;
 		}
@@ -380,8 +389,6 @@ static inline void cna_lock_handoff(struct mcs_spinlock *node,
  * Constant (boot-param configurable) flag selecting the NUMA-aware variant
  * of spinlock.  Possible values: -1 (off, default) / 0 (auto) / 1 (on).
  */
-static int numa_spinlock_flag = -1;
-
 static int __init numa_spinlock_setup(char *str)
 {
 	if (!strcmp(str, "auto")) {
@@ -399,17 +406,35 @@ static int __init numa_spinlock_setup(char *str)
 }
 __setup("numa_spinlock=", numa_spinlock_setup);
 
+/*
+ * Constant (boot-param configurable) flag selecting the LLC-aware variant
+ * of spinlock.  Possible values: -1 (off) / 1 (on).
+ */
+static int __init llc_spinlock_setup(char *str)
+{
+	if (!strcmp(str, "on")) {
+		llc_spinlock_flag = 1;
+		return 1;
+	} else if (!strcmp(str, "off")) {
+		llc_spinlock_flag = -1;
+		return 1;
+	}
+
+	return 0;
+}
+__setup("llc_spinlock=", llc_spinlock_setup);
+
 void __cna_queued_spin_lock_slowpath(struct qspinlock *lock, u32 val);
 
 /*
- * Switch to the NUMA-friendly slow path for spinlocks when we have
- * multiple NUMA nodes in native environment, unless the user has
- * overridden this default behavior by setting the numa_spinlock flag.
+ * Switch to the NUMA/LLC-friendly slow path for spinlocks when we have
+ * multiple NUMA/LLC nodes in native environment, unless the user has
+ * overridden this default behavior by setting the numa/llc_spinlock flag.
  */
 void __init cna_configure_spin_lock_slowpath(void)
 {
 
-	if (numa_spinlock_flag < 0)
+	if (numa_spinlock_flag == -1 && llc_spinlock_flag == -1)
 		return;
 
 	if (numa_spinlock_flag == 0 && (nr_node_ids < 2 ||
