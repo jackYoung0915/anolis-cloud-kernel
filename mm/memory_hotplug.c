@@ -449,23 +449,26 @@ static void update_pgdat_span(struct pglist_data *pgdat)
 	pgdat->node_spanned_pages = node_end_pfn - node_start_pfn;
 }
 
-void __ref remove_pfn_range_from_zone(struct zone *zone,
+void __ref __remove_pfn_range_from_zone(struct zone *zone,
 				      unsigned long start_pfn,
-				      unsigned long nr_pages)
+				      unsigned long nr_pages,
+					  int phase)
 {
 	const unsigned long end_pfn = start_pfn + nr_pages;
 	struct pglist_data *pgdat = zone->zone_pgdat;
 	unsigned long pfn, cur_nr_pages, flags;
 
-	/* Poison struct pages because they are now uninitialized again. */
-	for (pfn = start_pfn; pfn < end_pfn; pfn += cur_nr_pages) {
-		cond_resched();
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED) {
+		/* Poison struct pages because they are now uninitialized again. */
+		for (pfn = start_pfn; pfn < end_pfn; pfn += cur_nr_pages) {
+			cond_resched();
 
-		/* Select all remaining pages up to the next section boundary */
-		cur_nr_pages =
-			min(end_pfn - pfn, SECTION_ALIGN_UP(pfn + 1) - pfn);
-		page_init_poison(pfn_to_page(pfn),
-				 sizeof(struct page) * cur_nr_pages);
+			/* Select all remaining pages up to the next section boundary */
+			cur_nr_pages =
+				min(end_pfn - pfn, SECTION_ALIGN_UP(pfn + 1) - pfn);
+			page_init_poison(pfn_to_page(pfn),
+					sizeof(struct page) * cur_nr_pages);
+		}
 	}
 
 #ifdef CONFIG_ZONE_DEVICE
@@ -486,6 +489,13 @@ void __ref remove_pfn_range_from_zone(struct zone *zone,
 	pgdat_resize_unlock(zone->zone_pgdat, &flags);
 
 	set_zone_contiguous(zone);
+}
+
+void __ref remove_pfn_range_from_zone(struct zone *zone,
+				      unsigned long start_pfn,
+				      unsigned long nr_pages)
+{
+	__remove_pfn_range_from_zone(zone, start_pfn, nr_pages, MHP_PHASE_DEFAULT);
 }
 
 static void __remove_section(unsigned long pfn, unsigned long nr_pages,
@@ -1039,17 +1049,22 @@ void adjust_present_page_count(struct page *page, struct memory_group *group,
 	__adjust_present_page_count(page, group, nr_pages, zone, MHP_PHASE_DEFAULT);
 }
 
-int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
-			      struct zone *zone)
+int __mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
+			      struct zone *zone, int phase)
 {
 	unsigned long end_pfn = pfn + nr_pages;
 	int ret, i;
 
-	ret = kasan_add_zero_shadow(__va(PFN_PHYS(pfn)), PFN_PHYS(nr_pages));
-	if (ret)
-		return ret;
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE) {
+		ret = kasan_add_zero_shadow(__va(PFN_PHYS(pfn)), PFN_PHYS(nr_pages));
+		if (ret)
+			return ret;
+	}
 
-	move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_UNMOVABLE);
+	__move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_UNMOVABLE, phase);
+
+	if (phase == MHP_PHASE_PREPARE)
+		return ret;
 
 	for (i = 0; i < nr_pages; i++)
 		SetPageVmemmapSelfHosted(pfn_to_page(pfn + i));
@@ -1065,7 +1080,13 @@ int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
 	return ret;
 }
 
-void mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages)
+int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
+			      struct zone *zone)
+{
+	return __mhp_init_memmap_on_memory(pfn, nr_pages, zone, MHP_PHASE_DEFAULT);
+}
+
+void __mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages, int phase)
 {
 	unsigned long end_pfn = pfn + nr_pages;
 
@@ -1074,15 +1095,21 @@ void mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages)
 	 * the case, mark those sections offline here as otherwise they will be
 	 * left online.
 	 */
-	if (nr_pages >= PAGES_PER_SECTION)
+	if ((phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED) &&
+	    nr_pages >= PAGES_PER_SECTION)
 		offline_mem_sections(pfn, ALIGN_DOWN(end_pfn, PAGES_PER_SECTION));
 
         /*
 	 * The pages associated with this vmemmap have been offlined, so
 	 * we can reset its state here.
 	 */
-	remove_pfn_range_from_zone(page_zone(pfn_to_page(pfn)), pfn, nr_pages);
+	__remove_pfn_range_from_zone(page_zone(pfn_to_page(pfn)), pfn, nr_pages, phase);
 	kasan_remove_zero_shadow(__va(PFN_PHYS(pfn)), PFN_PHYS(nr_pages));
+}
+
+void mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages)
+{
+	__mhp_deinit_memmap_on_memory(pfn, nr_pages, MHP_PHASE_DEFAULT);
 }
 
 int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
@@ -1224,15 +1251,26 @@ static int deferred_memory_block_online_pages(struct memory_block *mem,
 	nr_pages = memory_block_size_bytes() >> PAGE_SHIFT;
 	nr_vmemmap_pages = mem->nr_vmemmap_pages;
 
+	if (nr_vmemmap_pages) {
+		ret = __mhp_init_memmap_on_memory(start_pfn, nr_vmemmap_pages,
+						  zone, MHP_PHASE_DEFERRED);
+		if (ret)
+			return ret;
+	}
+
 	ret = __online_pages(start_pfn + nr_vmemmap_pages,
 			     nr_pages - nr_vmemmap_pages, zone, mem->group,
 			     MHP_PHASE_DEFERRED);
 	if (ret) {
 		if (nr_vmemmap_pages)
-			mhp_deinit_memmap_on_memory(start_pfn,
-						    nr_vmemmap_pages);
+			__mhp_deinit_memmap_on_memory(start_pfn,
+						    nr_vmemmap_pages, MHP_PHASE_DEFERRED);
 		return ret;
 	}
+
+	if (nr_vmemmap_pages)
+		__adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
+					  nr_vmemmap_pages, zone, MHP_PHASE_DEFERRED);
 
 	mem->state = MEM_ONLINE;
 	return 0;
