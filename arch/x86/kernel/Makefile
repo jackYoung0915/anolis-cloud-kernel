@@ -159,7 +159,6 @@ ifeq ($(CONFIG_X86_64),y)
 
 	obj-$(CONFIG_MMCONF_FAM10H)	+= mmconf-fam10h_64.o
 	obj-y				+= vsmp_64.o
-	obj-$(CONFIG_PCI)		+= zhaoxin_kh40000.o
 endif
 
 obj-$(CONFIG_HYGON_CSV)			+= csv.o
