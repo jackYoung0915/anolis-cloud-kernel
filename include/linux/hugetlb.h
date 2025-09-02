@@ -601,6 +601,8 @@ struct huge_bootmem_page {
 };
 
 int isolate_or_dissolve_huge_page(struct page *page, struct list_head *list);
+int replace_free_hugepage_pages(unsigned long start_pfn, unsigned long end_pfn);
+void wait_for_freed_hugetlb_pages(void);
 struct page *alloc_huge_page(struct vm_area_struct *vma,
 				unsigned long addr, int avoid_reserve);
 struct page *alloc_huge_page_nodemask(struct hstate *h, int preferred_nid,
@@ -741,7 +743,6 @@ static inline int hstate_index(struct hstate *h)
 extern int dissolve_free_huge_page(struct page *page);
 extern int dissolve_free_huge_pages(unsigned long start_pfn,
 				    unsigned long end_pfn);
-extern void replace_or_wait_free_huge_page(struct page *page);
 
 #ifdef CONFIG_ARCH_ENABLE_HUGEPAGE_MIGRATION
 #ifndef arch_hugetlb_migration_supported
@@ -889,6 +890,16 @@ static inline int isolate_or_dissolve_huge_page(struct page *page,
 	return -ENOMEM;
 }
 
+static inline int replace_free_hugepage_pages(unsigned long start_pfn,
+		unsigned long end_pfn)
+{
+	return 0;
+}
+
+static inline void wait_for_freed_hugetlb_pages(void)
+{
+}
+
 static inline struct page *alloc_huge_page(struct vm_area_struct *vma,
 					   unsigned long addr,
 					   int avoid_reserve)
@@ -994,10 +1005,6 @@ static inline int dissolve_free_huge_pages(unsigned long start_pfn,
 					   unsigned long end_pfn)
 {
 	return 0;
-}
-
-static inline void replace_or_wait_free_huge_page(struct page *page)
-{
 }
 
 static inline bool hugepage_migration_supported(struct hstate *h)

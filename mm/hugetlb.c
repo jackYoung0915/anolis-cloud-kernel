@@ -43,6 +43,7 @@
 #include <linux/page_owner.h>
 #include "internal.h"
 #include "hugetlb_vmemmap.h"
+#include <linux/page-isolation.h>
 #include <linux/migrate.h>
 
 int hugetlb_max_hstate __read_mostly;
@@ -1080,6 +1081,9 @@ static struct page *dequeue_huge_page_node_exact(struct hstate *h, int nid)
 			continue;
 
 		if (PageHWPoison(page))
+			continue;
+
+		if (is_migrate_isolate_page(page))
 			continue;
 
 		list_move(&page->lru, &h->hugepage_activelist);
@@ -2515,34 +2519,58 @@ int isolate_or_dissolve_huge_page(struct page *page, struct list_head *list)
 	return ret;
 }
 
-void replace_or_wait_free_huge_page(struct page *page)
+void wait_for_freed_hugetlb_pages(void)
+{
+	if (llist_empty(&hpage_freelist))
+		return;
+
+	flush_work(&free_hpage_work);
+}
+
+/*
+ *  replace_free_hugepage_pages - Replace free hugepage pages in a given pfn
+ *  range with new pages.
+ *  @start_pfn: start pfn of the given pfn range
+ *  @end_pfn: end pfn of the given pfn range
+ *  Returns 0 on success, otherwise negated error.
+ */
+int replace_free_hugepage_pages(unsigned long start_pfn, unsigned long end_pfn)
 {
 	struct hstate *h;
-	struct page *head;
+	struct page *page;
+	int ret = 0;
 
 	LIST_HEAD(isolate_list);
 
-	spin_lock_irq(&hugetlb_lock);
-	if (PageHuge(page)) {
-		head = compound_head(page);
-		h = page_hstate(head);
-	} else {
+	while (start_pfn < end_pfn) {
+		page = pfn_to_page(start_pfn);
+
+		/*
+		 * The page might have been dissolved from under our feet, so make sure
+		 * to carefully check the state under the lock.
+		 */
+		spin_lock_irq(&hugetlb_lock);
+		if (PageHuge(page)) {
+			h = page_hstate(page);
+		} else {
+			spin_unlock_irq(&hugetlb_lock);
+			start_pfn++;
+			continue;
+		}
 		spin_unlock_irq(&hugetlb_lock);
 
-		 /* Wait hugetlb pages to be released to buddy allocator */
-		flush_work(&free_hpage_work);
-		return;
-	}
-	spin_unlock_irq(&hugetlb_lock);
+		if (!page_count(page)) {
+			ret = alloc_and_dissolve_huge_page(h, page,
+							       &isolate_list);
+			if (ret)
+				break;
 
-	if (hstate_is_gigantic(h))
-		return;
-
-	if (!page_count(head)) {
-		alloc_and_dissolve_huge_page(h, head, &isolate_list);
-		if (!list_empty(&isolate_list))
 			putback_movable_pages(&isolate_list);
+		}
+		start_pfn++;
 	}
+
+	return ret;
 }
 
 struct page *alloc_huge_page(struct vm_area_struct *vma,
