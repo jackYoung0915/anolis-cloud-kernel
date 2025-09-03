@@ -6925,8 +6925,15 @@ migrate:
 
 static inline bool should_push_expellee(struct rq *rq)
 {
-	return (sched_feat(ID_PUSH_EXPELLEE) && rq_on_expel(rq) &&
-	    rq->nr_expel_immune < rq->cfs.h_nr_running && !rq->nr_high_running);
+	if (!sched_feat(ID_PUSH_EXPELLEE))
+		return false;
+	if (!rq_on_expel(rq))
+		return false;
+	if (rq->nr_expel_immune >= rq->cfs.h_nr_running)
+		return false;
+	if (sched_feat(ID_PUSH_EXPELLEE_CONSIDER_HIGHCLASS) && rq->nr_high_running)
+		return false;
+	return true;
 }
 
 static inline void push_expellee(struct rq *rq)
