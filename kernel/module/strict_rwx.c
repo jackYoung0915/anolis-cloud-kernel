@@ -32,6 +32,22 @@ void module_enable_x(const struct module *mod)
 		module_set_memory(mod, type, set_memory_x);
 }
 
+/* livepatching wants to disable read-only so it can frob module. */
+void module_disable_ro(const struct module *mod)
+{
+	if (!IS_ENABLED(CONFIG_STRICT_MODULE_RWX))
+		return;
+#ifdef CONFIG_STRICT_MODULE_RWX
+	if (!rodata_enabled)
+		return;
+#endif
+
+	module_set_memory(mod, MOD_TEXT, set_memory_rw);
+	module_set_memory(mod, MOD_INIT_TEXT, set_memory_rw);
+	module_set_memory(mod, MOD_RODATA, set_memory_rw);
+	module_set_memory(mod, MOD_INIT_RODATA, set_memory_rw);
+}
+
 void module_enable_ro(const struct module *mod, bool after_init)
 {
 	if (!IS_ENABLED(CONFIG_STRICT_MODULE_RWX))
