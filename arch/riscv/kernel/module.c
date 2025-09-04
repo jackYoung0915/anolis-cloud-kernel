@@ -24,7 +24,7 @@ struct used_bucket {
 
 struct relocation_head {
 	struct hlist_node node;
-	struct list_head *rel_entry;
+	struct list_head rel_entry;
 	void *location;
 };
 
@@ -39,15 +39,6 @@ struct relocation_handlers {
 	int (*accumulate_handler)(struct module *me, void *location,
 				  long buffer);
 };
-
-unsigned int initialize_relocation_hashtable(unsigned int num_relocations);
-void process_accumulated_relocations(struct module *me);
-int add_relocation_to_accumulate(struct module *me, int type, void *location,
-				 unsigned int hashtable_bits, Elf_Addr v);
-
-struct hlist_head *relocation_hashtable;
-
-struct list_head used_buckets_list;
 
 /*
  * The auipc+jalr instruction pair can reach any PC-relative offset
@@ -64,7 +55,7 @@ static bool riscv_insn_valid_32bit_offset(ptrdiff_t val)
 
 static int riscv_insn_rmw(void *location, u32 keep, u32 set)
 {
-	u16 *parcel = location;
+	__le16 *parcel = location;
 	u32 insn = (u32)le16_to_cpu(parcel[0]) | (u32)le16_to_cpu(parcel[1]) << 16;
 
 	insn &= keep;
@@ -77,7 +68,7 @@ static int riscv_insn_rmw(void *location, u32 keep, u32 set)
 
 static int riscv_insn_rvc_rmw(void *location, u16 keep, u16 set)
 {
-	u16 *parcel = location;
+	__le16 *parcel = location;
 	u16 insn = le16_to_cpu(*parcel);
 
 	insn &= keep;
@@ -532,74 +523,82 @@ static int apply_uleb128_accumulation(struct module *me, void *location, long bu
  * This handles static linking only.
  */
 static const struct relocation_handlers reloc_handlers[] = {
-	[R_RISCV_32] = { apply_r_riscv_32_rela },
-	[R_RISCV_64] = { apply_r_riscv_64_rela },
-	[R_RISCV_RELATIVE] = { dynamic_linking_not_supported },
-	[R_RISCV_COPY] = { dynamic_linking_not_supported },
-	[R_RISCV_JUMP_SLOT] = { dynamic_linking_not_supported },
-	[R_RISCV_TLS_DTPMOD32] = { dynamic_linking_not_supported },
-	[R_RISCV_TLS_DTPMOD64] = { dynamic_linking_not_supported },
-	[R_RISCV_TLS_DTPREL32] = { dynamic_linking_not_supported },
-	[R_RISCV_TLS_DTPREL64] = { dynamic_linking_not_supported },
-	[R_RISCV_TLS_TPREL32] = { dynamic_linking_not_supported },
-	[R_RISCV_TLS_TPREL64] = { dynamic_linking_not_supported },
+	[R_RISCV_32]		= { .reloc_handler = apply_r_riscv_32_rela },
+	[R_RISCV_64]		= { .reloc_handler = apply_r_riscv_64_rela },
+	[R_RISCV_RELATIVE]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_COPY]		= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_JUMP_SLOT]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_TLS_DTPMOD32]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_TLS_DTPMOD64]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_TLS_DTPREL32]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_TLS_DTPREL64]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_TLS_TPREL32]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_TLS_TPREL64]	= { .reloc_handler = dynamic_linking_not_supported },
 	/* 12-15 undefined */
-	[R_RISCV_BRANCH] = { apply_r_riscv_branch_rela },
-	[R_RISCV_JAL] = { apply_r_riscv_jal_rela },
-	[R_RISCV_CALL] = { apply_r_riscv_call_rela },
-	[R_RISCV_CALL_PLT] = { apply_r_riscv_call_plt_rela },
-	[R_RISCV_GOT_HI20] = { apply_r_riscv_got_hi20_rela },
-	[R_RISCV_TLS_GOT_HI20] = { tls_not_supported },
-	[R_RISCV_TLS_GD_HI20] = { tls_not_supported },
-	[R_RISCV_PCREL_HI20] = { apply_r_riscv_pcrel_hi20_rela },
-	[R_RISCV_PCREL_LO12_I] = { apply_r_riscv_pcrel_lo12_i_rela },
-	[R_RISCV_PCREL_LO12_S] = { apply_r_riscv_pcrel_lo12_s_rela },
-	[R_RISCV_HI20] = { apply_r_riscv_hi20_rela },
-	[R_RISCV_LO12_I] = { apply_r_riscv_lo12_i_rela },
-	[R_RISCV_LO12_S] = { apply_r_riscv_lo12_s_rela },
-	[R_RISCV_TPREL_HI20] = { tls_not_supported },
-	[R_RISCV_TPREL_LO12_I] = { tls_not_supported },
-	[R_RISCV_TPREL_LO12_S] = { tls_not_supported },
-	[R_RISCV_TPREL_ADD] = { tls_not_supported },
-	[R_RISCV_ADD8] = { apply_r_riscv_add8_rela, apply_8_bit_accumulation },
-	[R_RISCV_ADD16] = { apply_r_riscv_add16_rela,
-			    apply_16_bit_accumulation },
-	[R_RISCV_ADD32] = { apply_r_riscv_add32_rela,
-			    apply_32_bit_accumulation },
-	[R_RISCV_ADD64] = { apply_r_riscv_add64_rela,
-			    apply_64_bit_accumulation },
-	[R_RISCV_SUB8] = { apply_r_riscv_sub8_rela, apply_8_bit_accumulation },
-	[R_RISCV_SUB16] = { apply_r_riscv_sub16_rela,
-			    apply_16_bit_accumulation },
-	[R_RISCV_SUB32] = { apply_r_riscv_sub32_rela,
-			    apply_32_bit_accumulation },
-	[R_RISCV_SUB64] = { apply_r_riscv_sub64_rela,
-			    apply_64_bit_accumulation },
+	[R_RISCV_BRANCH]	= { .reloc_handler = apply_r_riscv_branch_rela },
+	[R_RISCV_JAL]		= { .reloc_handler = apply_r_riscv_jal_rela },
+	[R_RISCV_CALL]		= { .reloc_handler = apply_r_riscv_call_rela },
+	[R_RISCV_CALL_PLT]	= { .reloc_handler = apply_r_riscv_call_plt_rela },
+	[R_RISCV_GOT_HI20]	= { .reloc_handler = apply_r_riscv_got_hi20_rela },
+	[R_RISCV_TLS_GOT_HI20]	= { .reloc_handler = tls_not_supported },
+	[R_RISCV_TLS_GD_HI20]	= { .reloc_handler = tls_not_supported },
+	[R_RISCV_PCREL_HI20]	= { .reloc_handler = apply_r_riscv_pcrel_hi20_rela },
+	[R_RISCV_PCREL_LO12_I]	= { .reloc_handler = apply_r_riscv_pcrel_lo12_i_rela },
+	[R_RISCV_PCREL_LO12_S]	= { .reloc_handler = apply_r_riscv_pcrel_lo12_s_rela },
+	[R_RISCV_HI20]		= { .reloc_handler = apply_r_riscv_hi20_rela },
+	[R_RISCV_LO12_I]	= { .reloc_handler = apply_r_riscv_lo12_i_rela },
+	[R_RISCV_LO12_S]	= { .reloc_handler = apply_r_riscv_lo12_s_rela },
+	[R_RISCV_TPREL_HI20]	= { .reloc_handler = tls_not_supported },
+	[R_RISCV_TPREL_LO12_I]	= { .reloc_handler = tls_not_supported },
+	[R_RISCV_TPREL_LO12_S]	= { .reloc_handler = tls_not_supported },
+	[R_RISCV_TPREL_ADD]	= { .reloc_handler = tls_not_supported },
+	[R_RISCV_ADD8]		= { .reloc_handler = apply_r_riscv_add8_rela,
+				    .accumulate_handler = apply_8_bit_accumulation },
+	[R_RISCV_ADD16]		= { .reloc_handler = apply_r_riscv_add16_rela,
+				    .accumulate_handler = apply_16_bit_accumulation },
+	[R_RISCV_ADD32]		= { .reloc_handler = apply_r_riscv_add32_rela,
+				    .accumulate_handler = apply_32_bit_accumulation },
+	[R_RISCV_ADD64]		= { .reloc_handler = apply_r_riscv_add64_rela,
+				    .accumulate_handler = apply_64_bit_accumulation },
+	[R_RISCV_SUB8]		= { .reloc_handler = apply_r_riscv_sub8_rela,
+				    .accumulate_handler = apply_8_bit_accumulation },
+	[R_RISCV_SUB16]		= { .reloc_handler = apply_r_riscv_sub16_rela,
+				    .accumulate_handler = apply_16_bit_accumulation },
+	[R_RISCV_SUB32]		= { .reloc_handler = apply_r_riscv_sub32_rela,
+				    .accumulate_handler = apply_32_bit_accumulation },
+	[R_RISCV_SUB64]		= { .reloc_handler = apply_r_riscv_sub64_rela,
+				    .accumulate_handler = apply_64_bit_accumulation },
 	/* 41-42 reserved for future standard use */
-	[R_RISCV_ALIGN] = { apply_r_riscv_align_rela },
-	[R_RISCV_RVC_BRANCH] = { apply_r_riscv_rvc_branch_rela },
-	[R_RISCV_RVC_JUMP] = { apply_r_riscv_rvc_jump_rela },
+	[R_RISCV_ALIGN]		= { .reloc_handler = apply_r_riscv_align_rela },
+	[R_RISCV_RVC_BRANCH]	= { .reloc_handler = apply_r_riscv_rvc_branch_rela },
+	[R_RISCV_RVC_JUMP]	= { .reloc_handler = apply_r_riscv_rvc_jump_rela },
 	/* 46-50 reserved for future standard use */
-	[R_RISCV_RELAX] = { apply_r_riscv_relax_rela },
-	[R_RISCV_SUB6] = { apply_r_riscv_sub6_rela, apply_6_bit_accumulation },
-	[R_RISCV_SET6] = { apply_r_riscv_set6_rela, apply_6_bit_accumulation },
-	[R_RISCV_SET8] = { apply_r_riscv_set8_rela, apply_8_bit_accumulation },
-	[R_RISCV_SET16] = { apply_r_riscv_set16_rela,
-			    apply_16_bit_accumulation },
-	[R_RISCV_SET32] = { apply_r_riscv_set32_rela,
-			    apply_32_bit_accumulation },
-	[R_RISCV_32_PCREL] = { apply_r_riscv_32_pcrel_rela },
-	[R_RISCV_IRELATIVE] = { dynamic_linking_not_supported },
-	[R_RISCV_PLT32] = { apply_r_riscv_plt32_rela },
-	[R_RISCV_SET_ULEB128] = { apply_r_riscv_set_uleb128,
-				  apply_uleb128_accumulation },
-	[R_RISCV_SUB_ULEB128] = { apply_r_riscv_sub_uleb128,
-				  apply_uleb128_accumulation },
+	[R_RISCV_RELAX]		= { .reloc_handler = apply_r_riscv_relax_rela },
+	[R_RISCV_SUB6]		= { .reloc_handler = apply_r_riscv_sub6_rela,
+				    .accumulate_handler = apply_6_bit_accumulation },
+	[R_RISCV_SET6]		= { .reloc_handler = apply_r_riscv_set6_rela,
+				    .accumulate_handler = apply_6_bit_accumulation },
+	[R_RISCV_SET8]		= { .reloc_handler = apply_r_riscv_set8_rela,
+				    .accumulate_handler = apply_8_bit_accumulation },
+	[R_RISCV_SET16]		= { .reloc_handler = apply_r_riscv_set16_rela,
+				    .accumulate_handler = apply_16_bit_accumulation },
+	[R_RISCV_SET32]		= { .reloc_handler = apply_r_riscv_set32_rela,
+				    .accumulate_handler = apply_32_bit_accumulation },
+	[R_RISCV_32_PCREL]	= { .reloc_handler = apply_r_riscv_32_pcrel_rela },
+	[R_RISCV_IRELATIVE]	= { .reloc_handler = dynamic_linking_not_supported },
+	[R_RISCV_PLT32]		= { .reloc_handler = apply_r_riscv_plt32_rela },
+	[R_RISCV_SET_ULEB128]	= { .reloc_handler = apply_r_riscv_set_uleb128,
+				    .accumulate_handler = apply_uleb128_accumulation },
+	[R_RISCV_SUB_ULEB128]	= { .reloc_handler = apply_r_riscv_sub_uleb128,
+				    .accumulate_handler = apply_uleb128_accumulation },
 	/* 62-191 reserved for future standard use */
 	/* 192-255 nonstandard ABI extensions  */
 };
 
-void process_accumulated_relocations(struct module *me)
+static void
+process_accumulated_relocations(struct module *me,
+				struct hlist_head **relocation_hashtable,
+				struct list_head *used_buckets_list)
 {
 	/*
 	 * Only ADD/SUB/SET/ULEB128 should end up here.
@@ -619,18 +618,25 @@ void process_accumulated_relocations(struct module *me)
 	 *	- Each relocation entry for a location address
 	 */
 	struct used_bucket *bucket_iter;
+	struct used_bucket *bucket_iter_tmp;
 	struct relocation_head *rel_head_iter;
+	struct hlist_node *rel_head_iter_tmp;
 	struct relocation_entry *rel_entry_iter;
+	struct relocation_entry *rel_entry_iter_tmp;
 	int curr_type;
 	void *location;
 	long buffer;
 
-	list_for_each_entry(bucket_iter, &used_buckets_list, head) {
-		hlist_for_each_entry(rel_head_iter, bucket_iter->bucket, node) {
+	list_for_each_entry_safe(bucket_iter, bucket_iter_tmp,
+				 used_buckets_list, head) {
+		hlist_for_each_entry_safe(rel_head_iter, rel_head_iter_tmp,
+					  bucket_iter->bucket, node) {
 			buffer = 0;
 			location = rel_head_iter->location;
-			list_for_each_entry(rel_entry_iter,
-					    rel_head_iter->rel_entry, head) {
+			list_for_each_entry_safe(rel_entry_iter,
+						 rel_entry_iter_tmp,
+						 &rel_head_iter->rel_entry,
+						 head) {
 				curr_type = rel_entry_iter->type;
 				reloc_handlers[curr_type].reloc_handler(
 					me, &buffer, rel_entry_iter->value);
@@ -643,11 +649,14 @@ void process_accumulated_relocations(struct module *me)
 		kfree(bucket_iter);
 	}
 
-	kfree(relocation_hashtable);
+	kvfree(*relocation_hashtable);
 }
 
-int add_relocation_to_accumulate(struct module *me, int type, void *location,
-				 unsigned int hashtable_bits, Elf_Addr v)
+static int add_relocation_to_accumulate(struct module *me, int type,
+					void *location,
+					unsigned int hashtable_bits, Elf_Addr v,
+					struct hlist_head *relocation_hashtable,
+					struct list_head *used_buckets_list)
 {
 	struct relocation_entry *entry;
 	struct relocation_head *rel_head;
@@ -656,6 +665,10 @@ int add_relocation_to_accumulate(struct module *me, int type, void *location,
 	unsigned long hash;
 
 	entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+
+	if (!entry)
+		return -ENOMEM;
+
 	INIT_LIST_HEAD(&entry->head);
 	entry->type = type;
 	entry->value = v;
@@ -664,7 +677,10 @@ int add_relocation_to_accumulate(struct module *me, int type, void *location,
 
 	current_head = &relocation_hashtable[hash];
 
-	/* Find matching location (if any) */
+	/*
+	 * Search for the relocation_head for the relocations that happen at the
+	 * provided location
+	 */
 	bool found = false;
 	struct relocation_head *rel_head_iter;
 
@@ -676,33 +692,55 @@ int add_relocation_to_accumulate(struct module *me, int type, void *location,
 		}
 	}
 
+	/*
+	 * If there has not yet been any relocations at the provided location,
+	 * create a relocation_head for that location and populate it with this
+	 * relocation_entry.
+	 */
 	if (!found) {
 		rel_head = kmalloc(sizeof(*rel_head), GFP_KERNEL);
-		rel_head->rel_entry =
-			kmalloc(sizeof(struct list_head), GFP_KERNEL);
-		INIT_LIST_HEAD(rel_head->rel_entry);
+
+		if (!rel_head) {
+			kfree(entry);
+			return -ENOMEM;
+		}
+
+		INIT_LIST_HEAD(&rel_head->rel_entry);
 		rel_head->location = location;
 		INIT_HLIST_NODE(&rel_head->node);
 		if (!current_head->first) {
 			bucket =
 				kmalloc(sizeof(struct used_bucket), GFP_KERNEL);
+
+			if (!bucket) {
+				kfree(entry);
+				kfree(rel_head);
+				return -ENOMEM;
+			}
+
 			INIT_LIST_HEAD(&bucket->head);
 			bucket->bucket = current_head;
-			list_add(&bucket->head, &used_buckets_list);
+			list_add(&bucket->head, used_buckets_list);
 		}
 		hlist_add_head(&rel_head->node, current_head);
 	}
 
 	/* Add relocation to head of discovered rel_head */
-	list_add_tail(&entry->head, rel_head->rel_entry);
+	list_add_tail(&entry->head, &rel_head->rel_entry);
 
 	return 0;
 }
 
-unsigned int initialize_relocation_hashtable(unsigned int num_relocations)
+static unsigned int
+initialize_relocation_hashtable(unsigned int num_relocations,
+				struct hlist_head **relocation_hashtable)
 {
 	/* Can safely assume that bits is not greater than sizeof(long) */
 	unsigned long hashtable_size = roundup_pow_of_two(num_relocations);
+	/*
+	 * When hashtable_size == 1, hashtable_bits == 0.
+	 * This is valid because the hashing algorithm returns 0 in this case.
+	 */
 	unsigned int hashtable_bits = ilog2(hashtable_size);
 
 	/*
@@ -715,12 +753,14 @@ unsigned int initialize_relocation_hashtable(unsigned int num_relocations)
 
 	hashtable_size <<= should_double_size;
 
-	relocation_hashtable = kmalloc_array(hashtable_size,
-					     sizeof(*relocation_hashtable),
-					     GFP_KERNEL);
-	__hash_init(relocation_hashtable, hashtable_size);
+	/* Number of relocations may be large, so kvmalloc it */
+	*relocation_hashtable = kvmalloc_array(hashtable_size,
+					       sizeof(**relocation_hashtable),
+					       GFP_KERNEL);
+	if (!*relocation_hashtable)
+		return 0;
 
-	INIT_LIST_HEAD(&used_buckets_list);
+	__hash_init(*relocation_hashtable, hashtable_size);
 
 	return hashtable_bits;
 }
@@ -737,7 +777,17 @@ int apply_relocate_add(Elf_Shdr *sechdrs, const char *strtab,
 	Elf_Addr v;
 	int res;
 	unsigned int num_relocations = sechdrs[relsec].sh_size / sizeof(*rel);
-	unsigned int hashtable_bits = initialize_relocation_hashtable(num_relocations);
+	struct hlist_head *relocation_hashtable;
+	struct list_head used_buckets_list;
+	unsigned int hashtable_bits;
+
+	hashtable_bits = initialize_relocation_hashtable(num_relocations,
+							 &relocation_hashtable);
+
+	if (!relocation_hashtable)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&used_buckets_list);
 
 	pr_debug("Applying relocate section %u to %u\n", relsec,
 	       sechdrs[relsec].sh_info);
@@ -818,14 +868,18 @@ int apply_relocate_add(Elf_Shdr *sechdrs, const char *strtab,
 		}
 
 		if (reloc_handlers[type].accumulate_handler)
-			res = add_relocation_to_accumulate(me, type, location, hashtable_bits, v);
+			res = add_relocation_to_accumulate(me, type, location,
+							   hashtable_bits, v,
+							   relocation_hashtable,
+							   &used_buckets_list);
 		else
 			res = handler(me, location, v);
 		if (res)
 			return res;
 	}
 
-	process_accumulated_relocations(me);
+	process_accumulated_relocations(me, &relocation_hashtable,
+					&used_buckets_list);
 
 	return 0;
 }
