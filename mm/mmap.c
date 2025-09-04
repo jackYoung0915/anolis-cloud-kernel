@@ -59,16 +59,20 @@
 
 #include "internal.h"
 
-bool __maybe_unused enable_brk_thp_aligned;
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+DEFINE_STATIC_KEY_FALSE(brk_thp_aligned_key);
+extern int sysctl_brk_thp_aligned;
 
 static int __init parse_enable_brk_thp_aligned(char *str)
 {
-	enable_brk_thp_aligned = true;
-	pr_info("Enabling brk thp aligned\n");
+	static_branch_enable(&brk_thp_aligned_key);
+	sysctl_brk_thp_aligned = 1;
 
+	pr_info("Enabling brk thp aligned\n");
 	return 0;
 }
 __setup("brk_thp_aligned", parse_enable_brk_thp_aligned);
+#endif
 
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
@@ -209,7 +213,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	bool populate;
 	bool downgraded = false;
 	LIST_HEAD(uf);
-	unsigned long __maybe_unused newbrk_aligned, oldbrk_aligned;
+	bool brk_thp_aligned = brk_thp_aligned_enabled();
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
@@ -244,27 +248,28 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 
 	newbrk = PAGE_ALIGN(brk);
 	oldbrk = PAGE_ALIGN(mm->brk);
-
-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned) {
-		newbrk_aligned = ALIGN(brk, HPAGE_SIZE);
-
-		next = find_vma(mm, oldbrk);
-		if (next && next->vm_start <= oldbrk)
-			oldbrk_aligned = next->vm_end;
-		else
-			oldbrk_aligned = oldbrk;
-	}
-
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
 		goto success;
 	}
 
 	/*
+	 * Use aligned_brk to track the current end of the heap VMA.
+	 * This ensures correct heap management regardless of THP alignment settings.
+	 */
+	if (mm->aligned_brk == 0UL)
+		mm->aligned_brk = oldbrk;
+	oldbrk = mm->aligned_brk;
+
+	/*
 	 * Always allow shrinking brk.
 	 * __do_munmap() may downgrade mmap_lock to read.
+	 *
+	 * Add a new shrink condition: after disabling heap THP alignment,
+	 * if the extended heap does not reach the 2M-aligned boundary,
+	 * the heap VMA should also be shrunk (unmapped).
 	 */
-	if (brk <= mm->brk) {
+	if (brk <= mm->brk || (!brk_thp_aligned && newbrk < oldbrk)) {
 		int ret;
 
 		/*
@@ -273,9 +278,6 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		 * mm->brk will be restored from origbrk.
 		 */
 		mm->brk = brk;
-		if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned)
-			oldbrk = oldbrk_aligned;
-
 		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, true);
 		if (ret < 0) {
 			mm->brk = origbrk;
@@ -283,17 +285,23 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		} else if (ret == 1) {
 			downgraded = true;
 		}
+		mm->aligned_brk = newbrk;
 		goto success;
 	}
-
-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned) {
-		if (newbrk <= oldbrk_aligned) {
+	/*
+	 * When heap THP alignment is enabled, expand the existing heap VMA
+	 * to the next HPAGE_SIZE boundary to facilitate THP usage.
+	 * If the new brk does not exceed the old heap end, return early;
+	 * otherwise, align newbrk upwards to the HPAGE_SIZE boundary.
+	 */
+	if (brk_thp_aligned) {
+		if (newbrk <= oldbrk) {
 			mm->brk = brk;
 			goto success;
 		}
-		newbrk = newbrk_aligned;
-		oldbrk = oldbrk_aligned;
+		newbrk = ALIGN(brk, HPAGE_SIZE);
 	}
+
 	/* Check against existing mmap mappings. */
 	next = find_vma(mm, oldbrk);
 	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
@@ -303,6 +311,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	if (do_brk_flags(oldbrk, newbrk-oldbrk, 0, &uf) < 0)
 		goto out;
 	mm->brk = brk;
+	mm->aligned_brk = newbrk;
 
 success:
 	populate = newbrk > oldbrk && (mm->def_flags & VM_LOCKED) != 0;

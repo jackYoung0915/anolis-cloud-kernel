@@ -893,6 +893,12 @@ static inline int page_mapcount(struct page *page)
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 int total_mapcount(struct page *page);
 int page_trans_huge_mapcount(struct page *page, int *total_mapcount);
+/* Static key for brk_thp_aligned feature, default is false (off) */
+DECLARE_STATIC_KEY_FALSE(brk_thp_aligned_key);
+static inline bool brk_thp_aligned_enabled(void)
+{
+	return static_branch_unlikely(&brk_thp_aligned_key);
+}
 #else
 static inline int total_mapcount(struct page *page)
 {
@@ -905,6 +911,10 @@ static inline int page_trans_huge_mapcount(struct page *page,
 	if (total_mapcount)
 		*total_mapcount = mapcount;
 	return mapcount;
+}
+static inline bool brk_thp_aligned_enabled(void)
+{
+	return false;
 }
 #endif
 
