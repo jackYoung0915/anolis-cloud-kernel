@@ -675,6 +675,10 @@ file_alloc
        is incremented every time a file huge page is successfully
        allocated.
 
+file_fallback
+       is incremented if a file huge page is attempted to be allocated
+       but fails and instead falls back to using small pages.
+
 As the system ages, allocating huge pages may be expensive as the
 system uses memory compaction to copy data around memory to free a
 huge page for use. There are some counters in ``/proc/vmstat`` to help

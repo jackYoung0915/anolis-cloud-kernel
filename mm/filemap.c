@@ -2059,6 +2059,7 @@ no_page:
 			folio = filemap_alloc_folio(alloc_gfp, order);
 			if (!folio) {
 				/* Try lower order */
+				count_mthp_stat(order, MTHP_STAT_FILE_FALLBACK);
 				order = next_order(&orders, order);
 				continue;
 			}
@@ -2075,6 +2076,7 @@ no_page:
 			folio_put(folio);
 			folio = NULL;
 
+			count_mthp_stat(order, MTHP_STAT_FILE_FALLBACK);
 			order = next_order(&orders, order);
 		};
 
