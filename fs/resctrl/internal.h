@@ -100,7 +100,8 @@ union mon_data_bits {
 	void *priv;
 	struct {
 		unsigned int rid		: 10;
-		enum resctrl_event_id evtid	: 8;
+		enum resctrl_event_id evtid	: 7;
+		unsigned int sum                : 1;
 		unsigned int domid		: 14;
 	} u;
 };
