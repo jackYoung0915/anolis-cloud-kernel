@@ -611,6 +611,8 @@ static void domain_add_cpu_mon(int cpu, struct rdt_resource *r)
 	resctrl_mbm_evt_config_init(hw_dom);
 	resctrl_arch_mbm_cntr_assign_configure();
 
+	arch_mon_domain_online(r, d);
+
 	if (r->mon_capable && arch_domain_mbm_alloc(r->mon.num_rmid, hw_dom)) {
 		mon_domain_free(hw_dom);
 		return;

@@ -209,6 +209,8 @@ union cpuid_0x10_x_edx {
 	unsigned int full;
 };
 
+void arch_mon_domain_online(struct rdt_resource *r, struct rdt_mon_domain *d);
+
 /*
  * ABMC counters can be configured by writing to L3_QOS_ABMC_CFG.
  * @bw_type		: Bandwidth configuration(supported by BMEC)
