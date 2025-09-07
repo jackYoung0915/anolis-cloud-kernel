@@ -106,7 +106,7 @@ static inline p4d_t *p4d_alloc_one(struct mm_struct *mm, unsigned long addr)
 static inline void __p4d_free(struct mm_struct *mm, p4d_t *p4d)
 {
 	BUG_ON((unsigned long)p4d & (PAGE_SIZE-1));
-	pagetable_p4d_dtor(virt_to_ptdesc(p4d));
+	pagetable_dtor(virt_to_ptdesc(p4d));
 	free_page((unsigned long)p4d);
 }
 
