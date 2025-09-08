@@ -1534,15 +1534,21 @@ static void receive_buf(struct virtnet_info *vi, struct receive_queue *rq,
 	/* XDP invalidates virtio-net-hdr. Save flags in advance to
 	 * determine checksum information before submitting it to netdev.
 	 */
-	flags = ((struct virtio_net_hdr_mrg_rxbuf *)buf)->hdr.flags;
 
-	if (vi->mergeable_rx_bufs)
+	if (vi->mergeable_rx_bufs) {
+		flags = ((struct virtio_net_hdr_mrg_rxbuf *)buf)->hdr.flags;
 		skb = receive_mergeable(dev, vi, rq, buf, ctx, len, xdp_xmit,
 					stats);
-	else if (vi->big_packets)
+	} else if (vi->big_packets) {
+		void *p = page_address((struct page *)buf);
+		flags = ((struct virtio_net_hdr_mrg_rxbuf *)p)->hdr.flags;
 		skb = receive_big(dev, vi, rq, buf, len, stats);
-	else
+	} else {
+		void *p;
+		p = buf + VIRTNET_RX_PAD + (unsigned long)ctx;
+		flags = ((struct virtio_net_hdr_mrg_rxbuf *)p)->hdr.flags;
 		skb = receive_small(dev, vi, rq, buf, ctx, len, xdp_xmit, stats);
+	}
 
 	if (unlikely(!skb))
 		return;
