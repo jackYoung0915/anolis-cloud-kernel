@@ -140,6 +140,26 @@ static enum sysctl_writes_mode sysctl_writes_strict = SYSCTL_WRITES_STRICT;
 
 extern int sysctl_enable_context_readahead;
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+int sysctl_brk_thp_aligned;
+static int proc_brk_thp_aligned_handler(struct ctl_table *table, int write,
+					void __user *buffer, size_t *lenp,
+					loff_t *ppos)
+{
+	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (ret || !write)
+		return ret;
+
+	if (sysctl_brk_thp_aligned)
+		static_branch_enable(&brk_thp_aligned_key);
+	else
+		static_branch_disable(&brk_thp_aligned_key);
+
+	return ret;
+}
+#endif
+
 #if defined(HAVE_ARCH_PICK_MMAP_LAYOUT) || \
     defined(CONFIG_ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT)
 int sysctl_legacy_va_layout;
@@ -2392,6 +2412,17 @@ static struct ctl_table vm_table[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_ONE,
 	},
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	{
+		.procname	= "enable_brk_thp_aligned",
+		.data		= &sysctl_brk_thp_aligned,
+		.maxlen		= sizeof(sysctl_brk_thp_aligned),
+		.mode		= 0644,
+		.proc_handler	= proc_brk_thp_aligned_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif
 	{ }
 };
 

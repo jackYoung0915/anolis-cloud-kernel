@@ -76,6 +76,7 @@ Currently, these files are in /proc/sys/vm:
 - watermark_scale_factor
 - zone_reclaim_mode
 - enable_context_readahead
+- enable_brk_thp_aligned
 
 
 admin_reserve_kbytes
@@ -1061,3 +1062,19 @@ To disable context readahead:
 
 To enable context readahead again:
        echo 1 > /proc/sys/vm/enable_context_readahead
+
+
+enable_brk_thp_aligned
+===========================
+
+The brk_thp_aligned feature optimizes workloads that involve frequent creation and
+access of heap memory by aligning and managing heap vmas according to THP size.
+This reduces memory fragmentation, lowers TLB miss, and enhances memory access efficiency.
+
+Default it is disabled.
+
+To disable brk_thp_aligned:
+       echo 0 > /proc/sys/vm/enable_brk_thp_aligned
+
+To enable brk_thp_aligned:
+       echo 1 > /proc/sys/vm/enable_brk_thp_aligned

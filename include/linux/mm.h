@@ -4340,4 +4340,18 @@ static inline bool is_async_fork_mm(struct mm_struct *mm)
 }
 #endif
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+/* Static key for brk_thp_aligned feature, default is false (off) */
+DECLARE_STATIC_KEY_FALSE(brk_thp_aligned_key);
+static inline bool brk_thp_aligned_enabled(void)
+{
+	return static_branch_unlikely(&brk_thp_aligned_key);
+}
+#else
+static inline bool brk_thp_aligned_enabled(void)
+{
+	return false;
+}
+#endif
+
 #endif /* _LINUX_MM_H */
