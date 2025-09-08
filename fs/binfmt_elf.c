@@ -1365,6 +1365,9 @@ out_free_interp:
 		current->brk_randomized = 1;
 #endif
 
+	if (brk_thp_aligned_enabled())
+		mm->brk = mm->start_brk = ALIGN(mm->start_brk, HPAGE_SIZE);
+
 	if (current->personality & MMAP_PAGE_ZERO) {
 		/* Why this, you ask???  Well SVr4 maps page 0 as read-only,
 		   and some applications "depend" upon this behavior.
