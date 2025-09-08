@@ -58,6 +58,21 @@
 
 #include "internal.h"
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+DEFINE_STATIC_KEY_FALSE(brk_thp_aligned_key);
+extern int sysctl_brk_thp_aligned;
+
+static int __init parse_enable_brk_thp_aligned(char *str)
+{
+	static_branch_enable(&brk_thp_aligned_key);
+	sysctl_brk_thp_aligned = 1;
+
+	pr_info("Enabling brk thp aligned\n");
+	return 0;
+}
+__setup("brk_thp_aligned", parse_enable_brk_thp_aligned);
+#endif
+
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
 #endif
@@ -183,6 +198,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	bool populate = false;
 	LIST_HEAD(uf);
 	struct vma_iterator vmi;
+	bool brk_thp_aligned = brk_thp_aligned_enabled();
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
@@ -222,8 +238,22 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto success;
 	}
 
-	/* Always allow shrinking brk. */
-	if (brk <= mm->brk) {
+	/*
+	 * Use aligned_brk to track the current end of the heap VMA.
+	 * This ensures correct heap management regardless of THP alignment settings.
+	 */
+	if (mm->aligned_brk == 0UL)
+		mm->aligned_brk = oldbrk;
+	oldbrk = mm->aligned_brk;
+
+	/*
+	 * Always allow shrinking brk.
+	 *
+	 * Add a new shrink condition: after disabling heap THP alignment,
+	 * if the extended heap does not reach the 2M-aligned boundary,
+	 * the heap VMA should also be shrunk (unmapped).
+	 */
+	if (brk <= mm->brk || (!brk_thp_aligned && newbrk < oldbrk)) {
 		/* Search one past newbrk */
 		vma_iter_init(&vmi, mm, newbrk);
 		brkvma = vma_find(&vmi, oldbrk);
@@ -238,7 +268,22 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		if (do_vma_munmap(&vmi, brkvma, newbrk, oldbrk, &uf, true))
 			goto out;
 
+		mm->aligned_brk = newbrk;
 		goto success_unlocked;
+	}
+
+	/*
+	 * When heap THP alignment is enabled, expand the existing heap VMA
+	 * to the next HPAGE_SIZE boundary to facilitate THP usage.
+	 * If the new brk does not exceed the old heap end, return early;
+	 * otherwise, align newbrk upwards to the HPAGE_SIZE boundary.
+	 */
+	if (brk_thp_aligned) {
+		if (newbrk <= oldbrk) {
+			mm->brk = brk;
+			goto success;
+		}
+		newbrk = ALIGN(brk, HPAGE_SIZE);
 	}
 
 	if (check_brk_limits(oldbrk, newbrk - oldbrk))
@@ -259,6 +304,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto out;
 
 	mm->brk = brk;
+	mm->aligned_brk = newbrk;
 	if (mm->def_flags & VM_LOCKED)
 		populate = true;
 

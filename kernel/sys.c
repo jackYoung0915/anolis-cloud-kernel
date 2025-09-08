@@ -2076,6 +2076,7 @@ static int prctl_set_mm_map(int opt, const void __user *addr, unsigned long data
 	mm->arg_end	= prctl_map.arg_end;
 	mm->env_start	= prctl_map.env_start;
 	mm->env_end	= prctl_map.env_end;
+	mm->aligned_brk	= 0UL;
 	spin_unlock(&mm->arg_lock);
 
 	/*
@@ -2253,6 +2254,7 @@ static int prctl_set_mm(int opt, unsigned long addr,
 	mm->arg_end	= prctl_map.arg_end;
 	mm->env_start	= prctl_map.env_start;
 	mm->env_end	= prctl_map.env_end;
+	mm->aligned_brk	= 0UL;
 
 	error = 0;
 out:
