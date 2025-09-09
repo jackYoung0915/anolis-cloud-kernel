@@ -908,7 +908,7 @@ void __init alternative_instructions(void)
 	}
 #endif
 
-#if defined(CONFIG_NUMA_AWARE_SPINLOCKS)
+#if defined(CONFIG_NUMA_AWARE_SPINLOCKS) || defined(CONFIG_LLC_AWARE_SPINLOCKS)
 	cna_configure_spin_lock_slowpath();
 #endif
 
