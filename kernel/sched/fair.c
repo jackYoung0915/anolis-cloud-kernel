@@ -9087,6 +9087,8 @@ static void __push_expellee(struct rq *rq)
 			break;
 		if (!task_is_idle(p))
 			continue;
+		if (p == rq->curr)
+			continue;
 		get_task_struct(p);
 		cpumask_clear(traversed_mask);
 		for_each_domain(cpu, sd) {
@@ -9131,10 +9133,7 @@ static void __push_expellee(struct rq *rq)
 				break;
 		}
 migrate:
-		dst_rq = cpu_rq(dst_cpu);
-		local_irq_disable();
-		double_rq_lock(rq, dst_rq);
-		update_rq_clock(rq);
+		deactivate_task(rq, p, 0);
 		set_task_cpu(p, dst_cpu);
 		activate_task(dst_rq, p, 0);
 		put_task_struct(p);
