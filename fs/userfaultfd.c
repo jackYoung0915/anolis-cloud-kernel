@@ -748,7 +748,8 @@ void mremap_userfaultfd_complete(struct vm_userfaultfd_ctx *vm_ctx,
 }
 
 bool userfaultfd_remove(struct vm_area_struct *vma,
-			unsigned long start, unsigned long end)
+			unsigned long start, unsigned long end,
+			bool write_locked)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	struct userfaultfd_ctx *ctx;
@@ -760,7 +761,10 @@ bool userfaultfd_remove(struct vm_area_struct *vma,
 
 	userfaultfd_ctx_get(ctx);
 	WRITE_ONCE(ctx->mmap_changing, true);
-	mmap_read_unlock(mm);
+	if (write_locked)
+		mmap_write_unlock(mm);
+	else
+		mmap_read_unlock(mm);
 
 	msg_init(&ewq.msg);
 
