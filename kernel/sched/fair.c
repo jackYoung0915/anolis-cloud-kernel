@@ -9147,9 +9147,15 @@ migrate:
 
 static inline bool should_push_expellee(struct rq *rq)
 {
-	return (sched_feat(ID_ABSOLUTE_EXPEL) && sched_feat(ID_PUSH_EXPELLEE) &&
-		rq_on_expel(rq) && rq->cfs.h_nr_idle &&
-		(sched_feat(ID_PUSH_EXPELLEE_IGNORE_HIGHCLASS) || sched_idle_rq(rq)));
+	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+		return false;
+	if (!rq_on_expel(rq))
+		return false;
+	if (!rq->cfs.h_nr_idle)
+		return false;
+	if (sched_feat(ID_PUSH_EXPELLEE_CONSIDER_HIGHCLASS) && !sched_idle_rq(rq))
+		return false;
+	return true;
 }
 
 static inline void push_expellee(struct rq *rq)
