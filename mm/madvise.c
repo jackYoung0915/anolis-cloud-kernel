@@ -790,15 +790,20 @@ static long madvise_dontneed_free(struct vm_area_struct *vma,
 				  int behavior)
 {
 	struct mm_struct *mm = vma->vm_mm;
+	bool write_locked = (behavior == MADV_DONTNEED) && reclaim_pt;
 
 	*prev = vma;
 	if (!can_madv_lru_vma(vma))
 		return -EINVAL;
 
-	if (!userfaultfd_remove(vma, start, end)) {
+	if (!userfaultfd_remove(vma, start, end, write_locked)) {
 		*prev = NULL; /* mmap_lock has been dropped, prev is stale */
 
-		mmap_read_lock(mm);
+		if (write_locked)
+			mmap_write_lock(mm);
+		else
+			mmap_read_lock(mm);
+
 		vma = find_vma(mm, start);
 		if (!vma)
 			return -ENOMEM;
@@ -879,7 +884,7 @@ static long madvise_remove(struct vm_area_struct *vma,
 	 * mmap_lock.
 	 */
 	get_file(f);
-	if (userfaultfd_remove(vma, start, end)) {
+	if (userfaultfd_remove(vma, start, end, false)) {
 		/* mmap_lock was not released by userfaultfd_remove() */
 		mmap_read_unlock(mm);
 	}
