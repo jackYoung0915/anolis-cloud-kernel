@@ -74,8 +74,6 @@ static int load_elf_library(struct file *);
 #define load_elf_library NULL
 #endif
 
-extern bool enable_brk_thp_aligned;
-
 /*
  * If we don't support core dumping, then supply a NULL so we
  * don't even try.
@@ -1367,7 +1365,7 @@ out_free_interp:
 		current->brk_randomized = 1;
 #endif
 
-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned)
+	if (brk_thp_aligned_enabled())
 		mm->brk = mm->start_brk = ALIGN(mm->start_brk, HPAGE_SIZE);
 
 	if (current->personality & MMAP_PAGE_ZERO) {
