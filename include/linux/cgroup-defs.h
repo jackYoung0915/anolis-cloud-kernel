@@ -135,6 +135,14 @@ enum {
 	__CFTYPE_NOT_ON_DFL	= (1 << 17),	/* not on default hierarchy */
 };
 
+enum cgroup_attach_lock_mode {
+	/* Default */
+	CGRP_ATTACH_LOCK_GLOBAL,
+
+	/* When pid=0 && threadgroup=false, see comments in cgroup_procs_write_start */
+	CGRP_ATTACH_LOCK_NONE,
+};
+
 /*
  * cgroup_file is the handle for a file instance created in a cgroup which
  * is used, for example, to generate file changed notifications.  This can
