@@ -35,7 +35,6 @@ static inline bool __tlb_remove_folio_pages(struct mmu_gather *tlb,
 #define p4d_free_tlb p4d_free_tlb
 #define pud_free_tlb pud_free_tlb
 
-#define __HAVE_ARCH_TLB_REMOVE_TABLE
 #include <asm/tlbflush.h>
 #include <asm-generic/tlb.h>
 
