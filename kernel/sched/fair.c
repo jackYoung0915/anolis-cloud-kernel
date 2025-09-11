@@ -9294,7 +9294,7 @@ simple:
 	return p;
 
 idle:
-	if (!rf && (!sched_feat(ID_LOAD_BALANCE) || rq->pulled))
+	if (!rf)
 		return NULL;
 
 	new_tasks = newidle_balance(rq, rf);
@@ -9304,7 +9304,7 @@ idle:
 	 * possible for any higher priority task to appear. In that case we
 	 * must re-start the pick_next_entity() loop.
 	 */
-	if (new_tasks < 0 && (!sched_feat(ID_LOAD_BALANCE) || rq->pulled))
+	if (new_tasks < 0)
 		return RETRY_TASK;
 
 	if (new_tasks > 0) {
