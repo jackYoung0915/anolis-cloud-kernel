@@ -674,6 +674,23 @@ static int mpam_enable_quirk_nvidia_t241_1(struct mpam_msc *msc,
 	return 0;
 }
 
+static int mpam_enable_quirk_hisi_csu(struct mpam_msc *msc,
+				      const struct mpam_quirk *quirk)
+{
+	struct mpam_msc_ris *ris;
+
+	if (!quirk->plat || acpi_match_platform_list(quirk->plat) < 0)
+		return -EINVAL;
+
+	list_for_each_entry(ris, &msc->ris, msc_list) {
+		struct mpam_class *class = ris->vmsc->comp->class;
+
+		if (class->type == MPAM_CLASS_CACHE && class->level == 3)
+			return 0;
+	}
+	return -EINVAL;
+}
+
 static const struct mpam_quirk mpam_quirks[] = {
 	{
 	/* NVIDIA t241 erratum T241-MPAM-1 */
@@ -699,6 +716,14 @@ static const struct mpam_quirk mpam_quirks[] = {
 	.iidr       = MPAM_IIDR_ARM_CMN_650,
 	.iidr_mask  = MPAM_IIDR_MATCH_ONE,
 	.workaround = IGNORE_CSU_NRDY,
+	},
+	{
+	.init       = mpam_enable_quirk_hisi_csu,
+	.iidr_mask  = MPAM_IIDR_MATCH_ONE,
+	.plat       = (struct acpi_platform_list[]) {
+		HIP12_ACPI_PLAT,
+		{} },
+	.workaround = HISI_CSU_WORKAROUND,
 	},
 	{ NULL } /* Sentinel */
 };
@@ -1268,6 +1293,8 @@ static void __ris_msmon_read(void *arg)
 		if (mpam_has_feature(mpam_feat_msmon_csu_hw_nrdy, rprops))
 			nrdy = now & MSMON___NRDY;
 		now = FIELD_GET(MSMON___VALUE, now);
+		if (mpam_has_quirk(HISI_CSU_WORKAROUND, ris->vmsc->msc))
+			now >>= 1;
 
 		if (mpam_has_quirk(IGNORE_CSU_NRDY, msc) && m->waited_timeout)
 			nrdy = false;
