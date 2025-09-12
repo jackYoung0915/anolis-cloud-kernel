@@ -207,6 +207,8 @@ static inline pud_t *__pud_alloc_one(struct mm_struct *mm, unsigned long addr)
 	ptdesc = pagetable_alloc(gfp, 0);
 	if (!ptdesc)
 		return NULL;
+
+	pagetable_pud_ctor(ptdesc);
 	return ptdesc_address(ptdesc);
 }
 
@@ -228,8 +230,11 @@ static inline pud_t *pud_alloc_one(struct mm_struct *mm, unsigned long addr)
 
 static inline void __pud_free(struct mm_struct *mm, pud_t *pud)
 {
+	struct ptdesc *ptdesc = virt_to_ptdesc(pud);
+
 	BUG_ON((unsigned long)pud & (PAGE_SIZE-1));
-	pagetable_free(virt_to_ptdesc(pud));
+	pagetable_dtor(ptdesc);
+	pagetable_free(ptdesc);
 }
 
 #ifndef __HAVE_ARCH_PUD_FREE
