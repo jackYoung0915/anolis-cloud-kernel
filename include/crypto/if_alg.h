@@ -140,6 +140,7 @@ struct af_alg_async_req {
  *			SG?
  * @op:			Cryptographic operation to be performed when
  *			recvmsg is invoked.
+ * @write:		True if we are in the middle of a write.
  * @init:		True if metadata has been sent.
  * @len:		Length of memory allocated for this data structure.
  */
@@ -158,6 +159,7 @@ struct af_alg_ctx {
 	bool merge;
 	int op;
 	bool init;
+	bool write;
 
 	unsigned int len;
 };
