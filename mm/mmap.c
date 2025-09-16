@@ -191,7 +191,7 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *brkvma,
 		unsigned long addr, unsigned long request, unsigned long flags);
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
-	unsigned long newbrk, oldbrk, origbrk;
+	unsigned long newbrk, oldbrk, origbrk, orig_aligned_brk;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *brkvma, *next = NULL;
 	unsigned long min_brk;
@@ -204,6 +204,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		return -EINTR;
 
 	origbrk = mm->brk;
+	orig_aligned_brk = mm->aligned_brk;
 
 #ifdef CONFIG_COMPAT_BRK
 	/*
@@ -260,15 +261,15 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		if (!brkvma || brkvma->vm_start >= oldbrk)
 			goto out; /* mapping intersects with an existing non-brk vma. */
 		/*
-		 * mm->brk must be protected by write mmap_lock.
+		 * mm->brk and mm->aligned_brk must be protected by write mmap_lock.
 		 * do_vma_munmap() will drop the lock on success,  so update it
 		 * before calling do_vma_munmap().
 		 */
 		mm->brk = brk;
+		mm->aligned_brk = newbrk;
 		if (do_vma_munmap(&vmi, brkvma, newbrk, oldbrk, &uf, true))
 			goto out;
 
-		mm->aligned_brk = newbrk;
 		goto success_unlocked;
 	}
 
@@ -318,6 +319,7 @@ success_unlocked:
 
 out:
 	mm->brk = origbrk;
+	mm->aligned_brk = orig_aligned_brk;
 	mmap_write_unlock(mm);
 	return origbrk;
 }
