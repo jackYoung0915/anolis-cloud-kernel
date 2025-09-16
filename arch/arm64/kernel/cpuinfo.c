@@ -253,7 +253,9 @@ static int c_show(struct seq_file *m, void *v)
 			   id_aa64mmfr0_pa_range_bits(cpuinfo->reg_id_aa64mmfr0),
 			   id_aa64mmfr2_va_range_bits(cpuinfo->reg_id_aa64mmfr2));
 
-		freq = arch_cpufreq_get_khz(cpu);
+		/*Do not retrieve CPU frequency in the Ampere CPU environment.*/
+		if (MIDR_IMPLEMENTOR(midr) != ARM_CPU_IMP_APM)
+			freq = arch_cpufreq_get_khz(cpu);
 		if (!freq)
 			freq = pv_cpufreq_get();
 		if (freq)
