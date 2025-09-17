@@ -1859,10 +1859,19 @@ static int swapin_pmd(struct vm_fault *vmf,
 	int ret = 0;
 
 	do {
+		/*
+		 * pte_unmap() must be invoked to release RCU read lock
+		 * if the pte is not swap pte.
+		 * It must not be invoked again after swapin_pte() returns,
+		 * as in swapin_pte(), do_swap_page() will do pte_unmap()
+		 * at the start of that function.
+		 */
 		pte = my___pte_offset_map(vmf->pmd, addr, NULL);
 		vmf->orig_pte = *pte;
-		if (!is_swap_pte(*pte))
+		if (!is_swap_pte(*pte)) {
+			pte_unmap(pte);
 			continue;
+		}
 
 		vmf->address = addr;
 		vmf->pte = pte;
