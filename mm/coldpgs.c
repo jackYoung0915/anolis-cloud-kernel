@@ -1966,8 +1966,6 @@ static int reclaim_coldpgs_swapin_from_task(struct task_struct *task)
 {
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
-	struct anon_vma *av;
-	struct anon_vma_chain *vmac;
 	struct vm_fault vmf = { };
 	int ret = 0;
 
@@ -1982,11 +1980,12 @@ static int reclaim_coldpgs_swapin_from_task(struct task_struct *task)
 	if (mm->owner != task)
 		goto out;
 
+	VMA_ITERATOR(vmi, mm, 0);
 	down_read(&mm->mmap_lock);
 again:
-	my_anon_vma_interval_tree_foreach(vmac, &av->rb_root, 0,
-					  ULONG_MAX) {
-		vma = vmac->vma;
+	for_each_vma(vmi, vma) {
+		if (!vma->anon_vma)
+			continue;
 
 		vmf.vma = vma;
 		ret = swapin_vma(&vmf);
