@@ -59,6 +59,11 @@ struct ub_entity *msi_desc_to_ub_entity(struct msi_desc *desc)
 	return to_ub_entity(desc->dev);
 }
 
+static void __iomem *ub_vector_desc_base_addr(struct msi_desc *desc)
+{
+	return desc->ub_intr.vector_base;
+}
+
 void __iomem *ub_vector_desc_addr(struct msi_desc *desc)
 {
 	return desc->ub_intr.vector_base + (desc->ub_intr.intr_attrib.entry_nr *
