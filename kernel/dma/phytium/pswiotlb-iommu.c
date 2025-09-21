@@ -244,20 +244,16 @@ static int __iommu_map_pages(struct iommu_domain *domain, unsigned long iova,
 {
 	const struct iommu_domain_ops *ops = domain->ops;
 	size_t pgsize, count;
-	int ret;
+	int ret = -EINVAL;
 
 	pgsize = iommu_pgsize(domain, iova, paddr, size, &count);
 
 	pr_debug("mapping: iova 0x%lx pa %pa pgsize 0x%zx count %zu\n",
 		 iova, &paddr, pgsize, count);
 
-	if (ops->map_pages) {
+	if (ops->map_pages)
 		ret = ops->map_pages(domain, iova, paddr, pgsize, count, prot,
 				     gfp, mapped);
-	} else {
-		ret = ops->map(domain, iova, paddr, pgsize, prot, gfp);
-		*mapped = ret ? 0 : pgsize;
-	}
 
 	return ret;
 }
@@ -272,8 +268,7 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 	phys_addr_t orig_paddr = paddr;
 	int ret = 0;
 
-	if (unlikely(!(ops->map || ops->map_pages) ||
-		     domain->pgsize_bitmap == 0UL))
+	if (unlikely(!ops->map_pages || domain->pgsize_bitmap == 0UL))
 		return -ENODEV;
 
 	if (unlikely(!(domain->type & __IOMMU_DOMAIN_PAGING)))
