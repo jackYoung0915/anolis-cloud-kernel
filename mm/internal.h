@@ -1253,6 +1253,12 @@ int numa_migrate_prep(struct folio *folio, struct vm_area_struct *vma,
 void free_zone_device_page(struct page *page);
 int migrate_device_coherent_page(struct page *page);
 
+struct vm_struct *__get_vm_area_node(unsigned long size,
+				     unsigned long align, unsigned long shift,
+				     unsigned long vm_flags, unsigned long start,
+				     unsigned long end, int node, gfp_t gfp_mask,
+				     const void *caller);
+
 /*
  * mm/gup.c
  */
