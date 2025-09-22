@@ -107,7 +107,6 @@ struct sun50i_iommu {
 	struct clk *clk;
 
 	struct iommu_domain *domain;
-	struct iommu_group *group;
 	struct kmem_cache *pt_pool;
 };
 
@@ -402,8 +401,8 @@ static void sun50i_iommu_flush_iotlb_all(struct iommu_domain *domain)
 	spin_unlock_irqrestore(&iommu->iommu_lock, flags);
 }
 
-static void sun50i_iommu_iotlb_sync_map(struct iommu_domain *domain,
-					unsigned long iova, size_t size)
+static int sun50i_iommu_iotlb_sync_map(struct iommu_domain *domain,
+				       unsigned long iova, size_t size)
 {
 	struct sun50i_iommu_domain *sun50i_domain = to_sun50i_domain(domain);
 	struct sun50i_iommu *iommu = sun50i_domain->iommu;
@@ -412,6 +411,8 @@ static void sun50i_iommu_iotlb_sync_map(struct iommu_domain *domain,
 	spin_lock_irqsave(&iommu->iommu_lock, flags);
 	sun50i_iommu_zap_range(iommu, iova, size);
 	spin_unlock_irqrestore(&iommu->iommu_lock, flags);
+
+	return 0;
 }
 
 static void sun50i_iommu_iotlb_sync(struct iommu_domain *domain,
@@ -590,7 +591,8 @@ static u32 *sun50i_dte_get_page_table(struct sun50i_iommu_domain *sun50i_domain,
 }
 
 static int sun50i_iommu_map(struct iommu_domain *domain, unsigned long iova,
-			    phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+			    phys_addr_t paddr, size_t size, size_t count,
+			    int prot, gfp_t gfp, size_t *mapped)
 {
 	struct sun50i_iommu_domain *sun50i_domain = to_sun50i_domain(domain);
 	struct sun50i_iommu *iommu = sun50i_domain->iommu;
@@ -617,13 +619,14 @@ static int sun50i_iommu_map(struct iommu_domain *domain, unsigned long iova,
 
 	*pte_addr = sun50i_mk_pte(paddr, prot);
 	sun50i_table_flush(sun50i_domain, pte_addr, 1);
+	*mapped = size;
 
 out:
 	return ret;
 }
 
 static size_t sun50i_iommu_unmap(struct iommu_domain *domain, unsigned long iova,
-				 size_t size, struct iommu_iotlb_gather *gather)
+				 size_t size, size_t count, struct iommu_iotlb_gather *gather)
 {
 	struct sun50i_iommu_domain *sun50i_domain = to_sun50i_domain(domain);
 	phys_addr_t pt_phys;
@@ -816,13 +819,6 @@ static struct iommu_device *sun50i_iommu_probe_device(struct device *dev)
 	return &iommu->iommu;
 }
 
-static struct iommu_group *sun50i_iommu_device_group(struct device *dev)
-{
-	struct sun50i_iommu *iommu = sun50i_iommu_from_dev(dev);
-
-	return iommu_group_ref_get(iommu->group);
-}
-
 static int sun50i_iommu_of_xlate(struct device *dev,
 				 const struct of_phandle_args *args)
 {
@@ -837,7 +833,7 @@ static int sun50i_iommu_of_xlate(struct device *dev,
 static const struct iommu_ops sun50i_iommu_ops = {
 	.identity_domain = &sun50i_iommu_identity_domain,
 	.pgsize_bitmap	= SZ_4K,
-	.device_group	= sun50i_iommu_device_group,
+	.device_group	= generic_single_device_group,
 	.domain_alloc_paging = sun50i_iommu_domain_alloc_paging,
 	.of_xlate	= sun50i_iommu_of_xlate,
 	.probe_device	= sun50i_iommu_probe_device,
@@ -847,8 +843,8 @@ static const struct iommu_ops sun50i_iommu_ops = {
 		.iotlb_sync_map = sun50i_iommu_iotlb_sync_map,
 		.iotlb_sync	= sun50i_iommu_iotlb_sync,
 		.iova_to_phys	= sun50i_iommu_iova_to_phys,
-		.map		= sun50i_iommu_map,
-		.unmap		= sun50i_iommu_unmap,
+		.map_pages	= sun50i_iommu_map,
+		.unmap_pages	= sun50i_iommu_unmap,
 		.free		= sun50i_iommu_domain_free,
 	}
 };
@@ -1005,42 +1001,36 @@ static int sun50i_iommu_probe(struct platform_device *pdev)
 	if (!iommu->pt_pool)
 		return -ENOMEM;
 
-	iommu->group = iommu_group_alloc();
-	if (IS_ERR(iommu->group)) {
-		ret = PTR_ERR(iommu->group);
-		goto err_free_cache;
-	}
-
 	iommu->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(iommu->base)) {
 		ret = PTR_ERR(iommu->base);
-		goto err_free_group;
+		goto err_free_cache;
 	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		ret = irq;
-		goto err_free_group;
+		goto err_free_cache;
 	}
 
 	iommu->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(iommu->clk)) {
 		dev_err(&pdev->dev, "Couldn't get our clock.\n");
 		ret = PTR_ERR(iommu->clk);
-		goto err_free_group;
+		goto err_free_cache;
 	}
 
 	iommu->reset = devm_reset_control_get(&pdev->dev, NULL);
 	if (IS_ERR(iommu->reset)) {
 		dev_err(&pdev->dev, "Couldn't get our reset line.\n");
 		ret = PTR_ERR(iommu->reset);
-		goto err_free_group;
+		goto err_free_cache;
 	}
 
 	ret = iommu_device_sysfs_add(&iommu->iommu, &pdev->dev,
 				     NULL, dev_name(&pdev->dev));
 	if (ret)
-		goto err_free_group;
+		goto err_free_cache;
 
 	ret = iommu_device_register(&iommu->iommu, &sun50i_iommu_ops, &pdev->dev);
 	if (ret)
@@ -1058,9 +1048,6 @@ err_unregister:
 
 err_remove_sysfs:
 	iommu_device_sysfs_remove(&iommu->iommu);
-
-err_free_group:
-	iommu_group_put(iommu->group);
 
 err_free_cache:
 	kmem_cache_destroy(iommu->pt_pool);
