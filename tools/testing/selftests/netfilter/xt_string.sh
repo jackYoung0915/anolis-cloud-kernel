@@ -47,11 +47,15 @@ countrule() { # (pattern)
 	showrules | grep -c -- "$*"
 }
 send() { # (offset)
+	infile=$(mktemp)
 	( for ((i = 0; i < $1 - $hdrlen; i++)); do
-		printf " "
+		echo -n " "
 	  done
-	  printf "$pattern"
-	) | ip netns exec "$ns" nc -w 1 -u 10.1.2.2 27374
+	  echo -n "$pattern"
+	) > "$infile"
+
+	ip netns exec "$ns" nc -w 1 -u 10.1.2.2 27374 < "$infile"
+	rm -f "$infile"
 }
 
 add_rule bm 1000 1500
