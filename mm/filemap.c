@@ -3805,7 +3805,10 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 			folio_unlock(folio);
 			folio_put(folio);
 			folio = d_folio;
-			folio_lock(folio);
+			if (!folio_trylock(folio)) {
+				folio_put(folio);
+				continue;
+			}
 		}
 
 		if (!folio_test_large(folio))
