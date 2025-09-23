@@ -433,11 +433,9 @@ bool arch_dma_unmap_sg_direct(struct device *dev, struct scatterlist *sg,
 #endif
 
 #ifdef CONFIG_ARCH_HAS_SETUP_DMA_OPS
-void arch_setup_dma_ops(struct device *dev, u64 dma_base, u64 size,
-		bool coherent);
+void arch_setup_dma_ops(struct device *dev, bool coherent);
 #else
-static inline void arch_setup_dma_ops(struct device *dev, u64 dma_base,
-		u64 size, bool coherent)
+static inline void arch_setup_dma_ops(struct device *dev, bool coherent)
 {
 }
 #endif /* CONFIG_ARCH_HAS_SETUP_DMA_OPS */
@@ -520,17 +518,10 @@ pci_p2pdma_map_segment(struct pci_p2pdma_map_state *state, struct device *dev,
 #if defined CONFIG_PCI && defined CONFIG_X86
 
 extern bool is_zhaoxin_kh40000;
-extern const struct dma_map_ops kh40000_dma_direct_ops;
-void kh40000_set_iommu_dma_ops(struct device *dev);
 
 #else
 
 bool __weak is_zhaoxin_kh40000;
-static inline void kh40000_set_iommu_dma_ops(struct device *dev)
-{
-
-}
-
 
 #endif
 

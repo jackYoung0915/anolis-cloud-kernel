@@ -73,8 +73,7 @@ void acpi_unlock_hp_context(void)
 
 void acpi_initialize_hp_context(struct acpi_device *adev,
 				struct acpi_hotplug_context *hp,
-				int (*notify)(struct acpi_device *, u32),
-				void (*uevent)(struct acpi_device *, u32))
+				acpi_hp_notify notify, acpi_hp_uevent uevent)
 {
 	acpi_lock_hp_context();
 	hp->notify = notify;
@@ -390,7 +389,7 @@ void acpi_device_hotplug(struct acpi_device *adev, u32 src)
 	} else if (adev->flags.hotplug_notify) {
 		error = acpi_generic_hotplug_event(adev, src);
 	} else {
-		int (*notify)(struct acpi_device *, u32);
+		acpi_hp_notify notify;
 
 		acpi_lock_hp_context();
 		notify = adev->hp ? adev->hp->notify : NULL;
@@ -1262,10 +1261,10 @@ const char *acpi_device_hid(struct acpi_device *device)
 {
 	struct acpi_hardware_id *hid;
 
-	if (list_empty(&device->pnp.ids))
+	hid = list_first_entry_or_null(&device->pnp.ids, struct acpi_hardware_id, list);
+	if (!hid)
 		return dummy_hid;
 
-	hid = list_first_entry(&device->pnp.ids, struct acpi_hardware_id, list);
 	return hid->id;
 }
 EXPORT_SYMBOL(acpi_device_hid);
@@ -1543,37 +1542,25 @@ int acpi_dma_get_range(struct device *dev, const struct bus_dma_region **map)
 
 #ifdef CONFIG_IOMMU_API
 int acpi_iommu_fwspec_init(struct device *dev, u32 id,
-			   struct fwnode_handle *fwnode,
-			   const struct iommu_ops *ops)
+			   struct fwnode_handle *fwnode)
 {
-	int ret = iommu_fwspec_init(dev, fwnode, ops);
+	int ret;
 
-	if (!ret)
-		ret = iommu_fwspec_add_ids(dev, &id, 1);
+	ret = iommu_fwspec_init(dev, fwnode);
+	if (ret)
+		return ret;
 
-	return ret;
-}
-
-static inline const struct iommu_ops *acpi_iommu_fwspec_ops(struct device *dev)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	return fwspec ? fwspec->ops : NULL;
+	return iommu_fwspec_add_ids(dev, &id, 1);
 }
 
 static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 {
 	int err;
-	const struct iommu_ops *ops;
 
 	/* Serialise to make dev->iommu stable under our potential fwspec */
 	mutex_lock(&iommu_probe_device_lock);
-	/*
-	 * If we already translated the fwspec there is nothing left to do,
-	 * return the iommu_ops.
-	 */
-	ops = acpi_iommu_fwspec_ops(dev);
-	if (ops) {
+	/* If we already translated the fwspec there is nothing left to do */
+	if (dev_iommu_fwspec_get(dev)) {
 		mutex_unlock(&iommu_probe_device_lock);
 		return 0;
 	}
@@ -1590,23 +1577,13 @@ static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 	if (!err && dev->bus)
 		err = iommu_probe_device(dev);
 
-	/* Ignore all other errors apart from EPROBE_DEFER */
-	if (err == -EPROBE_DEFER) {
-		return err;
-	} else if (err) {
-		dev_dbg(dev, "Adding to IOMMU failed: %d\n", err);
-		return -ENODEV;
-	}
-	if (!acpi_iommu_fwspec_ops(dev))
-		return -ENODEV;
-	return 0;
+	return err;
 }
 
 #else /* !CONFIG_IOMMU_API */
 
 int acpi_iommu_fwspec_init(struct device *dev, u32 id,
-			   struct fwnode_handle *fwnode,
-			   const struct iommu_ops *ops)
+			   struct fwnode_handle *fwnode)
 {
 	return -ENODEV;
 }
@@ -1636,16 +1613,14 @@ int acpi_dma_configure_id(struct device *dev, enum dev_dma_attr attr,
 
 	acpi_arch_dma_setup(dev);
 
+	/* Ignore all other errors apart from EPROBE_DEFER */
 	ret = acpi_iommu_configure_id(dev, input_id);
 	if (ret == -EPROBE_DEFER)
 		return -EPROBE_DEFER;
+	if (ret)
+		dev_dbg(dev, "Adding to IOMMU failed: %d\n", ret);
 
-	/*
-	 * Historically this routine doesn't fail driver probing due to errors
-	 * in acpi_iommu_configure_id()
-	 */
-
-	arch_setup_dma_ops(dev, 0, U64_MAX, attr == DEV_DMA_COHERENT);
+	arch_setup_dma_ops(dev, attr == DEV_DMA_COHERENT);
 
 	return 0;
 }
