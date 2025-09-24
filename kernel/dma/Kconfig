@@ -8,8 +8,12 @@ config HAS_DMA
 	depends on !NO_DMA
 	default y
 
+config DMA_OPS_HELPERS
+	bool
+
 config DMA_OPS
 	depends on HAS_DMA
+	select DMA_OPS_HELPERS
 	bool
 
 #
@@ -106,6 +110,11 @@ config SWIOTLB_DYNAMIC
 config DMA_BOUNCE_UNALIGNED_KMALLOC
 	bool
 	depends on SWIOTLB
+
+config DMA_NEED_SYNC
+	def_bool ARCH_HAS_SYNC_DMA_FOR_DEVICE || ARCH_HAS_SYNC_DMA_FOR_CPU || \
+		 ARCH_HAS_SYNC_DMA_FOR_CPU_ALL || DMA_API_DEBUG || DMA_OPS || \
+		 SWIOTLB
 
 config DMA_RESTRICTED_POOL
 	bool "DMA Restricted Pool"
@@ -270,5 +279,3 @@ config DMA_MAP_BENCHMARK
 	  performance of dma_(un)map_page.
 
 	  See tools/testing/selftests/dma/dma_map_benchmark.c
-
-source "kernel/dma/phytium/Kconfig"

@@ -13,23 +13,13 @@
 struct cma;
 struct iommu_ops;
 
-/*
- * Values for struct dma_map_ops.flags:
- *
- * DMA_F_PCI_P2PDMA_SUPPORTED: Indicates the dma_map_ops implementation can
- * handle PCI P2PDMA pages in the map_sg/unmap_sg operation.
- */
-#define DMA_F_PCI_P2PDMA_SUPPORTED     (1 << 0)
-
 struct dma_map_ops {
-	unsigned int flags;
-
 	void *(*alloc)(struct device *dev, size_t size,
 			dma_addr_t *dma_handle, gfp_t gfp,
 			unsigned long attrs);
 	void (*free)(struct device *dev, size_t size, void *vaddr,
 			dma_addr_t dma_handle, unsigned long attrs);
-	struct page *(*alloc_pages)(struct device *dev, size_t size,
+	struct page *(*alloc_pages_op)(struct device *dev, size_t size,
 			dma_addr_t *dma_handle, enum dma_data_direction dir,
 			gfp_t gfp);
 	void (*free_pages)(struct device *dev, size_t size, struct page *vaddr,
@@ -279,6 +269,15 @@ static inline bool dev_is_dma_coherent(struct device *dev)
 	return true;
 }
 #endif /* CONFIG_ARCH_HAS_DMA_COHERENCE_H */
+
+static inline void dma_reset_need_sync(struct device *dev)
+{
+#ifdef CONFIG_DMA_NEED_SYNC
+	/* Reset it only once so that the function can be called on hotpath */
+	if (unlikely(dev->dma_skip_sync))
+		dev->dma_skip_sync = false;
+#endif
+}
 
 /*
  * Check whether potential kmalloc() buffers are safe for non-coherent DMA.

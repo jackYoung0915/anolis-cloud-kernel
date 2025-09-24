@@ -3,14 +3,14 @@
  */
 #define pr_fmt(fmt) "iommufd: " fmt
 
+#include <linux/anon_inodes.h>
 #include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/iommufd.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/iommufd.h>
 #include <linux/pci.h>
 #include <linux/poll.h>
-#include <linux/anon_inodes.h>
 #include <uapi/linux/iommufd.h>
 
 #include "../iommu-priv.h"
@@ -128,7 +128,7 @@ iommufd_device_get_attach_handle(struct iommufd_device *idev)
 	struct iommu_attach_handle *handle;
 
 	handle = iommu_attach_handle_get(idev->igroup->group, IOMMU_NO_PASID, 0);
-	if (!handle)
+	if (IS_ERR(handle))
 		return NULL;
 
 	return to_iommufd_handle(handle);
@@ -304,6 +304,16 @@ static ssize_t iommufd_fault_fops_write(struct file *filep, const char __user *b
 		rc = copy_from_user(&response, buf + done, response_size);
 		if (rc)
 			break;
+
+		static_assert((int)IOMMUFD_PAGE_RESP_SUCCESS ==
+			      (int)IOMMU_PAGE_RESP_SUCCESS);
+		static_assert((int)IOMMUFD_PAGE_RESP_INVALID ==
+			      (int)IOMMU_PAGE_RESP_INVALID);
+		if (response.code != IOMMUFD_PAGE_RESP_SUCCESS &&
+		    response.code != IOMMUFD_PAGE_RESP_INVALID) {
+			rc = -EINVAL;
+			break;
+		}
 
 		group = xa_erase(&fault->response, response.cookie);
 		if (!group) {
