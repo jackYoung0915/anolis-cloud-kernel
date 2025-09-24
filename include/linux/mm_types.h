@@ -1039,6 +1039,9 @@ struct mm_struct {
 		unsigned long async_fork_flags;
 		atomic_t async_fork_refcnt;
 #endif
+#ifdef CONFIG_FUTEX
+		unsigned int futex_nid;
+#endif
 	} __randomize_layout;
 
 	CK_KABI_RESERVE(1)
