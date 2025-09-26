@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Makefile.
+#
+
+nettrace-objs	:= core.o kprobe.o parser.o dump.o help.o group.o handler.o procfs.o utils.o
+obj-m			:= ntrace.o
+
+all: clean build
+
+build:
+	make -C $(KERNEL_DIR) M=$(shell pwd) modules
+
+clean:
+	make -C $(KERNEL_DIR) M=$(shell pwd) clean
+
+.PHONY: build

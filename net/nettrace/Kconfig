@@ -1,0 +1,11 @@
+config NET_TRACE
+	tristate "Net trace"
+	depends on KPROBES
+	default n
+	help
+	  Trace net package from the kernel network proto stack.Nettrace is
+	  a new kernel module for network packet capture and tracking.It can
+	  capture packets from common protocol stacks and various points within
+	  the kernel, detect abnormal packets, and print kernel and user-mode
+	  stacks at tracepoints. It is designed to be scalable and to have
+	  minimal impact on system performance.
