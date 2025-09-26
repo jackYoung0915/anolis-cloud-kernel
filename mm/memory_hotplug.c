@@ -271,11 +271,10 @@ static int check_hotplug_memory_addressable(unsigned long pfn,
 {
 	const u64 max_addr = PFN_PHYS(pfn + nr_pages) - 1;
 
-	if (max_addr >> MAX_PHYSMEM_BITS) {
-		const u64 max_allowed = (1ull << (MAX_PHYSMEM_BITS + 1)) - 1;
+	if (max_addr > PHYSMEM_END) {
 		WARN(1,
 		     "Hotplugged memory exceeds maximum addressable address, range=%#llx-%#llx, maximum=%#llx\n",
-		     (u64)PFN_PHYS(pfn), max_addr, max_allowed);
+		     (u64)PFN_PHYS(pfn), max_addr, (u64)PHYSMEM_END);
 		return -E2BIG;
 	}
 

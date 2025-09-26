@@ -1728,7 +1728,7 @@ static struct resource *__request_free_mem_region(struct device *dev,
 	struct resource *res;
 
 	size = ALIGN(size, 1UL << PA_SECTION_SHIFT);
-	end = min_t(unsigned long, base->end, (1UL << MAX_PHYSMEM_BITS) - 1);
+	end = min_t(unsigned long, base->end, PHYSMEM_END);
 	addr = end - size + 1UL;
 
 	for (; addr > size && addr >= base->start; addr -= size) {
