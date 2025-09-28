@@ -213,7 +213,7 @@ static void adf_shutdown(struct pci_dev *pdev)
 {
 	struct adf_accel_dev *accel_dev = adf_devmgr_pci_to_accel_dev(pdev);
 
-	adf_dev_down(accel_dev, false);
+	adf_dev_down(accel_dev);
 }
 
 static const struct pci_device_id adf_pci_tbl[] = {
