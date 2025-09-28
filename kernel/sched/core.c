@@ -6225,6 +6225,9 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	struct rq *rq_i;
 	bool need_sync;
 
+	if (sched_feat(ID_LOAD_BALANCE))
+		rq->pulled = false;
+
 	if (!sched_core_enabled(rq))
 		return __pick_next_task(rq, prev, rf);
 
