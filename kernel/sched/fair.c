@@ -8928,9 +8928,11 @@ static void task_dead_fair(struct task_struct *p)
 static int
 balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
-	if (rq->nr_running)
+	if (rq->nr_running && (!sched_feat(ID_LOAD_BALANCE) || !sched_idle_rq(rq)))
 		return 1;
 
+	if (sched_feat(ID_LOAD_BALANCE))
+		rq->pulled = true;
 	return newidle_balance(rq, rf) != 0;
 }
 #endif /* CONFIG_SMP */
@@ -9200,13 +9202,11 @@ bool id_can_stop_tick(struct rq *rq)
 }
 #endif
 
-static struct task_struct *__pick_task_fair(struct rq *rq)
+static struct task_struct *pick_task_fair(struct rq *rq)
 {
 	struct sched_entity *se;
 	struct cfs_rq *cfs_rq;
 
-	if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(rq) && !rq->pulled)
-		return NULL;
 again:
 	cfs_rq = &rq->cfs;
 	if (!cfs_rq->nr_queued)
@@ -9229,14 +9229,6 @@ again:
 	return task_of(se);
 }
 
-static struct task_struct *pick_task_fair(struct rq *rq)
-{
-	if (sched_feat(ID_LOAD_BALANCE))
-		rq->pulled = false;
-
-	return __pick_task_fair(rq);
-}
-
 static void __set_next_task_fair(struct rq *rq, struct task_struct *p, bool first);
 static void set_next_task_fair(struct rq *rq, struct task_struct *p, bool first);
 
@@ -9247,13 +9239,13 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 	struct task_struct *p;
 	int new_tasks;
 
-	if (sched_feat(ID_LOAD_BALANCE))
-		rq->pulled = false;
-
 	update_rq_on_expel(rq);
 	push_expellee(rq);
 again:
-	p = __pick_task_fair(rq);
+	if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(rq) && !rq->pulled)
+		p = NULL;
+	else
+		p = pick_task_fair(rq);
 	if (!p)
 		goto idle;
 	se = &p->se;
@@ -9315,11 +9307,15 @@ idle:
 	 * possible for any higher priority task to appear. In that case we
 	 * must re-start the pick_next_entity() loop.
 	 */
-	if (new_tasks < 0)
+	if (new_tasks < 0) {
+		if (sched_feat(ID_LOAD_BALANCE) && !rq->pulled)
+			rq->pulled = true;
 		return RETRY_TASK;
+	}
 
 	if (new_tasks > 0) {
-		rq->pulled = true;
+		if (sched_feat(ID_LOAD_BALANCE) && !rq->pulled)
+			rq->pulled = true;
 		goto again;
 	}
 
