@@ -1062,8 +1062,10 @@ int __mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
 
 	__move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_UNMOVABLE, phase);
 
-	if (phase == MHP_PHASE_PREPARE)
+	if (phase == MHP_PHASE_PREPARE) {
+		atomic_long_add(nr_pages, &zone->deferred_pages);
 		return ret;
+	}
 
 	for (i = 0; i < nr_pages; i++)
 		SetPageVmemmapSelfHosted(pfn_to_page(pfn + i));
