@@ -2714,7 +2714,6 @@ static irqreturn_t txgbe_msix_other(int __always_unused irq, void *data)
 	if (eicr & TXGBE_PX_MISC_IC_PCIE_REQ_ERR) {
 		ERROR_REPORT1(TXGBE_ERROR_POLLING,
 			      "lan id %d, PCIe request error founded.\n", hw->bus.lan_id);
-		pci_read_config_word(adapter->pdev, PCI_VENDOR_ID, &vid);
 
 		if (hw->bus.lan_id == 0) {
 			adapter->flags2 |= TXGBE_FLAG2_PCIE_NEED_RECOVER;
