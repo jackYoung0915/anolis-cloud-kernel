@@ -7405,7 +7405,6 @@ static void txgbe_spoof_check(struct txgbe_adapter *adapter)
 static void txgbe_linkdown_subtask(struct txgbe_adapter *adapter)
 {
 	u32 __maybe_unused value = 0;
-	struct txgbe_hw *hw = &adapter->hw;
 
 	/* if interface is down do nothing */
 	if (test_bit(__TXGBE_DOWN, &adapter->state) ||
@@ -7633,6 +7632,8 @@ static void txgbe_sfp_link_config_subtask(struct txgbe_adapter *adapter)
 				else if (speed & TXGBE_LINK_SPEED_10GB_FULL)
 					speed = TXGBE_LINK_SPEED_10GB_FULL;
 			}
+
+			adapter->autoneg = autoneg;
 		}
 	}
 
