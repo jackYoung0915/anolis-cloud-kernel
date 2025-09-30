@@ -1,0 +1,27 @@
+* Tue Sep 30 2025 Ruidong Tian <tianruidong@linux.alibaba.com> [6.6.102-5%%DIST%%]
+- anolis: duptext: fix might_sleep in rcu in filemap_map_pages() (Yuanhe Shu)
+- anolis: config: Update the CONFIG_LSM (Tianjia Zhang)
+- fs: writeback: fix use-after-free in __mark_inode_dirty() (Jiufei Xue) {CVE-2025-39866}
+- media: ivsc: Fix crash at shutdown due to missing mei_cldev_disable() calls (Hans de Goede)
+- mISDN: hfcpci: Fix warning when deleting uninitialized timer (Vladimir Riabchun) {CVE-2025-39833}
+- bus: mhi: host: Detect events pointing to unexpected TREs (Youssef Samir) {CVE-2025-39790}
+- wifi: ath10k: shutdown driver when hardware is unreliable (Kang Yang) {CVE-2025-39746}
+- nvme-tcp: fix potential memory corruption in nvme_tcp_recv_pdu() (Maurizio Lombardi) {CVE-2025-21927}
+- nvme-tcp: sanitize request list handling (Hannes Reinecke) {CVE-2025-38264}
+- llist: add interface to check if a node is on a list. (NeilBrown)
+- anolis: selftests: netfilter: xt_string.sh: fix pipe symbol issue (Wen Gu)
+- perf/dwc_pcie: Move common DWC struct definitions to 'pcie-dwc.h' (Manivannan Sadhasivam)
+- perf/dwc_pcie: fix duplicate pci_dev devices (Yunhui Cui)
+- perf/dwc_pcie: fix some unreleased resources (Yunhui Cui)
+- perf/dwc_pcie: Qualify RAS DES VSEC Capability by Vendor, Revision (Bjorn Helgaas)
+- perf/dwc_pcie: Fix the event numbers (Ilkka Koskinen)
+- vmlinux: Avoid weak reference to notes section (Ard Biesheuvel)
+- kallsyms: Avoid weak references for kallsyms symbols (Juxin Gao)
+- btf: Avoid weak external references (Ard Biesheuvel)
+- crypto: iaa - Remove potential infinite loop in check_completion() (Zanussi, Tom)
+- ipv6: sr: Fix MAC comparison to be constant-time (Eric Biggers)
+- anolis: mm: coldpgs: Fix pte_unmap() missing issue (Zelin Deng)
+- anolis: mm: coldpgs: Fix incorrect vma traverse (Zelin Deng)
+- anolis: virtio-net: remove BQL (Xuan Zhuo)
+- mm/memory-failure: fix infinite UCE for VM_PFNMAP pfn (Jinjiang Tu)
+
