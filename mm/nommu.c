@@ -1208,6 +1208,10 @@ share:
 
 	setup_vma_to_mm(vma, current->mm);
 	current->mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+	if (current->mm->map_count > current->mm->max_map_count)
+		current->mm->max_map_count = current->mm->map_count;
+#endif
 	/* add the VMA to the tree */
 	vma_iter_store(&vmi, vma);
 
@@ -1376,6 +1380,10 @@ int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	setup_vma_to_mm(new, mm);
 	vma_iter_store(vmi, new);
 	mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+	if (mm->map_count > mm->max_map_count)
+		mm->max_map_count = mm->map_count;
+#endif
 	return 0;
 
 err_vmi_preallocate:

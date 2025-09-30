@@ -468,6 +468,10 @@ static int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
 	}
 
 	mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+	if (mm->map_count > mm->max_map_count)
+		mm->max_map_count = mm->map_count;
+#endif
 	validate_mm(mm);
 	return 0;
 }
@@ -586,6 +590,10 @@ static inline void vma_complete(struct vma_prepare *vp,
 		 */
 		vma_iter_store(vmi, vp->insert);
 		mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+		if (mm->map_count > mm->max_map_count)
+			mm->max_map_count = mm->map_count;
+#endif
 	}
 
 	if (vp->anon_vma) {
@@ -2925,6 +2933,10 @@ cannot_expand:
 	vma_start_write(vma);
 	vma_iter_store(&vmi, vma);
 	mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+	if (mm->map_count > mm->max_map_count)
+		mm->max_map_count = mm->map_count;
+#endif
 	if (vma->vm_file) {
 		i_mmap_lock_write(vma->vm_file->f_mapping);
 		if (vma->vm_flags & VM_SHARED)
@@ -3282,6 +3294,10 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		goto mas_store_fail;
 
 	mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+	if (mm->map_count > mm->max_map_count)
+		mm->max_map_count = mm->map_count;
+#endif
 	validate_mm(mm);
 	ksm_add_vma(vma);
 out:
