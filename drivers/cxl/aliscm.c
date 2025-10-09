@@ -629,8 +629,6 @@ struct cxl_aliscm_dev *devm_cxl_add_aliscm(struct device *host)
 		goto err;
 	}
 
-	dev_set_drvdata(host, aliscm);
-
 	return aliscm;
 
 err:
