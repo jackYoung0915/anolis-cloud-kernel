@@ -677,6 +677,7 @@ TRACE_EVENT(cxl_aliscm_specific,
 		CXL_EVT_TP_fast_assign(cxlmd, log, rec->hdr);
 
 		/* AliSCM Specific Event */
+		__entry->hdr_uuid = CXL_EVENT_ALISCM_SPECIFIC_UUID;
 		__entry->event_type = rec->event_type;
 		__entry->error_source = le16_to_cpu(rec->info.err_src);
 		__entry->error_detail = le16_to_cpu(rec->info.err_detail);
