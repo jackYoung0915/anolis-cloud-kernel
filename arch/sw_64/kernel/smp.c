@@ -73,7 +73,7 @@ static void upshift_freq(void)
 	if (is_guest_or_emul())
 		return;
 
-	if (!sunway_machine_is_compatible("sunway,junzhang"))
+	if (!is_junzhang_v1())
 		return;
 
 	cpu_num = sw64_chip->get_cpu_num();
@@ -96,7 +96,7 @@ static void downshift_freq(void)
 	if (is_guest_or_emul())
 		return;
 
-	if (!sunway_machine_is_compatible("sunway,junzhang"))
+	if (!is_junzhang_v1())
 		return;
 
 	for_each_online_cpu(cpu) {
