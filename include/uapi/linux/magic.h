@@ -102,5 +102,7 @@
 #define DEVMEM_MAGIC		0x454d444d	/* "DMEM" */
 #define SECRETMEM_MAGIC		0x5345434d	/* "SECM" */
 
+#ifdef CONFIG_GROUP_BALANCER
 #define GROUP_BALANCER_MAGIC	0x26262626
+#endif
 #endif /* __LINUX_MAGIC_H__ */
