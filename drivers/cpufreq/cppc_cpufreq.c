@@ -365,36 +365,39 @@ static inline u64 get_delta(u64 t1, u64 t0)
 	return (u32)t1 - (u32)t0;
 }
 
-static int cppc_get_rate_from_fbctrs(struct cppc_cpudata *cpu_data,
-				     struct cppc_perf_fb_ctrs fb_ctrs_t0,
-				     struct cppc_perf_fb_ctrs fb_ctrs_t1)
+static int cppc_perf_from_fbctrs(struct cppc_cpudata *cpu_data,
+				     struct cppc_perf_fb_ctrs *fb_ctrs_t0,
+				     struct cppc_perf_fb_ctrs *fb_ctrs_t1)
 {
 	u64 delta_reference, delta_delivered;
-	u64 reference_perf, delivered_perf;
+	u64 reference_perf;
 
-	reference_perf = fb_ctrs_t0.reference_perf;
+	reference_perf = fb_ctrs_t0->reference_perf;
 
-	delta_reference = get_delta(fb_ctrs_t1.reference,
-				    fb_ctrs_t0.reference);
-	delta_delivered = get_delta(fb_ctrs_t1.delivered,
-				    fb_ctrs_t0.delivered);
+	delta_reference = get_delta(fb_ctrs_t1->reference,
+				    fb_ctrs_t0->reference);
+	delta_delivered = get_delta(fb_ctrs_t1->delivered,
+				    fb_ctrs_t0->delivered);
 
-	/* Check to avoid divide-by zero */
-	if (delta_reference || delta_delivered)
-		delivered_perf = (reference_perf * delta_delivered) /
-					delta_reference;
-	else
-		delivered_perf = cpu_data->perf_ctrls.desired_perf;
+	/* Check to avoid divide-by zero and invalid delivered_perf */
+	if (!delta_reference || !delta_delivered)
+		return cpu_data->perf_ctrls.desired_perf;
 
-	return cppc_cpufreq_perf_to_khz(cpu_data, delivered_perf);
+	return (reference_perf * delta_delivered) / delta_reference;
 }
 
 static unsigned int cppc_cpufreq_get_rate(unsigned int cpu)
 {
 	struct cppc_perf_fb_ctrs fb_ctrs_t0 = {0}, fb_ctrs_t1 = {0};
 	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
-	struct cppc_cpudata *cpu_data = policy->driver_data;
+	struct cppc_cpudata *cpu_data;
+	u64 delivered_perf;
 	int ret;
+
+	if (!policy)
+		return 0;
+
+	cpu_data = policy->driver_data;
 
 	cpufreq_cpu_put(policy);
 
@@ -407,8 +410,9 @@ static unsigned int cppc_cpufreq_get_rate(unsigned int cpu)
 	ret = cppc_get_perf_ctrs(cpu, &fb_ctrs_t1);
 	if (ret)
 		return ret;
+	delivered_perf = cppc_perf_from_fbctrs(cpu_data, &fb_ctrs_t0, &fb_ctrs_t1);
 
-	return cppc_get_rate_from_fbctrs(cpu_data, fb_ctrs_t0, fb_ctrs_t1);
+	return cppc_cpufreq_perf_to_khz(cpu_data, delivered_perf);
 }
 
 static int cppc_cpufreq_set_boost(struct cpufreq_policy *policy, int state)
@@ -456,15 +460,20 @@ static struct cpufreq_driver cppc_cpufreq_driver = {
 static unsigned int hisi_cppc_cpufreq_get_rate(unsigned int cpu)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
-	struct cppc_cpudata *cpu_data = policy->driver_data;
+	struct cppc_cpudata *cpu_data;
 	u64 desired_perf;
 	int ret;
+
+	if (!policy)
+		return 0;
+
+	cpu_data = policy->driver_data;
 
 	cpufreq_cpu_put(policy);
 
 	ret = cppc_get_desired_perf(cpu, &desired_perf);
 	if (ret < 0)
-		return -EIO;
+		return 0;
 
 	return cppc_cpufreq_perf_to_khz(cpu_data, desired_perf);
 }
