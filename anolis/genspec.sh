@@ -5,6 +5,19 @@
 mkdir -p ${DIST_OUTPUT}
 cp -f ${DIST_RPM}/${DIST_SPEC_TEMPLATE} ${DIST_OUTPUT}/${DIST_SPEC_FILE}
 
+# get git commit hash and branch information
+GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to get Git commit information" >&2
+    exit 1
+fi
+
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to get Git branch information" >&2
+    exit 1
+fi
+
 for changelog_file in $(ls ${DIST_CHANGELOG} | sort)
 do
     sed -i "/%changelog/r ${DIST_CHANGELOG}/${changelog_file}" ${DIST_OUTPUT}/${DIST_SPEC_FILE}
@@ -14,6 +27,9 @@ sed -i -e "
     s/%%DIST%%/$DIST/
     s/%%DIST_KERNELVERSION%%/$DIST_KERNELVERSION/
     s/%%DIST_PKGRELEASEVERION%%/$DIST_PKGRELEASEVERION/" ${DIST_OUTPUT}/${DIST_SPEC_FILE}
+
+sed -i "s/%%GIT_COMMIT%%/${GIT_COMMIT}/g" ${DIST_OUTPUT}/${DIST_SPEC_FILE}
+sed -i "s|%%GIT_BRANCH%%|${GIT_BRANCH}|g" ${DIST_OUTPUT}/${DIST_SPEC_FILE}
 
 function generate_cmdline() {
     local arch=$1
