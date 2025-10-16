@@ -1405,6 +1405,8 @@ static ssize_t event_trigger_store(struct device *dev,
 }
 static DEVICE_ATTR_WO(event_trigger);
 
+static void cxl_mock_mbox_scan_media_work(struct work_struct *work) {}
+
 static int cxl_mock_mem_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1452,6 +1454,7 @@ static int cxl_mock_mem_probe(struct platform_device *pdev)
 	if (rc)
 		return rc;
 
+	INIT_DELAYED_WORK(&mds->poison.poll_dwork, cxl_mock_mbox_scan_media_work);
 	rc = cxl_poison_state_init(mds);
 	if (rc)
 		return rc;
