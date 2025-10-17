@@ -320,10 +320,6 @@ enum lruvec_flags {
 	 */
 	LRUVEC_CGROUP_CONGESTED,
 	LRUVEC_NODE_CONGESTED,
-	LRUVEC_DIRTY,			/* reclaim scanning has recently found
-					 * many dirty file pages at the tail
-					 * of the LRU.
-					 */
 	LRUVEC_WRITEBACK,		/* reclaim scanning has recently found
 					 * many pages under writeback
 					 */
