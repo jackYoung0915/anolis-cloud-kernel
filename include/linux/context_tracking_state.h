@@ -22,9 +22,19 @@ struct context_tracking {
 	} state;
 };
 
+struct sys_tracking {
+	enum sys_state {
+		ST_DISABLED = -1,	/* returned by sys_tracking_state() if unknown */
+		ST_KERNEL = 0,
+		ST_USER,
+		ST_GUEST,
+	} state;
+};
+
 #ifdef CONFIG_CONTEXT_TRACKING
 extern struct static_key_false context_tracking_key;
 DECLARE_PER_CPU(struct context_tracking, context_tracking);
+DECLARE_PER_CPU(struct sys_tracking, sys_tracking);
 
 static __always_inline bool context_tracking_enabled(void)
 {
