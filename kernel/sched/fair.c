@@ -863,7 +863,7 @@ static inline unsigned long expel_score(struct rq *rq)
 	if (!sched_feat(ID_RESCUE_EXPELLEE))
 		return 0;
 
-	return rq->cfs.nr_running - rq->nr_expel_immune;
+	return rq->cfs.h_nr_running - rq->nr_expel_immune;
 }
 #else
 static inline bool expellee_only(struct rq *rq)
