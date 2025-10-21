@@ -6,6 +6,7 @@
 
 #include <linux/mmzone.h>
 #include <linux/topology.h>
+#include <linux/cleanup.h>
 
 struct vm_area_struct;
 struct mempolicy;
@@ -372,5 +373,7 @@ extern struct page *alloc_contig_pages(unsigned long nr_pages, gfp_t gfp_mask,
 				       int nid, nodemask_t *nodemask);
 #endif
 void free_contig_range(unsigned long pfn, unsigned long nr_pages);
+
+DEFINE_FREE(free_page, void *, free_page((unsigned long)_T))
 
 #endif /* __LINUX_GFP_H */
