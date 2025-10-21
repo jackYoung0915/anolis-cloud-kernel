@@ -29,6 +29,7 @@
 #define CSV_CMA_SIZE			(1 << CSV_CMA_SHIFT)
 #define MIN_SMR_ENTRY_SHIFT		23
 #define CSV_SMR_INFO_SIZE		(nr_node_ids * sizeof(struct csv_mem))
+#define CSV_MEM_PCT_MAX		(95U)
 
 struct used_hugetlb_migration_control {
 	spinlock_t lock;
@@ -68,13 +69,13 @@ static int __init cmdline_parse_csv_mem_percentage(char *str)
 
 	ret  = kstrtou8(str, 10, &percentage);
 	if (!ret) {
-		csv_mem_percentage = min_t(unsigned char, percentage, 80);
+		csv_mem_percentage = min_t(unsigned char, percentage, CSV_MEM_PCT_MAX);
 		if (csv_mem_percentage != percentage)
-			pr_warn("csv_mem_percentage is limited to 80.\n");
+			pr_warn("csv_mem_percentage is limited to %d.\n", CSV_MEM_PCT_MAX);
 	} else {
 		/* Disable CSV CMA. */
 		csv_mem_percentage = 0;
-		pr_err("csv_mem_percentage is invalid. (0 - 80) is expected.\n");
+		pr_err("csv_mem_percentage is invalid. (0 - %d) is expected.\n", CSV_MEM_PCT_MAX);
 	}
 
 	return ret;
@@ -234,11 +235,12 @@ void __init early_csv_reserve_mem(void)
 	total_pages = PHYS_PFN(memblock_phys_mem_size());
 	if (csv_mem_size) {
 		if (csv_mem_size < (total_pages << PAGE_SHIFT)) {
-			csv_mem_percentage = csv_mem_size * 100 / (total_pages << PAGE_SHIFT);
-			if (csv_mem_percentage > 80)
-				csv_mem_percentage = 80; /* Maximum percentage */
+			csv_mem_percentage = div_u64((u64)csv_mem_size * 100,
+					(u64)total_pages << PAGE_SHIFT);
+			if (csv_mem_percentage > CSV_MEM_PCT_MAX)
+				csv_mem_percentage = CSV_MEM_PCT_MAX; /* Maximum percentage */
 		} else
-			csv_mem_percentage = 80; /* Maximum percentage */
+			csv_mem_percentage = CSV_MEM_PCT_MAX; /* Maximum percentage */
 	}
 
 	if (!csv_mem_percentage) {
