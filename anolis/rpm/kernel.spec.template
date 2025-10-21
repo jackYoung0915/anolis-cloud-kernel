@@ -338,6 +338,10 @@ fixes and features), updates to block layer, supported filesystems, major driver
 updates for supported hardware in Alibaba Cloud Linux, enhancements for
 enterprise customers, etc.
 
+Source Code Information:
+Git Revision: %%GIT_COMMIT%%
+Branch: %%GIT_BRANCH%%
+
 #
 # This macro does requires, provides, conflicts, obsoletes for a kernel package.
 #	%%kernel_reqprovconf <subpackage>
