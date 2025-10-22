@@ -1,0 +1,13 @@
+* Wed Oct 22 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-19.2_rc1%%DIST%%]
+- perf/dwc_pcie: Move common DWC struct definitions to 'pcie-dwc.h' (Manivannan Sadhasivam)
+- perf/dwc_pcie: fix duplicate pci_dev devices (Yunhui Cui)
+- perf/dwc_pcie: fix some unreleased resources (Yunhui Cui)
+- perf/dwc_pcie: Qualify RAS DES VSEC Capability by Vendor, Revision (Bjorn Helgaas)
+- perf/dwc_pcie: Fix the event numbers (Ilkka Koskinen)
+- x86/CPU/AMD: Only apply Zenbleed fix for Zen2 during late microcode load (John Allen)
+- x86/CPU/AMD: Check vendor in the AMD microcode callback (Borislav Petkov (AMD))
+- anolis: swiotlb: allocate swiotlb at high address when size >= 2G (Zelin Deng)
+- anolis: efi/libstub: should redefine for_each_set_bitrange_from (Zelin Deng)
+- bpf: fix a memory leak in the LRU and LRU_PERCPU hash maps (Anton Protopopov)
+- anolis: erofs: add missing map->m_flags = 0 in erofs_map_blocks() (Gao Xiang)
+
