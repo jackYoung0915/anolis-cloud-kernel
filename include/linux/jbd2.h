@@ -1308,6 +1308,13 @@ struct journal_s
 	bool proxy_exec_for_highclass;
 
 	/**
+	 * @jbd2_trans_commit_key:
+	 *
+	 * "struct lock_class_key" for @j_trans_commit_map
+	 */
+	struct lock_class_key	jbd2_trans_commit_key;
+
+	/**
 	 * @j_fc_cleanup_callback:
 	 *
 	 * Clean-up after fast commit or full commit. JBD2 calls this function
