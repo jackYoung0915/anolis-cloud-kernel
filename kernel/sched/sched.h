@@ -738,6 +738,7 @@ static inline bool group_identity_disabled(void);
 #define ID_SMT_EXPELLER		0x0004
 #define ID_IDLE_SAVER		0x0008
 #define ID_IDLE_SEEKER		0x0010
+#define ID_ABSOLUTE_EXPELLER	0x0020
 #define IDENTITY_FLAGS_MASK	0x00ff
 
 /*
@@ -1335,8 +1336,10 @@ struct rq {
 	unsigned int		nr_high_running;
 	unsigned int		nr_under_running;
 	unsigned int		nr_expel_immune;
+	unsigned int		nr_absolute_expeller;
 	long			nr_high_make_up;
 	long			nr_under_make_up;
+	long			nr_absolute_expeller_make_up;
 	bool			smt_expeller;
 	bool			smt_expellee;
 	bool			on_expel;
