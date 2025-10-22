@@ -26,6 +26,8 @@ extern unsigned int nvme_io_timeout;
 extern unsigned int admin_timeout;
 #define ADMIN_TIMEOUT	(admin_timeout * HZ)
 
+extern bool panic_on_double_cqe;
+
 #define NVME_DEFAULT_KATO	5
 #define NVME_KATO_GRACE		10
 
@@ -536,12 +538,14 @@ static inline struct request *nvme_find_rq(struct blk_mq_tags *tags,
 	if (unlikely(!rq)) {
 		pr_err("could not locate request for tag %#x\n",
 			tag);
+		BUG_ON(panic_on_double_cqe);
 		return NULL;
 	}
 	if (unlikely(nvme_genctr_mask(nvme_req(rq)->genctr) != genctr)) {
 		dev_err(nvme_req(rq)->ctrl->device,
 			"request %#x genctr mismatch (got %#x expected %#x)\n",
 			tag, genctr, nvme_genctr_mask(nvme_req(rq)->genctr));
+		BUG_ON(panic_on_double_cqe);
 		return NULL;
 	}
 	return rq;

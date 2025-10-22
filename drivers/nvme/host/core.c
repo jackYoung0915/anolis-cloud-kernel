@@ -60,6 +60,11 @@ static bool streams;
 module_param(streams, bool, 0644);
 MODULE_PARM_DESC(streams, "turn on support for Streams write directives");
 
+bool panic_on_double_cqe;
+EXPORT_SYMBOL_GPL(panic_on_double_cqe);
+module_param(panic_on_double_cqe, bool, 0444);
+MODULE_PARM_DESC(panic_on_double_cqe, "crash the kernel to save the scene");
+
 /*
  * nvme_wq - hosts nvme related works that are not reset or delete
  * nvme_reset_wq - hosts nvme reset works
