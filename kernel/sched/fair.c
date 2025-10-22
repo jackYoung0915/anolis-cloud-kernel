@@ -624,6 +624,7 @@ enum {
 	TYPE_NORMAL,
 	TYPE_LS,
 	TYPE_STRICT,
+	TYPE_MOST_STRICT,
 };
 
 static DEFINE_MUTEX(identity_mutex);
@@ -638,6 +639,18 @@ static inline bool is_highclass(struct sched_entity *se)
 static inline bool is_expeller(struct sched_entity *se)
 {
 	return test_identity(se, ID_SMT_EXPELLER);
+}
+
+static inline bool
+is_absolute_expeller(struct sched_entity *se)
+{
+	return test_identity(se, ID_ABSOLUTE_EXPELLER);
+}
+
+static inline bool
+task_is_absolute_expeller(struct task_struct *p)
+{
+	return p && test_identity(&p->se, ID_ABSOLUTE_EXPELLER);
 }
 
 static inline bool is_idle_saver(struct sched_entity *se)
@@ -681,6 +694,9 @@ static inline bool need_expel(int this_cpu, bool *expel_by_smt_sibling)
 	}
 #endif
 	if (sched_feat(ID_ABSOLUTE_EXPEL) && rq->nr_high_running)
+		return true;
+
+	if (rq->nr_absolute_expeller)
 		return true;
 
 	return false;
@@ -1171,6 +1187,10 @@ id_update_make_up(struct task_group *tg, struct rq *rq, struct cfs_rq *cfs_rq,
 
 	if (__is_underclass(se))
 		rq->nr_under_make_up += coefficient * cfs_rq->nr_tasks;
+
+	if (is_absolute_expeller(se))
+		rq->nr_absolute_expeller_make_up +=
+			coefficient * cfs_rq->nr_tasks;
 }
 
 static __always_inline void
@@ -1182,15 +1202,17 @@ id_commit_make_up(struct rq *rq, bool commit)
 	if (commit) {
 		rq->nr_high_running += rq->nr_high_make_up;
 		rq->nr_under_running += rq->nr_under_make_up;
+		rq->nr_absolute_expeller += rq->nr_absolute_expeller_make_up;
 	}
 
 	rq->nr_high_make_up = 0;
 	rq->nr_under_make_up = 0;
+	rq->nr_absolute_expeller_make_up = 0;
 }
 #endif
 
 static __always_inline void
-id_update_nr_running(struct task_group *tg, struct rq *rq, long delta)
+id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq, long delta)
 {
 	struct sched_entity *se;
 
@@ -1207,6 +1229,17 @@ id_update_nr_running(struct task_group *tg, struct rq *rq, long delta)
 
 	if (__is_underclass(se))
 		rq->nr_under_running += delta;
+
+	if (is_absolute_expeller(se))
+		rq->nr_absolute_expeller += delta;
+
+	/*
+	 * If a task was set absolute_expeller by prctl syscall, count for it separately,
+	 * so that no errors will occur when both the task and the task group are set to
+	 * absolute_expeller at the same time.
+	 */
+	if (task_is_absolute_expeller(p))
+		rq->nr_absolute_expeller += delta > 0 ? 1 : -1;
 }
 
 static inline bool id_regard_as_idle(struct rq *rq)
@@ -1523,7 +1556,7 @@ static void __update_identity(struct task_group *tg, int flags)
 				__dequeue_entity(cfs_rq, se);
 			hierarchy_update_nr_expel_immune(se, -ei_delta);
 			if (!throttled)
-				id_update_nr_running(tg, rq, -delta);
+				id_update_nr_running(tg, NULL, rq, -delta);
 
 			update_curr(cfs_rq);
 			se->vruntime -= __id_min_vruntime(cfs_rq, se);
@@ -1538,7 +1571,7 @@ static void __update_identity(struct task_group *tg, int flags)
 				__enqueue_entity(cfs_rq, se);
 			hierarchy_update_nr_expel_immune(se, ei_delta);
 			if (!throttled)
-				id_update_nr_running(tg, rq, delta);
+				id_update_nr_running(tg, NULL, rq, delta);
 
 			update_min_vruntime(cfs_rq);
 		}
@@ -1592,6 +1625,8 @@ static void __update_task_identity(struct task_struct *p, int flags)
 			rq->nr_high_running--;
 		if (__is_underclass(se))
 			rq->nr_under_running--;
+		if (task_is_absolute_expeller(p))
+			rq->nr_absolute_expeller--;
 
 		update_curr(cfs_rq);
 		se->vruntime -= __id_min_vruntime(cfs_rq, se);
@@ -1609,6 +1644,8 @@ static void __update_task_identity(struct task_struct *p, int flags)
 			rq->nr_high_running++;
 		if (__is_underclass(se))
 			rq->nr_under_running++;
+		if (task_is_absolute_expeller(p))
+			rq->nr_absolute_expeller++;
 
 		update_min_vruntime(cfs_rq);
 	}
@@ -1661,6 +1698,9 @@ int update_bvt_warp_ns(struct task_group *tg, s64 val)
 	case TYPE_STRICT:
 		flags = ID_HIGHCLASS | ID_IDLE_SEEKER | ID_SMT_EXPELLER;
 		break;
+	case TYPE_MOST_STRICT:
+		flags = ID_HIGHCLASS | ID_IDLE_SEEKER | ID_SMT_EXPELLER | ID_ABSOLUTE_EXPELLER;
+		break;
 	default:
 		ret = -ERANGE;
 		goto unlock;
@@ -1695,8 +1735,10 @@ int update_identity(struct task_group *tg, struct task_struct *p, s64 val)
 
 	/*
 	 * Tasks stuck in root group can update their id_flags.
+	 * Tasks can be set and clear absolute_expeller.
 	 */
-	if (p && !(p->flags & PF_NO_SETAFFINITY))
+	if (p && !(p->flags & PF_NO_SETAFFINITY) &&
+	    val != ID_ABSOLUTE_EXPELLER && val != 0)
 		return -EINVAL;
 
 	mutex_lock(&identity_mutex);
@@ -1987,11 +2029,13 @@ id_entity_before(struct sched_entity *a, struct sched_entity *b)
 {
 	bool a_is_underclass = __is_underclass(a);
 	bool b_is_underclass = __is_underclass(b);
+	struct rq *rq = rq_of((cfs_rq_of(a)));
 
 	if (group_identity_disabled())
 		return entity_before(a, b);
 
-	if (sched_feat(ID_ABSOLUTE_EXPEL) && a_is_underclass != b_is_underclass)
+	if ((sched_feat(ID_ABSOLUTE_EXPEL) || rq->nr_absolute_expeller) &&
+	    a_is_underclass != b_is_underclass)
 		return b_is_underclass;
 
 	return (s64)(__id_vruntime(a) - __id_vruntime(b)) < 0;
@@ -2475,7 +2519,7 @@ id_commit_make_up(struct rq *rq, bool commit)
 #endif
 
 static __always_inline void
-id_update_nr_running(struct task_group *tg, struct rq *rq, long delta)
+id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq, long delta)
 {
 }
 
@@ -8394,7 +8438,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 	/* At this point se is NULL and we are at root level*/
 	add_nr_running(rq, 1);
-	id_update_nr_running(task_group(p), rq, 1);
+	id_update_nr_running(task_group(p), p, rq, 1);
 
 	/*
 	 * Since new tasks are assigned an initial util_avg equal to
@@ -8523,7 +8567,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 	/* At this point se is NULL and we are at root level*/
 	sub_nr_running(rq, 1);
-	id_update_nr_running(task_group(p), rq, -1);
+	id_update_nr_running(task_group(p), p, rq, -1);
 
 	/* balance early to pull high priority tasks */
 	if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
