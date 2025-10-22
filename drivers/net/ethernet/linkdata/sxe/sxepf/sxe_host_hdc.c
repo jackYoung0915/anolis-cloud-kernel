@@ -896,6 +896,67 @@ l_ret:
 	return ret;
 }
 
+s32 sxe_ethtool_fw_trans(struct sxe_adapter *adapter, struct sxe_driver_cmd *cmd)
+{
+	s32 ret = SXE_SUCCESS;
+	struct sxe_hw *hw = &adapter->hw;
+	struct sxe_hdc_cmd_hdr *cmd_hdr;
+	struct sxe_hdc_trans_info trans_info;
+	u64 trace_id = cmd->trace_id;
+	u16 in_len = cmd->req_len;
+	u16 out_len = cmd->resp_len;
+	u8 *in_data = cmd->req;
+
+	u8 *in_data_buf;
+	u8 *out_data_buf;
+	u16 in_buf_len = in_len + SXE_HDC_CMD_HDR_SIZE;
+	u16 out_buf_len = out_len + SXE_HDC_CMD_HDR_SIZE;
+
+	in_data_buf = kzalloc(in_buf_len, GFP_KERNEL);
+	if (!in_data_buf) {
+		LOG_ERROR_BDF("cmd trace_id=0x%llx kzalloc indata\n"
+			      "\tmem len[%u] failed\n",
+			      trace_id, in_buf_len);
+		ret = -ENOMEM;
+		goto l_ret;
+	}
+
+	out_data_buf = kzalloc(out_buf_len, GFP_KERNEL);
+	if (!out_data_buf) {
+		LOG_ERROR_BDF("cmd trace_id=0x%llx kzalloc out_data\n"
+			      "\tmem len[%u] failed\n",
+			      trace_id, out_buf_len);
+		ret = -ENOMEM;
+		goto l_in_buf_free;
+	}
+
+	memcpy(in_data_buf + SXE_HDC_CMD_HDR_SIZE, in_data, in_len);
+
+	cmd_hdr = (struct sxe_hdc_cmd_hdr *)in_data_buf;
+	sxe_cmd_hdr_init(cmd_hdr, SXE_CMD_TYPE_CLI);
+
+	LOG_DEBUG_BDF("trans cli cmd:trace_id=0x%llx,, inlen=%u,\n"
+		      "\tout_len=%u\n",
+		      trace_id, in_len, out_len);
+	sxe_hdc_trans_info_init(&trans_info, in_data_buf, in_buf_len, out_data_buf,
+				out_buf_len);
+
+	ret = sxe_hdc_cmd_process(hw, trace_id, &trans_info, false,
+				  cmd->is_interruptible);
+	if (ret) {
+		LOG_DEV_DEBUG("hdc cmd trace_id=0x%llx hdc packet trans failed,\n"
+			      "\tret=%d\n", trace_id, ret);
+		goto l_out_buf_free;
+	}
+
+l_out_buf_free:
+	kfree(out_data_buf);
+l_in_buf_free:
+	kfree(in_data_buf);
+l_ret:
+	return ret;
+}
+
 s32 sxe_cli_cmd_trans(struct sxe_hw *hw, struct sxe_driver_cmd *cmd)
 {
 	s32 ret = SXE_SUCCESS;

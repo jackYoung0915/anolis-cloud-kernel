@@ -34,6 +34,12 @@
 
 #define SXEVF_HZ_TRANSTO_MS 1000
 
+#ifdef HAVE_STRSCPY
+#define SXE_STRCPY strscpy
+#else
+#define SXE_STRCPY strlcpy
+#endif
+
 #define SXEVF_KFREE(addr)                                                     \
 	do {                                                                  \
 		void *_addr = (addr);                                         \
@@ -72,6 +78,7 @@ enum sxevf_nic_state {
 	SXEVF_DOWN,
 	SXEVF_DISABLED,
 	SXEVF_REMOVING,
+	SXEVF_IRQ_REQUESTED,
 };
 
 struct sxevf_mac_filter_context {

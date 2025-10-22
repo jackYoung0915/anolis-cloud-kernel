@@ -99,11 +99,11 @@ static void sxevf_get_drvinfo(struct net_device *netdev,
 {
 	struct sxevf_adapter *adapter = netdev_priv(netdev);
 
-	strscpy(drvinfo->driver, SXEVF_DRV_NAME, sizeof(drvinfo->driver));
-	strscpy(drvinfo->version, SXE_VERSION, sizeof(drvinfo->version));
+	SXE_STRCPY(drvinfo->driver, SXEVF_DRV_NAME, sizeof(drvinfo->driver));
+	SXE_STRCPY(drvinfo->version, SXE_VERSION, sizeof(drvinfo->version));
 
-	strscpy(drvinfo->bus_info, pci_name(adapter->pdev),
-		sizeof(drvinfo->bus_info));
+	SXE_STRCPY(drvinfo->bus_info, pci_name(adapter->pdev),
+		   sizeof(drvinfo->bus_info));
 
 	drvinfo->n_priv_flags = SXEVF_PRIV_FLAGS_STR_LEN;
 }
@@ -503,6 +503,35 @@ static u32 sxevf_get_rss_hash_key_size(struct net_device *netdev)
 	return SXEVF_RSS_HASH_KEY_SIZE;
 }
 
+#ifdef HAVE_ETHTOOL_RXFH_PARAM
+static int sxevf_get_rxfh(struct net_device *netdev,
+			  struct ethtool_rxfh_param *rxfh)
+{
+	int err = 0;
+	struct sxevf_adapter *adapter = netdev_priv(netdev);
+
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
+
+	if (!rxfh->indir && !rxfh->key) {
+		LOG_DEBUG_BDF("param err, indir=%p, key=%p\n",
+			      rxfh->indir, rxfh->key);
+		return 0;
+	}
+
+	spin_lock_bh(&adapter->mbx_lock);
+	if (rxfh->indir)
+		err = sxevf_redir_tbl_get(&adapter->hw,
+					  adapter->rx_ring_ctxt.num,
+					  rxfh->indir);
+
+	if (!err && rxfh->key)
+		err = sxevf_rss_hash_key_get(&adapter->hw, rxfh->key);
+
+	spin_unlock_bh(&adapter->mbx_lock);
+
+	return err;
+}
+#else
 static int sxevf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 			  u8 *hfunc)
 {
@@ -528,6 +557,7 @@ static int sxevf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 
 	return err;
 }
+#endif
 
 static int sxevf_get_regs_len(struct net_device *netdev)
 {
