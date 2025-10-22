@@ -336,11 +336,13 @@ static bool nfs_want_read_modify_write(struct file *file, struct folio *folio,
  * If the writer ends up delaying the write, the writer needs to
  * increment the page use counts until he is done with the page.
  */
-static int nfs_write_begin(struct file *file, struct address_space *mapping,
+static int nfs_write_begin(const struct kiocb *iocb,
+			   struct address_space *mapping,
 			   loff_t pos, unsigned len, struct folio **foliop,
 			   void **fsdata)
 {
 	struct folio *folio;
+	struct file *file = iocb->ki_filp;
 	int once_thru = 0;
 	int ret;
 
@@ -369,10 +371,12 @@ start:
 	return ret;
 }
 
-static int nfs_write_end(struct file *file, struct address_space *mapping,
+static int nfs_write_end(const struct kiocb *iocb,
+			 struct address_space *mapping,
 			 loff_t pos, unsigned len, unsigned copied,
 			 struct folio *folio, void *fsdata)
 {
+	struct file *file = iocb->ki_filp;
 	struct nfs_open_context *ctx = nfs_file_open_context(file);
 	unsigned offset = offset_in_folio(folio, pos);
 	int status;
