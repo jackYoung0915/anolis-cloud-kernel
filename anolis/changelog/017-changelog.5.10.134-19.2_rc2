@@ -1,0 +1,5 @@
+* Thu Oct 23 2025 Qinyun Tan <qinyuntan@linux.alibaba.com> [5.10.134-19.2_rc2%%DIST%%]
+- anolis: Revert "PCI: Unify delay handling for reset and resume" (Qinyun Tan)
+- anolis: Revert "PCI/DPC: Await readiness of secondary bus after reset" (Qinyun Tan)
+- anolis: Revert "net: missing check virtio" (Philo Lu)
+
