@@ -22,9 +22,8 @@
 #include "sxe_errno.h"
 #include "sxe_logs.h"
 #include "sxe.h"
-
-#include "sxe_hw.h"
 #endif
+#include "sxe_hw.h"
 
 #define SXE_PFMSG_MASK (0xFF00)
 
@@ -113,7 +112,7 @@ static u32 sxe_hw_fault_check(struct sxe_hw *hw, u32 reg)
 	u8 __iomem *base_addr = hw->reg_base_addr;
 	struct sxe_adapter *adapter = hw->adapter;
 
-	if (sxe_is_hw_fault(hw))
+	if (sxe_is_hw_fault(hw) || pci_channel_offline(adapter->pdev))
 		goto l_out;
 
 	for (i = 0; i < SXE_REG_READ_RETRY; i++) {
@@ -124,7 +123,7 @@ static u32 sxe_hw_fault_check(struct sxe_hw *hw, u32 reg)
 		mdelay(3);
 	}
 
-	if (value == SXE_REG_READ_FAIL) {
+	if (value == SXE_REG_READ_FAIL && !pci_channel_offline(adapter->pdev)) {
 		LOG_ERROR_BDF("read registers multiple times failed, ret=%#x\n",
 			      value);
 		sxe_hw_fault_handle(hw);
@@ -850,12 +849,12 @@ void sxe_hw_specific_irq_enable(struct sxe_hw *hw, u32 value)
 	SXE_REG_WRITE(hw, SXE_EIMS, value);
 }
 
-static u32 sxe_hw_spp_state_get(struct sxe_hw *hw)
+u32 sxe_hw_spp_state_get(struct sxe_hw *hw)
 {
 	return SXE_REG_READ(hw, SXE_SPP_STATE);
 }
 
-static void sxe_hw_rx_los_disable(struct sxe_hw *hw)
+void sxe_hw_rx_los_disable(struct sxe_hw *hw)
 {
 	u32 value;
 
@@ -864,7 +863,7 @@ static void sxe_hw_rx_los_disable(struct sxe_hw *hw)
 	SXE_REG_WRITE(hw, SXE_EIMS, value);
 }
 
-static void sxe_hw_rx_los_enable(struct sxe_hw *hw)
+void sxe_hw_rx_los_enable(struct sxe_hw *hw)
 {
 	u32 value;
 
@@ -883,7 +882,7 @@ void sxe_hw_all_irq_disable(struct sxe_hw *hw)
 	SXE_WRITE_FLUSH(hw);
 }
 
-static void sxe_hw_spp_configure(struct sxe_hw *hw, u32 hw_spp_proc_delay_us)
+void sxe_hw_spp_configure(struct sxe_hw *hw, u32 hw_spp_proc_delay_us)
 {
 	u32 reg = SXE_REG_READ(hw, SXE_SPP_PROC);
 
@@ -3688,8 +3687,8 @@ static void sxe_hw_tx_tph_update(struct sxe_hw *hw, u8 ring_idx, u8 cpu)
 
 	value <<= SXE_TPH_TXCTRL_CPUID_SHIFT;
 
-	value |= SXE_TPH_TXCTRL_DESC_RRO_EN | SXE_TPH_TXCTRL_DATA_RRO_EN |
-		 SXE_TPH_TXCTRL_DESC_TPH_EN;
+	value |= SXE_TPH_TXCTRL_DESC_TPH_EN | SXE_TPH_TXCTRL_DESC_RRO_EN |
+		 SXE_TPH_TXCTRL_DESC_WRO_EN | SXE_TPH_TXCTRL_DATA_RRO_EN;
 
 	SXE_REG_WRITE(hw, SXE_TPH_TXCTRL(ring_idx), value);
 }
@@ -3700,8 +3699,8 @@ static void sxe_hw_rx_tph_update(struct sxe_hw *hw, u8 ring_idx, u8 cpu)
 
 	value <<= SXE_TPH_RXCTRL_CPUID_SHIFT;
 
-	value |= SXE_TPH_RXCTRL_DESC_RRO_EN | SXE_TPH_RXCTRL_DATA_TPH_EN |
-		 SXE_TPH_RXCTRL_DESC_TPH_EN;
+	value |= SXE_TPH_RXCTRL_DESC_TPH_EN | SXE_TPH_RXCTRL_DESC_RRO_EN |
+		 SXE_TPH_RXCTRL_DATA_WRO_EN | SXE_TPH_RXCTRL_HEAD_WRO_EN;
 
 	SXE_REG_WRITE(hw, SXE_TPH_RXCTRL(ring_idx), value);
 }
@@ -3712,6 +3711,28 @@ static void sxe_hw_tph_switch(struct sxe_hw *hw, bool is_enable)
 		SXE_REG_WRITE(hw, SXE_TPH_CTRL, SXE_TPH_CTRL_MODE_CB2);
 	else
 		SXE_REG_WRITE(hw, SXE_TPH_CTRL, SXE_TPH_CTRL_DISABLE);
+}
+
+void sxe_hw_rx_ro_enable(struct sxe_hw *hw, u8 ring_idx)
+{
+	u32 value = SXE_REG_READ(hw, SXE_TPH_RXCTRL(ring_idx));
+
+	value |= SXE_TPH_RXCTRL_DESC_RRO_EN |
+		SXE_TPH_RXCTRL_DATA_WRO_EN |
+		SXE_TPH_RXCTRL_HEAD_WRO_EN;
+
+	SXE_REG_WRITE(hw, SXE_TPH_RXCTRL(ring_idx), value);
+}
+
+void sxe_hw_tx_ro_enable(struct sxe_hw *hw, u8 ring_idx)
+{
+	u32 value = SXE_REG_READ(hw, SXE_TPH_TXCTRL(ring_idx));
+
+	value |= SXE_TPH_TXCTRL_DESC_RRO_EN |
+		SXE_TPH_TXCTRL_DESC_WRO_EN |
+		SXE_TPH_TXCTRL_DATA_RRO_EN;
+
+	SXE_REG_WRITE(hw, SXE_TPH_TXCTRL(ring_idx), value);
 }
 
 static const struct sxe_dma_operations sxe_dma_ops = {
@@ -3727,6 +3748,7 @@ static const struct sxe_dma_operations sxe_dma_ops = {
 	.rx_drop_switch = sxe_hw_rx_drop_switch,
 	.pool_rx_ring_drop_enable = sxe_hw_pool_rx_ring_drop_enable,
 	.rx_tph_update = sxe_hw_rx_tph_update,
+	.rx_ro_enable = sxe_hw_rx_ro_enable,
 
 	.tx_enable = sxe_hw_tx_enable,
 	.tx_multi_ring_configure = sxe_hw_tx_multi_ring_configure,
@@ -3739,6 +3761,7 @@ static const struct sxe_dma_operations sxe_dma_ops = {
 	.tx_desc_ctrl_get = sxe_hw_tx_desc_ctrl_get,
 	.tx_ring_info_get = sxe_hw_tx_ring_info_get,
 	.tx_tph_update = sxe_hw_tx_tph_update,
+	.tx_ro_enable = sxe_hw_tx_ro_enable,
 
 	.tph_switch = sxe_hw_tph_switch,
 
@@ -4372,7 +4395,9 @@ static bool sxe_hw_mbx_lock(struct sxe_hw *hw, u8 vf_idx)
 	u32 retry = hw->mbx.retry;
 
 	while (retry--) {
-		SXE_REG_WRITE(hw, SXE_PFMAILBOX(vf_idx), SXE_PFMAILBOX_PFU);
+		value = SXE_REG_READ(hw, SXE_PFMAILBOX(vf_idx));
+		value |= SXE_PFMAILBOX_PFU;
+		SXE_REG_WRITE(hw, SXE_PFMAILBOX(vf_idx), value);
 
 		value = SXE_REG_READ(hw, SXE_PFMAILBOX(vf_idx));
 		if (value & SXE_PFMAILBOX_PFU) {
@@ -4386,7 +4411,8 @@ static bool sxe_hw_mbx_lock(struct sxe_hw *hw, u8 vf_idx)
 	return ret;
 }
 
-s32 sxe_hw_rcv_msg_from_vf(struct sxe_hw *hw, u32 *msg, u16 msg_len, u16 index)
+static s32 sxe_hw_rcv_msg_from_vf(struct sxe_hw *hw, u32 *msg,
+				  u16 msg_len, u16 index)
 {
 	struct sxe_mbx_info *mbx = &hw->mbx;
 	u8 i;
@@ -4416,7 +4442,8 @@ l_out:
 	return ret;
 }
 
-s32 sxe_hw_send_msg_to_vf(struct sxe_hw *hw, u32 *msg, u16 msg_len, u16 index)
+static s32 sxe_hw_send_msg_to_vf(struct sxe_hw *hw, u32 *msg,
+				 u16 msg_len, u16 index)
 {
 	struct sxe_mbx_info *mbx = &hw->mbx;
 	u8 i;
@@ -4928,8 +4955,20 @@ bool sxe_hw_is_rss_enabled(struct sxe_hw *hw)
 	bool rss_enable = false;
 	u32 mrqc = SXE_REG_READ(hw, SXE_MRQC);
 
+#if defined DPDK_23_11_3 || defined DPDK_24_11_1
+	u32 mrqe_val = mrqc & SXE_MRQC_MRQE_MASK;
+
+	if (mrqe_val == SXE_MRQC_RSSEN ||
+	    mrqe_val == SXE_MRQC_RTRSS8TCEN ||
+	    mrqe_val == SXE_MRQC_RTRSS4TCEN ||
+	    mrqe_val == SXE_MRQC_VMDQRSS32EN ||
+	    mrqe_val == SXE_MRQC_VMDQRSS64EN) {
+		rss_enable = true;
+	}
+#else
 	if (mrqc & SXE_MRQC_RSSEN)
 		rss_enable = true;
+#endif
 
 	return rss_enable;
 }
@@ -4998,6 +5037,123 @@ void sxe_hw_dcb_vmdq_mq_configure(struct sxe_hw *hw, u8 num_pools)
 	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
 
 	SXE_REG_WRITE(hw, SXE_RTRPCS, SXE_RTRPCS_RRM);
+}
+
+static bool sxe_mbx_lock(struct sxe_hw *hw, u8 vf_idx)
+{
+	u32 value = 0;
+	bool ret = false;
+	u32 retry = hw->mbx.retry;
+	struct sxe_adapter *adapter = hw->adapter;
+
+	rte_spinlock_lock(&adapter->vt_ctxt.vfs_lock);
+	while (retry--) {
+		value = SXE_REG_READ(hw, SXE_PFMAILBOX(vf_idx));
+		if (value & SXE_PFMAILBOX_PFU) {
+			udelay(hw->mbx.interval);
+			continue;
+		}
+		break;
+	}
+
+	if (!retry) {
+		LOG_ERROR_BDF("get lock mailbox fail retry %d.(err:%d)\n",
+			      hw->mbx.retry, ret);
+		goto end;
+	}
+
+	retry = hw->mbx.retry;
+	while (retry--) {
+		value |= SXE_PFMAILBOX_PFU;
+		SXE_REG_WRITE(hw, SXE_PFMAILBOX(vf_idx), value);
+
+		value = SXE_REG_READ(hw, SXE_PFMAILBOX(vf_idx));
+		if (value & SXE_PFMAILBOX_PFU) {
+			ret = true;
+			break;
+		}
+		udelay(hw->mbx.interval);
+	}
+
+end:
+	rte_spinlock_unlock(&adapter->vt_ctxt.vfs_lock);
+
+	return ret;
+}
+
+s32 sxe_rcv_msg_from_vf_lock(struct sxe_hw *hw, u32 *msg,
+			     u16 msg_len, u16 index)
+{
+	struct sxe_mbx_info *mbx = &hw->mbx;
+	u8 i;
+	s32 ret = 0;
+	u16 msg_entry;
+	struct sxe_adapter *adapter = hw->adapter;
+
+	msg_entry = (msg_len > mbx->msg_len) ? mbx->msg_len : msg_len;
+
+	if (!sxe_mbx_lock(hw, index)) {
+		ret = -SXE_ERR_MBX_LOCK_FAIL;
+		LOG_ERROR_BDF("vf idx:%d msg_len:%d rcv lock mailbox fail.(err:%d)\n",
+			      index, msg_len, ret);
+		goto l_out;
+	}
+
+	for (i = 0; i < msg_entry; i++) {
+		msg[i] = SXE_REG_READ(hw, (SXE_PFMBMEM(index) + (i << 2)));
+		LOG_DEBUG_BDF("vf_idx:%u read mbx mem[%u]:0x%x.\n",
+			      index, i, msg[i]);
+	}
+
+	SXE_REG_WRITE(hw, SXE_PFMAILBOX(index), SXE_PFMAILBOX_ACK);
+	mbx->stats.rcv_msgs++;
+
+l_out:
+	return ret;
+}
+
+s32 sxe_send_msg_to_vf_lock(struct sxe_hw *hw, u32 *msg,
+			    u16 msg_len, u16 index)
+{
+	struct sxe_mbx_info *mbx = &hw->mbx;
+	u8 i;
+	s32 ret = 0;
+	u32 old;
+	struct sxe_adapter *adapter = hw->adapter;
+
+	if (msg_len > mbx->msg_len) {
+		ret = -EINVAL;
+		LOG_ERROR_BDF("pf reply msg num:%d exceed limit:%d reply fail.\n"
+			  "\t(err:%d)\n", msg_len, mbx->msg_len, ret);
+		goto l_out;
+	}
+
+	if (!sxe_mbx_lock(hw, index)) {
+		ret = -SXE_ERR_MBX_LOCK_FAIL;
+		LOG_ERROR_BDF("send msg len:%u to vf idx:%u msg[0]:0x%x\n"
+			   "\tlock mailbox fail.(err:%d)\n",
+			   msg_len, index, msg[0], ret);
+		goto l_out;
+	}
+
+	old = SXE_REG_READ(hw, (SXE_PFMBMEM(index)));
+	LOG_DEBUG_BDF("original send msg:0x%x. mbx mem[0]:0x%x\n", *msg, old);
+	if (msg[0] & SXE_CTRL_MSG_MASK)
+		msg[0] |= (old & SXE_MSGID_MASK);
+	else
+		msg[0] |= (old & SXE_PFMSG_MASK);
+
+	for (i = 0; i < msg_len; i++) {
+		SXE_REG_WRITE(hw, (SXE_PFMBMEM(index) + (i << 2)), msg[i]);
+		LOG_DEBUG_BDF("vf_idx:%u write mbx mem[%u]:0x%x.\n",
+			      index, i, msg[i]);
+	}
+
+	SXE_REG_WRITE(hw, SXE_PFMAILBOX(index), SXE_PFMAILBOX_STS);
+	mbx->stats.send_msgs++;
+
+l_out:
+	return ret;
 }
 
 static const struct sxe_reg_info sxe_regs_general_group[] = {
@@ -5450,10 +5606,42 @@ void sxe_hw_rss_cap_switch(struct sxe_hw *hw, bool is_on)
 {
 	u32 mrqc = SXE_REG_READ(hw, SXE_MRQC);
 
+#if defined DPDK_23_11_3 || defined DPDK_24_11_1
+	u32 mrqe_val;
+
+	mrqe_val = mrqc & SXE_MRQC_MRQE_MASK;
+	if (is_on) {
+		mrqe_val = SXE_MRQC_RSSEN;
+	} else {
+		switch (mrqe_val) {
+		case SXE_MRQC_RSSEN:
+			mrqe_val = 0;
+			break;
+		case SXE_MRQC_RTRSS8TCEN:
+			mrqe_val = SXE_MRQC_RT8TCEN;
+			break;
+		case SXE_MRQC_RTRSS4TCEN:
+			mrqe_val = SXE_MRQC_RT4TCEN;
+			break;
+		case SXE_MRQC_VMDQRSS64EN:
+			mrqe_val = SXE_MRQC_VMDQEN;
+			break;
+		case SXE_MRQC_VMDQRSS32EN:
+			PMD_LOG_WARN(DRV, "\tThree is no regression for virtualizatic\n"
+				"\t and RSS with 32 polls among the MRQE configuration\n"
+				"\t after disable RSS and left it unchanged.\n");
+			break;
+		default:
+			break;
+		}
+	}
+	mrqc = (mrqc & ~SXE_MRQC_MRQE_MASK) | mrqe_val;
+#else
 	if (is_on)
 		mrqc |= SXE_MRQC_RSSEN;
 	else
 		mrqc &= ~SXE_MRQC_RSSEN;
+#endif
 
 	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
 }

@@ -50,6 +50,12 @@
 #define SXE_MAX_MACVLANS 63
 #endif
 
+#ifdef HAVE_STRSCPY
+#define SXE_STRCPY strscpy
+#else
+#define SXE_STRCPY strlcpy
+#endif
+
 #define SXE_KFREE(addr)              \
 	do {                         \
 		void *_addr = (addr);   \
@@ -94,7 +100,9 @@ enum sxe_nic_state {
 	SXE_PTP_RUNNING,
 	SXE_PTP_TX_IN_PROGRESS,
 	SXE_IN_SFP_INIT,
-	SXE_SFP_MULTI_SPEED_SETTING,
+	SXE_SFP_LOS_DISABLED,
+	SXE_SFP_MULTI_SPEED_QUIRKS,
+	SXE_IRQ_REQUESTED,
 };
 
 struct sxe_sw_stats {
