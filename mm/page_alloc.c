@@ -1359,7 +1359,8 @@ void __free_pages_core(struct page *page, unsigned int order)
 	 * relevant for memory onlining.
 	 */
 	__free_pages_ok(page, order, FPI_TO_TAIL);
-	__SetPageInited(page);
+	for (loop = 0, p = page; loop < (nr_pages - 1); loop++, p++)
+		__SetPageInited(p);
 }
 
 /*
@@ -1592,8 +1593,10 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 
 	set_page_owner(page, order, gfp_flags);
 	page_table_check_alloc(page, order);
-	if (unlikely(PageInited(page)))
-		__ClearPageInited(page);
+	for (i = 0; i != 1 << order; ++i) {
+		if (unlikely(PageInited(page + i)))
+			__ClearPageInited(page + i);
+	}
 }
 
 static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags,
