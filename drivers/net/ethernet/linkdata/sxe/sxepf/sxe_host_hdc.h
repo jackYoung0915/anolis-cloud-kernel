@@ -89,4 +89,5 @@ void sxe_hdc_available_set(s32 value);
 
 void sxe_time_sync_handler(struct work_struct *work);
 
+s32 sxe_ethtool_fw_trans(struct sxe_adapter *adapter, struct sxe_driver_cmd *cmd);
 #endif

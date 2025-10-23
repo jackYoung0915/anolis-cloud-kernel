@@ -11,10 +11,10 @@
 #ifndef __SXE_VER_H__
 #define __SXE_VER_H__
 
-#define SXE_VERSION                "1.5.0.30"
-#define SXE_COMMIT_ID              "c7a62d6"
-#define SXE_BRANCH                 "develop/rc/sagitta-1.5.0_B030-Anolis"
-#define SXE_BUILD_TIME             "2025-05-09 15:25:18"
+#define SXE_VERSION                "0.0.0.0"
+#define SXE_COMMIT_ID              "369cabe"
+#define SXE_BRANCH                 "feature/sagitta-trunk-P8-open-linux"
+#define SXE_BUILD_TIME             "2025-10-22 22:25:33"
 
 #define SXE_DRV_NAME                   "sxe"
 #define SXEVF_DRV_NAME                 "sxevf"
