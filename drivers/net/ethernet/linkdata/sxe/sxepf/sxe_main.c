@@ -67,7 +67,7 @@ module_param(allow_inval_mac, bool, false);
 MODULE_PARM_DESC(allow_inval_mac,
 		 "Indicates device can be probed successfully or not when mac addr invalid.");
 
-bool sxe_allow_inval_mac(void)
+static bool sxe_allow_inval_mac(void)
 {
 	return !!allow_inval_mac;
 }
@@ -591,6 +591,9 @@ static int sxe_hw_base_init(struct sxe_adapter *adapter)
 		LOG_ERROR_BDF("phy init failed, ret=%d\n", ret);
 	}
 
+	if (adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.los_block_flag)
+		adapter->phy_ctxt.sfp_info.slow_skip = true;
+
 	ret = sxe_default_mac_addr_get(adapter);
 	if (ret) {
 		LOG_ERROR_BDF("get valid default mac addr failed, ret=%d\n",
@@ -801,8 +804,8 @@ static int sxe_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto l_adapter_create_failed;
 	}
 
-	strlcpy(adapter->dev_name, device_name,
-		min_t(u32, strlen(device_name) + 1, DEV_NAME_LEN));
+	SXE_STRCPY(adapter->dev_name, device_name,
+		   min_t(u32, strlen(device_name) + 1, DEV_NAME_LEN));
 
 	ret = sxe_pci_init(adapter);
 	if (ret) {
@@ -897,6 +900,7 @@ static void sxe_fuc_exit(struct sxe_adapter *adapter)
 {
 	cancel_work_sync(&adapter->monitor_ctxt.work);
 	cancel_work_sync(&adapter->hdc_ctxt.time_sync_work);
+	clear_bit(SXE_MONITOR_WORK_SCHED, &adapter->monitor_ctxt.state);
 
 #ifdef SXE_PHY_CONFIGURE
 	sxe_mdiobus_exit(adapter);
@@ -1047,6 +1051,7 @@ static int sxe_suspend(struct device *dev)
 
 	cancel_work_sync(&adapter->monitor_ctxt.work);
 	cancel_work_sync(&adapter->hdc_ctxt.time_sync_work);
+	clear_bit(SXE_MONITOR_WORK_SCHED, &adapter->monitor_ctxt.state);
 
 	sxe_hdc_channel_destroy(hw);
 	if (ret) {
@@ -1530,8 +1535,8 @@ static void sxe_driver_remove_file(void)
 #endif
 
 #ifdef SXE_DRIVER_TRACE
-ssize_t trace_dump_store(struct device_driver *dd, const char *buf,
-			 size_t count)
+static ssize_t trace_dump_store(struct device_driver *dd, const char *buf,
+				size_t count)
 {
 	ssize_t ret = count;
 
@@ -1551,7 +1556,7 @@ static inline ssize_t trace_dump_show(struct device_driver *dd, char *buf)
 
 static DRIVER_ATTR_RW(trace_dump);
 
-s32 sxe_trace_dump_create_file(void)
+static s32 sxe_trace_dump_create_file(void)
 {
 	s32 ret;
 
@@ -1563,7 +1568,7 @@ s32 sxe_trace_dump_create_file(void)
 	return ret;
 }
 
-void sxe_trace_dump_remove_file(void)
+static void sxe_trace_dump_remove_file(void)
 {
 	driver_remove_file(&sxe_pci_driver.driver, &driver_attr_trace_dump);
 }

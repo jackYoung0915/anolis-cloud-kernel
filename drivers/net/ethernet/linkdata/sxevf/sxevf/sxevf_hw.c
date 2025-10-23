@@ -25,8 +25,8 @@
 #include "sxe_dpdk_version.h"
 #include "sxe_compat_version.h"
 #include "sxevf.h"
-#include "sxevf_hw.h"
 #endif
+#include "sxevf_hw.h"
 
 #if defined SXE_DPDK_L4_FEATURES && defined SXE_DPDK_SRIOV
 struct sxevf_adapter;
@@ -69,6 +69,9 @@ static void sxevf_hw_fault_check(struct sxevf_hw *hw, u32 reg)
 	struct sxevf_adapter *adapter = hw->adapter;
 	u8 i;
 
+	if (pci_channel_offline(adapter->pdev))
+		return;
+
 	if (reg == SXE_VFSTATUS) {
 		sxevf_hw_fault_handle(hw);
 		return;
@@ -85,7 +88,7 @@ static void sxevf_hw_fault_check(struct sxevf_hw *hw, u32 reg)
 
 	LOG_INFO_BDF("retry done i:%d value:0x%x\n", i, value);
 
-	if (value == SXEVF_REG_READ_FAIL)
+	if (value == SXEVF_REG_READ_FAIL && !pci_channel_offline(adapter->pdev))
 		sxevf_hw_fault_handle(hw);
 }
 
@@ -674,8 +677,8 @@ static const struct sxevf_dma_operations sxevf_dma_ops = {
 };
 
 #ifdef SXE_DPDK
-void sxevf_32bit_counter_update(struct sxevf_hw *hw,
-				u32 reg, u64 *last, u64 *cur)
+static void sxevf_32bit_counter_update(struct sxevf_hw *hw,
+				       u32 reg, u64 *last, u64 *cur)
 {
 	u32 latest = SXEVF_REG_READ(hw, reg);
 
@@ -683,8 +686,8 @@ void sxevf_32bit_counter_update(struct sxevf_hw *hw,
 	*last = latest;
 }
 
-void sxevf_36bit_counter_update(struct sxevf_hw *hw,
-				u32 lsb, u32 msb, u64 *last, u64 *cur)
+static void sxevf_36bit_counter_update(struct sxevf_hw *hw, u32 lsb,
+				       u32 msb, u64 *last, u64 *cur)
 {
 	u64 new_lsb = SXEVF_REG_READ(hw, lsb);
 	u64 new_msb = SXEVF_REG_READ(hw, msb);
@@ -694,8 +697,8 @@ void sxevf_36bit_counter_update(struct sxevf_hw *hw,
 	*last = latest;
 }
 #else
-void sxevf_32bit_counter_update(struct sxevf_hw *hw,
-				u32 reg, u64 *last, u64 *cur)
+static void sxevf_32bit_counter_update(struct sxevf_hw *hw,
+				       u32 reg, u64 *last, u64 *cur)
 {
 	u32 current_counter = SXEVF_REG_READ(hw, reg);
 
@@ -707,8 +710,8 @@ void sxevf_32bit_counter_update(struct sxevf_hw *hw,
 	*cur |= current_counter;
 }
 
-void sxevf_36bit_counter_update(struct sxevf_hw *hw,
-				u32 lsb, u32 msb, u64 *last, u64 *cur)
+static void sxevf_36bit_counter_update(struct sxevf_hw *hw, u32 lsb,
+				       u32 msb, u64 *last, u64 *cur)
 {
 	u64 current_counter_lsb = SXEVF_REG_READ(hw, lsb);
 	u64 current_counter_msb = SXEVF_REG_READ(hw, msb);
