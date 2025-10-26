@@ -395,12 +395,6 @@ int hugepage_madvise(struct vm_area_struct *vma,
 #endif
 		*vm_flags &= ~VM_NOHUGEPAGE;
 		*vm_flags |= VM_HUGEPAGE;
-		/*
-		 * If the vma become good for khugepaged to scan,
-		 * register it here without waiting a page fault that
-		 * may not happen any time soon.
-		 */
-		khugepaged_enter_vma(vma, *vm_flags);
 		break;
 	case MADV_NOHUGEPAGE:
 		*vm_flags &= ~VM_HUGEPAGE;
@@ -559,14 +553,21 @@ static unsigned long collapse_allowable_orders(struct vm_area_struct *vma,
 	return thp_vma_allowable_orders(vma, vm_flags, tva_flags, orders);
 }
 
-void khugepaged_enter_vma(struct vm_area_struct *vma,
-			  unsigned long vm_flags)
+void khugepaged_enter_mm(struct mm_struct *mm)
 {
-	if (!test_bit(MMF_VM_HUGEPAGE, &vma->vm_mm->flags) &&
-	    hugepage_enabled()) {
-		if (collapse_allowable_orders(vma, vm_flags, /*is_khugepaged=*/true))
-			__khugepaged_enter(vma->vm_mm);
-	}
+	if (test_bit(MMF_VM_HUGEPAGE, &mm->flags))
+		return;
+	if (!hugepage_enabled())
+		return;
+
+	__khugepaged_enter(mm);
+}
+
+void khugepaged_enter_vma(struct vm_area_struct *vma)
+{
+	if (!collapse_allowable_orders(vma, vma->vm_flags, true))
+		return;
+	khugepaged_enter_mm(vma->vm_mm);
 }
 
 void __khugepaged_exit(struct mm_struct *mm)
