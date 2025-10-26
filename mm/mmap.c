@@ -1098,7 +1098,7 @@ struct vm_area_struct *vma_merge(struct vma_iterator *vmi, struct mm_struct *mm,
 	}
 
 	vma_complete(&vp, vmi, mm);
-	khugepaged_enter_vma(res, vm_flags);
+	khugepaged_enter_vma(res);
 	return res;
 
 prealloc_fail:
@@ -2122,7 +2122,7 @@ static int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 		}
 	}
 	anon_vma_unlock_write(vma->anon_vma);
-	khugepaged_enter_vma(vma, vma->vm_flags);
+	khugepaged_enter_vma(vma);
 	mas_destroy(&mas);
 	validate_mm(mm);
 	return error;
@@ -2218,7 +2218,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 		}
 	}
 	anon_vma_unlock_write(vma->anon_vma);
-	khugepaged_enter_vma(vma, vma->vm_flags);
+	khugepaged_enter_vma(vma);
 	mas_destroy(&mas);
 	validate_mm(mm);
 	return error;
@@ -2831,7 +2831,7 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 	/* Actually expand, if possible */
 	if (vma &&
 	    !vma_expand(&vmi, vma, merge_start, merge_end, vm_pgoff, next)) {
-		khugepaged_enter_vma(vma, vm_flags);
+		khugepaged_enter_vma(vma);
 		goto expanded;
 	}
 
@@ -2939,7 +2939,7 @@ cannot_expand:
 	 * vma_merge() calls khugepaged_enter_vma() either, the below
 	 * call covers the non-merge case.
 	 */
-	khugepaged_enter_vma(vma, vma->vm_flags);
+	khugepaged_enter_vma(vma);
 
 file_expanded:
 	file = vma->vm_file;
@@ -3259,7 +3259,7 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		vma_iter_store(vmi, vma);
 
 		vma_complete(&vp, vmi, mm);
-		khugepaged_enter_vma(vma, flags);
+		khugepaged_enter_vma(vma);
 		goto out;
 	}
 
