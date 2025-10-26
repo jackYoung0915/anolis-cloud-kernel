@@ -539,10 +539,10 @@ static unsigned int collapse_max_ptes_none(unsigned int order, bool full_scan)
 
 /* Check what orders are allowed based on the vma and collapse type */
 static unsigned long collapse_allowable_orders(struct vm_area_struct *vma,
-			vm_flags_t vm_flags, bool is_khugepaged)
+					       bool is_khugepaged)
 {
 	unsigned long orders;
-	enum tva_type tva_flags = is_khugepaged ? TVA_KHUGEPAGED : TVA_FORCED_COLLAPSE;
+	enum tva_type tva_type = is_khugepaged ? TVA_KHUGEPAGED : TVA_FORCED_COLLAPSE;
 
 	/* If khugepaged is scanning an anonymous vma, allow mTHP collapse */
 	if (is_khugepaged && vma_is_anonymous(vma))
@@ -550,7 +550,7 @@ static unsigned long collapse_allowable_orders(struct vm_area_struct *vma,
 	else
 		orders = BIT(HPAGE_PMD_ORDER);
 
-	return thp_vma_allowable_orders(vma, vm_flags, tva_flags, orders);
+	return thp_vma_allowable_orders(vma, tva_type, orders);
 }
 
 void khugepaged_enter_mm(struct mm_struct *mm)
@@ -565,7 +565,7 @@ void khugepaged_enter_mm(struct mm_struct *mm)
 
 void khugepaged_enter_vma(struct vm_area_struct *vma)
 {
-	if (!collapse_allowable_orders(vma, vma->vm_flags, true))
+	if (!collapse_allowable_orders(vma, true))
 		return;
 	khugepaged_enter_mm(vma->vm_mm);
 }
@@ -1049,7 +1049,7 @@ static enum scan_result hugepage_vma_revalidate(struct mm_struct *mm, unsigned l
 	/* Always check the PMD order to ensure its not shared by another VMA */
 	if (!thp_vma_suitable_order(vma, address, PMD_ORDER))
 		return SCAN_ADDRESS_RANGE;
-	if (!thp_vma_allowable_orders(vma, vma->vm_flags, type, BIT(order)))
+	if (!thp_vma_allowable_orders(vma, type, BIT(order)))
 		return SCAN_VMA_CHECK;
 	/*
 	 * Anon VMA expected, the address may be unmapped then
@@ -1607,7 +1607,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
 	memset(cc->node_load, 0, sizeof(cc->node_load));
 	nodes_clear(cc->alloc_nmask);
 
-	enabled_orders = collapse_allowable_orders(vma, vma->vm_flags, cc->is_khugepaged);
+	enabled_orders = collapse_allowable_orders(vma, cc->is_khugepaged);
 
 	/*
 	 * If PMD is the only enabled order, enforce max_ptes_none, otherwise
@@ -1849,7 +1849,7 @@ static enum scan_result try_collapse_pte_mapped_thp(struct mm_struct *mm, unsign
 	 * and map it by a PMD, regardless of sysfs THP settings. As such, let's
 	 * analogously elide sysfs THP settings here and force collapse.
 	 */
-	if (!thp_vma_allowable_order(vma, vma->vm_flags, TVA_FORCED_COLLAPSE, PMD_ORDER))
+	if (!thp_vma_allowable_order(vma, TVA_FORCED_COLLAPSE, PMD_ORDER))
 		return SCAN_VMA_CHECK;
 
 	/* Keep pmd pgtable for uffd-wp; see comment in retract_page_tables() */
@@ -2812,7 +2812,7 @@ static unsigned int collapse_scan_mm_slot(unsigned int pages, enum scan_result *
 			progress++;
 			break;
 		}
-		if (!collapse_allowable_orders(vma, vma->vm_flags, /*is_khugepaged=*/true)) {
+		if (!collapse_allowable_orders(vma, true)) {
 			progress++;
 			continue;
 		}
@@ -3145,7 +3145,7 @@ int madvise_collapse(struct vm_area_struct *vma, struct vm_area_struct **prev,
 
 	*prev = vma;
 
-	if (!collapse_allowable_orders(vma, vma->vm_flags, /*is_khugepaged=*/false))
+	if (!collapse_allowable_orders(vma, false))
 		return -EINVAL;
 
 	cc = kmalloc(sizeof(*cc), GFP_KERNEL);
