@@ -12,12 +12,19 @@
 #include <linux/if_vlan.h>
 #include <net/page_pool/helpers.h>
 
+#include <linux/bpf_trace.h>
+
 DEFINE_STATIC_KEY_FALSE(nbl_xdp_locking_key);
 
 static bool nbl_txrx_within_vsi(struct nbl_txrx_vsi_info *vsi_info, u16 ring_index)
 {
 	return ring_index >= vsi_info->ring_offset &&
 	       ring_index < vsi_info->ring_offset + vsi_info->ring_num;
+}
+
+static struct netdev_queue *txring_txq(const struct nbl_res_tx_ring *ring)
+{
+	return netdev_get_tx_queue(ring->netdev, ring->queue_index);
 }
 
 static struct nbl_res_tx_ring *
@@ -147,8 +154,10 @@ static int nbl_alloc_rx_rings(struct nbl_resource_mgt *res_mgt, struct net_devic
 		ring->notify_qid = NBL_RES_NOFITY_QID(res_mgt, ring_index * 2);
 		ring->netdev = netdev;
 		ring->desc_num = desc_num;
-		/* TODO: maybe TX buffer length should be determined by other factors */
-		ring->buf_len = NBL_RX_BUFSZ - NBL_RX_PAD;
+		/* RX buffer length is determined by mtu,
+		 * when netdev up we will set buf_len according to its mtu
+		 */
+		ring->buf_len = PAGE_SIZE / 2 - NBL_RX_PAD;
 
 		ring->used_wrap_counter = 1;
 		ring->avail_used_flags |= BIT(NBL_PACKED_DESC_F_AVAIL);
@@ -320,12 +329,8 @@ static dma_addr_t nbl_res_txrx_start_tx_ring(void *priv, u8 ring_index)
 	tx_ring->size = ALIGN(tx_ring->desc_num * sizeof(struct nbl_ring_desc), PAGE_SIZE);
 	tx_ring->desc = dmam_alloc_coherent(dma_dev, tx_ring->size, &tx_ring->dma,
 					    GFP_KERNEL | __GFP_ZERO);
-	if (!tx_ring->desc) {
-		nbl_err(res_mgt->common, NBL_DEBUG_RESOURCE,
-			"Allocate %u bytes descriptor DMA memory for TX queue %u failed\n",
-			tx_ring->size, tx_ring->queue_index);
+	if (!tx_ring->desc)
 		goto alloc_dma_err;
-	}
 
 	tx_ring->next_to_use = 0;
 	tx_ring->next_to_clean = 0;
@@ -361,7 +366,8 @@ static inline bool nbl_rx_cache_get(struct nbl_res_rx_ring *rx_ring, struct nbl_
 	cache->head = (cache->head + 1) & (NBL_MAX_CACHE_SIZE - 1);
 	stats->rx_cache_reuse++;
 
-	dma_sync_single_for_device(rx_ring->dma_dev, dma_info->addr, PAGE_SIZE, DMA_FROM_DEVICE);
+	dma_sync_single_for_device(rx_ring->dma_dev, dma_info->addr,
+				   dma_info->size, DMA_FROM_DEVICE);
 	return true;
 }
 
@@ -375,7 +381,7 @@ static inline int nbl_page_alloc_pool(struct nbl_res_rx_ring *rx_ring,
 	if (unlikely(!dma_info->page))
 		return -ENOMEM;
 
-	dma_info->addr = dma_map_page_attrs(rx_ring->dma_dev, dma_info->page, 0, PAGE_SIZE,
+	dma_info->addr = dma_map_page_attrs(rx_ring->dma_dev, dma_info->page, 0, dma_info->size,
 					    DMA_FROM_DEVICE, NBL_RX_DMA_ATTR);
 
 	if (unlikely(dma_mapping_error(rx_ring->dma_dev, dma_info->addr))) {
@@ -392,7 +398,7 @@ static inline int nbl_get_rx_frag(struct nbl_res_rx_ring *rx_ring, struct nbl_rx
 	int err = 0;
 
 	/* first buffer alloc page */
-	if (buffer->offset == NBL_RX_PAD)
+	if (buffer->offset == buffer->rx_pad)
 		err = nbl_page_alloc_pool(rx_ring, buffer->di);
 
 	return err;
@@ -432,7 +438,7 @@ static inline bool nbl_alloc_rx_bufs(struct nbl_res_rx_ring *rx_ring, u16 count)
 		if (nbl_get_rx_frag(rx_ring, rx_buf))
 			break;
 
-		for (i = 0; i < NBL_RX_PAGE_PER_FRAGS; i++, rx_desc++, rx_buf++) {
+		for (i = 0; i < rx_ring->frags_num_per_page; i++, rx_desc++, rx_buf++) {
 			rx_desc->addr = cpu_to_le64(rx_buf->di->addr + rx_buf->offset);
 			rx_desc->len = cpu_to_le32(buf_len);
 			rx_desc->id = cpu_to_le16(next_to_use);
@@ -445,9 +451,9 @@ static inline bool nbl_alloc_rx_bufs(struct nbl_res_rx_ring *rx_ring, u16 count)
 							 NBL_PACKED_DESC_F_WRITE);
 		}
 
-		next_to_use += NBL_RX_PAGE_PER_FRAGS;
-		rx_ring->tail_ptr += NBL_RX_PAGE_PER_FRAGS;
-		count -= NBL_RX_PAGE_PER_FRAGS;
+		next_to_use += rx_ring->frags_num_per_page;
+		rx_ring->tail_ptr += rx_ring->frags_num_per_page;
+		count -= rx_ring->frags_num_per_page;
 		if (next_to_use == rx_ring->desc_num) {
 			next_to_use = 0;
 			rx_desc = NBL_RX_DESC(rx_ring, next_to_use);
@@ -506,6 +512,8 @@ static void nbl_unmap_and_free_tx_resource(struct nbl_res_tx_ring *ring,
 	tx_buffer->next_to_watch = NULL;
 	tx_buffer->skb = NULL;
 	tx_buffer->page = 0;
+	tx_buffer->bytecount = 0;
+	tx_buffer->gso_segs = 0;
 	dma_unmap_len_set(tx_buffer, len, 0);
 }
 
@@ -551,7 +559,7 @@ static void nbl_res_txrx_stop_tx_ring(void *priv, u8 ring_index)
 		/* Flush napi task, to ensue the sched napi finish. So napi will no to access the
 		 * ring memory(wild point), bacause the vector->started has set false.
 		 */
-		napi_synchronize(&vector->napi);
+		napi_synchronize(&vector->nbl_napi.napi);
 	}
 
 	tx_ring->valid = false;
@@ -567,10 +575,18 @@ static void nbl_res_txrx_stop_tx_ring(void *priv, u8 ring_index)
 	tx_ring->dma = (dma_addr_t)NULL;
 	tx_ring->size = 0;
 
+	if (nbl_txrx_within_vsi(&tx_ring->vsi_info[NBL_VSI_DATA], tx_ring->queue_index))
+		netdev_tx_reset_queue(txring_txq(tx_ring));
+
 	nbl_debug(res_mgt->common, NBL_DEBUG_RESOURCE, "Stop tx ring %d", ring_index);
 }
 
-static inline bool nbl_rx_cache_put(struct nbl_res_rx_ring *rx_ring, struct nbl_dma_info *dma_info)
+static inline bool nbl_dev_page_is_reusable(struct page *page, u8 nid)
+{
+	return likely(page_to_nid(page) == nid && !page_is_pfmemalloc(page));
+}
+
+static inline int nbl_rx_cache_put(struct nbl_res_rx_ring *rx_ring, struct nbl_dma_info *dma_info)
 {
 	struct nbl_page_cache *cache = &rx_ring->page_cache;
 	u32 tail_next = (cache->tail + 1) & (NBL_MAX_CACHE_SIZE - 1);
@@ -578,34 +594,41 @@ static inline bool nbl_rx_cache_put(struct nbl_res_rx_ring *rx_ring, struct nbl_
 
 	if (tail_next == cache->head) {
 		stats->rx_cache_full++;
-		return false;
+		return 0;
 	}
 
-	if (!dev_page_is_reusable(dma_info->page)) {
+	if (!nbl_dev_page_is_reusable(dma_info->page, rx_ring->nid)) {
 		stats->rx_cache_waive++;
-		return false;
+		return 1;
 	}
 
 	cache->page_cache[cache->tail] = *dma_info;
 	cache->tail = tail_next;
 
-	return true;
+	return 2;
 }
 
 static inline void nbl_page_release_dynamic(struct nbl_res_rx_ring *rx_ring,
 					    struct nbl_dma_info *dma_info, bool recycle)
 {
+	u32 ret;
+
 	if (likely(recycle)) {
-		if (nbl_rx_cache_put(rx_ring, dma_info))
+		ret = nbl_rx_cache_put(rx_ring, dma_info);
+		if (ret == 2)
 			return;
-		dma_unmap_page_attrs(rx_ring->dma_dev, dma_info->addr, PAGE_SIZE,
+		if (ret == 1)
+			goto free_page;
+		dma_unmap_page_attrs(rx_ring->dma_dev, dma_info->addr, dma_info->size,
 				     DMA_FROM_DEVICE, NBL_RX_DMA_ATTR);
 		page_pool_recycle_direct(rx_ring->page_pool, dma_info->page);
-	} else {
-		dma_unmap_page_attrs(rx_ring->dma_dev, dma_info->addr, PAGE_SIZE,
-				     DMA_FROM_DEVICE, NBL_RX_DMA_ATTR);
-		page_pool_put_page(rx_ring->page_pool, dma_info->page, PAGE_SIZE, true);
+
+		return;
 	}
+free_page:
+	dma_unmap_page_attrs(rx_ring->dma_dev, dma_info->addr, dma_info->size,
+			     DMA_FROM_DEVICE, NBL_RX_DMA_ATTR);
+	page_pool_put_page(rx_ring->page_pool, dma_info->page, dma_info->size, true);
 }
 
 static inline void nbl_put_rx_frag(struct nbl_res_rx_ring *rx_ring,
@@ -660,7 +683,11 @@ static dma_addr_t nbl_res_txrx_start_rx_ring(void *priv, u8 ring_index, bool use
 	struct nbl_res_rx_ring *rx_ring = NBL_RES_MGT_TO_RX_RING(res_mgt, ring_index);
 	struct nbl_res_vector *vector = NULL;
 	struct page_pool_params pp_params = {0};
+	int pkt_len_shift = 0;
+	int pkt_len = 0, order = 0;
+	int dma_size = 0, buf_size = 0;
 	int i, j;
+	u16 rx_pad, tailroom;
 
 	if (rx_ring->rx_bufs) {
 		nbl_err(common, NBL_DEBUG_RESOURCE,
@@ -671,12 +698,46 @@ static dma_addr_t nbl_res_txrx_start_rx_ring(void *priv, u8 ring_index, bool use
 	if (!nbl_txrx_within_vsi(&txrx_mgt->vsi_info[NBL_VSI_XDP], ring_index))
 		vector = NBL_RES_MGT_TO_VECTOR(res_mgt, ring_index);
 
-	pp_params.order = 0;
+	rx_pad = NBL_RX_PAD;
+	tailroom = 0;
+	if (rx_ring->xdp_prog) {
+		rx_pad = XDP_PACKET_HEADROOM;
+		tailroom = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	}
+	if (!!adaptive_rxbuf_len_disable && !rx_ring->xdp_prog) {
+		buf_size = NBL_RX_BUFSZ;
+		pkt_len_shift = PAGE_SHIFT - 1;
+	} else {
+		pkt_len = rx_pad + ETH_HLEN + (VLAN_HLEN * 2) + rx_ring->netdev->mtu +
+			tailroom + NBL_BUFFER_HDR_LEN;
+		pkt_len_shift = ilog2((pkt_len) - 1) + 1;
+		pkt_len_shift = max(pkt_len_shift, NBL_RXBUF_MIN_ORDER);
+		buf_size = 1UL << pkt_len_shift;
+	}
+
+	if (pkt_len_shift >= PAGE_SHIFT) {
+		order = pkt_len_shift - PAGE_SHIFT;
+		rx_ring->frags_num_per_page = 1;
+	} else {
+		order = 0;
+		rx_ring->frags_num_per_page = PAGE_SIZE / buf_size;
+		WARN_ON(rx_ring->frags_num_per_page > NBL_MAX_BATCH_DESC);
+	}
+	dma_size = PAGE_SIZE << order;
+
+	rx_ring->buf_len = buf_size - rx_pad - tailroom;
+
+	pp_params.order = order;
 	pp_params.flags = 0;
 	pp_params.pool_size = rx_ring->desc_num;
 	pp_params.nid = dev_to_node(dev);
 	pp_params.dev = dev;
 	pp_params.dma_dir = DMA_FROM_DEVICE;
+
+	if (dev_to_node(dev) == NUMA_NO_NODE)
+		rx_ring->nid = 0;
+	else
+		rx_ring->nid = dev_to_node(dev);
 
 	rx_ring->page_pool = page_pool_create(&pp_params);
 	if (IS_ERR(rx_ring->page_pool)) {
@@ -685,7 +746,7 @@ static dma_addr_t nbl_res_txrx_start_rx_ring(void *priv, u8 ring_index, bool use
 		return (dma_addr_t)NULL;
 	}
 
-	rx_ring->di = kvzalloc_node(array_size(rx_ring->desc_num / NBL_RX_PAGE_PER_FRAGS,
+	rx_ring->di = kvzalloc_node(array_size(rx_ring->desc_num / rx_ring->frags_num_per_page,
 					       sizeof(struct nbl_dma_info)),
 					       GFP_KERNEL, dev_to_node(dev));
 	if (!rx_ring->di) {
@@ -715,15 +776,18 @@ static dma_addr_t nbl_res_txrx_start_rx_ring(void *priv, u8 ring_index, bool use
 	rx_ring->tail_ptr = 0;
 
 	j = 0;
-	for (i = 0; i < rx_ring->desc_num / NBL_RX_PAGE_PER_FRAGS; i++) {
+	for (i = 0; i < rx_ring->desc_num / rx_ring->frags_num_per_page; i++) {
 		struct nbl_dma_info *di = &rx_ring->di[i];
-		struct nbl_rx_buffer *buffer;
+		struct nbl_rx_buffer *buffer = &rx_ring->rx_bufs[j];
 		int f;
 
-		for (f = 0; f < NBL_RX_PAGE_PER_FRAGS; f++, j++) {
+		di->size = dma_size;
+		for (f = 0; f < rx_ring->frags_num_per_page; f++, j++) {
 			buffer = &rx_ring->rx_bufs[j];
 			buffer->di = di;
-			buffer->offset = NBL_RX_PAD + f * NBL_RX_BUFSZ;
+			buffer->size = buf_size;
+			buffer->offset = rx_pad + f * buf_size;
+			buffer->rx_pad = rx_pad;
 			buffer->last_in_page = false;
 		}
 
@@ -941,6 +1005,8 @@ static int nbl_res_txrx_clean_tx_irq(struct nbl_res_tx_ring *tx_ring)
 	tx_ring->stats.packets += total_tx_pkts;
 	tx_ring->stats.descs += total_tx_descs;
 	u64_stats_update_end(&tx_ring->syncp);
+	if (nbl_txrx_within_vsi(&tx_ring->vsi_info[NBL_VSI_DATA], tx_ring->queue_index))
+		netdev_tx_completed_queue(txring_txq(tx_ring), total_tx_pkts, total_tx_bytes);
 
 #define TX_WAKE_THRESHOLD (DESC_NEEDED * 2)
 	if (unlikely(total_tx_pkts && netif_carrier_ok(tx_ring->netdev) &&
@@ -987,7 +1053,7 @@ static inline void nbl_add_rx_frag(struct nbl_rx_buffer *rx_buffer,
 {
 	page_ref_inc(rx_buffer->di->page);
 	skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, rx_buffer->di->page,
-			rx_buffer->offset, size, NBL_RX_BUFSZ);
+			rx_buffer->offset, size, rx_buffer->size);
 }
 
 #ifdef CONFIG_TLS_DEVICE
@@ -1133,31 +1199,27 @@ static void nbl_res_txrx_cfg_txrx_vlan(void *priv, u16 vlan_tci, u16 vlan_proto,
  * Current version support merging multiple descriptor for one packet.
  */
 static struct sk_buff *nbl_construct_skb(struct nbl_res_rx_ring *rx_ring, struct napi_struct *napi,
-					 struct nbl_rx_buffer *rx_buf, unsigned int size)
+					 struct nbl_rx_buffer *rx_buf, struct xdp_buff *xdp)
 {
 	struct sk_buff *skb;
-	char *p, *buf;
 	int tailroom, shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	unsigned int truesize = NBL_RX_BUFSZ;
+	unsigned int truesize = rx_buf->size;
 	unsigned int headlen;
+	unsigned int size = xdp->data_end - xdp->data;
+	u8 metasize = xdp->data - xdp->data_meta;
 
-	/* p point dma buff start, buf point whole buffer start*/
-	p = page_address(rx_buf->di->page) + rx_buf->offset;
-	buf = p - NBL_RX_PAD;
-
-	/* p point pkt start */
-	p += NBL_BUFFER_HDR_LEN;
-	tailroom = truesize - size - NBL_RX_PAD;
-	size -= NBL_BUFFER_HDR_LEN;
+	tailroom = truesize - size - rx_buf->rx_pad - NBL_BUFFER_HDR_LEN;
 
 	if (size > NBL_RX_HDR_SIZE && tailroom >= shinfo_size) {
-		skb = build_skb(buf, truesize);
+		skb = build_skb(xdp->data_hard_start, truesize);
 		if (unlikely(!skb))
 			return NULL;
 
 		page_ref_inc(rx_buf->di->page);
-		skb_reserve(skb, p - buf);
-		skb_put(skb, size);
+		skb_reserve(skb, xdp->data - xdp->data_hard_start);
+		skb_put(skb, xdp->data_end - xdp->data);
+		if (metasize)
+			skb_metadata_set(skb, metasize);
 		goto ok;
 	}
 
@@ -1167,8 +1229,9 @@ static struct sk_buff *nbl_construct_skb(struct nbl_res_rx_ring *rx_ring, struct
 
 	headlen = size;
 	if (headlen > NBL_RX_HDR_SIZE)
-		headlen = eth_get_headlen(skb->dev, p, NBL_RX_HDR_SIZE);
-	memcpy(__skb_put(skb, headlen), p, ALIGN(headlen, sizeof(long)));
+		headlen = eth_get_headlen(skb->dev, xdp->data, NBL_RX_HDR_SIZE);
+
+	memcpy(__skb_put(skb, headlen), xdp->data, ALIGN(headlen, sizeof(long)));
 	size -= headlen;
 	if (size) {
 		page_ref_inc(rx_buf->di->page);
@@ -1236,21 +1299,289 @@ static inline int nbl_maybe_stop_tx(struct nbl_res_tx_ring *tx_ring, unsigned in
 	return 0;
 }
 
-static int
-nbl_res_txrx_run_xdp(struct nbl_res_rx_ring *rx_ring, struct nbl_ring_desc *rx_desc,
-		     struct nbl_rx_buffer *rx_buf, struct nbl_xdp_output *xdp_output)
+static int nbl_res_txrx_xmit_xdp_ring(struct nbl_res_tx_ring *xdp_ring, struct xdp_frame *xdpf)
 {
-	return NBL_XDP_PASS;
+	u16 index  = xdp_ring->next_to_use;
+	u16 avail_used_flags = xdp_ring->avail_used_flags;
+	unsigned int size;
+	dma_addr_t dma;
+	union nbl_tx_extend_head *hdr;
+	struct device *dma_dev = NBL_RING_TO_DMA_DEV(xdp_ring);
+	struct nbl_tx_buffer *tx_buffer = NBL_TX_BUF(xdp_ring, index);
+	struct nbl_ring_desc *tx_desc = NBL_TX_DESC(xdp_ring, index);
+	const struct ethhdr *eth;
+
+	if (xdpf->headroom < sizeof(union nbl_tx_extend_head))
+		return -EOVERFLOW;
+
+	if (unlikely(nbl_maybe_stop_tx(xdp_ring, 1))) {
+		xdp_ring->tx_stats.tx_busy++;
+		return NETDEV_TX_BUSY;
+	}
+
+	size = xdpf->len;
+	eth = (struct ethhdr *)xdpf->data;
+	xdpf->headroom -= sizeof(union nbl_tx_extend_head);
+	xdpf->data -= sizeof(union nbl_tx_extend_head);
+	hdr = xdpf->data;
+	memset(hdr, 0, sizeof(union nbl_tx_extend_head));
+	hdr->fwd = NBL_TX_FWD_TYPE_NORMAL;
+	xdpf->len += sizeof(union nbl_tx_extend_head);
+	dma = dma_map_single(dma_dev, xdpf->data, xdpf->len, DMA_TO_DEVICE);
+	if (dma_mapping_error(dma_dev, dma)) {
+		xdp_ring->tx_stats.tx_dma_busy++;
+		return NETDEV_TX_BUSY;
+	}
+
+	dma_unmap_addr_set(tx_buffer, dma, dma);
+	dma_unmap_len_set(tx_buffer, len, xdpf->len);
+	tx_buffer->raw_buff = xdpf->data;
+	tx_buffer->gso_segs = 1;
+	tx_buffer->bytecount = size;
+	tx_desc->addr = cpu_to_le64(dma);
+	tx_desc->len = xdpf->len;
+	tx_desc->id = 0;
+	index++;
+	if (index == xdp_ring->desc_num) {
+		index = 0;
+		xdp_ring->avail_used_flags ^=
+			1 << NBL_PACKED_DESC_F_AVAIL |
+			1 << NBL_PACKED_DESC_F_USED;
+	}
+
+	/* todo:xdp add multicast case */
+	xdp_ring->tx_stats.tx_unicast_packets++;
+	tx_buffer->next_to_watch = tx_desc;
+
+	/* wmb */
+	wmb();
+
+	xdp_ring->next_to_use = index;
+	tx_desc->flags = cpu_to_le16(avail_used_flags);
+
+	return NETDEV_TX_OK;
+}
+
+static int nbl_res_txrx_xmit_xdp_buff(struct nbl_res_rx_ring *rx_ring, struct xdp_buff *xdp_buff)
+{
+	int ret;
+	struct nbl_res_tx_ring *xdp_ring;
+	struct xdp_frame *xdpf;
+	struct nbl_txrx_mgt *txrx_mgt = rx_ring->txrx_mgt;
+
+	xdpf = xdp_convert_buff_to_frame(xdp_buff);
+	if (unlikely(!xdpf))
+		goto buff_to_frame_failed;
+
+	xdp_ring = nbl_res_txrx_select_xdp_ring(txrx_mgt);
+	if (static_branch_unlikely(&nbl_xdp_locking_key))
+		spin_lock(&xdp_ring->xmit_lock);
+
+	ret = nbl_res_txrx_xmit_xdp_ring(xdp_ring, xdpf);
+	if (static_branch_unlikely(&nbl_xdp_locking_key))
+		spin_unlock(&xdp_ring->xmit_lock);
+
+	return ret;
+buff_to_frame_failed:
+	return -1;
+}
+
+static int
+nbl_res_txrx_run_xdp(struct nbl_res_rx_ring *rx_ring, struct nbl_rx_buffer *rx_buf,
+		     struct nbl_xdp_output *xdp_output, struct xdp_buff *xdp_buff)
+{
+	struct nbl_rx_extend_head *hdr;
+	struct nbl_ring_desc *rx_desc;
+	const struct ethhdr *eth;
+	int i;
+	int err;
+	enum xdp_action act;
+	int nbl_act;
+	u16 num_buffers = 0;
+
+	hdr = xdp_buff->data - NBL_BUFFER_HDR_LEN;
+	net_prefetch(hdr);
+	num_buffers = le16_to_cpu(hdr->num_buffers);
+
+	/* receive xdp only support one desc for one packet */
+	if (num_buffers > 1)
+		goto drop_big_packet;
+
+	xdp_output->bytes = xdp_buff->data_end - xdp_buff->data;
+	eth = (struct ethhdr *)(hdr + 1);
+	if (unlikely(is_multicast_ether_addr(eth->h_dest)))
+		xdp_output->flags |= NBL_XDP_FLAG_MULTICAST;
+
+	xdp_output->desc_done_num++;
+	xdp_init_buff(xdp_buff, rx_buf->size, &rx_ring->xdp_rxq);
+	act = bpf_prog_run_xdp(rx_ring->xdp_prog, xdp_buff);
+	switch (act) {
+	case XDP_PASS:
+		nbl_act = 0;
+		break;
+	case XDP_TX:
+		nbl_act = 1;
+		page_ref_inc(rx_buf->di->page);
+		err = nbl_res_txrx_xmit_xdp_buff(rx_ring, xdp_buff);
+		if (unlikely(err)) {
+			page_ref_dec(rx_buf->di->page);
+			goto xdp_aborted;
+		}
+
+		xdp_output->flags |= NBL_XDP_FLAG_TX;
+		break;
+	case XDP_REDIRECT:
+		nbl_act = 1;
+		page_ref_inc(rx_buf->di->page);
+		err = xdp_do_redirect(rx_ring->netdev, xdp_buff, rx_ring->xdp_prog);
+		if (unlikely(err)) {
+			page_ref_dec(rx_buf->di->page);
+			goto xdp_aborted;
+		}
+
+		xdp_output->flags |= NBL_XDP_FLAG_REDIRECT;
+		break;
+	default:
+		bpf_warn_invalid_xdp_action(rx_ring->netdev, rx_ring->xdp_prog, act);
+		fallthrough;
+	case XDP_ABORTED:
+xdp_aborted:
+		trace_xdp_exception(rx_ring->netdev, rx_ring->xdp_prog, act);
+		fallthrough;
+	case XDP_DROP:
+		xdp_output->flags |= NBL_XDP_FLAG_DROP;
+		nbl_act = 1;
+		break;
+	}
+
+	if (nbl_act)
+		nbl_put_rx_buf(rx_ring, rx_buf);
+
+	return nbl_act;
+
+drop_big_packet:
+	nbl_put_rx_buf(rx_ring, rx_buf);
+	xdp_output->desc_done_num++;
+	xdp_output->flags |= NBL_XDP_FLAG_OVERSIZE;
+	for (i = 1; i < num_buffers; i++) {
+		rx_desc = NBL_RX_DESC(rx_ring, rx_ring->next_to_clean);
+		if (!nbl_ring_desc_used(rx_desc, rx_ring->used_wrap_counter))
+			break;
+
+		dma_rmb();
+		xdp_output->bytes += le32_to_cpu(rx_desc->len);
+		xdp_output->desc_done_num++;
+		rx_buf = nbl_get_rx_buf(rx_ring);
+		nbl_put_rx_buf(rx_ring, rx_buf);
+	}
+
+	return 1;
+}
+
+static int
+nbl_res_txrx_xdp_xmit(struct net_device *netdev, int n, struct xdp_frame **frame, u32 flags)
+{
+	int ret;
+	int i;
+	int nxmit = 0;
+	struct nbl_res_tx_ring *xdp_ring;
+	struct nbl_resource_mgt *res_mgt =
+				NBL_ADAPTER_TO_RES_MGT(NBL_NETDEV_TO_ADAPTER(netdev));
+	struct nbl_txrx_mgt *txrx_mgt = NBL_RES_MGT_TO_TXRX_MGT(res_mgt);
+
+	if (unlikely(flags & ~XDP_XMIT_FLAGS_MASK))
+		return -EINVAL;
+
+	xdp_ring = nbl_res_txrx_select_xdp_ring(txrx_mgt);
+	if (unlikely(!xdp_ring))
+		return -ENXIO;
+
+	if (unlikely(!xdp_ring->valid))
+		return -ENETDOWN;
+
+	if (unlikely(!nbl_res_txrx_is_xdp_ring(xdp_ring)))
+		return -ENXIO;
+
+	if (static_branch_unlikely(&nbl_xdp_locking_key))
+		spin_lock(&xdp_ring->xmit_lock);
+
+	for (i = 0; i < n; i++) {
+		ret = nbl_res_txrx_xmit_xdp_ring(xdp_ring, frame[i]);
+		if (ret)
+			break;
+
+		nxmit++;
+	}
+
+	if (unlikely(flags & XDP_XMIT_FLUSH && nxmit))
+		writel(xdp_ring->notify_qid, xdp_ring->notify_addr);
+
+	if (static_branch_unlikely(&nbl_xdp_locking_key))
+		spin_unlock(&xdp_ring->xmit_lock);
+
+	return nxmit;
+}
+
+static void
+nbl_res_txrx_update_xdp_tail_locked(struct nbl_res_rx_ring *rx_ring)
+{
+	struct nbl_res_tx_ring *xdp_ring;
+	struct nbl_txrx_mgt *txrx_mgt = rx_ring->txrx_mgt;
+
+	xdp_ring = nbl_res_txrx_select_xdp_ring(txrx_mgt);
+	if (static_branch_unlikely(&nbl_xdp_locking_key))
+		spin_lock(&xdp_ring->xmit_lock);
+
+	writel(xdp_ring->notify_qid, xdp_ring->notify_addr);
+
+	if (static_branch_unlikely(&nbl_xdp_locking_key))
+		spin_unlock(&xdp_ring->xmit_lock);
 }
 
 static int nbl_res_txrx_register_xdp_rxq(void *priv, u8 ring_index)
 {
+	int err;
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	struct nbl_res_vector *vector = NBL_RES_MGT_TO_VECTOR(res_mgt, ring_index);
+	struct nbl_res_rx_ring *rx_ring = NBL_RES_MGT_TO_RX_RING(res_mgt, ring_index);
+
+	err = xdp_rxq_info_reg(&rx_ring->xdp_rxq, rx_ring->netdev, rx_ring->queue_index,
+			       vector->nbl_napi.napi.napi_id);
+	if (err < 0) {
+		nbl_err(common, NBL_DEBUG_RESOURCE, "Register xdp rxq err\n");
+		return -1;
+	}
+
+	err = xdp_rxq_info_reg_mem_model(&rx_ring->xdp_rxq, MEM_TYPE_PAGE_SHARED, NULL);
+	if (err < 0) {
+		nbl_err(common, NBL_DEBUG_RESOURCE, "Register xdp rxq mem model err\n");
+		xdp_rxq_info_unreg(&rx_ring->xdp_rxq);
+		return -1;
+	}
+
 	return 0;
 }
 
 static void nbl_res_txrx_unregister_xdp_rxq(void *priv, u8 ring_index)
 {
-	/* nothing need to do */
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_res_rx_ring *rx_ring = NBL_RES_MGT_TO_RX_RING(res_mgt, ring_index);
+
+	xdp_rxq_info_unreg(&rx_ring->xdp_rxq);
+}
+
+static inline void nbl_res_txrx_build_xdp_buff(struct nbl_rx_buffer *rx_buf,
+					       struct nbl_ring_desc *rx_desc,
+					       struct xdp_buff *xdp)
+{
+	char *p, *buf;
+	u32 size;
+
+	p = page_address(rx_buf->di->page) + rx_buf->offset;
+	buf = p - rx_buf->rx_pad;
+	size = rx_desc->len - NBL_BUFFER_HDR_LEN;
+	xdp_prepare_buff(xdp, buf, rx_buf->rx_pad + NBL_BUFFER_HDR_LEN, size, true);
 }
 
 static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
@@ -1258,6 +1589,7 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 				     int budget)
 {
 	struct nbl_xdp_output xdp_output;
+	struct xdp_buff xdp;
 	struct nbl_ring_desc *rx_desc;
 	struct nbl_rx_buffer *rx_buf;
 	struct nbl_rx_extend_head *hdr;
@@ -1267,11 +1599,11 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 	unsigned int xdp_tx_pkts = 0;
 	unsigned int xdp_redirect_pkts = 0;
 	unsigned int xdp_oversize = 0;
+	unsigned int xdp_drop = 0;
 	unsigned int size;
 	int nbl_act;
 	u32 rx_multicast_packets = 0;
 	u32 rx_unicast_packets = 0;
-	int xdp_act_final = 0;
 	u16 desc_count = 0;
 	u16 num_buffers = 0;
 	u16 cleaned_count = nbl_unused_rx_desc_count(rx_ring);
@@ -1290,30 +1622,25 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 		size = le32_to_cpu(rx_desc->len);
 		rx_buf = nbl_get_rx_buf(rx_ring);
 
+		nbl_res_txrx_build_xdp_buff(rx_buf, rx_desc, &xdp);
+
 		if (READ_ONCE(rx_ring->xdp_prog)) {
 			memset(&xdp_output, 0, sizeof(xdp_output));
-			nbl_act = nbl_res_txrx_run_xdp(rx_ring, rx_desc, rx_buf, &xdp_output);
+			nbl_act = nbl_res_txrx_run_xdp(rx_ring, rx_buf, &xdp_output, &xdp);
 			if (nbl_act) {
 				cleaned_count += xdp_output.desc_done_num;
-				if (unlikely(xdp_output.multicast))
+				if (unlikely(xdp_output.flags & NBL_XDP_FLAG_MULTICAST))
 					rx_multicast_packets++;
 				else
 					rx_unicast_packets++;
 
-				if (xdp_output.xdp_tx_act) {
-					xdp_tx_pkts++;
-					xdp_act_final |= NBL_XDP_TX;
-				} else if (xdp_output.xdp_redirect_act) {
-					xdp_redirect_pkts++;
-					xdp_act_final |= NBL_XDP_REDIRECT;
-				}
-
-				if (xdp_output.xdp_oversize)
-					xdp_oversize++;
+				xdp_tx_pkts += !!(xdp_output.flags & NBL_XDP_FLAG_TX);
+				xdp_redirect_pkts += !!(xdp_output.flags & NBL_XDP_FLAG_REDIRECT);
+				xdp_drop += !!(xdp_output.flags & NBL_XDP_FLAG_DROP);
+				xdp_oversize += !!(xdp_output.flags & NBL_XDP_FLAG_OVERSIZE);
 
 				total_rx_pkts++;
 				total_rx_bytes += xdp_output.bytes;
-
 				continue;
 			}
 		}
@@ -1325,7 +1652,7 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 		} else {
 			hdr = page_address(rx_buf->di->page) + rx_buf->offset;
 			net_prefetch(hdr);
-			skb = nbl_construct_skb(rx_ring, napi, rx_buf, size);
+			skb = nbl_construct_skb(rx_ring, napi, rx_buf, &xdp);
 			if (unlikely(!skb)) {
 				rx_ring->rx_stats.rx_alloc_buf_err_cnt++;
 				break;
@@ -1358,6 +1685,7 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 			continue;
 		}
 
+		total_rx_bytes += skb->len;
 		skb->protocol = eth_type_trans(skb, rx_ring->netdev);
 		if (unlikely(skb->pkt_type == PACKET_BROADCAST ||
 			     skb->pkt_type == PACKET_MULTICAST))
@@ -1365,7 +1693,6 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 		else
 			rx_unicast_packets++;
 
-		total_rx_bytes += skb->len;
 		if (sport_type)
 			nbl_rep_update_rx_stats(rx_ring->netdev, skb, sport_id);
 
@@ -1376,6 +1703,11 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 		total_rx_pkts++;
 	}
 
+	if (xdp_redirect_pkts)
+		xdp_do_flush();
+
+	if (xdp_tx_pkts)
+		nbl_res_txrx_update_xdp_tail_locked(rx_ring);
 	if (cleaned_count & (~(NBL_MAX_BATCH_DESC - 1)))
 		failure = nbl_alloc_rx_bufs(rx_ring, cleaned_count & (~(NBL_MAX_BATCH_DESC - 1)));
 
@@ -1384,6 +1716,10 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 	rx_ring->stats.bytes += total_rx_bytes;
 	rx_ring->rx_stats.rx_multicast_packets += rx_multicast_packets;
 	rx_ring->rx_stats.rx_unicast_packets += rx_unicast_packets;
+	rx_ring->rx_stats.xdp_tx_packets += xdp_tx_pkts;
+	rx_ring->rx_stats.xdp_redirect_packets += xdp_redirect_pkts;
+	rx_ring->rx_stats.xdp_oversize_packets += xdp_oversize;
+	rx_ring->rx_stats.xdp_drop_packets += xdp_drop;
 	u64_stats_update_end(&rx_ring->syncp);
 
 	return failure ? budget : total_rx_pkts;
@@ -1391,7 +1727,8 @@ static int nbl_res_txrx_clean_rx_irq(struct nbl_res_rx_ring *rx_ring,
 
 static int nbl_res_napi_poll(struct napi_struct *napi, int budget)
 {
-	struct nbl_res_vector *vector = container_of(napi, struct nbl_res_vector, napi);
+	struct nbl_napi_struct *nbl_napi = container_of(napi, struct nbl_napi_struct, napi);
+	struct nbl_res_vector *vector = container_of(nbl_napi, struct nbl_res_vector, nbl_napi);
 	struct nbl_res_tx_ring *tx_ring;
 	struct nbl_res_tx_ring *xdp_ring;
 	struct nbl_res_rx_ring *rx_ring;
@@ -1743,17 +2080,6 @@ static inline void nbl_tx_fill_tx_extend_header_leonis(union nbl_tx_extend_head 
 	pkthdr->l4_csum_en = param->l4_csum_en;
 }
 
-static inline void nbl_tx_fill_tx_extend_header_virtio(union nbl_tx_extend_head *pkthdr,
-						       struct nbl_tx_hdr_param *param)
-{
-	pkthdr->bootis.tso = 0;
-	pkthdr->bootis.dport_info = 0;
-	pkthdr->bootis.dport_id = 0;
-	pkthdr->bootis.dport = 0;
-	/* 0x0: drop, 0x1: normal fwd, 0x2: rsv, 0x3: cpu set dport */
-	pkthdr->bootis.fwd = NBL_TX_FWD_TYPE_NORMAL;
-}
-
 #ifdef CONFIG_TLS_DEVICE
 static bool nbl_ktls_send_init_packet(struct nbl_resource_mgt *res_mgt,
 				      struct nbl_res_tx_ring *tx_ring,
@@ -2086,7 +2412,6 @@ static bool nbl_ktls_send_resync_mul(struct nbl_resource_mgt *res_mgt,
 		tx_buffer->dma = firstdma;
 		tx_buffer->len = total_len;
 	}
-
 	/* wmb for head desc */
 	wmb();
 
@@ -2300,6 +2625,7 @@ static int nbl_tx_map(struct nbl_res_tx_ring *tx_ring, struct sk_buff *skb,
 	u16 avail_used_flags = tx_ring->avail_used_flags;
 	u32 pkthdr_len;
 	bool can_push;
+	bool doorbell = true;
 
 	first_desc = NBL_TX_DESC(tx_ring, desc_index);
 	first = NBL_TX_BUF(tx_ring, desc_index);
@@ -2332,12 +2658,6 @@ static int nbl_tx_map(struct nbl_res_tx_ring *tx_ring, struct sk_buff *skb,
 	switch (tx_ring->product_type) {
 	case NBL_LEONIS_TYPE:
 		nbl_tx_fill_tx_extend_header_leonis(pkthdr, hdr_param);
-		break;
-	case NBL_BOOTIS_TYPE:
-		nbl_tx_fill_tx_extend_header_bootis(pkthdr, hdr_param);
-		break;
-	case NBL_VIRTIO_TYPE:
-		nbl_tx_fill_tx_extend_header_virtio(pkthdr, hdr_param);
 		break;
 	default:
 		netdev_err(tx_ring->netdev, "fill tx extend header failed, product type: %d, eth: %u.\n",
@@ -2389,24 +2709,27 @@ static int nbl_tx_map(struct nbl_res_tx_ring *tx_ring, struct sk_buff *skb,
 
 	tx_desc = NBL_TX_DESC(tx_ring, (desc_index == 0 ? tx_ring->desc_num : desc_index) - 1);
 	tx_desc->flags &= cpu_to_le16(~NBL_PACKED_DESC_F_NEXT);
-	first->next_to_watch = tx_desc;
 	first_desc->len += (hdr_param->total_hlen << NBL_TX_TOTAL_HEADERLEN_SHIFT);
 	first_desc->id = cpu_to_le16(skb_shinfo(skb)->gso_size);
 
+	tx_ring->next_to_use = desc_index;
+	nbl_maybe_stop_tx(tx_ring, DESC_NEEDED);
+	if (nbl_txrx_within_vsi(&tx_ring->vsi_info[NBL_VSI_DATA], tx_ring->queue_index))
+		doorbell = __netdev_tx_sent_queue(txring_txq(tx_ring),
+						  first->bytecount, netdev_xmit_more());
 	/* wmb */
 	wmb();
 
+	first->next_to_watch = tx_desc;
 	/* first desc last set flag */
 	if (first_desc == tx_desc)
 		first_desc->flags = cpu_to_le16(avail_used_flags);
 	else
 		first_desc->flags = cpu_to_le16(avail_used_flags | NBL_PACKED_DESC_F_NEXT);
 
-	tx_ring->next_to_use = desc_index;
-
-	nbl_maybe_stop_tx(tx_ring, DESC_NEEDED);
 	/* kick doorbell passthrough for performace */
-	writel(tx_ring->notify_qid, tx_ring->notify_addr);
+	if (doorbell)
+		writel(tx_ring->notify_qid, tx_ring->notify_addr);
 
 	// nbl_trace(tx_map_ok, tx_ring, skb, head, first_desc, pkthdr);
 
@@ -2454,8 +2777,7 @@ static netdev_tx_t nbl_res_txrx_rep_xmit(struct sk_buff *skb,
 	WARN_ON(count > MAX_DESC_NUM_PER_PKT);
 	if (unlikely(nbl_maybe_stop_tx(tx_ring, count))) {
 		if (net_ratelimit())
-			dev_dbg(NBL_RING_TO_DEV(tx_ring), "There is no enough "
-				"descriptor to transmit packet in queue %u\n",
+			dev_dbg(NBL_RING_TO_DEV(tx_ring), "no desc to tx pkt in queue %u\n",
 				tx_ring->queue_index);
 		tx_ring->tx_stats.tx_busy++;
 		return NETDEV_TX_BUSY;
@@ -2492,8 +2814,7 @@ static netdev_tx_t nbl_res_txrx_self_test_start_xmit(struct sk_buff *skb, struct
 	WARN_ON(count > MAX_DESC_NUM_PER_PKT);
 	if (unlikely(nbl_maybe_stop_tx(tx_ring, count))) {
 		if (net_ratelimit())
-			dev_dbg(NBL_RING_TO_DEV(tx_ring), "There is no enough "
-				"descriptor to transmit packet in queue %u\n",
+			dev_dbg(NBL_RING_TO_DEV(tx_ring), "no desc to tx pkt in queue %u\n",
 				tx_ring->queue_index);
 		tx_ring->tx_stats.tx_busy++;
 		return NETDEV_TX_BUSY;
@@ -2523,6 +2844,8 @@ static netdev_tx_t nbl_res_txrx_start_xmit(struct sk_buff *skb,
 		.l4_len = 20 >> 2,
 		.mss = 256,
 	};
+	u16 vlan_tci;
+	u16 vlan_proto;
 	struct sk_buff *skb2 = NULL;
 	unsigned int count;
 	int ret = 0;
@@ -2534,16 +2857,24 @@ static netdev_tx_t nbl_res_txrx_start_xmit(struct sk_buff *skb,
 	WARN_ON(count > MAX_DESC_NUM_PER_PKT);
 	if (unlikely(nbl_maybe_stop_tx(tx_ring, count))) {
 		if (net_ratelimit())
-			dev_dbg(NBL_RING_TO_DEV(tx_ring), "There is no enough "
-				"descriptor to transmit packet in queue %u\n",
+			dev_dbg(NBL_RING_TO_DEV(tx_ring), "no desc to tx pkt in queue %u\n",
 				tx_ring->queue_index);
 		tx_ring->tx_stats.tx_busy++;
 		return NETDEV_TX_BUSY;
 	}
 
-	if (tx_ring->vlan_proto) {
-		skb = vlan_insert_tag_set_proto(skb, htons(tx_ring->vlan_proto),
-						tx_ring->vlan_tci);
+	if (tx_ring->vlan_proto || skb_vlan_tag_present(skb)) {
+		if (tx_ring->vlan_proto) {
+			vlan_proto = htons(tx_ring->vlan_proto);
+			vlan_tci = tx_ring->vlan_tci;
+		}
+
+		if (skb_vlan_tag_present(skb)) {
+			vlan_proto = skb->vlan_proto;
+			vlan_tci = skb_vlan_tag_get(skb);
+		}
+
+		skb = vlan_insert_tag_set_proto(skb, vlan_proto, vlan_tci);
 		if (!skb)
 			return NETDEV_TX_OK;
 	}
@@ -2617,7 +2948,7 @@ static int nbl_res_txring_is_invalid(struct nbl_resource_mgt *res_mgt,
 {
 	struct nbl_txrx_mgt *txrx_mgt = NBL_RES_MGT_TO_TXRX_MGT(res_mgt);
 	struct nbl_res_tx_ring *tx_ring;
-	u8 ring_num = txrx_mgt->tx_ring_num;
+	u16 ring_num = txrx_mgt->tx_ring_num;
 
 	if (index >= ring_num) {
 		seq_printf(m, "Invalid tx index %d, max ring num is %d\n", index, ring_num);
@@ -2638,7 +2969,7 @@ static int nbl_res_rxring_is_invalid(struct nbl_resource_mgt *res_mgt,
 {
 	struct nbl_txrx_mgt *txrx_mgt = NBL_RES_MGT_TO_TXRX_MGT(res_mgt);
 	struct nbl_res_rx_ring *rx_ring;
-	u8 ring_num = txrx_mgt->rx_ring_num;
+	u16 ring_num = txrx_mgt->rx_ring_num;
 
 	if (index >= ring_num) {
 		seq_printf(m, "Invalid rx index %d, max ring num is %d\n", index, ring_num);
@@ -2776,7 +3107,7 @@ static int nbl_res_txrx_dump_ring_stats(void *priv, struct seq_file *m, bool is_
 		return nbl_res_rx_dump_ring_stats(res_mgt, m, index);
 }
 
-static struct napi_struct *nbl_res_txrx_get_vector_napi(void *priv, u16 index)
+static struct nbl_napi_struct *nbl_res_txrx_get_vector_napi(void *priv, u16 index)
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
@@ -2787,7 +3118,7 @@ static struct napi_struct *nbl_res_txrx_get_vector_napi(void *priv, u16 index)
 		return NULL;
 	}
 
-	return &txrx_mgt->vectors[index]->napi;
+	return &txrx_mgt->vectors[index]->nbl_napi;
 }
 
 static void nbl_res_txrx_set_vector_info(void *priv, u8 *irq_enable_base,
@@ -2813,6 +3144,7 @@ static void nbl_res_get_pt_ops(void *priv, struct nbl_resource_pt_ops *pt_ops)
 	pt_ops->rep_xmit = nbl_res_txrx_rep_xmit;
 	pt_ops->self_test_xmit = nbl_res_txrx_self_test_start_xmit;
 	pt_ops->napi_poll = nbl_res_napi_poll;
+	pt_ops->xdp_xmit = nbl_res_txrx_xdp_xmit;
 }
 
 static u32 nbl_res_txrx_get_tx_headroom(void *priv)
@@ -2846,10 +3178,23 @@ static void nbl_res_txrx_get_queue_stats(void *priv, u8 queue_id,
 	} while (u64_stats_fetch_retry(syncp, start));
 }
 
+static bool nbl_res_is_ctrlq(struct nbl_txrx_mgt *txrx_mgt, u16 qid)
+{
+	u16 ring_num = txrx_mgt->vsi_info[NBL_VSI_CTRL].ring_num;
+	u16 ring_offset = txrx_mgt->vsi_info[NBL_VSI_CTRL].ring_offset;
+
+	if (qid >= ring_offset && qid < ring_offset + ring_num)
+		return true;
+
+	return false;
+}
+
 static void nbl_res_txrx_get_net_stats(void *priv, struct nbl_stats *net_stats)
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_txrx_mgt *txrx_mgt = NBL_RES_MGT_TO_TXRX_MGT(res_mgt);
+	struct nbl_res_rx_ring *rx_ring;
+	struct nbl_res_tx_ring *tx_ring;
 	int i;
 	u64 bytes = 0, packets = 0;
 	u64 tso_packets = 0, tso_bytes = 0;
@@ -2875,32 +3220,42 @@ static void nbl_res_txrx_get_net_stats(void *priv, struct nbl_stats *net_stats)
 	u64 rx_cache_busy = 0;
 	u64 rx_cache_waive = 0;
 	u64 tx_skb_free = 0;
+	u64 xdp_tx_packets = 0;
+	u64 xdp_redirect_packets = 0;
+	u64 xdp_oversize_packets = 0;
+	u64 xdp_drop_packets = 0;
 	unsigned int start;
 
 	rcu_read_lock();
 	for (i = 0; i < txrx_mgt->rx_ring_num; i++) {
-		struct nbl_res_rx_ring *ring = NBL_RES_MGT_TO_RX_RING(res_mgt, i);
+		if (nbl_res_is_ctrlq(txrx_mgt, i))
+			continue;
 
+		rx_ring = NBL_RES_MGT_TO_RX_RING(res_mgt, i);
 		do {
-			start = u64_stats_fetch_begin(&ring->syncp);
-			bytes += ring->stats.bytes;
-			packets += ring->stats.packets;
-			rx_csum_packets += ring->rx_stats.rx_csum_packets;
-			rx_csum_errors += ring->rx_stats.rx_csum_errors;
-			rx_multicast_packets += ring->rx_stats.rx_multicast_packets;
-			rx_unicast_packets += ring->rx_stats.rx_unicast_packets;
-			rx_desc_addr_err_cnt += ring->rx_stats.rx_desc_addr_err_cnt;
-			rx_alloc_buf_err_cnt += ring->rx_stats.rx_alloc_buf_err_cnt;
-			rx_cache_reuse += ring->rx_stats.rx_cache_reuse;
-			rx_cache_full += ring->rx_stats.rx_cache_full;
-			rx_cache_empty += ring->rx_stats.rx_cache_empty;
-			rx_cache_busy += ring->rx_stats.rx_cache_busy;
-			rx_cache_waive += ring->rx_stats.rx_cache_waive;
+			start = u64_stats_fetch_begin(&rx_ring->syncp);
+			bytes += rx_ring->stats.bytes;
+			packets += rx_ring->stats.packets;
+			rx_csum_packets += rx_ring->rx_stats.rx_csum_packets;
+			rx_csum_errors += rx_ring->rx_stats.rx_csum_errors;
+			rx_multicast_packets += rx_ring->rx_stats.rx_multicast_packets;
+			rx_unicast_packets += rx_ring->rx_stats.rx_unicast_packets;
+			rx_desc_addr_err_cnt += rx_ring->rx_stats.rx_desc_addr_err_cnt;
+			rx_alloc_buf_err_cnt += rx_ring->rx_stats.rx_alloc_buf_err_cnt;
+			rx_cache_reuse += rx_ring->rx_stats.rx_cache_reuse;
+			rx_cache_full += rx_ring->rx_stats.rx_cache_full;
+			rx_cache_empty += rx_ring->rx_stats.rx_cache_empty;
+			rx_cache_busy += rx_ring->rx_stats.rx_cache_busy;
+			rx_cache_waive += rx_ring->rx_stats.rx_cache_waive;
+			xdp_tx_packets += rx_ring->rx_stats.xdp_tx_packets;
+			xdp_redirect_packets += rx_ring->rx_stats.xdp_redirect_packets;
+			xdp_oversize_packets += rx_ring->rx_stats.xdp_oversize_packets;
+			xdp_drop_packets += rx_ring->rx_stats.xdp_drop_packets;
 #ifdef CONFIG_TLS_DEVICE
-			tls_decrypted_packets += ring->rx_stats.tls_decrypted_packets;
-			tls_resync_req_num += ring->rx_stats.tls_resync_req_num;
+			tls_decrypted_packets += rx_ring->rx_stats.tls_decrypted_packets;
+			tls_resync_req_num += rx_ring->rx_stats.tls_resync_req_num;
 #endif
-		} while (u64_stats_fetch_retry(&ring->syncp, start));
+		} while (u64_stats_fetch_retry(&rx_ring->syncp, start));
 	}
 
 	net_stats->rx_packets = packets;
@@ -2910,6 +3265,10 @@ static void nbl_res_txrx_get_net_stats(void *priv, struct nbl_stats *net_stats)
 	net_stats->rx_csum_errors = rx_csum_errors;
 	net_stats->rx_multicast_packets = rx_multicast_packets;
 	net_stats->rx_unicast_packets = rx_unicast_packets;
+	net_stats->xdp_tx_packets = xdp_tx_packets;
+	net_stats->xdp_redirect_packets = xdp_redirect_packets;
+	net_stats->xdp_oversize_packets = xdp_oversize_packets;
+	net_stats->xdp_drop_packets = xdp_drop_packets;
 #ifdef CONFIG_TLS_DEVICE
 	net_stats->tls_decrypted_packets = tls_decrypted_packets;
 	net_stats->tls_resync_req_num = tls_resync_req_num;
@@ -2919,28 +3278,30 @@ static void nbl_res_txrx_get_net_stats(void *priv, struct nbl_stats *net_stats)
 	packets = 0;
 
 	for (i = 0; i < txrx_mgt->tx_ring_num; i++) {
-		struct nbl_res_tx_ring *ring = NBL_RES_MGT_TO_TX_RING(res_mgt, i);
+		if (nbl_res_is_ctrlq(txrx_mgt, i))
+			continue;
 
+		tx_ring = NBL_RES_MGT_TO_TX_RING(res_mgt, i);
 		do {
-			start = u64_stats_fetch_begin(&ring->syncp);
-			bytes += ring->stats.bytes;
-			packets += ring->stats.packets;
-			tso_packets += ring->tx_stats.tso_packets;
-			tso_bytes += ring->tx_stats.tso_bytes;
-			tx_csum_packets += ring->tx_stats.tx_csum_packets;
-			tx_busy += ring->tx_stats.tx_busy;
-			tx_dma_busy += ring->tx_stats.tx_dma_busy;
-			tx_multicast_packets += ring->tx_stats.tx_multicast_packets;
-			tx_unicast_packets += ring->tx_stats.tx_unicast_packets;
-			tx_skb_free += ring->tx_stats.tx_skb_free;
-			tx_desc_addr_err_cnt += ring->tx_stats.tx_desc_addr_err_cnt;
-			tx_desc_len_err_cnt += ring->tx_stats.tx_desc_len_err_cnt;
+			start = u64_stats_fetch_begin(&tx_ring->syncp);
+			bytes += tx_ring->stats.bytes;
+			packets += tx_ring->stats.packets;
+			tso_packets += tx_ring->tx_stats.tso_packets;
+			tso_bytes += tx_ring->tx_stats.tso_bytes;
+			tx_csum_packets += tx_ring->tx_stats.tx_csum_packets;
+			tx_busy += tx_ring->tx_stats.tx_busy;
+			tx_dma_busy += tx_ring->tx_stats.tx_dma_busy;
+			tx_multicast_packets += tx_ring->tx_stats.tx_multicast_packets;
+			tx_unicast_packets += tx_ring->tx_stats.tx_unicast_packets;
+			tx_skb_free += tx_ring->tx_stats.tx_skb_free;
+			tx_desc_addr_err_cnt += tx_ring->tx_stats.tx_desc_addr_err_cnt;
+			tx_desc_len_err_cnt += tx_ring->tx_stats.tx_desc_len_err_cnt;
 #ifdef CONFIG_TLS_DEVICE
-			tls_encrypted_packets += ring->tx_stats.tls_encrypted_packets;
-			tls_encrypted_bytes += ring->tx_stats.tls_encrypted_bytes;
-			tls_ooo_packets += ring->tx_stats.tls_ooo_packets;
+			tls_encrypted_packets += tx_ring->tx_stats.tls_encrypted_packets;
+			tls_encrypted_bytes += tx_ring->tx_stats.tls_encrypted_bytes;
+			tls_ooo_packets += tx_ring->tx_stats.tls_ooo_packets;
 #endif
-		} while (u64_stats_fetch_retry(&ring->syncp, start));
+		} while (u64_stats_fetch_retry(&tx_ring->syncp, start));
 	}
 
 	rcu_read_unlock();
@@ -3131,7 +3492,7 @@ nbl_res_queue_stop_abnormal_sw_queue(void *priv, u16 local_queue_id, int type)
 
 	if (vector) {
 		vector->started = false;
-		napi_synchronize(&vector->napi);
+		napi_synchronize(&vector->nbl_napi.napi);
 		netif_stop_subqueue(tx_ring->netdev, local_queue_id);
 	}
 
@@ -3202,8 +3563,11 @@ static int nbl_res_txrx_restart_abnormal_ring(void *priv, int ring_index, int ty
 		break;
 	}
 
-	if (vector)
+	if (vector) {
+		if (vector->net_msix_mask_en)
+			writel(vector->irq_data, vector->irq_enable_base);
 		vector->started = true;
+	}
 
 	return ret;
 }
@@ -3231,6 +3595,19 @@ static void nbl_res_txrx_set_xdp_prog(void *priv, void *prog)
 
 		WRITE_ONCE(tx_ring->xdp_prog, prog);
 	}
+}
+
+static int nbl_res_get_max_mtu(void *priv)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_txrx_mgt *txrx_mgt = NBL_RES_MGT_TO_TXRX_MGT(res_mgt);
+	struct nbl_res_rx_ring *rx_ring;
+
+	rx_ring = NBL_RES_MGT_TO_RX_RING(res_mgt, 0);
+
+	if (!!(txrx_mgt->xdp_ring_num) && rx_ring->xdp_prog)
+		return rx_ring->buf_len - NBL_BUFFER_HDR_LEN - ETH_HLEN - (2 * VLAN_HLEN);
+	return NBL_MAX_JUMBO_FRAME_SIZE - NBL_PKT_HDR_PAD;
 }
 
 /* NBL_TXRX_SET_OPS(ops_name, func)
@@ -3270,6 +3647,7 @@ do {											\
 	NBL_TXRX_SET_OPS(set_rings_xdp_prog, nbl_res_txrx_set_xdp_prog);		\
 	NBL_TXRX_SET_OPS(register_xdp_rxq, nbl_res_txrx_register_xdp_rxq);		\
 	NBL_TXRX_SET_OPS(unregister_xdp_rxq, nbl_res_txrx_unregister_xdp_rxq);		\
+	NBL_TXRX_SET_OPS(get_max_mtu, nbl_res_get_max_mtu);				\
 } while (0)
 
 /* Structure starts here, adding an op should not modify anything below */

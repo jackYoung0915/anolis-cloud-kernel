@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
  */
+
 #ifndef _NBL_TC_FLOW_FILTER_LEONIS_H_
 #define _NBL_TC_FLOW_FILTER_LEONIS_H_
 
@@ -10,6 +11,9 @@
 
 #define NBL_ACC_HT0				(0)
 #define NBL_ACC_HT1				(1)
+
+#define NBL_TC_UPDATE_MAC_OFT(p) ((p) += 2)
+#define NBL_TC_UPDATE_IP_OFT(p) ((p) += 4)
 
 struct nbl_flow_offload_ops {
 	int (*add)
