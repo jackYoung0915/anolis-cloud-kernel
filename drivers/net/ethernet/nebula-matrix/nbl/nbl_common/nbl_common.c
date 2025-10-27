@@ -170,6 +170,7 @@ u32 nbl_common_pf_id_subtraction_mgtpf_id(struct nbl_common_info *common, u32 pf
 /**
  * alloc a index resource poll, the index_size max is 64 * 1024
  * the poll support start_index not zero;
+ * the poll support multi thread
  */
 void *nbl_common_init_index_table(struct nbl_index_tbl_key *key)
 {
@@ -254,7 +255,6 @@ void nbl_common_remove_index_table(void *priv, struct nbl_index_tbl_del_key *key
 void nbl_common_scan_index_table(void *priv, struct nbl_index_tbl_scan_key *key)
 {
 	struct nbl_index_mgt *index_mgt = (struct nbl_index_mgt *)priv;
-	struct device *dev;
 	struct nbl_index_entry_node *idx_node;
 	struct hlist_node *list_node;
 	int i;
@@ -262,7 +262,6 @@ void nbl_common_scan_index_table(void *priv, struct nbl_index_tbl_scan_key *key)
 	if (!index_mgt)
 		return;
 
-	dev = index_mgt->tbl_key.dev;
 	for (i = 0; i < index_mgt->bucket_size; i++) {
 		hlist_for_each_entry_safe(idx_node, list_node, index_mgt->key_hash + i, node) {
 			if (key && key->action_func)
@@ -375,7 +374,7 @@ int nbl_common_alloc_index(void *priv, void *key, struct nbl_index_key_extra *ex
 		return index;
 
 	key_node_size = sizeof(struct nbl_index_entry_node) + key_size + data_size;
-	idx_node = devm_kzalloc(index_mgt->tbl_key.dev, key_node_size, GFP_KERNEL);
+	idx_node = devm_kzalloc(index_mgt->tbl_key.dev, key_node_size, GFP_ATOMIC);
 	if (!idx_node)
 		return index;
 
@@ -528,11 +527,9 @@ int nbl_common_alloc_hash_node(void *priv, void *key, void *data, void **out_dat
 	struct nbl_hash_tbl_mgt *tbl_mgt = (struct nbl_hash_tbl_mgt *)priv;
 	struct nbl_hash_entry_node *hash_node;
 	u32 hash_value;
-	u32 node_size;
 	u16 key_size;
 	u16 data_size;
 
-	node_size = sizeof(struct nbl_hash_entry_node);
 	hash_node = devm_kzalloc(tbl_mgt->tbl_key.dev, sizeof(struct nbl_hash_entry_node),
 				 GFP_KERNEL);
 	if (!hash_node)

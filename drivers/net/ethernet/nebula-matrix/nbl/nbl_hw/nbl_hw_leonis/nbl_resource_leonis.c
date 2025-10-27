@@ -62,12 +62,14 @@ static void nbl_res_get_user_queue_info(void *priv, u16 *queue_num, u16 *queue_s
 	struct nbl_resource_info *res_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
 	struct nbl_net_ring_num_info *num_info = &res_info->net_ring_num_info;
 	u16 func_id = nbl_res_vsi_id_to_func_id(res_mgt, vsi_id);
+	u16 default_queue;
 
 	if (num_info->net_max_qp_num[func_id] != 0)
-		*queue_num = num_info->net_max_qp_num[func_id];
+		default_queue = num_info->net_max_qp_num[func_id];
 	else
-		*queue_num = num_info->pf_def_max_net_qp_num;
+		default_queue = num_info->pf_def_max_net_qp_num;
 
+	*queue_num = min_t(u16, default_queue, NBL_VSI_PF_LEGACY_QUEUE_NUM_MAX - default_queue);
 	*queue_size = NBL_DEFAULT_DESC_NUM;
 
 	if (*queue_num > NBL_MAX_TXRX_QUEUE_PER_FUNC) {
@@ -94,43 +96,40 @@ static int nbl_res_save_vf_bar_info(struct nbl_resource_mgt *res_mgt,
 				    u16 func_id, struct nbl_register_net_param *register_param)
 {
 	struct device *dev = NBL_RES_MGT_TO_DEV(res_mgt);
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
 	struct nbl_sriov_info *sriov_info = &NBL_RES_MGT_TO_SRIOV_INFO(res_mgt)[func_id];
 	u64 pf_bar_start;
-	u16 pf_bdf;
 	u64 vf_bar_start;
+	u16 pf_bdf;
 	u64 vf_bar_size;
 	u16 total_vfs;
 	u16 offset;
 	u16 stride;
 
-	pf_bar_start = register_param->pf_bar_start;
-	if (pf_bar_start) {
+	if (func_id < NBL_RES_MGT_TO_PF_NUM(res_mgt)) {
+		pf_bar_start = phy_ops->get_pf_bar_addr(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), func_id);
 		sriov_info->pf_bar_start = pf_bar_start;
 		dev_info(dev, "sriov_info, pf_bar_start:%llx\n", sriov_info->pf_bar_start);
 	}
 
-	pf_bdf = register_param->pf_bdf;
-	vf_bar_start = register_param->vf_bar_start;
+	pf_bdf = (u16)sriov_info->bdf;
 	vf_bar_size = register_param->vf_bar_size;
 	total_vfs = register_param->total_vfs;
 	offset = register_param->offset;
 	stride = register_param->stride;
 
 	if (total_vfs) {
-		if (pf_bdf != sriov_info->bdf) {
-			dev_err(dev, "PF bdf donot equal, af record = %u, real pf bdf: %u\n",
-				sriov_info->bdf, pf_bdf);
-			return -EIO;
-		}
 		sriov_info->offset = offset;
 		sriov_info->stride = stride;
+		vf_bar_start = phy_ops->get_vf_bar_addr(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), func_id);
 		sriov_info->vf_bar_start = vf_bar_start;
 		sriov_info->vf_bar_len = vf_bar_size / total_vfs;
 
-		dev_info(dev, "sriov_info, bdf:%x:%x.%x, num_vfs:%d, start_vf_func_id:%d,"
-			"offset:%d, stride:%d,",
-			PCI_BUS_NUM(pf_bdf), PCI_SLOT(pf_bdf & 0xff), PCI_FUNC(pf_bdf & 0xff),
-			sriov_info->num_vfs, sriov_info->start_vf_func_id, offset, stride);
+		dev_info(dev, "sriov_info, bdf:%x:%x.%x, num_vfs:%d, start_vf_func_id:%d,",
+			 PCI_BUS_NUM(pf_bdf), PCI_SLOT(pf_bdf & 0xff), PCI_FUNC(pf_bdf & 0xff),
+			 sriov_info->num_vfs, sriov_info->start_vf_func_id);
+		dev_info(dev, "offset:%d, stride:%d, vf_bar_start: %llx",
+			 offset, stride, sriov_info->vf_bar_start);
 	}
 
 	return 0;
@@ -140,9 +139,7 @@ static int nbl_res_prepare_vf_chan(struct nbl_resource_mgt *res_mgt,
 				   u16 func_id, struct nbl_register_net_param *register_param)
 {
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
-	struct device *dev = NBL_RES_MGT_TO_DEV(res_mgt);
 	struct nbl_sriov_info *sriov_info = &NBL_RES_MGT_TO_SRIOV_INFO(res_mgt)[func_id];
-	u16 pf_bdf;
 	u16 total_vfs;
 	u16 offset;
 	u16 stride;
@@ -155,18 +152,11 @@ static int nbl_res_prepare_vf_chan(struct nbl_resource_mgt *res_mgt,
 	u8 function;
 	u16 vf_func_id;
 
-	pf_bdf = register_param->pf_bdf;
 	total_vfs = register_param->total_vfs;
 	offset = register_param->offset;
 	stride = register_param->stride;
 
 	if (total_vfs) {
-		if (pf_bdf != sriov_info->bdf) {
-			dev_err(dev, "PF bdf donot equal, af record = %u, real pf bdf: %u\n",
-				sriov_info->bdf, pf_bdf);
-			return -EIO;
-		}
-
 		/* Configure mailbox qinfo_map_table for the pf's all vf,
 		 * so vf's mailbox is ready, vf can use mailbox.
 		 */
@@ -236,19 +226,27 @@ static int nbl_res_register_net(void *priv, u16 func_id,
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
+	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+	struct nbl_vdpa_status **vf_status = NBL_RES_MGT_TO_VDPA_VF_STATS(res_mgt);
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+	struct device *dev = NBL_RES_MGT_TO_DEV(res_mgt);
 	netdev_features_t csumo_features = 0;
 	netdev_features_t tso_features = 0;
 	netdev_features_t pf_features = 0;
+	netdev_features_t vlano_features = 0;
 	u16 tx_queue_num, rx_queue_num;
 	u8 mac[ETH_ALEN] = {0};
 	u32 quirks;
+	u16 vsi_id;
 	int ret = 0;
 
 	if (func_id < NBL_MAX_PF) {
 		nbl_res_get_eth_mac(res_mgt, mac, nbl_res_pf_to_eth_id(res_mgt, func_id));
 		pf_features = NBL_FEATURE(NETIF_F_NTUPLE);
+		register_result->trusted = 1;
 	} else {
 		ether_addr_copy(mac, vsi_info->mac_info[func_id].mac);
+		register_result->trusted = vsi_info->mac_info[func_id].trusted;
 	}
 	ether_addr_copy(register_result->mac, mac);
 
@@ -263,15 +261,26 @@ static int nbl_res_register_net(void *priv, u16 func_id,
 			NBL_FEATURE(NETIF_F_GSO_UDP_L4);
 	}
 
+	if (func_id < NBL_MAX_PF) /* vf unsupport */
+		vlano_features = NBL_FEATURE(NETIF_F_HW_VLAN_CTAG_TX) |
+				 NBL_FEATURE(NETIF_F_HW_VLAN_CTAG_RX) |
+				 NBL_FEATURE(NETIF_F_HW_VLAN_STAG_TX) |
+				 NBL_FEATURE(NETIF_F_HW_VLAN_STAG_RX);
+
 	register_result->hw_features |= pf_features |
 					csumo_features |
 					tso_features |
+					vlano_features |
 					NBL_FEATURE(NETIF_F_SG) |
-					NBL_FEATURE(NETIF_F_HW_TC);
+					NBL_FEATURE(NETIF_F_HW_TC) |
+					NBL_FEATURE(NETIF_F_RXHASH);
+
 	register_result->features |= register_result->hw_features |
 				     NBL_FEATURE(NETIF_F_HW_TC) |
 				     NBL_FEATURE(NETIF_F_HW_VLAN_CTAG_FILTER) |
 				     NBL_FEATURE(NETIF_F_HW_VLAN_STAG_FILTER);
+
+	register_result->vlan_features = register_result->features;
 
 	register_result->max_mtu = NBL_MAX_JUMBO_FRAME_SIZE - NBL_PKT_HDR_PAD;
 
@@ -302,6 +311,31 @@ static int nbl_res_register_net(void *priv, u16 func_id,
 		goto update_active_vf_fail;
 	}
 
+	if (register_param->is_vdpa) {
+		set_bit(func_id, resource_info->vdpa.vdpa_func_bitmap);
+
+		if (!vf_status[func_id]) {
+			vf_status[func_id] = devm_kzalloc(dev, sizeof(struct nbl_vdpa_status),
+							  GFP_KERNEL);
+			if (!vf_status[func_id]) {
+				ret = -ENOMEM;
+				goto alloc_nbl_vf_stats_fail;
+			}
+		}
+		vsi_id = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_DATA);
+		phy_ops->get_dstat_vsi_stat(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vsi_id,
+					    &vf_status[func_id]->init_stats.tx_packets,
+					    &vf_status[func_id]->init_stats.tx_bytes);
+		phy_ops->get_ustat_vsi_stat(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vsi_id,
+					    &vf_status[func_id]->init_stats.rx_packets,
+					    &vf_status[func_id]->init_stats.rx_bytes);
+		memcpy(&vf_status[func_id]->prev_stats, &vf_status[func_id]->init_stats,
+		       sizeof(vf_status[func_id]->prev_stats));
+		vf_status[func_id]->timestamp = jiffies;
+	} else {
+		clear_bit(func_id, resource_info->vdpa.vdpa_func_bitmap);
+	}
+
 	if (func_id >= NBL_RES_MGT_TO_PF_NUM(res_mgt))
 		return 0;
 
@@ -319,8 +353,9 @@ static int nbl_res_register_net(void *priv, u16 func_id,
 
 prepare_vf_chan_fail:
 save_vf_bar_info_fail:
+alloc_nbl_vf_stats_fail:
 update_active_vf_fail:
-	return -EIO;
+	return ret;
 }
 
 static int nbl_res_unregister_net(void *priv, u16 func_id)
@@ -621,11 +656,56 @@ static void nbl_res_set_offload_status(void *priv, u16 func_id)
 	rep_status->timestamp = jiffies;
 }
 
+static void nbl_res_vdpa_itr_update(struct nbl_resource_mgt *res_mgt,
+				    u16 func_id, bool active)
+{
+	struct nbl_vdpa_info *vdpa_info = &res_mgt->resource_info->vdpa;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+	struct nbl_vdpa_status *vdpa_vf_stats = vdpa_info->vf_stats[func_id];
+	struct nbl_vf_stats cur_stats = {0}, *prev_stats;
+	u64 tx_rates = 0, rx_rates = 0, pkt_rates = 0, time_diff;
+	u16 itr_level = 0;
+	u16 vsi_id;
+
+	if (!vdpa_vf_stats)
+		return;
+
+	if (active) {
+		vsi_id = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_DATA);
+		phy_ops->get_dstat_vsi_stat(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vsi_id,
+					    &cur_stats.tx_packets, &cur_stats.tx_bytes);
+		phy_ops->get_ustat_vsi_stat(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vsi_id,
+					    &cur_stats.rx_packets, &cur_stats.rx_bytes);
+
+		time_diff = jiffies - vdpa_vf_stats->timestamp;
+		if (time_diff > 0) {
+			prev_stats = &vdpa_vf_stats->prev_stats;
+			tx_rates = (cur_stats.tx_packets - prev_stats->tx_packets) / time_diff * HZ;
+			rx_rates = (cur_stats.rx_packets - prev_stats->rx_packets) / time_diff * HZ;
+			pkt_rates = max_t(u64, tx_rates, rx_rates);
+
+			itr_level = nbl_res_intr_get_suppress_level(res_mgt, pkt_rates,
+								    vdpa_vf_stats->itr_level);
+		} else {
+			itr_level = vdpa_vf_stats->itr_level;
+		}
+
+		memcpy(&vdpa_vf_stats->prev_stats, &cur_stats, sizeof(cur_stats));
+		vdpa_vf_stats->timestamp = jiffies;
+	}
+
+	if (itr_level != vdpa_vf_stats->itr_level) {
+		nbl_res_intr_set_intr_suppress_level(res_mgt, func_id, 0, U16_MAX, itr_level);
+		vdpa_vf_stats->itr_level = itr_level;
+	}
+}
+
 static int nbl_res_check_offload_status(void *priv, bool *is_down)
 {
 	struct nbl_resource_mgt_leonis *res_mgt_leonis =
 				(struct nbl_resource_mgt_leonis *)priv;
 	struct nbl_resource_mgt *res_mgt = &res_mgt_leonis->res_mgt;
+	struct nbl_resource_info *res_info = res_mgt->resource_info;
 	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
 	struct nbl_upcall_port_info *upcall_port_info =
 				&res_mgt_leonis->pmd_status.upcall_port_info;
@@ -633,6 +713,8 @@ static int nbl_res_check_offload_status(void *priv, bool *is_down)
 				&res_mgt_leonis->pmd_status.rep_status;
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
 	int i;
+	u16 func_id;
+	u32 start, batch_cnt;
 
 	if (!upcall_port_info->upcall_port_active)
 		return 0;
@@ -644,6 +726,8 @@ static int nbl_res_check_offload_status(void *priv, bool *is_down)
 		return 0;
 	}
 
+	start = res_info->vdpa.start;
+	batch_cnt = NBL_VDPA_ITR_BATCH_CNT;
 	if (rep_status->timestamp && time_after(jiffies, rep_status->timestamp + 30 * HZ)) {
 		for (i = 0; i < NBL_OFFLOAD_STATUS_MAX_VSI; i++)
 			clear_bit(i, rep_status->rep_vsi_bitmap);
@@ -654,9 +738,31 @@ static int nbl_res_check_offload_status(void *priv, bool *is_down)
 		upcall_port_info->upcall_port_active = false;
 		nbl_err(common, NBL_DEBUG_FLOW, "offload found inactive!");
 		phy_ops->clear_profile_table_action(NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
+		phy_ops->ipro_chksum_err_ctrl(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), 0);
 		nbl_res_update_offload_status(res_mgt_leonis);
 		*is_down = true;
+
+		start = 0;
+		batch_cnt = NBL_MAX_FUNC;
 	}
+
+	i = 0;
+	for (; start < NBL_MAX_FUNC;) {
+		func_id = find_next_bit(res_info->vdpa.vdpa_func_bitmap, NBL_MAX_FUNC, start);
+		if (func_id >= NBL_MAX_FUNC) {
+			start = 0;
+			break;
+		}
+		i++;
+		start = func_id + 1;
+
+		nbl_res_vdpa_itr_update(res_mgt, func_id,
+					upcall_port_info->upcall_port_active);
+		if (i >= batch_cnt)
+			break;
+	}
+
+	res_info->vdpa.start = start;
 
 	return 0;
 }
@@ -963,7 +1069,8 @@ static int nbl_res_register_upcall_port(void *priv, u16 func_id)
 				&res_mgt_leonis->pmd_status.upcall_port_info;
 	struct nbl_rep_offload_status *rep_status =
 				&res_mgt_leonis->pmd_status.rep_status;
-	u16 vsi_id = nbl_res_func_id_to_vsi_id(&res_mgt_leonis->res_mgt, func_id, NBL_VSI_DATA);
+	u16 vsi_id = nbl_res_func_id_to_vsi_id(&res_mgt_leonis->res_mgt, func_id,
+					       NBL_VSI_SERV_PF_DATA_TYPE);
 	int i;
 
 	rep_status->timestamp = jiffies;
@@ -1038,6 +1145,14 @@ static void nbl_res_init_cmdq(void *priv, void *data, u16 func_id)
 		(struct nbl_resource_mgt_leonis *)priv;
 	struct nbl_resource_mgt *res_mgt = &res_mgt_leonis->res_mgt;
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+	struct nbl_chan_cmdq_init_info *cmdq_param =
+		(struct nbl_chan_cmdq_init_info *)data;
+	u8 bus;
+	u8 dev;
+	u8 func;
+
+	nbl_res_func_id_to_bdf(res_mgt, func_id, &bus, &dev, &func);
+	cmdq_param->bdf_num = (u16)PCI_DEVID(bus, PCI_DEVFN(dev, func));
 
 	phy_ops->init_cmdq(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), data, func_id);
 }
@@ -1166,6 +1281,7 @@ static int nbl_res_get_upcall_port(void *priv, u16 *bdf)
 	struct nbl_resource_mgt_leonis *res_mgt_leonis =
 				(struct nbl_resource_mgt_leonis *)priv;
 	struct nbl_resource_mgt *res_mgt = &res_mgt_leonis->res_mgt;
+	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
 	struct nbl_upcall_port_info *upcall_port_info =
 				&res_mgt_leonis->pmd_status.upcall_port_info;
 	u8 bus, dev, func;
@@ -1174,7 +1290,7 @@ static int nbl_res_get_upcall_port(void *priv, u16 *bdf)
 		return U32_MAX;
 
 	nbl_res_func_id_to_bdf(res_mgt, upcall_port_info->func_id, &bus, &dev, &func);
-	*bdf = PCI_DEVID(bus, PCI_DEVFN(dev, func));
+	*bdf = (u16)PCI_DEVID(common->bus, PCI_DEVFN(dev, func));
 	return 0;
 }
 
@@ -1302,6 +1418,7 @@ static int nbl_res_set_tc_flow_info(void *priv)
 	}
 
 	tc_flow_mgt->pf_set_tc_count++;
+	phy_ops->ipro_chksum_err_ctrl(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), 1);
 	nbl_info(common, NBL_DEBUG_FLOW, "tc flow set pf_set_tc_count++=%d\n",
 		 tc_flow_mgt->pf_set_tc_count);
 
@@ -1346,6 +1463,8 @@ static int nbl_res_unset_tc_flow_info(void *priv)
 		nbl_tc_unset_flow_info(common->tc_inst_id);
 		nbl_info(common, NBL_DEBUG_FLOW, "tc flow unset inst_id=%d success.\n",
 			 common->tc_inst_id);
+
+		phy_ops->ipro_chksum_err_ctrl(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), 0);
 	}
 
 	return 0;
@@ -1443,7 +1562,7 @@ static void nbl_res_flr_clear_net(void *priv, u16 vf_id)
 	u16 func_id = vf_id + NBL_MAX_PF;
 	u16 vsi_id;
 
-	vsi_id = nbl_res_func_id_to_vsi_id(priv, func_id, NBL_VSI_DATA);
+	vsi_id = nbl_res_func_id_to_vsi_id(priv, func_id, NBL_VSI_SERV_VF_DATA_TYPE);
 	nbl_res_unregister_rdma(priv, vsi_id);
 
 	if (nbl_res_vf_is_active(priv, func_id))
@@ -1455,7 +1574,7 @@ static void nbl_res_flr_clear_rdma(void *priv, u16 vf_id)
 	u16 func_id = vf_id + NBL_MAX_PF;
 	u16 vsi_id;
 
-	vsi_id = nbl_res_func_id_to_vsi_id(priv, func_id, NBL_VSI_DATA);
+	vsi_id = nbl_res_func_id_to_vsi_id(priv, func_id, NBL_VSI_SERV_VF_DATA_TYPE);
 	nbl_res_unregister_rdma(priv, vsi_id);
 }
 
@@ -1465,6 +1584,88 @@ static u16 nbl_res_covert_vfid_to_vsi_id(void *priv, u16 vf_id)
 	u16 func_id = vf_id + NBL_MAX_PF;
 
 	return nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_SERV_VF_DATA_TYPE);
+}
+
+static bool nbl_res_check_vf_is_active(void *priv, u16 func_id)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+
+	return nbl_res_vf_is_active(res_mgt, func_id);
+}
+
+static int nbl_res_check_vf_is_vdpa(void *priv, u16 func_id, u8 *is_vdpa)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+
+	*is_vdpa = test_bit(func_id, resource_info->vdpa.vdpa_func_bitmap);
+	return 0;
+}
+
+static int nbl_res_get_vdpa_vf_stats(void *priv, u16 func_id, struct nbl_vf_stats *vf_stats)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+	struct device *dev = NBL_RES_MGT_TO_DEV(res_mgt);
+	struct nbl_vdpa_status *vdpa_vf_stats = NULL;
+	struct nbl_vf_stats vdpa_vf_stats_current = {0}, *init_stats;
+	u16 vsi_id;
+
+	if (NBL_RES_MGT_TO_VDPA_VF_STATS(res_mgt) &&
+	    NBL_RES_MGT_TO_VDPA_VF_STATS(res_mgt)[func_id]) {
+		vdpa_vf_stats = NBL_RES_MGT_TO_VDPA_VF_STATS(res_mgt)[func_id];
+		init_stats = &vdpa_vf_stats->init_stats;
+	} else {
+		dev_err(dev, "function %d vdpa_vf_stats is NULL\n", func_id);
+		return -EFAULT;
+	}
+
+	vsi_id = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_DATA);
+	phy_ops->get_dstat_vsi_stat(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vsi_id,
+				    &vdpa_vf_stats_current.tx_packets,
+				    &vdpa_vf_stats_current.tx_bytes);
+	phy_ops->get_ustat_vsi_stat(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vsi_id,
+				    &vdpa_vf_stats_current.rx_packets,
+				    &vdpa_vf_stats_current.rx_bytes);
+
+	vf_stats->tx_packets = vdpa_vf_stats_current.tx_packets - init_stats->tx_packets;
+	vf_stats->tx_bytes = vdpa_vf_stats_current.tx_bytes - init_stats->tx_bytes;
+	vf_stats->rx_packets = vdpa_vf_stats_current.rx_packets - init_stats->rx_packets;
+	vf_stats->rx_bytes = vdpa_vf_stats_current.rx_bytes - init_stats->rx_bytes;
+
+	return 0;
+}
+
+static int nbl_res_get_ustore_pkt_drop_stats(void *priv)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+	struct nbl_eth_info *eth_info = NBL_RES_MGT_TO_ETH_INFO(res_mgt);
+	struct nbl_ustore_stats *ustore_stats = NBL_RES_MGT_TO_USTORE_STATS(res_mgt);
+	struct nbl_ustore_stats ustore_stats_temp = {0};
+	u8 eth_id = 0;
+	int i = 0;
+
+	for (i = 0; i < eth_info->eth_num; i++) {
+		eth_id = eth_info->eth_id[i];
+		phy_ops->get_ustore_pkt_drop_stats(NBL_RES_MGT_TO_PHY_PRIV(res_mgt),
+						   eth_id, &ustore_stats_temp);
+		ustore_stats[eth_id].rx_drop_packets += ustore_stats_temp.rx_drop_packets;
+		ustore_stats[eth_id].rx_trun_packets += ustore_stats_temp.rx_trun_packets;
+	}
+
+	return 0;
+}
+
+static int nbl_res_get_ustore_total_pkt_drop_stats(void *priv, u8 eth_id,
+						   struct nbl_ustore_stats *nbl_ustore_stats)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_ustore_stats *ustore_stats = NBL_RES_MGT_TO_USTORE_STATS(res_mgt);
+
+	nbl_ustore_stats->rx_drop_packets = ustore_stats[eth_id].rx_drop_packets;
+	nbl_ustore_stats->rx_trun_packets = ustore_stats[eth_id].rx_trun_packets;
+	return 0;
 }
 
 static int nbl_res_get_board_id(void *priv)
@@ -1579,13 +1780,14 @@ static void nbl_res_get_xdp_queue_info(void *priv, u16 *queue_num, u16 *queue_si
 	struct nbl_resource_info *res_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
 	struct nbl_net_ring_num_info *num_info = &res_info->net_ring_num_info;
 	u16 func_id = nbl_res_vsi_id_to_func_id(res_mgt, vsi_id);
+	u16 default_queue;
 
 	if (num_info->net_max_qp_num[func_id] != 0)
-		*queue_num = num_info->net_max_qp_num[func_id];
+		default_queue = num_info->net_max_qp_num[func_id];
 	else
-		*queue_num = num_info->pf_def_max_net_qp_num;
+		default_queue = num_info->pf_def_max_net_qp_num;
 
-	*queue_size = NBL_DEFAULT_DESC_NUM;
+	*queue_num = min_t(u16, default_queue, NBL_VSI_PF_LEGACY_QUEUE_NUM_MAX - default_queue);
 
 	if (*queue_num > NBL_MAX_TXRX_QUEUE_PER_FUNC) {
 		nbl_warn(NBL_RES_MGT_TO_COMMON(res_mgt), NBL_DEBUG_QUEUE,
@@ -1619,6 +1821,118 @@ static int nbl_res_configure_qos(void *priv, u8 eth_id, u8 *pfc, u8 trust, u8 *d
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
 
 	phy_ops->configure_qos(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), eth_id, pfc, trust, dscp2prio_map);
+
+	return 0;
+}
+
+static int nbl_res_configure_rdma_bw(void *priv, u8 eth_id, int rdma_bw)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	phy_ops->configure_rdma_bw(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), eth_id, rdma_bw);
+
+	return 0;
+}
+
+static int nbl_res_set_rate_limit(void *priv, u16 func_id, enum nbl_traffic_type type, u32 rate)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	phy_ops->set_rate_limit(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), func_id, type, rate);
+
+	return 0;
+}
+
+static u32 nbl_res_get_perf_dump_length(void *priv)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	return phy_ops->get_perf_dump_length(NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
+}
+
+static u32 nbl_res_get_perf_dump_data(void *priv, u8 *buffer, u32 length)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	return phy_ops->get_perf_dump_data(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), buffer, length);
+}
+
+static void nbl_res_register_dev_name(void *priv, u16 vsi_id, char *name)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+	u32 pf_id;
+
+	pf_id = nbl_res_vsi_id_to_pf_id(res_mgt, vsi_id);
+	WARN_ON(pf_id >= NBL_MAX_PF);
+	strscpy(resource_info->pf_name_list[pf_id], name, IFNAMSIZ);
+	nbl_info(NBL_RES_MGT_TO_COMMON(res_mgt), NBL_DEBUG_RESOURCE,
+		 "vsi:%u-pf:%u register a pf_name->%s", vsi_id, pf_id, name);
+}
+
+static void nbl_res_get_dev_name(void *priv, u16 vsi_id, char *name)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+	int pf_id, vf_id;
+	u16 func_id;
+	int name_len;
+
+	func_id = nbl_res_vsi_id_to_func_id(res_mgt, vsi_id);
+	nbl_res_func_id_to_pfvfid(res_mgt, func_id, &pf_id, &vf_id);
+	WARN_ON(pf_id >= NBL_MAX_PF);
+	name_len = snprintf(name, IFNAMSIZ, "%sv%d", resource_info->pf_name_list[pf_id], vf_id);
+	if (name_len >= IFNAMSIZ)
+		nbl_err(NBL_RES_MGT_TO_COMMON(res_mgt), NBL_DEBUG_RESOURCE,
+			"vsi:%u-pf%uvf%u get name over length", vsi_id, pf_id, vf_id);
+
+	nbl_debug(NBL_RES_MGT_TO_COMMON(res_mgt), NBL_DEBUG_RESOURCE,
+		  "vsi:%u-pf%uvf%u get a pf_name->%s", vsi_id, pf_id, vf_id, name);
+}
+
+static int nbl_res_get_mirror_table_id(void *priv, u16 vsi_id, int dir, bool mirror_en,
+				       u8 *mt_id)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	return phy_ops->get_mirror_table_id(NBL_RES_MGT_TO_PHY_PRIV(res_mgt),
+					    vsi_id, dir, mirror_en, mt_id);
+}
+
+static int nbl_res_configure_mirror(void *priv, u16 func_id, bool mirror_en, int dir,
+				    u8 mt_id)
+{
+	u16 data_vsi, user_vsi;
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	data_vsi = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_SERV_PF_DATA_TYPE);
+	user_vsi = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_SERV_PF_USER_TYPE);
+
+	phy_ops->configure_mirror(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), data_vsi, mirror_en, dir,
+				  mt_id);
+	phy_ops->configure_mirror(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), user_vsi, mirror_en, dir,
+				  mt_id);
+
+	return 0;
+}
+
+static int nbl_res_clear_mirror_cfg(void *priv, u16 func_id)
+{
+	u16 data_vsi, user_vsi;
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	data_vsi = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_SERV_PF_DATA_TYPE);
+	user_vsi = nbl_res_func_id_to_vsi_id(res_mgt, func_id, NBL_VSI_SERV_PF_USER_TYPE);
+
+	phy_ops->clear_mirror_cfg(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), data_vsi);
+	phy_ops->clear_mirror_cfg(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), user_vsi);
 
 	return 0;
 }
@@ -1686,6 +2000,11 @@ static struct nbl_resource_ops res_ops = {
 	.flr_clear_net = nbl_res_flr_clear_net,
 	.flr_clear_rdma = nbl_res_flr_clear_rdma,
 	.covert_vfid_to_vsi_id = nbl_res_covert_vfid_to_vsi_id,
+	.check_vf_is_active = nbl_res_check_vf_is_active,
+	.check_vf_is_vdpa = nbl_res_check_vf_is_vdpa,
+	.get_vdpa_vf_stats = nbl_res_get_vdpa_vf_stats,
+	.get_ustore_pkt_drop_stats = nbl_res_get_ustore_pkt_drop_stats,
+	.get_ustore_total_pkt_drop_stats = nbl_res_get_ustore_total_pkt_drop_stats,
 
 	.init_vdpaq = nbl_res_init_vdpaq,
 	.destroy_vdpaq = nbl_res_destroy_vdpaq,
@@ -1726,8 +2045,20 @@ static struct nbl_resource_ops res_ops = {
 	.set_hw_status = nbl_res_set_hw_status,
 
 	.configure_qos = nbl_res_configure_qos,
+	.configure_rdma_bw = nbl_res_configure_rdma_bw,
 	.set_pfc_buffer_size = nbl_res_set_pfc_buffer_size,
 	.get_pfc_buffer_size = nbl_res_get_pfc_buffer_size,
+	.set_rate_limit = nbl_res_set_rate_limit,
+
+	.get_perf_dump_length = nbl_res_get_perf_dump_length,
+	.get_perf_dump_data = nbl_res_get_perf_dump_data,
+
+	.register_dev_name = nbl_res_register_dev_name,
+	.get_dev_name = nbl_res_get_dev_name,
+
+	.get_mirror_table_id = nbl_res_get_mirror_table_id,
+	.configure_mirror = nbl_res_configure_mirror,
+	.clear_mirror_cfg = nbl_res_clear_mirror_cfg,
 };
 
 static struct nbl_res_product_ops product_ops = {
@@ -1946,10 +2277,10 @@ static int nbl_res_ctrl_dev_sriov_info_init(struct nbl_resource_mgt *res_mgt)
 		sriov_info = &NBL_RES_MGT_TO_SRIOV_INFO(res_mgt)[func_id];
 		function = NBL_COMMON_TO_PCI_FUNC_ID(common) + func_id;
 
-		sriov_info->bdf = PCI_DEVID(common->bus,
+		common->hw_bus = (u8)phy_ops->get_real_bus(NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
+		sriov_info->bdf = PCI_DEVID(common->hw_bus,
 					    PCI_DEVFN(common->devid, function));
-		vf_fid = phy_ops->get_host_pf_fid(NBL_RES_MGT_TO_PHY_PRIV(res_mgt),
-							func_id);
+		vf_fid = phy_ops->get_host_pf_fid(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), func_id);
 		vf_startid = vf_fid & 0xFFFF;
 		vf_endid = (vf_fid >> 16) & 0xFFFF;
 		sriov_info->start_vf_func_id = vf_startid + NBL_MAX_PF_LEONIS;
@@ -1971,6 +2302,20 @@ static void nbl_res_ctrl_dev_sriov_info_remove(struct nbl_resource_mgt *res_mgt)
 
 	devm_kfree(dev, *sriov_info);
 	*sriov_info = NULL;
+}
+
+static void nbl_res_ctrl_dev_vdpa_vf_stats_remove(struct nbl_resource_mgt *res_mgt)
+{
+	struct nbl_vdpa_status **vf_status = NBL_RES_MGT_TO_VDPA_VF_STATS(res_mgt);
+	struct device *dev = NBL_RES_MGT_TO_DEV(res_mgt);
+	int i = 0;
+
+	for (i = 0; i < NBL_MAX_FUNC; i++) {
+		if (vf_status[i]) {
+			devm_kfree(dev, vf_status[i]);
+			vf_status[i] = NULL;
+		}
+	}
 }
 
 static int nbl_res_ctrl_dev_vsi_info_init(struct nbl_resource_mgt *res_mgt)
@@ -2066,21 +2411,63 @@ static int nbl_res_ring_num_info_init(struct nbl_resource_mgt *res_mgt)
 	return 0;
 }
 
+static int nbl_res_ctrl_dev_ustore_stats_init(struct nbl_resource_mgt *res_mgt)
+{
+	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	struct device *dev =  NBL_COMMON_TO_DEV(common);
+	struct nbl_ustore_stats *ustore_stats;
+
+	ustore_stats = devm_kcalloc(dev, NBL_MAX_ETHERNET,
+				    sizeof(struct nbl_ustore_stats), GFP_KERNEL);
+	if (!ustore_stats)
+		return -ENOMEM;
+
+	NBL_RES_MGT_TO_USTORE_STATS(res_mgt) = ustore_stats;
+
+	return 0;
+}
+
+static void nbl_res_ctrl_dev_ustore_stats_remove(struct nbl_resource_mgt *res_mgt)
+{
+	struct nbl_ustore_stats **ustore_stats = &NBL_RES_MGT_TO_USTORE_STATS(res_mgt);
+	struct device *dev = NBL_RES_MGT_TO_DEV(res_mgt);
+
+	if (!(*ustore_stats))
+		return;
+
+	devm_kfree(dev, *ustore_stats);
+	*ustore_stats = NULL;
+}
+
 static int nbl_res_check_fw_working(struct nbl_resource_mgt *res_mgt)
 {
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
 	unsigned long fw_pong_current;
 	unsigned long seconds_current = 0;
+	unsigned long timeout_us = 500 * USEC_PER_MSEC;
+	unsigned long sleep_us = USEC_PER_MSEC;
+	ktime_t timeout = ktime_add_us(ktime_get(), timeout_us);
+	bool sleep_before_read = false;
 
 	seconds_current = (unsigned long)ktime_get_real_seconds();
 	phy_ops->set_fw_pong(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), seconds_current - 1);
 	phy_ops->set_fw_ping(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), seconds_current);
 
-	/* Wait for FW to ack the first heartbeat seq */
-	return nbl_read_poll_timeout(phy_ops->get_fw_pong, fw_pong_current,
-				     fw_pong_current == seconds_current,
-				     USEC_PER_MSEC, 100 * USEC_PER_MSEC,
-				     false, NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
+	might_sleep_if(sleep_us != 0);
+	if (sleep_before_read && sleep_us)
+		usleep_range((sleep_us >> 2) + 1, sleep_us);
+	for (;;) {
+		fw_pong_current = phy_ops->get_fw_pong(NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
+		if (fw_pong_current == seconds_current)
+			break;
+		if (timeout_us && ktime_compare(ktime_get(), timeout) > 0) {
+			fw_pong_current = phy_ops->get_fw_pong(NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
+			break;
+		}
+		if (sleep_us)
+			usleep_range((sleep_us >> 2) + 1, sleep_us);
+	}
+	return (fw_pong_current == seconds_current) ? 0 : -ETIMEDOUT;
 }
 
 static int nbl_res_init_pf_num(struct nbl_resource_mgt *res_mgt)
@@ -2127,6 +2514,8 @@ static void nbl_res_stop(struct nbl_resource_mgt_leonis *res_mgt_leonis)
 	nbl_vsi_mgt_stop(res_mgt);
 	nbl_accel_mgt_stop(res_mgt);
 	nbl_flow_mgt_stop_leonis(res_mgt);
+	nbl_res_ctrl_dev_ustore_stats_remove(res_mgt);
+	nbl_res_ctrl_dev_vdpa_vf_stats_remove(res_mgt);
 	nbl_res_ctrl_dev_remove_vsi_info(res_mgt);
 	nbl_res_ctrl_dev_remove_eth_info(res_mgt);
 	nbl_res_ctrl_dev_sriov_info_remove(res_mgt);
@@ -2148,41 +2537,6 @@ static int nbl_res_start(struct nbl_resource_mgt_leonis *res_mgt_leonis,
 				&res_mgt_leonis->pmd_status.upcall_port_info;
 	u32 quirks;
 	int ret = 0;
-
-	if (caps.has_factory_ctrl) {
-		ret = nbl_res_check_fw_working(res_mgt);
-		if (ret) {
-			nbl_err(common, NBL_DEBUG_RESOURCE, "fw is not working");
-			return ret;
-		}
-
-		ret = nbl_res_init_pf_num(res_mgt);
-		if (ret) {
-			nbl_err(common, NBL_DEBUG_RESOURCE, "pf number is illegal");
-			return ret;
-		}
-
-		nbl_res_set_fix_capability(res_mgt, NBL_TASK_FW_HB_CAP);
-		nbl_res_set_fix_capability(res_mgt, NBL_TASK_FW_RESET_CAP);
-		nbl_res_set_fix_capability(res_mgt, NBL_TASK_CLEAN_ADMINDQ_CAP);
-		nbl_res_set_fix_capability(res_mgt, NBL_RESTOOL_CAP);
-
-		ret = nbl_res_ctrl_dev_sriov_info_init(res_mgt);
-		if (ret) {
-			nbl_err(common, NBL_DEBUG_RESOURCE, "Failed to init sr_iov info");
-			return ret;
-		}
-
-		ret = nbl_intr_mgt_start(res_mgt);
-		if (ret)
-			goto start_fail;
-
-		ret = nbl_adminq_mgt_start(res_mgt);
-		if (ret)
-			goto start_fail;
-
-		return 0;
-	}
 
 	if (caps.has_ctrl) {
 		ret = nbl_res_check_fw_working(res_mgt);
@@ -2214,6 +2568,10 @@ static int nbl_res_start(struct nbl_resource_mgt_leonis *res_mgt_leonis,
 			goto start_fail;
 
 		ret = nbl_res_ring_num_info_init(res_mgt);
+		if (ret)
+			goto start_fail;
+
+		ret = nbl_res_ctrl_dev_ustore_stats_init(res_mgt);
 		if (ret)
 			goto start_fail;
 
@@ -2251,7 +2609,6 @@ static int nbl_res_start(struct nbl_resource_mgt_leonis *res_mgt_leonis,
 
 		nbl_res_set_flex_capability(res_mgt, NBL_DUMP_FLOW_CAP);
 		nbl_res_set_flex_capability(res_mgt, NBL_DUMP_FD_CAP);
-		nbl_res_set_flex_capability(res_mgt, NBL_SECURITY_ACCEL_CAP);
 		nbl_res_set_fix_capability(res_mgt, NBL_TASK_OFFLOAD_NETWORK_CAP);
 		nbl_res_set_fix_capability(res_mgt, NBL_TASK_FW_HB_CAP);
 		nbl_res_set_fix_capability(res_mgt, NBL_TASK_FW_RESET_CAP);
@@ -2262,9 +2619,12 @@ static int nbl_res_start(struct nbl_resource_mgt_leonis *res_mgt_leonis,
 		nbl_res_set_fix_capability(res_mgt, NBL_TASK_RESET_CTRL_CAP);
 		/* leonis af need a pmd_debug for dpdk gdb debug */
 		nbl_res_set_fix_capability(res_mgt, NBL_PMD_DEBUG);
+		nbl_res_set_fix_capability(res_mgt, NBL_HIGH_THROUGHPUT_CAP);
+		nbl_res_set_fix_capability(res_mgt, NBL_TASK_HEALTH_REPORT_TEMP_CAP);
+		nbl_res_set_fix_capability(res_mgt, NBL_TASK_HEALTH_REPORT_REBOOT_CAP);
+		nbl_res_set_fix_capability(res_mgt, NBL_DVN_DESC_REQ_SYSFS_CAP);
 		nbl_res_set_flex_capability(res_mgt, NBL_SECURITY_ACCEL_CAP);
 		nbl_res_set_fix_capability(res_mgt, NBL_TASK_IPSEC_AGE_CAP);
-
 		upcall_port_info->upcall_port_active = false;
 	}
 
@@ -2286,6 +2646,9 @@ static int nbl_res_start(struct nbl_resource_mgt_leonis *res_mgt_leonis,
 	nbl_res_set_fix_capability(res_mgt, NBL_P4_CAP);
 	nbl_res_set_fix_capability(res_mgt, NBL_TASK_RESET_CAP);
 	nbl_res_set_fix_capability(res_mgt, NBL_QOS_SYSFS_CAP);
+	nbl_res_set_fix_capability(res_mgt, NBL_MIRROR_SYSFS_CAP);
+
+	nbl_res_set_fix_capability(res_mgt, NBL_XDP_CAP);
 
 	quirks = nbl_res_get_quirks(res_mgt);
 	if (quirks & BIT(NBL_QUIRKS_NO_TOE)) {

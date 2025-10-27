@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -29,6 +29,8 @@
 #define NBL_SERV_MGT_TO_CHAN_PRIV(serv_mgt)	(NBL_SERV_MGT_TO_CHAN_OPS_TBL(serv_mgt)->priv)
 
 #define NBL_DEFAULT_VLAN_ID				0
+#define NBL_HW_STATS_PERIOD_SECONDS			5
+#define NBL_HW_STATS_RX_RATE_THRESHOLD			(1000) /* 1k pps */
 
 #define NBL_REP_QUEUE_MGT_DESC_MAX			(32768)
 #define NBL_REP_QUEUE_MGT_DESC_NUM			(2048)
@@ -45,10 +47,6 @@
 #define NBL_TX_TSO_L2L3L4_HDR_LEN_MIN			(42)
 #define NBL_TX_TSO_L2L3L4_HDR_LEN_MAX			(128)
 #define NBL_TX_CHECKSUM_OFFLOAD_L2L3L4_HDR_LEN_MAX	(255)
-
-#define NBL_FLAG_AQ_MODIFY_MAC_FILTER			BIT(0)
-#define NBL_FLAG_AQ_CONFIGURE_PROMISC_MODE		BIT(1)
-#define NBL_FLAG_AQ_CONFIGURE_PROMISC_MODE		BIT(1)
 
 #define NBL_EEPROM_LENGTH				(0)
 
@@ -68,7 +66,14 @@
 #define SET_DPORT_TYPE_ETH_LAG				(2)
 #define SET_DPORT_TYPE_SP_PORT				(3)
 
+#define NBL_MAX_BURST					524287
+
 #define NBL_VLAN_PCP_SHIFT				13
+
+/* primary vlan in vlan list */
+#define NBL_NO_TRUST_MAX_VLAN				9
+/* primary mac not in submac list */
+#define NBL_NO_TRUST_MAX_MAC				12
 
 #define NBL_DEVLINK_INFO_FRIMWARE_VERSION_LEN		32
 #define NBL_DEVLINK_FLASH_COMPONENT_CRC_SIZE		4
@@ -108,7 +113,7 @@ struct nbl_serv_vector {
 	char name[32];
 	cpumask_t cpumask;
 	struct net_device *netdev;
-	struct napi_struct *napi;
+	struct nbl_napi_struct *nbl_napi;
 	struct nbl_serv_ring *tx_ring;
 	struct nbl_serv_ring *rx_ring;
 	u8 __iomem *irq_enable_base;
@@ -135,6 +140,7 @@ struct nbl_serv_ring_mgt {
 	struct nbl_serv_vector *vectors;
 	void *xdp_prog;
 	struct nbl_serv_ring_vsi_info vsi_info[NBL_VSI_MAX];
+	u32 *rss_indir_user;
 	u16 tx_desc_num;
 	u16 rx_desc_num;
 	u16 tx_ring_num;
@@ -147,20 +153,51 @@ struct nbl_serv_ring_mgt {
 struct nbl_serv_vlan_node {
 	struct list_head node;
 	u16 vid;
+	// primary_mac_effective means base mac + vlan ok
+	u16 primary_mac_effective;
+	// sub_mac_effective means sub mac + vlan ok
+	u16 sub_mac_effective;
 	u16 ref_cnt;
 };
 
 struct nbl_serv_submac_node {
 	struct list_head node;
 	u8 mac[ETH_ALEN];
+	// effective means this submac + allvlan flowrule effective
+	u16 effective;
+};
+
+enum {
+	NBL_PROMISC = 0,
+	NBL_ALLMULTI = 1,
+	NBL_USER_FLOW = 2,
+	NBL_MIRROR = 3,
+};
+
+enum {
+	NBL_SUBMAC_UNICAST = 0,
+	NBL_SUBMAC_MULTI = 1,
+	NBL_SUBMAC_MAX = 2
 };
 
 struct nbl_serv_flow_mgt {
 	struct list_head vlan_list;
-	struct list_head submac_list;
+	struct list_head submac_list[NBL_SUBMAC_MAX];
 	u16 vid;
 	u8 mac[ETH_ALEN];
 	u8 eth;
+	bool trusted_en;
+	bool trusted_update;
+	u16 vlan_list_cnt;
+	u16 active_submac_list;
+	u16 submac_list_cnt;
+	u16 unicast_mac_cnt;
+	u16 multi_mac_cnt;
+	u16 promisc;
+	bool force_promisc;
+	bool unicast_flow_enable;
+	bool multicast_flow_enable;
+	bool pending_async_work;
 };
 
 struct nbl_mac_filter {
@@ -180,6 +217,7 @@ enum nbl_adapter_flags {
 	NBL_FLAG_P4_DEFAULT,
 	NBL_FLAG_LINK_DOWN_ON_CLOSE,
 	NBL_FLAG_NRZ_RS_FEC_544_SUPPORT,
+	NBL_FLAG_HIGH_THROUGHPUT,
 	NBL_ADAPTER_FLAGS_MAX
 };
 
@@ -210,16 +248,43 @@ struct nbl_sysfs_vf_config_attr {
 
 struct nbl_serv_vf_info {
 	struct kobject kobj;
+	struct kobject meters_kobj;
+	struct kobject rx_kobj;
+	struct kobject tx_kobj;
+	struct kobject rx_bps_kobj;
+	struct kobject tx_bps_kobj;
 	void *priv;
 	u16 vf_id;
 
 	int state;
 	int spoof_check;
 	int max_tx_rate;
+	int meter_tx_rate;
+	int meter_rx_rate;
+	int meter_tx_burst;
+	int meter_rx_burst;
 	u8 mac[ETH_ALEN];
 	u16 vlan;
 	u16 vlan_proto;
 	u8 vlan_qos;
+	bool trusted;
+};
+
+#define NBL_DCB_NO_HW_CHG	1
+#define NBL_DCB_HW_CHG		2
+struct nbl_serv_qos_info {
+	u8 dcbx_mode;
+	u8 dcbx_state;
+	u8 trust_mode;		/* Trust Mode value 0:802.1p 1: dscp */
+	u8 pfc[NBL_MAX_PFC_PRIORITIES];
+	u8 dscp2prio_map[NBL_DSCP_MAX]; /* DSCP -> Priority map */
+	int rdma_bw;
+	u32 rdma_rate;
+	u32 net_rate;
+	DECLARE_BITMAP(dscp_mapped, NBL_DSCP_MAX);
+	struct dcb_app app[NBL_DSCP_MAX];
+	int buffer_sizes[NBL_MAX_PFC_PRIORITIES][2];
+	struct ieee_ets ets;
 };
 
 struct nbl_serv_net_resource_mgt {
@@ -230,28 +295,28 @@ struct nbl_serv_net_resource_mgt {
 	struct work_struct tx_timeout;
 	struct work_struct update_link_state;
 	struct work_struct update_vlan;
+	struct work_struct update_mirror_outputport;
 	struct delayed_work watchdog_task;
 	struct timer_list serv_timer;
 	unsigned long serv_timer_period;
 
-	/* spinlock_t for rx mode submac */
-	spinlock_t mac_vlan_list_lock;
-	/* spinlock_t for rx mode promisc */
-	spinlock_t current_netdev_promisc_flags_lock;
-	struct list_head mac_filter_list;
+	struct list_head tmp_add_filter_list;
+	struct list_head tmp_del_filter_list;
 	struct list_head indr_dev_priv_list;
 	struct nbl_serv_lag_info *lag_info;
 	struct nbl_serv_netdev_ops netdev_ops;
-	u32 rxmode_set_required;
 	u16 curr_promiscuout_mode;
-	u16 user_promisc_mode;
 	u16 num_net_msix;
+	bool update_submac;
 	int num_vfs;
 	int total_vfs;
 
 	/* stats for netdev */
 	u64 get_stats_jiffies;
 	struct nbl_stats stats;
+	struct nbl_hw_stats hw_stats;
+	unsigned long hw_stats_jiffies;
+	unsigned long hw_stats_period;
 	struct nbl_priv_stats priv_stats;
 	struct nbl_phy_caps phy_caps;
 	struct nbl_serv_rep_drop *rep_drop;
@@ -265,8 +330,9 @@ struct nbl_serv_net_resource_mgt {
 	u16 vlan_tci;
 	u16 vlan_proto;
 	int max_tx_rate;
-	u8 pfc_mode;
-	u8 dscp2prio_map[NBL_DSCP_MAX]; /* DSCP -> Priority map */
+	u32 dump_flag;
+	u32 dump_perf_len;
+	struct nbl_serv_qos_info qos_info;
 };
 
 struct nbl_serv_rep_queue_mgt {
@@ -339,7 +405,6 @@ struct nbl_serv_notify_vlan_param {
 	u16 vlan_tci;
 	u16 vlan_proto;
 };
-
 int nbl_serv_netdev_open(struct net_device *netdev);
 int nbl_serv_netdev_stop(struct net_device *netdev);
 int nbl_serv_vsi_open(void *priv, struct net_device *netdev, u16 vsi_index,
@@ -348,5 +413,6 @@ int nbl_serv_vsi_stop(void *priv, u16 vsi_index);
 void nbl_serv_get_rep_drop_stats(struct nbl_service_mgt *serv_mgt, u16 rep_vsi_id,
 				 struct nbl_rep_stats *rep_stats);
 void nbl_serv_cpu_affinity_init(void *priv, u16 rings_num);
+u16 nbl_serv_get_vf_function_id(void *priv, int vf_id);
 
 #endif
