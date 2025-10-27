@@ -104,6 +104,11 @@ struct kvm_csv_info {
 	bool kvm_ext_valid;	/* if @kvm_ext field is valid */
 	u32 kvm_ext;		/* extensions supported by KVM */
 	u32 inuse_ext;		/* extensions inused by current VM */
+
+#ifdef CONFIG_SYSFS
+	unsigned long npt_size;
+	unsigned long pri_mem;
+#endif	/* CONFIG_SYSFS */
 };
 
 struct kvm_svm_csv {
@@ -459,6 +464,12 @@ static int csv3_set_guest_private_memory(struct kvm *kvm, struct kvm_sev_cmd *ar
 
 	list_splice(&tmp_list, &csv->smr_list);
 
+#ifdef CONFIG_SYSFS
+	csv->npt_size = ALIGN(nr_pages * 9, 1UL << smr_entry_shift);
+	csv->pri_mem = ALIGN((nr_pages << PAGE_SHIFT), 1UL << smr_entry_shift);
+	atomic_long_add(csv->npt_size, &csv3_npt_size);
+	atomic_long_add(csv->pri_mem, &csv3_pri_mem);
+#endif	/* CONFIG_SYSFS */
 	goto done;
 
 e_free_smr:
@@ -1685,6 +1696,11 @@ static void csv_vm_destroy(struct kvm *kvm)
 				kfree(smr);
 			}
 		}
+
+#ifdef CONFIG_SYSFS
+		atomic_long_sub(csv->npt_size, &csv3_npt_size);
+		atomic_long_sub(csv->pri_mem, &csv3_pri_mem);
+#endif	/* CONFIG_SYSFS */
 	}
 }
 

@@ -23,6 +23,11 @@ struct csv_mem {
 
 extern struct csv_mem *csv_smr;
 extern unsigned int csv_smr_num;
+#ifdef CONFIG_SYSFS
+extern atomic_long_t csv3_npt_size;
+extern atomic_long_t csv3_pri_mem;
+extern unsigned long csv3_meta;
+#endif	/* CONFIG_SYSFS */
 
 void __init early_csv_reserve_mem(void);
 phys_addr_t csv_alloc_from_contiguous(size_t size, nodemask_t *nodes_allowed,
