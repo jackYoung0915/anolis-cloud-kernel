@@ -65,6 +65,7 @@
 #include <linux/pid.h>
 #include <linux/pid_namespace.h>
 #include <linux/fault_event.h>
+#include <linux/cgroup.h>
 
 #include "../lib/kstrtox.h"
 
@@ -138,6 +139,26 @@ static enum sysctl_writes_mode sysctl_writes_strict = SYSCTL_WRITES_STRICT;
 #endif /* CONFIG_PROC_SYSCTL */
 
 extern int sysctl_enable_context_readahead;
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+int sysctl_brk_thp_aligned;
+static int proc_brk_thp_aligned_handler(struct ctl_table *table, int write,
+					void __user *buffer, size_t *lenp,
+					loff_t *ppos)
+{
+	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (ret || !write)
+		return ret;
+
+	if (sysctl_brk_thp_aligned)
+		static_branch_enable(&brk_thp_aligned_key);
+	else
+		static_branch_disable(&brk_thp_aligned_key);
+
+	return ret;
+}
+#endif
 
 #if defined(HAVE_ARCH_PICK_MMAP_LAYOUT) || \
     defined(CONFIG_ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT)
@@ -2081,6 +2102,26 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif /* CONFIG_SCHED_ACPU*/
+#ifdef CONFIG_GROUP_BALANCER
+	{
+		.procname	= "sched_group_balancer",
+		.data		= &sysctl_sched_group_balancer_enabled,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= sched_group_balancer_enable_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif
+#ifdef CONFIG_SMP
+	{
+		.procname	= "sched_push_expellee_interval_ns",
+		.data		= &sysctl_sched_push_expellee_interval,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif
 #ifdef CONFIG_RICH_CONTAINER
 	{
 		.procname	= "rich_container_enable",
@@ -2147,6 +2188,15 @@ static struct ctl_table kern_table[] = {
 		.extra1         = SYSCTL_ZERO,
 		.extra2         = SYSCTL_ONE,
 	},
+#ifdef CONFIG_CGROUPS
+	{
+		.procname	= "cgroup_supply_delay_time",
+		.data		= &cgroup_supply_delay_time,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif
 	{ }
 };
 
@@ -2362,6 +2412,17 @@ static struct ctl_table vm_table[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_ONE,
 	},
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	{
+		.procname	= "enable_brk_thp_aligned",
+		.data		= &sysctl_brk_thp_aligned,
+		.maxlen		= sizeof(sysctl_brk_thp_aligned),
+		.mode		= 0644,
+		.proc_handler	= proc_brk_thp_aligned_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif
 	{ }
 };
 

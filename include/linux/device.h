@@ -42,7 +42,6 @@ struct class;
 struct subsys_private;
 struct device_node;
 struct fwnode_handle;
-struct iommu_ops;
 struct iommu_group;
 struct dev_pin_info;
 struct dev_iommu;
@@ -693,6 +692,9 @@ struct device_physical_location {
  *		and optionall (if the coherent mask is large enough) also
  *		for dma allocations.  This flag is managed by the dma ops
  *		instance from ->dma_supported.
+ * @dma_skip_sync: DMA sync operations can be skipped for coherent buffers.
+ * @dma_iommu: Device is using default IOMMU implementation for DMA and
+ *		doesn't rely on dma_ops structure.
  *
  * At the lowest level, every device in a Linux system is represented by an
  * instance of struct device. The device structure contains the information
@@ -774,6 +776,7 @@ struct device {
 
 #ifdef CONFIG_NUMA
 	int		numa_node;	/* NUMA node this device is close to */
+	nodemask_t		gi_node;	/* GPU gi node the device is close to */
 #endif
 	dev_t			devt;	/* dev_t, creates the sysfs "dev" */
 	u32			id;	/* device instance */
@@ -804,6 +807,12 @@ struct device {
 #endif
 #ifdef CONFIG_DMA_OPS_BYPASS
 	bool			dma_ops_bypass : 1;
+#endif
+#ifdef CONFIG_DMA_NEED_SYNC
+	bool			dma_skip_sync:1;
+#endif
+#ifdef CONFIG_IOMMU_DMA
+	bool			dma_iommu:1;
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -904,12 +913,19 @@ static inline void set_dev_node(struct device *dev, int node)
 {
 	dev->numa_node = node;
 }
+static inline void dev_gi_node_init(struct device *dev)
+{
+	dev->gi_node = NODE_MASK_NONE;
+}
 #else
 static inline int dev_to_node(struct device *dev)
 {
 	return NUMA_NO_NODE;
 }
 static inline void set_dev_node(struct device *dev, int node)
+{
+}
+static inline void dev_gi_node_init(struct device *dev)
 {
 }
 #endif

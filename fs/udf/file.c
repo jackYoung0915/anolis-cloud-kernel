@@ -62,14 +62,14 @@ static vm_fault_t udf_page_mkwrite(struct vm_fault *vmf)
 		end = size & ~PAGE_MASK;
 	else
 		end = PAGE_SIZE;
-	err = __block_write_begin(page, 0, end, udf_get_block);
+	err = __block_write_begin(page_folio(page), 0, end, udf_get_block);
 	if (err) {
 		unlock_page(page);
 		ret = vmf_fs_error(err);
 		goto out_unlock;
 	}
 
-	block_commit_write(page, 0, end);
+	block_commit_write(page_folio(page), 0, end);
 out_dirty:
 	set_page_dirty(page);
 	wait_for_stable_page(page);

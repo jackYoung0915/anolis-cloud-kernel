@@ -406,12 +406,12 @@ struct address_space_operations {
 
 	void (*readahead)(struct readahead_control *);
 
-	int (*write_begin)(struct file *, struct address_space *mapping,
+	int (*write_begin)(const struct kiocb *, struct address_space *mapping,
 				loff_t pos, unsigned len,
-				struct page **pagep, void **fsdata);
-	int (*write_end)(struct file *, struct address_space *mapping,
+				struct folio **foliop, void **fsdata);
+	int (*write_end)(const struct kiocb *, struct address_space *mapping,
 				loff_t pos, unsigned len, unsigned copied,
-				struct page *page, void *fsdata);
+				struct folio *folio, void *fsdata);
 
 	/* Unfortunately this kludge is needed for FIBMAP. Don't use it */
 	sector_t (*bmap)(struct address_space *, sector_t);
@@ -2352,6 +2352,10 @@ static inline void kiocb_clone(struct kiocb *kiocb, struct kiocb *kiocb_src,
 #define __I_LRU_ISOLATING	19
 #define I_LRU_ISOLATING		(1 << __I_LRU_ISOLATING)
 
+#ifdef CONFIG_KIDLED
+#define I_KIDLED_YOUNG		(1 << 31)
+#endif
+
 #define I_DIRTY_INODE (I_DIRTY_SYNC | I_DIRTY_DATASYNC)
 #define I_DIRTY (I_DIRTY_INODE | I_DIRTY_PAGES)
 #define I_DIRTY_ALL (I_DIRTY | I_DIRTY_TIME)
@@ -3272,12 +3276,15 @@ extern void simple_recursive_removal(struct dentry *,
 extern int noop_fsync(struct file *, loff_t, loff_t, int);
 extern ssize_t noop_direct_IO(struct kiocb *iocb, struct iov_iter *iter);
 extern int simple_empty(struct dentry *);
-extern int simple_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len,
-			struct page **pagep, void **fsdata);
+extern int simple_write_begin(const struct kiocb *iocb,
+				struct address_space *mapping,
+				loff_t pos, unsigned len,
+				struct folio **foliop, void **fsdata);
 extern const struct address_space_operations ram_aops;
 extern int always_delete_dentry(const struct dentry *);
 extern struct inode *alloc_anon_inode(struct super_block *);
+struct inode *anon_inode_make_secure_inode(struct super_block *sb, const char *name,
+					   const struct inode *context_inode);
 extern int simple_nosetlease(struct file *, int, struct file_lock **, void **);
 extern const struct dentry_operations simple_dentry_operations;
 

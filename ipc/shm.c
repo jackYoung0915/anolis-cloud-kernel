@@ -430,8 +430,11 @@ static int shm_try_destroy_orphaned(int id, void *p, void *data)
 void shm_destroy_orphaned(struct ipc_namespace *ns)
 {
 	down_write(&shm_ids(ns).rwsem);
-	if (shm_ids(ns).in_use)
+	if (shm_ids(ns).in_use) {
+		rcu_read_lock();
 		idr_for_each(&shm_ids(ns).ipcs_idr, &shm_try_destroy_orphaned, ns);
+		rcu_read_unlock();
+	}
 	up_write(&shm_ids(ns).rwsem);
 }
 
@@ -562,30 +565,25 @@ static unsigned long shm_pagesize(struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_NUMA
-static int shm_set_policy(struct vm_area_struct *vma, struct mempolicy *new)
+static int shm_set_policy(struct vm_area_struct *vma, struct mempolicy *mpol)
 {
-	struct file *file = vma->vm_file;
-	struct shm_file_data *sfd = shm_file_data(file);
+	struct shm_file_data *sfd = shm_file_data(vma->vm_file);
 	int err = 0;
 
 	if (sfd->vm_ops->set_policy)
-		err = sfd->vm_ops->set_policy(vma, new);
+		err = sfd->vm_ops->set_policy(vma, mpol);
 	return err;
 }
 
 static struct mempolicy *shm_get_policy(struct vm_area_struct *vma,
-					unsigned long addr)
+					unsigned long addr, pgoff_t *ilx)
 {
-	struct file *file = vma->vm_file;
-	struct shm_file_data *sfd = shm_file_data(file);
-	struct mempolicy *pol = NULL;
+	struct shm_file_data *sfd = shm_file_data(vma->vm_file);
+	struct mempolicy *mpol = vma->vm_policy;
 
 	if (sfd->vm_ops->get_policy)
-		pol = sfd->vm_ops->get_policy(vma, addr);
-	else if (vma->vm_policy)
-		pol = vma->vm_policy;
-
-	return pol;
+		mpol = sfd->vm_ops->get_policy(vma, addr, ilx);
+	return mpol;
 }
 #endif
 

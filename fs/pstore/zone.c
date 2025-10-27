@@ -93,6 +93,7 @@ struct pstore_zone {
  * @ppsz: pmsg storage zone
  * @cpsz: console storage zone
  * @fpszs: ftrace storage zones
+ * @tpsz: ttyprobe storage zone
  * @kmsg_max_cnt: max count of @kpszs
  * @kmsg_read_cnt: counter of total read kmsg dumps
  * @kmsg_write_cnt: counter of total kmsg dump writes
@@ -100,6 +101,7 @@ struct pstore_zone {
  * @console_read_cnt: counter of total read console zone
  * @ftrace_max_cnt: max count of @fpszs
  * @ftrace_read_cnt: counter of max read ftrace zone
+ * @ttyprobe_read_cnt: counter of total read ttyprobe zone
  * @oops_counter: counter of oops dumps
  * @panic_counter: counter of panic dumps
  * @recovered: whether finished recovering data from storage
@@ -113,6 +115,7 @@ struct psz_context {
 	struct pstore_zone *ppsz;
 	struct pstore_zone *cpsz;
 	struct pstore_zone **fpszs;
+	struct pstore_zone *tpsz;
 	unsigned int kmsg_max_cnt;
 	unsigned int kmsg_read_cnt;
 	unsigned int kmsg_write_cnt;
@@ -120,6 +123,7 @@ struct psz_context {
 	unsigned int console_read_cnt;
 	unsigned int ftrace_max_cnt;
 	unsigned int ftrace_read_cnt;
+	unsigned int ttyprobe_read_cnt;
 	/*
 	 * These counters should be calculated during recovery.
 	 * It records the oops/panic times after crashes rather than boots.
@@ -325,6 +329,8 @@ static void psz_flush_all_dirty_zones(struct work_struct *work)
 		ret |= psz_flush_dirty_zones(cxt->kpszs, cxt->kmsg_max_cnt);
 	if (cxt->fpszs)
 		ret |= psz_flush_dirty_zones(cxt->fpszs, cxt->ftrace_max_cnt);
+	if (cxt->tpsz)
+		ret |= psz_flush_dirty_zone(cxt->tpsz);
 	if (ret && cxt->pstore_zone_info)
 		schedule_delayed_work(&psz_cleaner, msecs_to_jiffies(1000));
 }
@@ -617,6 +623,10 @@ static inline int psz_recovery(struct psz_context *cxt)
 	if (ret)
 		goto out;
 
+	ret = psz_recover_zone(cxt, cxt->tpsz);
+	if (ret)
+		goto out;
+
 	ret = psz_recover_zones(cxt, cxt->fpszs, cxt->ftrace_max_cnt);
 
 out:
@@ -637,6 +647,7 @@ static int psz_pstore_open(struct pstore_info *psi)
 	cxt->pmsg_read_cnt = 0;
 	cxt->console_read_cnt = 0;
 	cxt->ftrace_read_cnt = 0;
+	cxt->ttyprobe_read_cnt = 0;
 	return 0;
 }
 
@@ -713,6 +724,8 @@ static int psz_pstore_erase(struct pstore_record *record)
 		if (record->id >= cxt->ftrace_max_cnt)
 			return -EINVAL;
 		return psz_record_erase(cxt, cxt->fpszs[record->id]);
+	case PSTORE_TYPE_TTYPROBE:
+		return psz_record_erase(cxt, cxt->tpsz);
 	default: return -EINVAL;
 	}
 }

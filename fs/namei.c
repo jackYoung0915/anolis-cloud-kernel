@@ -41,6 +41,7 @@
 #include <linux/bitops.h>
 #include <linux/init_task.h>
 #include <linux/uaccess.h>
+#include <linux/kidled.h>
 
 #include "internal.h"
 #include "mount.h"
@@ -858,10 +859,14 @@ out_dput:
 
 static inline int d_revalidate(struct dentry *dentry, unsigned int flags)
 {
+	int status = 1;
+
 	if (unlikely(dentry->d_flags & DCACHE_OP_REVALIDATE))
-		return dentry->d_op->d_revalidate(dentry, flags);
-	else
-		return 1;
+		status = dentry->d_op->d_revalidate(dentry, flags);
+	/* Reset the age when lookuping the dentry successfully */
+	if (status > 0 && kidled_get_slab_age(dentry))
+		kidled_set_slab_age(dentry, 0);
+	return status;
 }
 
 /**
@@ -3644,6 +3649,8 @@ static int do_open(struct nameidata *nd,
 	if (!error && !(file->f_mode & FMODE_OPENED))
 		error = vfs_open(&nd->path, file);
 	if (!error)
+		error = security_file_post_open(file, op->acc_mode);
+	if (!error)
 		error = ima_file_check(file, op->acc_mode);
 	if (!error && do_truncate)
 		error = handle_truncate(idmap, file);
@@ -5232,7 +5239,7 @@ int page_symlink(struct inode *inode, const char *symname, int len)
 	struct address_space *mapping = inode->i_mapping;
 	const struct address_space_operations *aops = mapping->a_ops;
 	bool nofs = !mapping_gfp_constraint(mapping, __GFP_FS);
-	struct page *page;
+	struct folio *folio;
 	void *fsdata = NULL;
 	int err;
 	unsigned int flags;
@@ -5240,16 +5247,16 @@ int page_symlink(struct inode *inode, const char *symname, int len)
 retry:
 	if (nofs)
 		flags = memalloc_nofs_save();
-	err = aops->write_begin(NULL, mapping, 0, len-1, &page, &fsdata);
+	err = aops->write_begin(NULL, mapping, 0, len-1, &folio, &fsdata);
 	if (nofs)
 		memalloc_nofs_restore(flags);
 	if (err)
 		goto fail;
 
-	memcpy(page_address(page), symname, len-1);
+	memcpy(folio_address(folio), symname, len - 1);
 
-	err = aops->write_end(NULL, mapping, 0, len-1, len-1,
-							page, fsdata);
+	err = aops->write_end(NULL, mapping, 0, len - 1, len - 1,
+						folio, fsdata);
 	if (err < 0)
 		goto fail;
 	if (err < len-1)

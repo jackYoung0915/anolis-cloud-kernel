@@ -21,7 +21,10 @@
 
 #include "proto.h"
 
+static DECLARE_COMPLETION(cpu_running);
+
 struct smp_rcb_struct *smp_rcb;
+EXPORT_SYMBOL(smp_rcb);
 
 extern struct cpuinfo_sw64 cpu_data[NR_CPUS];
 
@@ -70,7 +73,7 @@ static void upshift_freq(void)
 	if (is_guest_or_emul())
 		return;
 
-	if (!sunway_machine_is_compatible("sunway,junzhang"))
+	if (!is_junzhang_v1())
 		return;
 
 	cpu_num = sw64_chip->get_cpu_num();
@@ -93,7 +96,7 @@ static void downshift_freq(void)
 	if (is_guest_or_emul())
 		return;
 
-	if (!sunway_machine_is_compatible("sunway,junzhang"))
+	if (!is_junzhang_v1())
 		return;
 
 	for_each_online_cpu(cpu) {
@@ -135,14 +138,12 @@ void smp_callin(void)
 	save_ktp();
 	upshift_freq();
 	cpuid = smp_processor_id();
-	local_irq_disable();
+	WARN_ON_ONCE(!irqs_disabled());
 
 	if (cpu_online(cpuid)) {
 		pr_err("??, cpu 0x%x already present??\n", cpuid);
 		BUG();
 	}
-
-	set_cpu_online(cpuid, true);
 
 	/* Set trap vectors.  */
 	trap_init();
@@ -182,6 +183,10 @@ void smp_callin(void)
 	store_cpu_topology(cpuid);
 	numa_add_cpu(cpuid);
 
+	set_cpu_online(cpuid, true);
+
+	complete(&cpu_running);
+
 	/* Must have completely accurate bogos.  */
 	local_irq_enable();
 
@@ -205,7 +210,6 @@ static inline void set_secondary_ready(int cpuid)
  */
 static int secondary_cpu_start(int cpuid, struct task_struct *idle)
 {
-	unsigned long timeout;
 	/*
 	 * Precalculate the target ksp.
 	 */
@@ -222,17 +226,12 @@ static int secondary_cpu_start(int cpuid, struct task_struct *idle)
 #endif
 
 	/* Wait 10 seconds for secondary cpu.  */
-	timeout = jiffies + 10*HZ;
-	while (time_before(jiffies, timeout)) {
-		if (cpu_online(cpuid))
-			goto started;
-		udelay(10);
-		barrier();
+	if (!wait_for_completion_timeout(&cpu_running,
+				msecs_to_jiffies(10000))) {
+		pr_err("SMP: Processor %d failed to start.\n", cpuid);
+		return -1;
 	}
-	pr_err("SMP: Processor %d failed to start.\n", cpuid);
-	return -1;
 
-started:
 	return 0;
 }
 
@@ -500,6 +499,9 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 	for_each_possible_cpu(cpu) {
 		numa_store_cpu_info(cpu);
 	}
+#ifdef CONFIG_NUMA_AWARE_SPINLOCKS
+	cna_configure_spin_lock_slowpath();
+#endif
 
 	/* Nothing to do on a UP box, or when told not to.  */
 	if (nr_cpu_ids == 1 || max_cpus == 0) {
@@ -852,7 +854,7 @@ void arch_cpu_idle_dead(void)
 	}
 
 #ifdef CONFIG_SUSPEND
-	if (!is_junzhang_v1()) {
+	if (is_in_host() && !is_junzhang_v1()) {
 		sleepen();
 		send_sleep_interrupt(smp_processor_id());
 		while (1)
@@ -862,7 +864,6 @@ void arch_cpu_idle_dead(void)
 		while (1)
 			asm("nop");
 	}
-
 #else
 	asm volatile("memb");
 	asm volatile("halt");

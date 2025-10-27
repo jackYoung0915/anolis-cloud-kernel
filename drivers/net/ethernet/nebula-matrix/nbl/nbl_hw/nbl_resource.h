@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -35,6 +35,8 @@
 #define NBL_RES_MGT_TO_VSI_INFO(res_mgt)	(NBL_RES_MGT_TO_RES_INFO(res_mgt)->vsi_info)
 #define NBL_RES_MGT_TO_ETH_BOND_INFO(res_mgt)	(NBL_RES_MGT_TO_RES_INFO(res_mgt)->eth_bond_info)
 #define NBL_RES_MGT_TO_PF_NUM(res_mgt)		(NBL_RES_MGT_TO_RES_INFO(res_mgt)->max_pf)
+#define NBL_RES_MGT_TO_VDPA_VF_STATS(res_mgt)	(NBL_RES_MGT_TO_RES_INFO(res_mgt)->vdpa.vf_stats)
+#define NBL_RES_MGT_TO_USTORE_STATS(res_mgt)	(NBL_RES_MGT_TO_RES_INFO(res_mgt)->ustore_stats)
 
 #define NBL_RES_MGT_TO_PHY_OPS_TBL(res_mgt)	((res_mgt)->phy_ops_tbl)
 #define NBL_RES_MGT_TO_PHY_OPS(res_mgt)		(NBL_RES_MGT_TO_PHY_OPS_TBL(res_mgt)->ops)
@@ -69,10 +71,14 @@
 #define NBL_DEFAULT_PF_HW_QUEUE_NUM		(16)
 #define NBL_DEFAULT_USER_HW_QUEUE_NUM		(16)
 #define NBL_DEFAULT_VF_HW_QUEUE_NUM		(2)
+#define NBL_VSI_PF_LEGACY_QUEUE_NUM_MAX		(NBL_MAX_TXRX_QUEUE_PER_FUNC - \
+						 NBL_DEFAULT_REP_HW_QUEUE_NUM)
 
 #define NBL_SPECIFIC_VSI_NET_ID_OFFSET		(4)
 #define NBL_MAX_CACHE_SIZE			(256)
 #define NBL_MAX_BATCH_DESC			(64)
+
+#define NBL_VDPA_ITR_BATCH_CNT			(64)
 
 enum nbl_qid_map_table_type {
 	NBL_MASTER_QID_MAP_TABLE,
@@ -102,6 +108,7 @@ struct nbl_queue_info {
 	u16 rss_ret_base;
 	u16 *txrx_queues;
 	u16 *queues_context;
+	u32 *uvn_stat_pkt_drop;
 	u16 rss_entry_size;
 	u16 split;
 	u32 curr_qps;
@@ -145,6 +152,7 @@ struct nbl_msix_map_table {
 
 struct nbl_func_interrupt_resource_mng {
 	u16 num_interrupts;
+	u16 num_net_interrupts;
 	u16 msix_base;
 	u16 msix_max;
 	u16 *interrupts;
@@ -196,6 +204,7 @@ struct nbl_tx_buffer {
 struct nbl_dma_info {
 	dma_addr_t addr;
 	struct page *page;
+	u32 size;
 };
 
 struct nbl_page_cache {
@@ -206,12 +215,14 @@ struct nbl_page_cache {
 
 struct nbl_rx_buffer {
 	struct nbl_dma_info *di;
-	u32 offset;
+	u16 offset;
+	u16 rx_pad;
+	u16 size;
 	bool last_in_page;
 };
 
 struct nbl_res_vector {
-	struct napi_struct napi;
+	struct nbl_napi_struct nbl_napi;
 	struct nbl_res_tx_ring *tx_ring;
 	struct nbl_res_rx_ring *rx_ring;
 	struct nbl_res_tx_ring *xdp_ring;
@@ -277,6 +288,7 @@ struct nbl_res_rx_ring {
 	u32 buf_len;
 	u16 avail_used_flags;
 	bool used_wrap_counter;
+	u8 nid;
 	u16 next_to_use;
 	u16 next_to_clean;
 	u16 tail_ptr;
@@ -290,12 +302,15 @@ struct nbl_res_rx_ring {
 	struct nbl_common_info *common;
 	void *txrx_mgt;
 	void *xdp_prog;
+	struct xdp_rxq_info xdp_rxq;
 	// dma for desc[]
 	dma_addr_t dma;
 	// size for desc[]
 	unsigned int size;
 	bool valid;
 	u16 notify_qid;
+
+	u16 frags_num_per_page;
 } ____cacheline_internodealigned_in_smp;
 
 struct nbl_txrx_bond_info {
@@ -339,13 +354,13 @@ struct nbl_adminq_mgt {
 	struct wait_queue_head wait_queue;
 
 	struct mutex eth_lock; /* To prevent link_state_changed mismodified. */
+
 	void *cmd_filter;
 };
 
 /* --------- FLOW ---------- */
-#define NBL_FEM_HT_PP0_LEN				(1 * 1024)
-
-#define NBL_MACVLAN_TABLE_LEN				(4096)
+#define NBL_FEM_HT_PP0_LEN				(2 * 1024)
+#define NBL_MACVLAN_TABLE_LEN				(4096 * 2)
 
 enum nbl_next_stg_id_e {
 	NBL_NEXT_STG_PA		= 1,
@@ -368,16 +383,19 @@ enum {
 	NBL_FLOW_UP,
 	NBL_FLOW_DOWN,
 	NBL_FLOW_MACVLAN_MAX,
-	NBL_FLOW_L2_UP = NBL_FLOW_MACVLAN_MAX,
-	NBL_FLOW_L2_DOWN,
-	NBL_FLOW_L3_UP,
-	NBL_FLOW_L3_DOWN,
-	NBL_FLOW_TYPE_MAX,
-	NBL_FLOW_TLS_UP = NBL_FLOW_TYPE_MAX,
-	NBL_FLOW_IPSEC_DOWN,
-	NBL_FLOW_ACCEL_MAX,
-	NBL_FLOW_LLDP_LACP_UP,
+	NBL_FLOW_LLDP_LACP_UP = NBL_FLOW_MACVLAN_MAX,
 	NBL_FLOW_PMD_ND_UPCALL,
+	NBL_FLOW_L2_UP_MULTI_MCAST,
+	NBL_FLOW_L3_UP_MULTI_MCAST,
+	NBL_FLOW_UP_MULTI_MCAST_END,
+	NBL_FLOW_L2_DOWN_MULTI_MCAST = NBL_FLOW_UP_MULTI_MCAST_END,
+	NBL_FLOW_L3_DOWN_MULTI_MCAST,
+	NBL_FLOW_DOWN_MULTI_MCAST_END,
+	NBL_FLOW_ACCEL_BEGIN = NBL_FLOW_DOWN_MULTI_MCAST_END,
+	NBL_FLOW_TLS_UP	= NBL_FLOW_ACCEL_BEGIN,
+	NBL_FLOW_IPSEC_DOWN,
+	NBL_FLOW_ACCEL_END,
+	NBL_FLOW_TYPE_MAX = NBL_FLOW_ACCEL_END,
 };
 
 struct nbl_flow_ht_key {
@@ -409,19 +427,44 @@ struct nbl_flow_fem_entry {
 
 struct nbl_flow_mcc_node {
 	struct list_head node;
+	u16 data;
 	u16 mcc_id;
-	u16 mcc_head;
+	u16 mcc_action;
+	bool mcc_head;
+	u8 type;
 };
 
-struct nbl_flow_multi_group {
-	struct list_head mcc_list;
+struct nbl_flow_mcc_group {
+	struct list_head group_node;
+	/* list_head for mcc_node_list */
+	struct list_head mcc_node;
 	struct list_head mcc_head;
-	struct nbl_flow_fem_entry entry[NBL_FLOW_TYPE_MAX - NBL_FLOW_MACVLAN_MAX];
-	u8 ether_id;
-	u16 mcc_id;
+	unsigned long *vsi_bitmap;
+	u32 nbits;
+	u32 vsi_base;
+	u32 vsi_num;
+	u32 ref_cnt;
+	u16 up_mcc_id;
+	u16 down_mcc_id;
+	bool multi;
+};
+
+struct nbl_flow_switch_res {
+	void *mac_hash_tbl;
+	unsigned long *vf_bitmap;
+	struct list_head allmulti_head;
+	struct list_head allmulti_list;
+	struct list_head mcc_group_head;
+	struct nbl_flow_fem_entry allmulti_up[2];
+	struct nbl_flow_fem_entry allmulti_down[2];
+	u16 vld;
 	u16 network_status;
 	u16 pfc_mode;
 	u16 bp_mode;
+	u16 allmulti_first_mcc;
+	u16 num_vfs;
+	u16 active_vfs;
+	u8 ether_id;
 };
 
 struct nbl_flow_lacp_rule {
@@ -459,23 +502,29 @@ struct nbl_flow_nd_upcall_rule {
 	struct list_head node;
 };
 
+struct nbl_event_mirror_outputport_data {
+	u16 func_id;
+	bool opcode; /* true: add; false: del */
+};
+
 struct nbl_flow_mgt {
 	unsigned long *flow_id_bitmap;
+	unsigned long *mcc_id_bitmap;
 	DECLARE_BITMAP(tcam_id, NBL_TCAM_TABLE_LEN);
-	u32 pp_tcam_count;
-	u32 unicast_mac_threshold;
-	u32 accel_flow_count;
 	struct nbl_flow_ht_mng pp0_ht0_mng;
 	struct nbl_flow_ht_mng pp0_ht1_mng;
-	struct nbl_flow_multi_group multi_flow[NBL_MAX_ETHERNET];
-	void *mac_hash_tbl[NBL_MAX_ETHERNET];
+	struct nbl_flow_switch_res switch_res[NBL_MAX_ETHERNET];
 	struct list_head lldp_list;
 	struct list_head lacp_list;
 	struct list_head ul4s_head;
 	struct list_head dprbac_head;
-	void *mcc_tbl_priv;
 	struct list_head nd_upcall_list;	// note: works only for offload network
-						// not the physical network
+	u32 pp_tcam_count;
+	u32 accel_flow_count;
+	u32 flow_id_cnt;
+	u16 vsi_max_per_switch;
+#define NBL_MIRROR_OUTPUTPORT_MAX_FUNC			8
+	u16 mirror_outputport_func[NBL_MIRROR_OUTPUTPORT_MAX_FUNC];
 };
 
 #define NBL_FLOW_INIT_BIT				BIT(1)
@@ -503,22 +552,22 @@ enum nbl_flow_key_type {
 };
 
 #define NBL_PP0_KT_NUM					(0)
-#define NBL_PP1_KT_NUM					(12 * 1024)
-#define NBL_PP2_KT_NUM					(112 * 1024)
-#define NBL_PP0_KT_OFFSET				(124 * 1024)
-#define NBL_PP1_KT_OFFSET				(112 * 1024)
-#define NBL_FEM_HT_PP0_LEN				(1 * 1024)
-#define NBL_FEM_HT_PP1_LEN				(3 * 1024)
+#define NBL_PP1_KT_NUM					(24 * 1024)
+#define NBL_PP2_KT_NUM					(96 * 1024)
+#define NBL_PP0_KT_OFFSET				(120 * 1024)
+#define NBL_PP1_KT_OFFSET				(96 * 1024)
+#define NBL_FEM_HT_PP0_LEN				(2 * 1024)
+#define NBL_FEM_HT_PP1_LEN				(6 * 1024)
 #define NBL_FEM_HT_PP2_LEN				(16 * 1024)
-#define NBL_FEM_HT_PP0_DEPTH				(1 * 1024)
-#define NBL_FEM_HT_PP1_DEPTH				(3 * 1024)
-#define NBL_FEM_HT_PP2_DEPTH				(0)
-#define NBL_FEM_AT_PP1_LEN				(6 * 1024)
-#define NBL_FEM_AT2_PP1_LEN				(2 * 1024)
-#define NBL_FEM_AT_PP2_LEN				(72 * 1024)
+#define NBL_FEM_HT_PP0_DEPTH				(2 * 1024)
+#define NBL_FEM_HT_PP1_DEPTH				(6 * 1024)
+#define NBL_FEM_HT_PP2_DEPTH				(0)  /* 16K, treat as zero */
+#define NBL_FEM_AT_PP1_LEN				(12 * 1024)
+#define NBL_FEM_AT2_PP1_LEN				(4  * 1024)
+#define NBL_FEM_AT_PP2_LEN				(64 * 1024)
 #define NBL_FEM_AT2_PP2_LEN				(16 * 1024)
-#define NBL_TC_MCC_TBL_DEPTH				(7168)
-#define NBL_TC_ENCAP_TBL_DEPTH				(4 * 1024)
+#define NBL_TC_MCC_TBL_DEPTH					(4096)
+#define NBL_TC_ENCAP_TBL_DEPTH					(4 * 1024)
 
 struct nbl_flow_key_info {
 	bool valid;
@@ -733,6 +782,30 @@ struct nbl_tc_mcc_mgt {
 	u16 mcc_offload_cnt;
 };
 
+struct nbl_tc_pedit_res_info {
+#define NBL_TC_MAX_PED_IDX 2048
+	/* common pedit resource */
+	DECLARE_BITMAP(pedit_pool, NBL_TC_MAX_PED_IDX);
+	void *pedit_tbl;
+	u32 pedit_num:16;
+	u32 pedit_cnt:16;
+
+	/* special use for leonis-ipv6, ipv6 need 2 addrs */
+	DECLARE_BITMAP(pedit_pool_h, NBL_TC_MAX_PED_H_IDX);
+	void *pedit_tbl_h;
+	/* normal could store in _h */
+	u32 pedit_num_h:16;
+	u32 pedit_cnt_h:16;
+
+	u32 pedit_base_id;
+};
+
+struct nbl_tc_pedit_mgt {
+	struct nbl_tc_pedit_res_info pedit_res[NBL_FLOW_PED_RES_MAX];
+	struct nbl_common_info *common;
+	struct mutex pedit_lock;	/* protect the pedit */
+};
+
 struct nbl_tc_flow_mgt {
 	spinlock_t flow_lock;  /* used to lock flow resource */
 	struct nbl_flow_prf_upcall_info prf_info;
@@ -778,6 +851,9 @@ struct nbl_tc_flow_mgt {
 	struct mutex encap_tbl_lock; /* used to lock encap resource */
 	struct nbl_flow_tab_hash_info encap_tbl;
 	DECLARE_BITMAP(encap_tbl_bmp, NBL_TC_ENCAP_TBL_DEPTH);
+
+	/* pedit info */
+	struct nbl_tc_pedit_mgt pedit_mgt;
 };
 
 /* --------- ACCEL ---------- */
@@ -862,6 +938,7 @@ struct nbl_eth_info {
 	u8 resv[3];
 	u8 eth_id[NBL_MAX_PF];
 	u8 logic_eth_id[NBL_MAX_PF];
+	u64 link_down_count[NBL_MAX_ETHERNET];
 };
 
 enum nbl_vsi_serv_type {
@@ -885,6 +962,7 @@ struct nbl_vsi_mac_info {
 	u16 vlan_tci;
 	int rate;
 	u8 mac[ETH_ALEN];
+	bool trusted;
 };
 
 struct nbl_vsi_info {
@@ -929,9 +1007,23 @@ struct nbl_rdma_mem_type_info {
 	u32 mem_type;
 };
 
+struct nbl_vdpa_status {
+	struct nbl_vf_stats init_stats;
+	struct nbl_vf_stats prev_stats;
+	unsigned long timestamp;
+	u16 itr_level;
+};
+
+struct nbl_vdpa_info {
+	DECLARE_BITMAP(vdpa_func_bitmap, NBL_MAX_FUNC);
+	struct nbl_vdpa_status *vf_stats[NBL_MAX_FUNC];
+	u32 start;
+};
+
 struct nbl_resource_info {
 	/* ctrl-dev owned pfs */
 	DECLARE_BITMAP(func_bitmap, NBL_MAX_FUNC);
+	struct nbl_vdpa_info vdpa;
 	struct nbl_sriov_info *sriov_info;
 	struct nbl_eswitch_info *eswitch_info;
 	struct nbl_eth_info *eth_info;
@@ -950,8 +1042,13 @@ struct nbl_resource_info {
 	u8 max_pf;
 	u16 nd_upcall_refnt;
 	struct nbl_board_port_info board_info;
+	/* store all pf names for vf/rep device name use */
+	char pf_name_list[NBL_MAX_PF][IFNAMSIZ];
 
 	u8 link_forced_info[NBL_MAX_FUNC];
+	struct nbl_mtu_entry mtu_list[NBL_MAX_MTU];
+
+	struct nbl_ustore_stats *ustore_stats;
 };
 
 enum {
@@ -1034,6 +1131,7 @@ struct nbl_pmd_status {
 struct nbl_resource_common_ops {
 	u16 (*vsi_id_to_func_id)(void *res_mgt, u16 vsi_id);
 	int (*vsi_id_to_pf_id)(void *res_mgt, u16 vsi_id);
+	u16 (*vsi_id_to_vf_id)(void *res_mgt, u16 vsi_id);
 	u16 (*pfvfid_to_func_id)(void *res_mgt, int pfid, int vfid);
 	u16 (*pfvfid_to_vsi_id)(void *res_mgt, int pfid, int vfid, u16 type);
 	u16 (*func_id_to_vsi_id)(void *res_mgt, u16 func_id, u16 type);
@@ -1161,5 +1259,9 @@ void nbl_res_pf_dev_vsi_type_to_hw_vsi_type(u16 src_type, enum nbl_vsi_serv_type
 int nbl_res_get_rep_idx(struct nbl_eswitch_info *eswitch_info, u16 rep_vsi_id);
 bool nbl_res_vf_is_active(void *priv, u16 func_id);
 void nbl_res_set_hw_status(void *priv, enum nbl_hw_status hw_status);
+int nbl_res_get_pf_vf_num(void *priv, u16 pf_id);
 
+u16 nbl_res_intr_get_suppress_level(void *priv, u64 rates, u16 last_level);
+void nbl_res_intr_set_intr_suppress_level(void *priv, u16 func_id, u16 vector_id,
+					  u16 num_net_msix, u16 level);
 #endif

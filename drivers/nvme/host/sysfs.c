@@ -14,6 +14,9 @@ static ssize_t admin_timeout_show(struct device *dev, struct device_attribute *a
 {
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
 
+	if (!ctrl->admin_tagset)
+		return -EIO;
+
 	return sysfs_emit(buf, "%u\n", ctrl->admin_tagset->timeout / HZ);
 }
 
@@ -25,15 +28,16 @@ static ssize_t admin_timeout_store(struct device *dev,
 	unsigned int timeout;
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
 
-	ret = kstrtouint(buf, 10, &timeout);
-	if (ret < 0)
-		return ret;
+	if (!ctrl->admin_tagset)
+		return -EIO;
 
-	if (timeout > 0) {
-		timeout = timeout * HZ;
-		ctrl->admin_tagset->timeout = timeout;
-		blk_queue_rq_timeout(ctrl->admin_q, timeout);
-	}
+	ret = kstrtouint(buf, 10, &timeout);
+	if (ret < 0 || timeout == 0)
+		return -EINVAL;
+
+	timeout = timeout * HZ;
+	ctrl->admin_tagset->timeout = timeout;
+	blk_queue_rq_timeout(ctrl->admin_q, timeout);
 
 	return count;
 }
@@ -42,6 +46,9 @@ static DEVICE_ATTR_RW(admin_timeout);
 static ssize_t io_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	if (!ctrl->tagset)
+		return -EIO;
 
 	return sysfs_emit(buf, "%u\n", ctrl->tagset->timeout / HZ);
 }
@@ -55,20 +62,21 @@ static ssize_t io_timeout_store(struct device *dev,
 	struct nvme_ns *ns;
 	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
 
-	ret = kstrtouint(buf, 10, &timeout);
-	if (ret < 0)
-		return ret;
+	if (!ctrl->tagset)
+		return -EIO;
 
-	if (timeout > 0) {
-		timeout = timeout * HZ;
-		ctrl->tagset->timeout = timeout;
-		srcu_idx = srcu_read_lock(&ctrl->srcu);
-		list_for_each_entry_srcu(ns, &ctrl->namespaces, list,
-					srcu_read_lock_held(&ctrl->srcu)) {
-			blk_queue_rq_timeout(ns->queue, timeout);
-		}
-		srcu_read_unlock(&ctrl->srcu, srcu_idx);
+	ret = kstrtouint(buf, 10, &timeout);
+	if (ret < 0 || timeout == 0)
+		return -EINVAL;
+
+	timeout = timeout * HZ;
+	ctrl->tagset->timeout = timeout;
+	srcu_idx = srcu_read_lock(&ctrl->srcu);
+	list_for_each_entry_srcu(ns, &ctrl->namespaces, list,
+				srcu_read_lock_held(&ctrl->srcu)) {
+		blk_queue_rq_timeout(ns->queue, timeout);
 	}
+	srcu_read_unlock(&ctrl->srcu, srcu_idx);
 
 	return count;
 }

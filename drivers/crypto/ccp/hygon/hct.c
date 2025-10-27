@@ -57,6 +57,7 @@
 #define MCCP_CONFIG_SPACE_SIZE			0xff
 
 #define MCCP_VFIO_PCI_OFFSET_SHIFT		40
+#define MCCP_PCI_BAR2_RES_MAP_LEN		0x8000
 #define MCCP_VFIO_PCI_OFFSET_TO_INDEX(off) \
 				(off >> MCCP_VFIO_PCI_OFFSET_SHIFT)
 #define MCCP_VFIO_PCI_INDEX_TO_OFFSET(index) \
@@ -413,6 +414,17 @@ static int hct_iommu_alloc(struct pci_dev *pdev)
 
 	if (i == MCCP_DEV_MAX)
 		return -EINVAL;
+
+	if (!hct_data.domain) {
+		hct_data.domain = iommu_paging_domain_alloc(&pdev->dev);
+		if (IS_ERR(hct_data.domain))
+			return -ENOMEM;
+		hct_data.prot = IOMMU_READ | IOMMU_WRITE;
+		/* When the pasid value is 0 or 1, the address space overlaps with the host,
+		 * so the pasid needs to start from 2.
+		 */
+		hct_data.pasids[0] |= MCCP_PASID_MASK_BIT;
+	}
 
 	ret = iommu_attach_device(hct_data.domain, &pdev->dev);
 	if (ret) {
@@ -772,7 +784,14 @@ static int hct_get_region_info(struct mdev_device *mdev,
 	case VFIO_PCI_CONFIG_REGION_INDEX:
 		size = pdev->cfg_size;
 		break;
-	case VFIO_PCI_BAR0_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
+	case VFIO_PCI_BAR2_REGION_INDEX:
+		size = MCCP_PCI_BAR2_RES_MAP_LEN;
+		break;
+	case VFIO_PCI_BAR0_REGION_INDEX:
+	case VFIO_PCI_BAR1_REGION_INDEX:
+	case VFIO_PCI_BAR3_REGION_INDEX:
+	case VFIO_PCI_BAR4_REGION_INDEX:
+	case VFIO_PCI_BAR5_REGION_INDEX:
 		size = pci_resource_len(pdev, bar_index);
 		break;
 	default:
@@ -1903,9 +1922,11 @@ static long hct_share_ioctl(struct file *file, unsigned int ioctl, unsigned long
 			ret = 0;
 		break;
 	case MCCP_SHARE_OP_GET_PASID:
+		mutex_lock(&hct_data.lock);
 		pasid = find_first_zero_bit(hct_data.pasids, MCCP_PASID_SIZE);
 		if (pasid >= MCCP_PASID_SIZE) {
 			ret = -EINVAL;
+			mutex_unlock(&hct_data.lock);
 			break;
 		}
 		private->pasid = pasid;
@@ -1913,6 +1934,7 @@ static long hct_share_ioctl(struct file *file, unsigned int ioctl, unsigned long
 		bitmap_set(hct_data.pasids, pasid, 1);
 		if (copy_to_user((void __user *)arg, &dev_ctrl, sizeof(dev_ctrl)))
 			ret = -EINVAL;
+		mutex_unlock(&hct_data.lock);
 		break;
 	case MCCP_SHARE_OP_GET_VERSION:
 		memcpy(dev_ctrl.version, VERSION_STRING, sizeof(VERSION_STRING));
@@ -2049,7 +2071,6 @@ static struct miscdevice hct_misc = {
 static int hct_share_init(void)
 {
 	int i;
-	int ret;
 
 	memset(&hct_data, 0x00, sizeof(hct_data));
 	mutex_init(&hct_data.lock);
@@ -2057,25 +2078,7 @@ static int hct_share_init(void)
 	for (i = 0; i < MCCP_DEV_MAX; i++)
 		mutex_init(&hct_data.iommu[i].lock);
 
-	ret = misc_register(&hct_misc);
-	if (!ret) {
-		hct_data.domain = iommu_domain_alloc(&pci_bus_type);
-		if (!hct_data.domain) {
-			misc_deregister(&hct_misc);
-			if (!pci_bus_type.iommu_ops) {
-				pr_err("iommu is disabled\n");
-				return -ENODEV;
-			}
-			return -ENOMEM;
-		}
-		hct_data.prot = IOMMU_READ | IOMMU_WRITE;
-	}
-
-	/* When the pasid value is 0 or 1, the address space overlaps with the host,
-	 * so the pasid needs to start from 2.
-	 */
-	hct_data.pasids[0] |= MCCP_PASID_MASK_BIT;
-	return ret;
+	return misc_register(&hct_misc);
 }
 
 static void hct_share_exit(void)

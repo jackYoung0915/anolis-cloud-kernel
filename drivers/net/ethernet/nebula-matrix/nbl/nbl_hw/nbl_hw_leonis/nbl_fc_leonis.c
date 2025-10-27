@@ -107,9 +107,8 @@ cmd_send_error:
 	return ret;
 
 set_stat_error:
-	nbl_debug(mgt->common, NBL_DEBUG_FLOW, "nbl flow fc set flow stats failed."
-		 " count_id:%u, cookie: %lu, ret(%u): %d", counter_array->counter_id[idx],
-		 counter_array->cookie[idx], idx, ret);
+	nbl_debug(mgt->common, NBL_DEBUG_FLOW, "set stats err.id:%u, cookie: %lu, ret(%u): %d",
+		  counter_array->counter_id[idx], counter_array->cookie[idx], idx, ret);
 	return ret;
 }
 

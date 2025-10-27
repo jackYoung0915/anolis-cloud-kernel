@@ -214,6 +214,7 @@ static int coalesce_fill_reply(struct sk_buff *skb,
 	struct dim_irq_moder *moder = req_base->dev->irq_moder;
 	const struct ethtool_coalesce *coal = &data->coalesce;
 	u32 supported = data->supported_params;
+	struct dim_irq_moder *moder;
 	int ret = 0;
 
 	if (coalesce_put_u32(skb, ETHTOOL_A_COALESCE_RX_USECS,
@@ -272,9 +273,10 @@ static int coalesce_fill_reply(struct sk_buff *skb,
 			     kcoal->tx_aggr_time_usecs, supported))
 		return -EMSGSIZE;
 
-	if (!moder)
+	if (!req_base->dev || !req_base->dev->irq_moder)
 		return 0;
 
+	moder = req_base->dev->irq_moder;
 	rcu_read_lock();
 	if (moder->profile_flags & DIM_PROFILE_RX) {
 		ret = coalesce_put_profile(skb, ETHTOOL_A_COALESCE_RX_PROFILE,

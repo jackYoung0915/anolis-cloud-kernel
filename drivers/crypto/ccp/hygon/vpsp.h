@@ -55,6 +55,9 @@ struct vpsp_ret {
 #define VPSP_RET_SYS_FORMAT    1
 #define VPSP_RET_PSP_FORMAT    0
 
+#define VPSP_MAGIC_NUM		0x56505350	/* "VPSP" */
+#define TKM_ERR_SIZE_SMALL	5
+
 #define PSP_2MB_MASK		(2*1024*1024 - 1)
 #define PSP_HUGEPAGE_2MB	(2*1024*1024)
 #define PSP_HUGEPAGE_NUM_MAX	128
@@ -77,6 +80,7 @@ struct vpsp_dev_ctx {
 	// `vm_is_bound` indicates whether the binding operation has been performed
 	u32 vm_is_bound;
 	u32 vm_handle;	// only for csv
+	atomic64_t locked;
 };
 
 struct vpsp_cmd_ctx {
@@ -101,13 +105,43 @@ struct vpsp_cmd_ctx {
 	struct hlist_node node;
 };
 
+struct vpsp_ctx_serialized {
+	gpa_t gpa;
+	uint32_t statval;
+	uint32_t data_size;
+	uint32_t data_offset;
+} __packed;
+
+#define VPSP_SERIALIZED_VERSION		1
+struct vpsp_serialized_header {
+	uint32_t magic;
+	uint32_t buffer_len;
+	uint32_t version;
+	uint32_t ctx_count;
+	struct vpsp_ctx_serialized ctx_meta[];
+} __packed;
+
 enum VPSP_DEV_CTRL_OPCODE {
 	VPSP_OP_VID_ADD,
 	VPSP_OP_VID_DEL,
 	VPSP_OP_SET_DEFAULT_VID_PERMISSION,
 	VPSP_OP_GET_DEFAULT_VID_PERMISSION,
 	VPSP_OP_SET_GPA,
+	VPSP_OP_BACKUP_KEY,
+	VPSP_OP_RESTORE_KEY,
+	VPSP_OP_BACKUP_CTX,
+	VPSP_OP_RESTORE_CTX,
 };
+
+struct key_img_ctl {
+	unsigned int img_len;
+	void __user *key_img_ptr;
+} __packed;
+
+struct cmd_ctx_ctl {
+	unsigned int buffer_len;
+	void __user *cmd_ctx_ptr;
+} __packed;
 
 struct vpsp_dev_ctrl {
 	unsigned char op;
@@ -124,29 +158,19 @@ struct vpsp_dev_ctrl {
 			u64 gpa_start;
 			u64 gpa_end;
 		} gpa;
+
+		struct key_img_ctl key_img_ctl;
+		struct cmd_ctx_ctl cmd_ctx_ctl;
+
 		unsigned char reserved[128];
 	} __packed data;
 };
 
-/* defination of variabled used by virtual psp */
-enum VPSP_RB_CHECK_STATUS {
-	RB_NOT_CHECK = 0,
-	RB_CHECKING,
-	RB_CHECKED,
-	RB_CHECK_MAX
-};
-#define VPSP_RB_IS_SUPPORTED(buildid)		(buildid >= 1913)
-#define VPSP_RB_OC_IS_SUPPORTED(buildid)	(buildid >= 2167)
-#define VPSP_CMD_STATUS_RUNNING		0xffff
-#define VPSP_RB_OVERCOMMIT_SIZE		1024
-
-extern struct csv_ringbuffer_queue vpsp_ring_buffer[CSV_COMMAND_PRIORITY_NUM];
 extern struct hygon_psp_hooks_table hygon_psp_hooks;
-extern bool vpsp_in_ringbuffer_mode;
 extern struct kmem_cache *vpsp_cmd_ctx_slab;
-extern uint8_t vpsp_rb_oc_supported;
+extern int is_hygon_psp;
+extern struct csv_ringbuffer_queue vpsp_ring_buffer[CSV_COMMAND_PRIORITY_NUM];
 
-void vpsp_worker_handler(struct work_struct *unused);
 int vpsp_try_get_result(struct vpsp_cmd_ctx *cmd_ctx, struct vpsp_ret *psp_ret);
 int vpsp_try_do_cmd(int cmd, phys_addr_t phy_addr,
 		struct vpsp_cmd_ctx *cmd_ctx, struct vpsp_ret *psp_ret);
@@ -156,7 +180,7 @@ void vpsp_cmd_ctx_obj_put(struct vpsp_cmd_ctx *cmd_ctx, bool force);
 int vpsp_get_dev_ctx(struct vpsp_dev_ctx **ctx, pid_t pid);
 int vpsp_get_default_vid_permission(void);
 int do_vpsp_op_ioctl(struct vpsp_dev_ctrl *ctrl);
-int vpsp_rb_check_and_cmd_prio_parse(uint8_t *prio,
+int vpsp_parse_ringbuffer_cmd_prio(uint8_t *prio,
 		struct vpsp_cmd *vcmd);
 
 #endif	/* __CCP_HYGON_VPSP_H__ */

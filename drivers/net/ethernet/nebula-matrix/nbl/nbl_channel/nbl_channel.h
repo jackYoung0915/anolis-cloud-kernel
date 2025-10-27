@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -18,9 +18,9 @@
 #define NBL_CHAN_MGT_TO_ADMINQ(chan_mgt)	((chan_mgt)->chan_info[NBL_CHAN_TYPE_ADMINQ])
 #define NBL_CHAN_MGT_TO_CHAN_INFO(chan_mgt, chan_type)	((chan_mgt)->chan_info[chan_type])
 
-#define NBL_CHAN_TX_RING_TO_DESC(tx_ring, i)							\
+#define NBL_CHAN_TX_RING_TO_DESC(tx_ring, i) \
 	(&(((struct nbl_chan_tx_desc *)((tx_ring)->desc))[i]))
-#define NBL_CHAN_RX_RING_TO_DESC(rx_ring, i)							\
+#define NBL_CHAN_RX_RING_TO_DESC(rx_ring, i) \
 	(&(((struct nbl_chan_rx_desc *)((rx_ring)->desc))[i]))
 #define NBL_CHAN_TX_RING_TO_BUF(tx_ring, i)  (&(((tx_ring)->buf)[i]))
 #define NBL_CHAN_RX_RING_TO_BUF(rx_ring, i)  (&(((rx_ring)->buf)[i]))
@@ -34,7 +34,7 @@
 
 #define NBL_CHAN_TX_WAIT_US			100
 #define NBL_CHAN_TX_REKICK_WAIT_TIMES		2000
-#define NBL_CHAN_TX_WAIT_TIMES			10000
+#define NBL_CHAN_TX_WAIT_TIMES			30000
 
 #define NBL_CHAN_TX_WAIT_ACK_US_MIN		100
 #define NBL_CHAN_TX_WAIT_ACK_US_MAX		120
@@ -52,7 +52,7 @@
 #define NBL_CHAN_RX_DESC_AVAIL			BIT(3)
 #define NBL_CHAN_RX_DESC_USED			BIT(4)
 
-#define NBL_CHAN_ACK_WAIT_TIME			(2 * HZ)
+#define NBL_CHAN_ACK_WAIT_TIME			(3 * HZ)
 
 /* adminq */
 #define NBL_ADMINQ_QUEUE_LEN			256

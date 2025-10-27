@@ -37,6 +37,7 @@
 #include <asm/kfence.h>
 
 #include "kfence.h"
+#include "../internal.h"
 
 /* Disables KFENCE on the first warning assuming an irrecoverable error. */
 #define KFENCE_WARN_ON(cond)                                                   \
@@ -87,7 +88,13 @@ DEFINE_STATIC_KEY_FALSE(kfence_skip_interval);
 static DEFINE_STATIC_KEY_FALSE(kfence_once_enabled);
 DEFINE_STATIC_KEY_TRUE(kfence_order0_page);
 
-#define KFENCE_MAX_OBJECTS_PER_AREA (PUD_SIZE / PAGE_SIZE / 2 - 1)
+#ifdef CONFIG_ARM64_64K_PAGES
+/* For 64K page kernel, PUD is too large. Just split PMD table. (512M) */
+#define KFENCE_POOL_SIZE PMD_SIZE
+#else
+#define KFENCE_POOL_SIZE PUD_SIZE
+#endif
+#define KFENCE_MAX_OBJECTS_PER_AREA (KFENCE_POOL_SIZE / PAGE_SIZE / 2 - 1)
 
 static void kfence_enable_late(void);
 static int param_set_sample_interval(const char *val, const struct kernel_param *kp)
@@ -856,14 +863,24 @@ static struct page *kfence_guarded_alloc_page(int node, unsigned long *stack_ent
 		return NULL;
 	}
 
+	addr = (void *)metadata_to_pageaddr(meta);
+	page = virt_to_page(addr);
+	if (!page_ref_freeze(page, 1)) {
+		/*
+		 * This is extremely unlikely -- someone else has
+		 * taken an extra ref on the page.
+		 */
+		raw_spin_unlock_irqrestore(&meta->lock, flags);
+		put_free_meta(meta);
+		return NULL;
+	}
+
 	__init_meta(meta, PAGE_SIZE, NULL, stack_entries, num_stack_entries, alloc_stack_hash);
 
 	raw_spin_unlock_irqrestore(&meta->lock, flags);
 
-	addr = (void *)meta->addr;
 	alloc_covered_add(alloc_stack_hash, 1);
 
-	page = virt_to_page(addr);
 	if (PageSlab(page)) {
 		struct slab *slab = page_slab(page);
 
@@ -881,9 +898,6 @@ static struct page *kfence_guarded_alloc_page(int node, unsigned long *stack_ent
 		__ClearPageSlab(page);
 	}
 	page->mapping = NULL;
-#ifdef CONFIG_DEBUG_VM
-	atomic_set(&page->_refcount, 0);
-#endif
 
 	if (random_fault)
 		kfence_protect(meta->addr); /* Random "faults" by protecting the object. */
@@ -1041,6 +1055,7 @@ static void kfence_guarded_free_page(struct page *page, void *addr, struct kfenc
 	if (!__free_meta(addr, meta, false, true))
 		return;
 
+	set_page_refcounted(page);
 	put_free_meta(meta);
 
 	this_cpu_counter->counter[KFENCE_COUNTER_ALLOCATED_PAGE]--;
@@ -1070,7 +1085,6 @@ static void kfence_clear_page_info(unsigned long addr, unsigned long size)
 		}
 		__ClearPageKfence(page);
 		page->mapping = NULL;
-		atomic_set(&page->_refcount, 1);
 		kfence_unprotect(i);
 	}
 }
@@ -1171,7 +1185,8 @@ static void __init kfence_alloc_pool_node(int node)
 	while (nr_need) {
 		unsigned long kfence_pool_size = (nr_request + 1) * 2 * PAGE_SIZE;
 
-		__kfence_pool_area[index] = memblock_alloc_node(kfence_pool_size, PUD_SIZE, node);
+		__kfence_pool_area[index] = memblock_alloc_node(kfence_pool_size,
+								KFENCE_POOL_SIZE, node);
 		if (!__kfence_pool_area[index]) {
 			pr_err("kfence alloc pool on node %d failed\n", node);
 			break;
@@ -1320,7 +1335,18 @@ static void kfence_free_pool_area(struct kfence_pool_area *kpa)
 
 	kmemleak_free_part_phys(base, size);
 	for (; cursor < end; cursor++) {
-		__free_pages_core(pfn_to_page(cursor), 0);
+		struct page *page = pfn_to_page(cursor);
+
+		/*
+		 * This is extremely unlikely -- someone else has
+		 * taken an extra ref on the page.  Just give up
+		 * because of its unlikeliness.
+		 */
+		if (!page_ref_freeze(page, 1)) {
+			WARN_ONCE(1, "kfence: extra page ref!\n");
+			continue;
+		}
+		__free_pages_core(page, 0);
 		totalram_pages_inc();
 	}
 }
@@ -1445,7 +1471,7 @@ static bool kfence_can_recover_tlb(struct kfence_pool_area *kpa)
 {
 #ifdef CONFIG_X86_64
 	/* only recover 1GiB aligned tlb */
-	return kpa->pool_size == PUD_SIZE;
+	return kpa->pool_size == KFENCE_POOL_SIZE;
 #else
 	/*
 	 * On arm64, the direct mapping area is already splited to page granularity
@@ -1461,12 +1487,12 @@ static inline void __kfence_recover_tlb(unsigned long addr)
 {
 	if (!arch_kfence_free_pool(addr))
 		pr_warn("fail to recover tlb to 1G at 0x%p-0x%p\n",
-			(void *)addr, (void *)(addr + PUD_SIZE));
+			(void *)addr, (void *)(addr + KFENCE_POOL_SIZE));
 }
 
 static inline void kfence_recover_tlb(struct kfence_pool_area *kpa)
 {
-	unsigned long base = ALIGN_DOWN((unsigned long)kpa->addr, PUD_SIZE);
+	unsigned long base = ALIGN_DOWN((unsigned long)kpa->addr, KFENCE_POOL_SIZE);
 
 	if (kfence_can_recover_tlb(kpa))
 		__kfence_recover_tlb(base);
@@ -1953,7 +1979,7 @@ int __init update_kfence_booting_max(void)
 {
 	static bool done __initdata;
 
-	unsigned long long parse_mem = PUD_SIZE;
+	unsigned long long parse_mem = KFENCE_POOL_SIZE;
 	unsigned long nr_pages, nr_obj_max;
 	char *cmdline;
 	int ret;
@@ -1976,7 +2002,7 @@ int __init update_kfence_booting_max(void)
 	if (ret)
 		goto nokfence;
 
-	nr_pages = min_t(unsigned long, parse_mem, PUD_SIZE) / PAGE_SIZE;
+	nr_pages = min_t(unsigned long, parse_mem, KFENCE_POOL_SIZE) / PAGE_SIZE;
 	/* We need at least 4 pages to enable KFENCE. */
 	if (nr_pages < 4)
 		goto nokfence;

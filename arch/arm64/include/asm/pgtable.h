@@ -35,6 +35,85 @@
 #include <linux/sched.h>
 #include <linux/page_table_check.h>
 
+static inline void emit_pte_barriers(void)
+{
+	/*
+	 * These barriers are emitted under certain conditions after a pte entry
+	 * was modified (see e.g. __set_pte_complete()). The dsb makes the store
+	 * visible to the table walker. The isb ensures that any previous
+	 * speculative "invalid translation" marker that is in the CPU's
+	 * pipeline gets cleared, so that any access to that address after
+	 * setting the pte to valid won't cause a spurious fault. If the thread
+	 * gets preempted after storing to the pgtable but before emitting these
+	 * barriers, __switch_to() emits a dsb which ensure the walker gets to
+	 * see the store. There is no guarantee of an isb being issued though.
+	 * This is safe because it will still get issued (albeit on a
+	 * potentially different CPU) when the thread starts running again,
+	 * before any access to the address.
+	 */
+	dsb(ishst);
+	isb();
+}
+
+static inline void queue_pte_barriers(void)
+{
+	unsigned long flags;
+
+	if (in_interrupt()) {
+		emit_pte_barriers();
+		return;
+	}
+
+	flags = read_thread_flags();
+
+	if (flags & BIT(TIF_LAZY_MMU)) {
+		/* Avoid the atomic op if already set. */
+		if (!(flags & BIT(TIF_LAZY_MMU_PENDING)))
+			set_thread_flag(TIF_LAZY_MMU_PENDING);
+	} else {
+		emit_pte_barriers();
+	}
+}
+
+#define  __HAVE_ARCH_ENTER_LAZY_MMU_MODE
+static inline void arch_enter_lazy_mmu_mode(void)
+{
+	/*
+	 * lazy_mmu_mode is not supposed to permit nesting. But in practice this
+	 * does happen with CONFIG_DEBUG_PAGEALLOC, where a page allocation
+	 * inside a lazy_mmu_mode section (such as zap_pte_range()) will change
+	 * permissions on the linear map with apply_to_page_range(), which
+	 * re-enters lazy_mmu_mode. So we tolerate nesting in our
+	 * implementation. The first call to arch_leave_lazy_mmu_mode() will
+	 * flush and clear the flag such that the remainder of the work in the
+	 * outer nest behaves as if outside of lazy mmu mode. This is safe and
+	 * keeps tracking simple.
+	 */
+
+	if (in_interrupt())
+		return;
+
+	set_thread_flag(TIF_LAZY_MMU);
+}
+
+static inline void arch_flush_lazy_mmu_mode(void)
+{
+	if (in_interrupt())
+		return;
+
+	if (test_and_clear_thread_flag(TIF_LAZY_MMU_PENDING))
+		emit_pte_barriers();
+}
+
+static inline void arch_leave_lazy_mmu_mode(void)
+{
+	if (in_interrupt())
+		return;
+
+	arch_flush_lazy_mmu_mode();
+	clear_thread_flag(TIF_LAZY_MMU);
+}
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 #define __HAVE_ARCH_FLUSH_PMD_TLB_RANGE
 
@@ -242,8 +321,7 @@ static inline pte_t pte_mkspecial(pte_t pte)
 
 static inline pte_t pte_mkcont(pte_t pte)
 {
-	pte = set_pte_bit(pte, __pgprot(PTE_CONT));
-	return set_pte_bit(pte, __pgprot(PTE_TYPE_PAGE));
+	return set_pte_bit(pte, __pgprot(PTE_CONT));
 }
 
 static inline pte_t pte_mknoncont(pte_t pte)
@@ -271,18 +349,30 @@ static inline pte_t pte_mkdevmap(pte_t pte)
 	return set_pte_bit(pte, __pgprot(PTE_DEVMAP | PTE_SPECIAL));
 }
 
-static inline void __set_pte(pte_t *ptep, pte_t pte)
+static inline void __set_pte_nosync(pte_t *ptep, pte_t pte)
 {
 	WRITE_ONCE(*ptep, pte);
+}
 
+static inline void __set_pte_complete(pte_t pte)
+{
 	/*
 	 * Only if the new pte is valid and kernel, otherwise TLB maintenance
-	 * or update_mmu_cache() have the necessary barriers.
+	 * has the necessary barriers.
 	 */
-	if (pte_valid_not_user(pte)) {
-		dsb(ishst);
-		isb();
-	}
+	if (pte_valid_not_user(pte))
+		queue_pte_barriers();
+}
+
+static inline void __set_pte(pte_t *ptep, pte_t pte)
+{
+	__set_pte_nosync(ptep, pte);
+	__set_pte_complete(pte);
+}
+
+static inline pte_t __ptep_get(pte_t *ptep)
+{
+	return READ_ONCE(*ptep);
 }
 
 static inline pte_t __ptep_get(pte_t *ptep)
@@ -370,28 +460,6 @@ static inline pte_t pte_advance_pfn(pte_t pte, unsigned long nr)
 {
 	return pfn_pte(pte_pfn(pte) + nr, pte_pgprot(pte));
 }
-
-static inline void __set_ptes(struct mm_struct *mm,
-			      unsigned long __always_unused addr,
-			      pte_t *ptep, pte_t pte, unsigned int nr)
-{
-	page_table_check_ptes_set(mm, ptep, pte, nr);
-	__sync_cache_and_tags(pte, nr);
-
-	for (;;) {
-		__check_safe_pte_update(mm, ptep, pte);
-		__set_pte(ptep, pte);
-		if (--nr == 0)
-			break;
-		ptep++;
-		pte = pte_advance_pfn(pte, 1);
-	}
-}
-
-/*
- * Huge pte definitions.
- */
-#define pte_mkhuge(pte)		(__pte(pte_val(pte) & ~PTE_TABLE_BIT))
 
 /*
  * Hugetlb definitions.
@@ -548,30 +616,64 @@ static inline pmd_t pmd_mkdevmap(pmd_t pmd)
 #define pud_pfn(pud)		((__pud_to_phys(pud) & PUD_MASK) >> PAGE_SHIFT)
 #define pfn_pud(pfn,prot)	__pud(__phys_to_pud_val((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot))
 
-static inline void __set_pte_at(struct mm_struct *mm,
-				unsigned long __always_unused addr,
-				pte_t *ptep, pte_t pte, unsigned int nr)
+static inline void __set_ptes_anysz(struct mm_struct *mm, pte_t *ptep,
+				    pte_t pte, unsigned int nr,
+				    unsigned long pgsize)
 {
-	__sync_cache_and_tags(pte, nr);
-	__check_safe_pte_update(mm, ptep, pte);
-	__set_pte(ptep, pte);
+	unsigned long stride = pgsize >> PAGE_SHIFT;
+
+	switch (pgsize) {
+	case PAGE_SIZE:
+		page_table_check_ptes_set(mm, ptep, pte, nr);
+		break;
+	case PMD_SIZE:
+		page_table_check_pmds_set(mm, (pmd_t *)ptep, pte_pmd(pte), nr);
+		break;
+#ifndef __PAGETABLE_PMD_FOLDED
+	case PUD_SIZE:
+		page_table_check_puds_set(mm, (pud_t *)ptep, pte_pud(pte), nr);
+		break;
+#endif
+	default:
+		VM_WARN_ON(1);
+	}
+
+	__sync_cache_and_tags(pte, nr * stride);
+
+	for (;;) {
+		__check_safe_pte_update(mm, ptep, pte);
+		__set_pte_nosync(ptep, pte);
+		if (--nr == 0)
+			break;
+		ptep++;
+		pte = pte_advance_pfn(pte, stride);
+	}
+
+	__set_pte_complete(pte);
 }
 
-static inline void set_pmd_at(struct mm_struct *mm, unsigned long addr,
-			      pmd_t *pmdp, pmd_t pmd)
+static inline void __set_ptes(struct mm_struct *mm,
+			      unsigned long __always_unused addr,
+			      pte_t *ptep, pte_t pte, unsigned int nr)
 {
-	page_table_check_pmd_set(mm, pmdp, pmd);
-	return __set_pte_at(mm, addr, (pte_t *)pmdp, pmd_pte(pmd),
-						PMD_SIZE >> PAGE_SHIFT);
+	__set_ptes_anysz(mm, ptep, pte, nr, PAGE_SIZE);
 }
 
-static inline void set_pud_at(struct mm_struct *mm, unsigned long addr,
-			      pud_t *pudp, pud_t pud)
+static inline void __set_pmds(struct mm_struct *mm,
+			      unsigned long __always_unused addr,
+			      pmd_t *pmdp, pmd_t pmd, unsigned int nr)
 {
-	page_table_check_pud_set(mm, pudp, pud);
-	return __set_pte_at(mm, addr, (pte_t *)pudp, pud_pte(pud),
-						PUD_SIZE >> PAGE_SHIFT);
+	__set_ptes_anysz(mm, (pte_t *)pmdp, pmd_pte(pmd), nr, PMD_SIZE);
 }
+#define set_pmd_at(mm, addr, pmdp, pmd) __set_pmds(mm, addr, pmdp, pmd, 1)
+
+static inline void __set_puds(struct mm_struct *mm,
+			      unsigned long __always_unused addr,
+			      pud_t *pudp, pud_t pud, unsigned int nr)
+{
+	__set_ptes_anysz(mm, (pte_t *)pudp, pud_pte(pud), nr, PUD_SIZE);
+}
+#define set_pud_at(mm, addr, pudp, pud) __set_puds(mm, addr, pudp, pud, 1)
 
 #define __p4d_to_phys(p4d)	__pte_to_phys(p4d_pte(p4d))
 #define __phys_to_p4d_val(phys)	__phys_to_pte_val(phys)
@@ -662,10 +764,8 @@ static inline void set_pmd(pmd_t *pmdp, pmd_t pmd)
 
 	WRITE_ONCE(*pmdp, pmd);
 
-	if (pmd_valid(pmd)) {
-		dsb(ishst);
-		isb();
-	}
+	if (pmd_valid(pmd))
+		queue_pte_barriers();
 }
 
 static inline void pmd_clear(pmd_t *pmdp)
@@ -707,7 +807,8 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 	pr_err("%s:%d: bad pmd %016llx.\n", __FILE__, __LINE__, pmd_val(e))
 
 #define pud_none(pud)		(!pud_val(pud))
-#define pud_bad(pud)		(!pud_table(pud))
+#define pud_bad(pud)		((pud_val(pud) & PUD_TYPE_MASK) != \
+				 PUD_TYPE_TABLE)
 #define pud_present(pud)	pte_present(pud_pte(pud))
 #define pud_leaf(pud)		(pud_present(pud) && !pud_table(pud))
 #define pud_valid(pud)		pte_valid(pud_pte(pud))
@@ -726,10 +827,8 @@ static inline void set_pud(pud_t *pudp, pud_t pud)
 
 	WRITE_ONCE(*pudp, pud);
 
-	if (pud_valid(pud)) {
-		dsb(ishst);
-		isb();
-	}
+	if (pud_valid(pud))
+		queue_pte_barriers();
 }
 
 static inline void pud_clear(pud_t *pudp)
@@ -791,8 +890,7 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 	}
 
 	WRITE_ONCE(*p4dp, p4d);
-	dsb(ishst);
-	isb();
+	queue_pte_barriers();
 }
 
 static inline void p4d_clear(p4d_t *p4dp)
@@ -963,14 +1061,35 @@ static inline int pmdp_test_and_clear_young(struct vm_area_struct *vma,
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
-static inline pte_t __ptep_get_and_clear(struct mm_struct *mm,
-				       unsigned long address, pte_t *ptep)
+static inline pte_t __ptep_get_and_clear_anysz(struct mm_struct *mm,
+					       pte_t *ptep,
+					       unsigned long pgsize)
 {
 	pte_t pte = __pte(xchg_relaxed(&pte_val(*ptep), 0));
 
-	page_table_check_pte_clear(mm, pte);
+	switch (pgsize) {
+	case PAGE_SIZE:
+		page_table_check_pte_clear(mm, pte);
+		break;
+	case PMD_SIZE:
+		page_table_check_pmd_clear(mm, pte_pmd(pte));
+		break;
+#ifndef __PAGETABLE_PMD_FOLDED
+	case PUD_SIZE:
+		page_table_check_pud_clear(mm, pte_pud(pte));
+		break;
+#endif
+	default:
+		VM_WARN_ON(1);
+	}
 
 	return pte;
+}
+
+static inline pte_t __ptep_get_and_clear(struct mm_struct *mm,
+					 unsigned long address, pte_t *ptep)
+{
+	return __ptep_get_and_clear_anysz(mm, ptep, PAGE_SIZE);
 }
 
 static inline void __clear_full_ptes(struct mm_struct *mm, unsigned long addr,
@@ -1009,11 +1128,7 @@ static inline pte_t __get_and_clear_full_ptes(struct mm_struct *mm,
 static inline pmd_t pmdp_huge_get_and_clear(struct mm_struct *mm,
 					    unsigned long address, pmd_t *pmdp)
 {
-	pmd_t pmd = __pmd(xchg_relaxed(&pmd_val(*pmdp), 0));
-
-	page_table_check_pmd_clear(mm, pmd);
-
-	return pmd;
+	return pte_pmd(__ptep_get_and_clear_anysz(mm, (pte_t *)pmdp, PMD_SIZE));
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
@@ -1048,6 +1163,46 @@ static inline void __wrprotect_ptes(struct mm_struct *mm, unsigned long address,
 
 	for (i = 0; i < nr; i++, address += PAGE_SIZE, ptep++)
 		__ptep_set_wrprotect(mm, address, ptep);
+}
+
+static inline void __clear_young_dirty_pte(struct vm_area_struct *vma,
+					   unsigned long addr, pte_t *ptep,
+					   pte_t pte, cydp_t flags)
+{
+	pte_t old_pte;
+
+	do {
+		old_pte = pte;
+
+		if (flags & CYDP_CLEAR_YOUNG)
+			pte = pte_mkold(pte);
+		if (flags & CYDP_CLEAR_DIRTY)
+			pte = pte_mkclean(pte);
+
+		pte_val(pte) = cmpxchg_relaxed(&pte_val(*ptep),
+					       pte_val(old_pte), pte_val(pte));
+	} while (pte_val(pte) != pte_val(old_pte));
+}
+
+static inline void __clear_young_dirty_ptes(struct vm_area_struct *vma,
+					    unsigned long addr, pte_t *ptep,
+					    unsigned int nr, cydp_t flags)
+{
+	pte_t pte;
+
+	for (;;) {
+		pte = __ptep_get(ptep);
+
+		if (flags == (CYDP_CLEAR_YOUNG | CYDP_CLEAR_DIRTY))
+			__set_pte(ptep, pte_mkclean(pte_mkold(pte)));
+		else
+			__clear_young_dirty_pte(vma, addr, ptep, pte, flags);
+
+		if (--nr == 0)
+			break;
+		ptep++;
+		addr += PAGE_SIZE;
+	}
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
@@ -1215,6 +1370,9 @@ extern void contpte_wrprotect_ptes(struct mm_struct *mm, unsigned long addr,
 extern int contpte_ptep_set_access_flags(struct vm_area_struct *vma,
 				unsigned long addr, pte_t *ptep,
 				pte_t entry, int dirty);
+extern void contpte_clear_young_dirty_ptes(struct vm_area_struct *vma,
+				unsigned long addr, pte_t *ptep,
+				unsigned int nr, cydp_t flags);
 
 static __always_inline void contpte_try_fold(struct mm_struct *mm,
 				unsigned long addr, pte_t *ptep, pte_t pte)
@@ -1439,6 +1597,17 @@ static inline int ptep_set_access_flags(struct vm_area_struct *vma,
 	return contpte_ptep_set_access_flags(vma, addr, ptep, entry, dirty);
 }
 
+#define clear_young_dirty_ptes clear_young_dirty_ptes
+static inline void clear_young_dirty_ptes(struct vm_area_struct *vma,
+					  unsigned long addr, pte_t *ptep,
+					  unsigned int nr, cydp_t flags)
+{
+	if (likely(nr == 1 && !pte_cont(__ptep_get(ptep))))
+		__clear_young_dirty_ptes(vma, addr, ptep, nr, flags);
+	else
+		contpte_clear_young_dirty_ptes(vma, addr, ptep, nr, flags);
+}
+
 #else /* CONFIG_ARM64_CONTPTE */
 
 #define ptep_get				__ptep_get
@@ -1458,6 +1627,7 @@ static inline int ptep_set_access_flags(struct vm_area_struct *vma,
 #define wrprotect_ptes				__wrprotect_ptes
 #define __HAVE_ARCH_PTEP_SET_ACCESS_FLAGS
 #define ptep_set_access_flags			__ptep_set_access_flags
+#define clear_young_dirty_ptes			__clear_young_dirty_ptes
 
 #endif /* CONFIG_ARM64_CONTPTE */
 

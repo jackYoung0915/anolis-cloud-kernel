@@ -1123,6 +1123,13 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 	if (result != SCAN_SUCCEED)
 		goto out_nolock;
 
+	/*
+	 * Typically async fork is protected by holding mmap lock, hence
+	 * there's a special case when fork(2) syscall happens in collapsing
+	 * where mmap lock is unlocked temporarily.
+	 * Just like pmd check, mm->async_fork_mm has to be checked again
+	 * in case the special case has happened.
+	 */
 	mmap_read_lock(mm);
 	result = hugepage_vma_revalidate(mm, address, true, &vma, cc);
 	if (result != SCAN_SUCCEED) {
@@ -1131,7 +1138,7 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 	}
 
 	result = find_pmd_or_thp_or_none(mm, address, &pmd);
-	if (result != SCAN_SUCCEED) {
+	if (result != SCAN_SUCCEED || is_async_fork_mm(mm)) {
 		mmap_read_unlock(mm);
 		goto out_nolock;
 	}
@@ -1160,7 +1167,7 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 		goto out_up_write;
 	/* check if the pmd is still valid */
 	result = check_pmd_still_valid(mm, address, pmd);
-	if (result != SCAN_SUCCEED)
+	if (result != SCAN_SUCCEED || is_async_fork_mm(mm))
 		goto out_up_write;
 
 	vma_start_write(vma);
@@ -2379,6 +2386,13 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, int *result,
 	spin_unlock(&khugepaged_mm_lock);
 
 	mm = slot->mm;
+
+	/* Don't scan processes in the state of async fork. */
+	if (is_async_fork_mm(mm)) {
+		vma = NULL;
+		goto breakouterloop_mmap_lock;
+	}
+
 	/*
 	 * Don't wait for semaphore (to avoid long wait times).  Just move to
 	 * the next mm on the list.
@@ -2607,6 +2621,25 @@ static int khugepaged(void *none)
 	return 0;
 }
 
+static int anon_allowable_huge_highest_order(void)
+{
+	unsigned long orders = READ_ONCE(huge_anon_orders_always) |
+			       READ_ONCE(huge_anon_orders_madvise);
+
+	if (hugepage_global_enabled())
+		orders |= READ_ONCE(huge_anon_orders_inherit);
+
+	return orders == 0 ? 0 : fls(orders) - 1;
+}
+
+static unsigned long min_thp_pageblock_nr_pages(void)
+{
+	int anon_highest_order = anon_allowable_huge_highest_order();
+	int shmem_highest_order = shmem_allowable_huge_highest_order();
+
+	return min(1UL << max(anon_highest_order, shmem_highest_order), pageblock_nr_pages);
+}
+
 static void set_recommended_min_free_kbytes(void)
 {
 	struct zone *zone;
@@ -2629,16 +2662,16 @@ static void set_recommended_min_free_kbytes(void)
 		nr_zones++;
 	}
 
-	/* Ensure 2 pageblocks are free to assist fragmentation avoidance */
-	recommended_min = pageblock_nr_pages * nr_zones * 2;
+	/* Ensure 2 * min_thp_pageblocks are free to assist fragmentation avoidance */
+	recommended_min = min_thp_pageblock_nr_pages() * nr_zones * 2;
 
 	/*
-	 * Make sure that on average at least two pageblocks are almost free
+	 * Make sure that on average at least two min_thp_pageblocks are almost free
 	 * of another type, one for a migratetype to fall back to and a
 	 * second to avoid subsequent fallbacks of other types There are 3
 	 * MIGRATE_TYPES we care about.
 	 */
-	recommended_min += pageblock_nr_pages * nr_zones *
+	recommended_min += min_thp_pageblock_nr_pages() * nr_zones *
 			   MIGRATE_PCPTYPES * MIGRATE_PCPTYPES;
 
 	/* don't ever allow to reserve more than 5% of the lowmem */

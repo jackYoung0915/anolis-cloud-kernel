@@ -133,6 +133,7 @@ static void nbl_disp_chan_add_multi_rule_resp(void *priv, u16 src_id, u16 msg_id
 	struct nbl_resource_ops *res_ops;
 	struct nbl_channel_ops *chan_ops;
 	struct nbl_chan_ack_info chan_ack;
+	u8 broadcast_mac[ETH_ALEN];
 	int err = NBL_CHAN_RESP_OK;
 	int ret = 0;
 	u16 vsi_id;
@@ -141,8 +142,10 @@ static void nbl_disp_chan_add_multi_rule_resp(void *priv, u16 src_id, u16 msg_id
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 
 	vsi_id = *(u16 *)data;
-	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->add_multi_rule,
-				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id);
+	memset(broadcast_mac, 0xFF, ETH_ALEN);
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->add_macvlan,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), broadcast_mac, 0, vsi_id);
 	if (ret)
 		err = NBL_CHAN_RESP_ERR;
 
@@ -175,6 +178,7 @@ static void nbl_disp_chan_del_multi_rule_resp(void *priv, u16 src_id, u16 msg_id
 	struct nbl_resource_ops *res_ops;
 	struct nbl_channel_ops *chan_ops;
 	struct nbl_chan_ack_info chan_ack;
+	u8 broadcast_mac[ETH_ALEN];
 	int err = NBL_CHAN_RESP_OK;
 	u16 vsi_id;
 
@@ -182,11 +186,75 @@ static void nbl_disp_chan_del_multi_rule_resp(void *priv, u16 src_id, u16 msg_id
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 
 	vsi_id = *(u16 *)data;
-
-	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_multi_rule,
-			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id);
-
+	memset(broadcast_mac, 0xFF, ETH_ALEN);
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_macvlan,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), broadcast_mac, 0, vsi_id);
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_DEL_MULTI_RULE, msg_id, err, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_cfg_multi_mcast(void *priv, u16 vsi, u16 enable)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	if (enable)
+		ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->add_multi_mcast,
+					NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi);
+	else
+		NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_multi_mcast,
+				  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi);
+	return ret;
+}
+
+static int nbl_disp_chan_cfg_multi_mcast_req(void *priv, u16 vsi_id, u16 enable)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send;
+	struct nbl_common_info *common;
+	struct nbl_chan_param_cfg_multi_mcast mcast;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	mcast.vsi = vsi_id;
+	mcast.enable = enable;
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_CFG_MULTI_MCAST_RULE,
+		      &mcast, sizeof(mcast), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_cfg_multi_mcast_resp(void *priv, u16 src_id, u16 msg_id,
+					       void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_cfg_multi_mcast *mcast;
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+
+	mcast = (struct nbl_chan_param_cfg_multi_mcast *)data;
+
+	if (mcast->enable)
+		ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->add_multi_mcast,
+					NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), mcast->vsi);
+	else
+		NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_multi_mcast,
+				  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), mcast->vsi);
+	if (ret)
+		err = NBL_CHAN_RESP_ERR;
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CFG_MULTI_MCAST_RULE, msg_id, err, NULL, 0);
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
@@ -285,25 +353,30 @@ static void nbl_disp_chan_register_net_resp(void *priv, u16 src_id, u16 msg_id,
 	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
 	struct nbl_resource_ops *res_ops;
 	struct nbl_channel_ops *chan_ops;
-	struct nbl_chan_param_register_net_info *param;
+	struct nbl_chan_param_register_net_info param;
 	struct nbl_register_net_result result = {0};
 	struct nbl_register_net_param register_param = {0};
 	struct nbl_chan_ack_info chan_ack;
+	int copy_len;
 	int err = NBL_CHAN_RESP_OK;
 	int ret = 0;
 
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 
-	param = (struct nbl_chan_param_register_net_info *)data;
+	memset(&param, 0, sizeof(struct nbl_chan_param_register_net_info));
+	copy_len = data_len < sizeof(struct nbl_chan_param_register_net_info) ?
+			data_len : sizeof(struct nbl_chan_param_register_net_info);
+	memcpy(&param, data, copy_len);
 
-	register_param.pf_bar_start = param->pf_bar_start;
-	register_param.pf_bdf = param->pf_bdf;
-	register_param.vf_bar_start = param->vf_bar_start;
-	register_param.vf_bar_size = param->vf_bar_size;
-	register_param.total_vfs = param->total_vfs;
-	register_param.offset = param->offset;
-	register_param.stride = param->stride;
+	register_param.pf_bar_start = param.pf_bar_start;
+	register_param.pf_bdf = param.pf_bdf;
+	register_param.vf_bar_start = param.vf_bar_start;
+	register_param.vf_bar_size = param.vf_bar_size;
+	register_param.total_vfs = param.total_vfs;
+	register_param.offset = param.offset;
+	register_param.stride = param.stride;
+	register_param.is_vdpa = param.is_vdpa;
 
 	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->register_net,
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), src_id, &register_param, &result);
@@ -467,7 +540,6 @@ static int nbl_disp_chan_register_vsi2q_req(void *priv, u16 vsi_index, u16 vsi_i
 	param.queue_num = queue_num;
 	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_REGISTER_VSI2Q, &param,
 		      sizeof(param), NULL, 0, 1);
-
 	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
 }
 
@@ -657,6 +729,48 @@ static void nbl_disp_chan_setup_queue_resp(void *priv, u16 src_id, u16 msg_id,
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
+static int nbl_disp_chan_remove_queue_req(void *priv, struct nbl_txrx_queue_param *queue_param,
+					  bool is_tx)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_setup_queue param;
+	struct nbl_chan_send_info chan_send;
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	memcpy(&param.queue_param, queue_param, sizeof(param.queue_param));
+	param.is_tx = is_tx;
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_REMOVE_QUEUE, &param, sizeof(param),
+		      NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_remove_queue_resp(void *priv, u16 src_id, u16 msg_id,
+					    void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_setup_queue *param;
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+
+	param = (struct nbl_chan_param_setup_queue *)data;
+
+	err = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->remove_queue, NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+				&param->queue_param, param->is_tx);
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_REMOVE_QUEUE, msg_id, err, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
 static void nbl_disp_chan_remove_all_queues_req(void *priv, u16 vsi_id)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -687,7 +801,7 @@ static void nbl_disp_chan_remove_all_queues_resp(void *priv, u16 src_id, u16 msg
 
 	vsi_id = *(u16 *)data;
 	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->remove_all_queues,
-			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id);
+			   NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id);
 
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_REMOVE_ALL_QUEUES, msg_id, err, NULL, 0);
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
@@ -731,7 +845,20 @@ static void nbl_disp_chan_cfg_dsch_resp(void *priv, u16 src_id, u16 msg_id,
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
-static int nbl_disp_chan_setup_cqs_req(void *priv, u16 vsi_id, u16 real_qps)
+static int nbl_disp_setup_cqs(void *priv, u16 vsi_id, u16 real_qps, bool rss_indir_set)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->setup_cqs,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+				vsi_id, real_qps, rss_indir_set);
+	return ret;
+}
+
+static int nbl_disp_chan_setup_cqs_req(void *priv, u16 vsi_id, u16 real_qps, bool rss_indir_set)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_channel_ops *chan_ops;
@@ -744,6 +871,7 @@ static int nbl_disp_chan_setup_cqs_req(void *priv, u16 vsi_id, u16 real_qps)
 
 	param.vsi_id = vsi_id;
 	param.real_qps = real_qps;
+	param.rss_indir_set = rss_indir_set;
 
 	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_SETUP_CQS, &param, sizeof(param),
 		      NULL, 0, 1);
@@ -756,18 +884,23 @@ static void nbl_disp_chan_setup_cqs_resp(void *priv, u16 src_id, u16 msg_id,
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops;
 	struct nbl_channel_ops *chan_ops;
-	struct nbl_chan_param_setup_cqs *param;
+	struct nbl_chan_param_setup_cqs param;
 	struct nbl_chan_ack_info chan_ack;
+	int copy_len;
 	int err = NBL_CHAN_RESP_OK;
 
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 
-	param = (struct nbl_chan_param_setup_cqs *)data;
+	memset(&param, 0, sizeof(struct nbl_chan_param_setup_cqs));
+	param.rss_indir_set = true;
+	copy_len = data_len < sizeof(struct nbl_chan_param_setup_cqs) ?
+			data_len : sizeof(struct nbl_chan_param_setup_cqs);
+	memcpy(&param, data, copy_len);
 
 	err = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->setup_cqs,
 				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
-				param->vsi_id, param->real_qps);
+				param.vsi_id, param.real_qps, param.rss_indir_set);
 
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SETUP_CQS, msg_id, err, NULL, 0);
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
@@ -1110,6 +1243,64 @@ static void nbl_disp_chan_get_queue_err_stats_resp(void *priv, u16 src_id, u16 m
 			ret, NBL_CHAN_MSG_GET_QUEUE_ERR_STATS, src_id);
 }
 
+static int nbl_disp_get_eth_abnormal_stats(void *priv, u8 eth_id,
+					   struct nbl_eth_abnormal_stats *eth_abnormal_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_eth_abnormal_stats,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, eth_abnormal_stats);
+}
+
+static int
+nbl_disp_chan_get_eth_abnormal_stats_req(void *priv, u8 eth_id,
+					 struct nbl_eth_abnormal_stats *eth_abnormal_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_GET_ETH_ABNORMAL_STATS, &eth_id,
+		      sizeof(eth_id), eth_abnormal_stats, sizeof(*eth_abnormal_stats), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_eth_abnormal_stats_resp(void *priv, u16 src_id, u16 msg_id,
+						      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_eth_abnormal_stats eth_abnormal_stats = { 0 };
+	int err = NBL_CHAN_RESP_OK;
+	int ret;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_eth_abnormal_stats,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), *(u8 *)data,
+				&eth_abnormal_stats);
+	if (ret) {
+		err = NBL_CHAN_RESP_ERR;
+		dev_err(dev, "disp get eth abnormal stats resp failed with ret: %d\n", ret);
+	}
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_ETH_ABNORMAL_STATS, msg_id, err,
+		     &eth_abnormal_stats, sizeof(eth_abnormal_stats));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "disp chan send ack failed with ret: %d, msg_type: %d, src_id: %d\n",
+			ret, NBL_CHAN_MSG_GET_ETH_ABNORMAL_STATS, src_id);
+}
+
 static void nbl_disp_chan_get_coalesce_req(void *priv, u16 vector_id,
 					   struct nbl_chan_param_get_coalesce *ec)
 {
@@ -1315,7 +1506,7 @@ static void nbl_disp_chan_get_rxfh_rss_key_resp(void *priv, u16 src_id, u16 msg_
 	kfree(rss_key);
 }
 
-static void nbl_disp_chan_get_rxfh_rss_alg_sel_req(void *priv, u8 *rss_alg_sel, u8 eth_id)
+static void nbl_disp_chan_get_rxfh_rss_alg_sel_req(void *priv, u16 vsi_id, u8 *rss_alg_sel)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_channel_ops *chan_ops;
@@ -1325,9 +1516,9 @@ static void nbl_disp_chan_get_rxfh_rss_alg_sel_req(void *priv, u8 *rss_alg_sel, 
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
 
-	NBL_CHAN_SEND(chan_send, common->mgt_pf,
-		      NBL_CHAN_MSG_GET_RXFH_RSS_ALG_SEL, &eth_id,
-		      sizeof(eth_id), rss_alg_sel, sizeof(u8), 1);
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_GET_RXFH_RSS_ALG_SEL, &vsi_id,
+		      sizeof(vsi_id), rss_alg_sel, sizeof(u8), 1);
 	chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
 }
 
@@ -1338,17 +1529,71 @@ static void nbl_disp_chan_get_rxfh_rss_alg_sel_resp(void *priv, u16 src_id, u16 
 	struct nbl_resource_ops *res_ops;
 	struct nbl_channel_ops *chan_ops;
 	struct nbl_chan_ack_info chan_ack;
-	u8 rss_alg_sel, eth_id;
+	u16 vsi_id;
+	u8 rss_alg_sel;
 	int ret = NBL_CHAN_RESP_OK;
 
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
-	eth_id = *(u8 *)data;
+	vsi_id = *(u16 *)data;
 
 	NBL_OPS_CALL(res_ops->get_rss_alg_sel,
-		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), &rss_alg_sel, eth_id));
+		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, &rss_alg_sel));
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_RXFH_RSS_ALG_SEL, msg_id, ret,
 		     &rss_alg_sel, sizeof(rss_alg_sel));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_set_rxfh_rss_alg_sel(void *priv, u16 vsi_id, u8 rss_alg_sel)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->set_rss_alg_sel,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, rss_alg_sel));
+	return ret;
+}
+
+static int nbl_disp_chan_set_rxfh_rss_alg_sel_req(void *priv, u16 vsi_id, u8 rss_alg_sel)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_set_rxfh_rss_alg_sel param = {0};
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.vsi_id = vsi_id;
+	param.rss_alg_sel = rss_alg_sel;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_SET_RXFH_RSS_ALG_SEL, &param,
+		      sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_set_rxfh_rss_alg_sel_resp(void *priv, u16 src_id, u16 msg_id,
+						    void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_set_rxfh_rss_alg_sel *param;
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	param = (struct nbl_chan_param_set_rxfh_rss_alg_sel *)data;
+
+	err = NBL_OPS_CALL(res_ops->set_rss_alg_sel,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+			    param->vsi_id, param->rss_alg_sel));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_RXFH_RSS_ALG_SEL, msg_id, err, NULL, 0);
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
@@ -1447,6 +1692,7 @@ static void nbl_disp_chan_register_rdma_req(void *priv, u16 vsi_id,
 	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
 	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 	struct nbl_chan_send_info chan_send = {0};
+
 
 	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common), NBL_CHAN_MSG_REGISTER_RDMA,
 		      &vsi_id, sizeof(vsi_id), param, sizeof(*param), 1);
@@ -2272,7 +2518,7 @@ static void nbl_disp_unregister_xdp_rxq(void *priv, u8 ring_index)
 	NBL_OPS_CALL(res_ops->unregister_xdp_rxq, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), ring_index));
 }
 
-static struct napi_struct *nbl_disp_get_vector_napi(void *priv, u16 index)
+static struct nbl_napi_struct *nbl_disp_get_vector_napi(void *priv, u16 index)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops;
@@ -2418,6 +2664,16 @@ static void nbl_disp_remove_all_queues(void *priv, u16 vsi_id)
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id);
 }
 
+static int nbl_disp_remove_queue(void *priv, struct nbl_txrx_queue_param *param, bool is_tx)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->remove_queue,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param, is_tx);
+}
+
 static int nbl_disp_cfg_dsch(void *priv, u16 vsi_id, bool vld)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -2427,18 +2683,6 @@ static int nbl_disp_cfg_dsch(void *priv, u16 vsi_id, bool vld)
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->cfg_dsch,
 				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, vld);
-	return ret;
-}
-
-static int nbl_disp_setup_cqs(void *priv, u16 vsi_id, u16 real_qps)
-{
-	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
-	struct nbl_resource_ops *res_ops;
-	int ret = 0;
-
-	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->setup_cqs,
-				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, real_qps);
 	return ret;
 }
 
@@ -2497,14 +2741,14 @@ static int nbl_disp_add_multi_rule(void *priv, u16 vsi)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops;
+	u8 broadcast_mac[ETH_ALEN];
 	int ret = 0;
 
-	if (!disp_mgt)
-		return -EINVAL;
-
+	memset(broadcast_mac, 0xFF, ETH_ALEN);
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->add_multi_rule,
-				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi);
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->add_macvlan,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), broadcast_mac, 0, vsi);
+
 	return ret;
 }
 
@@ -2512,13 +2756,12 @@ static void nbl_disp_del_multi_rule(void *priv, u16 vsi)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops;
+	u8 broadcast_mac[ETH_ALEN];
 
-	if (!disp_mgt)
-		return;
-
+	memset(broadcast_mac, 0xFF, ETH_ALEN);
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_multi_rule,
-			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi);
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_macvlan,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), broadcast_mac, 0, vsi);
 }
 
 static int nbl_disp_setup_multi_group(void *priv)
@@ -2558,6 +2801,61 @@ static void nbl_disp_get_private_stat_len(void *priv, u32 *len)
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), len);
 }
 
+static int nbl_disp_get_pause_stats(void *priv, u32 eth_id,
+				    struct nbl_pause_stats *pause_stats, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_pause_stats,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, pause_stats);
+}
+
+static int nbl_disp_chan_get_pause_stats_req(void *priv, u32 eth_id,
+					     struct nbl_pause_stats *pause_stats, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_GET_PAUSE_STATS, &eth_id,
+		      sizeof(eth_id), pause_stats, data_len, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_pause_stats_resp(void *priv, u16 src_id, u16 msg_id,
+					       void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_pause_stats pause_stats = {0};
+	u32 *param = (u32 *)(data);
+	int err = NBL_CHAN_RESP_OK;
+	int ret;
+
+	ret = NBL_OPS_CALL(res_ops->get_pause_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), *param, &pause_stats));
+	if (ret) {
+		err = NBL_CHAN_RESP_ERR;
+		dev_err(dev, "disp get eth pause stats failed with ret: %d\n", ret);
+	}
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_PAUSE_STATS, msg_id,
+		     ret, &pause_stats, sizeof(struct nbl_pause_stats));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "disp chan send ack failed with ret: %d, msg_type: %d, src_id: %d\n",
+			ret, NBL_CHAN_MSG_GET_PAUSE_STATS, src_id);
+}
+
 static void nbl_disp_get_private_stat_data(void *priv, u32 eth_id, u64 *data, u32 data_len)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -2565,7 +2863,7 @@ static void nbl_disp_get_private_stat_data(void *priv, u32 eth_id, u64 *data, u3
 
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_private_stat_data,
-			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, data);
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, data, data_len);
 }
 
 static void nbl_disp_get_private_stat_data_req(void *priv, u32 eth_id, u64 *data, u32 data_len)
@@ -2607,12 +2905,182 @@ static void nbl_disp_chan_get_private_stat_data_resp(void *priv, u16 src_id, u16
 	}
 
 	NBL_OPS_CALL(res_ops->get_private_stat_data,
-		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->eth_id, recv_data));
+		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->eth_id,
+		     recv_data, param->data_len));
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_ETH_STATS, msg_id,
 		     ret, recv_data, param->data_len);
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 
 	kfree(recv_data);
+}
+
+static int nbl_disp_get_eth_ctrl_stats(void *priv, u32 eth_id,
+				       struct nbl_eth_ctrl_stats *eth_ctrl_stats,
+				       u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_eth_ctrl_stats,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id,
+				 eth_ctrl_stats);
+}
+
+static int nbl_disp_chan_get_eth_ctrl_stats_req(void *priv, u32 eth_id,
+						struct nbl_eth_ctrl_stats *eth_ctrl_stats,
+						u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_GET_ETH_CTRL_STATS, &eth_id,
+		      sizeof(eth_id), eth_ctrl_stats, data_len, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_eth_ctrl_stats_resp(void *priv, u16 src_id, u16 msg_id,
+						  void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_eth_ctrl_stats eth_ctrl_stats = {0};
+	struct nbl_chan_ack_info chan_ack;
+	u32 *param = (u32 *)(data);
+	int err = NBL_CHAN_RESP_OK;
+	int ret;
+
+	ret = NBL_OPS_CALL(res_ops->get_eth_ctrl_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), *param, &eth_ctrl_stats));
+	if (ret) {
+		err = NBL_CHAN_RESP_ERR;
+		dev_err(dev, "disp get eth ctrl stats failed with ret: %d\n", ret);
+	}
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_ETH_CTRL_STATS, msg_id,
+		     ret, &eth_ctrl_stats, sizeof(struct nbl_eth_ctrl_stats));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "disp chan send ack failed with ret: %d, msg_type: %d, src_id: %d\n",
+			ret, NBL_CHAN_MSG_GET_ETH_CTRL_STATS, src_id);
+}
+
+static int nbl_disp_get_eth_mac_stats(void *priv, u32 eth_id,
+				      struct nbl_eth_mac_stats *eth_mac_stats, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_eth_mac_stats,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, eth_mac_stats);
+}
+
+static int nbl_disp_chan_get_eth_mac_stats_req(void *priv, u32 eth_id,
+					       struct nbl_eth_mac_stats *eth_mac_stats,
+					       u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_GET_ETH_MAC_STATS, &eth_id,
+		      sizeof(eth_id), eth_mac_stats, data_len, 1);
+
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_eth_mac_stats_resp(void *priv, u16 src_id, u16 msg_id,
+						 void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_eth_mac_stats eth_mac_stats = {0};
+	u32 *param = (u32 *)(data);
+	int err = NBL_CHAN_RESP_OK;
+	int ret;
+
+	ret = NBL_OPS_CALL(res_ops->get_eth_mac_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), *param, &eth_mac_stats));
+	if (ret) {
+		err = NBL_CHAN_RESP_ERR;
+		dev_err(dev, "disp get eth mac stats failed with ret: %d\n", ret);
+	}
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_ETH_MAC_STATS, msg_id,
+		     ret, &eth_mac_stats, sizeof(struct nbl_eth_mac_stats));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "disp chan send ack failed with ret: %d, msg_type: %d, src_id: %d\n",
+			ret, NBL_CHAN_MSG_GET_ETH_MAC_STATS, src_id);
+}
+
+static int nbl_disp_get_rmon_stats(void *priv, u32 eth_id,
+				   struct nbl_rmon_stats *rmon_stats, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_rmon_stats,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, rmon_stats);
+}
+
+static int nbl_disp_chan_get_rmon_stats_req(void *priv, u32 eth_id,
+					    struct nbl_rmon_stats *rmon_stats,
+					       u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf, NBL_CHAN_MSG_GET_RMON_STATS, &eth_id,
+		      sizeof(eth_id), rmon_stats, data_len, 1);
+
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_rmon_stats_resp(void *priv, u16 src_id, u16 msg_id,
+					      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_rmon_stats rmon_stats = {0};
+	u32 *param = (u32 *)(data);
+	int err = NBL_CHAN_RESP_OK;
+	int ret;
+
+	ret = NBL_OPS_CALL(res_ops->get_rmon_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), *param, &rmon_stats));
+	if (ret) {
+		err = NBL_CHAN_RESP_ERR;
+		dev_err(dev, "disp get eth mac stats failed with ret: %d\n", ret);
+	}
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_RMON_STATS, msg_id,
+		     ret, &rmon_stats, sizeof(struct nbl_rmon_stats));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "disp chan send ack failed with ret: %d, msg_type: %d, src_id: %d\n",
+			ret, NBL_CHAN_MSG_GET_RMON_STATS, src_id);
 }
 
 static void nbl_disp_fill_private_stat_strings(void *priv, u8 *strings)
@@ -2845,6 +3313,67 @@ static void nbl_disp_get_rxfh_indir(void *priv, u16 vsi_id, u32 *indir, u32 indi
 	NBL_OPS_CALL(res_ops->get_rxfh_indir, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, indir));
 }
 
+static int nbl_disp_set_rxfh_indir(void *priv, u16 vsi_id, const u32 *indir, u32 indir_size)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->set_rxfh_indir,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, indir, indir_size));
+	return ret;
+}
+
+static int nbl_disp_chan_set_rxfh_indir_req(void *priv,
+					    u16 vsi_id, const u32 *indir, u32 indir_size)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_set_rxfh_indir *param = NULL;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+	int ret = 0;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param = kzalloc(sizeof(*param), GFP_KERNEL);
+	if (!param)
+		return -ENOMEM;
+
+	param->vsi_id = vsi_id;
+	param->indir_size = indir_size;
+	memcpy(param->indir, indir, indir_size * sizeof(param->indir[0]));
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common), NBL_CHAN_MSG_SET_RXFH_INDIR, param,
+		      sizeof(*param), NULL, 0, 1);
+	ret = chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+	kfree(param);
+	return ret;
+}
+
+static void nbl_disp_chan_set_rxfh_indir_resp(void *priv, u16 src_id, u16 msg_id,
+					      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_param_set_rxfh_indir *param;
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	param = (struct nbl_chan_param_set_rxfh_indir *)data;
+
+	err = NBL_OPS_CALL(res_ops->set_rxfh_indir,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+			    param->vsi_id, param->indir, param->indir_size));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_RXFH_INDIR, msg_id, err, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
 static void nbl_disp_get_rxfh_rss_key(void *priv, u8 *rss_key, u32 key_size)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -2854,14 +3383,14 @@ static void nbl_disp_get_rxfh_rss_key(void *priv, u8 *rss_key, u32 key_size)
 	NBL_OPS_CALL(res_ops->get_rxfh_rss_key, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), rss_key));
 }
 
-static void nbl_disp_get_rxfh_rss_alg_sel(void *priv, u8 *alg_sel, u8 eth_id)
+static void nbl_disp_get_rxfh_rss_alg_sel(void *priv, u16 vsi_id, u8 *alg_sel)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops;
 
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	NBL_OPS_CALL(res_ops->get_rss_alg_sel,
-		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), alg_sel, eth_id));
+		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, alg_sel));
 }
 
 static void nbl_disp_get_phy_caps(void *priv, u8 eth_id, struct nbl_phy_caps *phy_caps)
@@ -3725,54 +4254,6 @@ static void nbl_disp_del_lldp_flow(void *priv, u16 vsi_id)
 
 	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->del_lldp_flow,
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id);
-}
-
-static int nbl_disp_chan_cfg_lag_mcc_req(void *priv, u16 eth_id, u16 lag_id, bool enable)
-{
-	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
-	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
-	struct nbl_chan_param_cfg_lag_mcc param = {0};
-	struct nbl_chan_send_info chan_send;
-
-	param.eth_id = eth_id;
-	param.lag_id = lag_id;
-	param.enable = enable;
-
-	NBL_CHAN_SEND(chan_send, 0, NBL_CHAN_MSG_CFG_LAG_MCC, &param, sizeof(param), NULL, 0, 1);
-	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
-}
-
-static void nbl_disp_chan_cfg_lag_mcc_resp(void *priv, u16 src_id, u16 msg_id,
-					   void *data, u32 data_len)
-{
-	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
-	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
-	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
-	struct nbl_chan_param_cfg_lag_mcc *param = NULL;
-	struct nbl_chan_ack_info chan_ack;
-	int err = NBL_CHAN_RESP_OK;
-	int ret = 0;
-
-	param = (struct nbl_chan_param_cfg_lag_mcc *)data;
-
-	err = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->cfg_lag_mcc, NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
-				param->eth_id, param->lag_id, param->enable);
-
-	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CFG_LAG_MCC, msg_id, err, NULL, 0);
-	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
-	if (ret)
-		dev_err(dev, "channel send ack failed with ret: %d, msg_type: %d\n",
-			ret, NBL_CHAN_MSG_CFG_LAG_MCC);
-}
-
-static int nbl_disp_cfg_lag_mcc(void *priv, u16 eth_id, u16 lag_id, bool enable)
-{
-	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
-	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-
-	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->cfg_lag_mcc, NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
-				 eth_id, lag_id, enable);
 }
 
 static int nbl_disp_cfg_duppkt_info(void *priv, struct nbl_lag_member_list_param *param)
@@ -5532,6 +6013,29 @@ nbl_disp_chan_get_upcall_port_resp(void *priv, u16 src_id, u16 msg_id,
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
+static void nbl_disp_get_board_info(void *priv, struct nbl_board_port_info *board_info)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->get_board_info,
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), board_info));
+}
+
+static void
+nbl_disp_chan_get_board_info_req(void *priv, struct nbl_board_port_info *board_info)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_GET_BOARD_INFO, NULL,
+		      0, board_info, sizeof(*board_info), 1);
+	chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
 static void
 nbl_disp_chan_get_board_info_resp(void *priv, u16 src_id, u16 msg_id,
 				  void *data, u32 data_len)
@@ -5544,7 +6048,6 @@ nbl_disp_chan_get_board_info_resp(void *priv, u16 src_id, u16 msg_id,
 
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
-
 	NBL_OPS_CALL(res_ops->get_board_info,
 		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), &board_info));
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_BOARD_INFO,
@@ -5743,6 +6246,61 @@ static void nbl_disp_chan_recv_port_notify_resp(void *priv, u16 src_id, u16 msg_
 	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	NBL_OPS_CALL(res_ops->recv_port_notify,
 		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), data));
+}
+
+static int nbl_disp_get_fec_stats(void *priv, u8 eth_id,
+				  struct nbl_fec_stats *fec_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	int ret = 0;
+
+	ret = NBL_OPS_CALL(res_ops->get_fec_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, fec_stats));
+	return ret;
+}
+
+static int nbl_disp_chan_get_fec_stats_req(void *priv, u8 eth_id,
+					   struct nbl_fec_stats *fec_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, common->mgt_pf,
+		      NBL_CHAN_MSG_GET_FEC_STATS, &eth_id, sizeof(eth_id),
+		      fec_stats, sizeof(*fec_stats), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_fec_stats_resp(void *priv, u16 src_id, u16 msg_id,
+					     void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_fec_stats info = {0};
+	int err = NBL_CHAN_RESP_OK;
+	int ret = 0;
+
+	ret = NBL_OPS_CALL(res_ops->get_fec_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), *(u8 *)data, &info));
+	if (ret) {
+		err = NBL_CHAN_RESP_ERR;
+		dev_err(dev, "disp get eth fec stats failed with ret: %d\n", ret);
+	}
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_FEC_STATS, msg_id, err,
+		     &info, sizeof(info));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "disp chan send ack failed with ret: %d, msg_type: %d, src_id: %d\n",
+			ret, NBL_CHAN_MSG_GET_FEC_STATS, src_id);
 }
 
 static int nbl_disp_get_port_state(void *priv, u8 eth_id,
@@ -6034,6 +6592,108 @@ static void nbl_disp_chan_get_link_state_resp(void *priv, u16 src_id, u16 msg_id
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
+static int nbl_disp_get_link_down_count(void *priv, u8 eth_id, u64 *link_down_count)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->get_link_down_count,
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, link_down_count));
+}
+
+static int nbl_disp_chan_get_link_down_count_req(void *priv, u8 eth_id, u64 *link_down_count)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send;
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_GET_LINK_DOWN_COUNT, &eth_id,
+		      sizeof(eth_id), link_down_count, sizeof(*link_down_count), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_link_down_count_resp(void *priv, u16 src_id, u16 msg_id,
+						   void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+	u8 eth_id;
+	u64 link_down_count = 0;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+
+	eth_id = *(u8 *)data;
+	ret = res_ops->get_link_down_count(NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+					 eth_id, &link_down_count);
+	if (ret)
+		err = NBL_CHAN_RESP_ERR;
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_LINK_DOWN_COUNT, msg_id, err,
+		     &link_down_count, sizeof(link_down_count));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_get_link_status_opcode(void *priv, u8 eth_id, u32 *link_status_opcode)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->get_link_status_opcode,
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, link_status_opcode));
+}
+
+static int nbl_disp_chan_get_link_status_opcode_req(void *priv, u8 eth_id, u32 *link_status_opcode)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send;
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_GET_LINK_STATUS_OPCODE, &eth_id,
+		      sizeof(eth_id), link_status_opcode, sizeof(*link_status_opcode), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_link_status_opcode_resp(void *priv, u16 src_id, u16 msg_id,
+						      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+	u8 eth_id;
+	u32 link_status_opcode = 0;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+
+	eth_id = *(u8 *)data;
+	ret = res_ops->get_link_status_opcode(NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+					 eth_id, &link_status_opcode);
+	if (ret)
+		err = NBL_CHAN_RESP_ERR;
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_LINK_STATUS_OPCODE, msg_id, err,
+		     &link_status_opcode, sizeof(link_status_opcode));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
 static void nbl_disp_get_reg_dump(void *priv, u32 *data, u32 len)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -6062,6 +6722,57 @@ static void nbl_disp_chan_get_reg_dump_req(void *priv, u32 *data, u32 len)
 
 	memcpy(data, result, len);
 	kfree(result);
+}
+
+static int nbl_disp_set_wol(void *priv, u8 eth_id, bool enable)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->set_wol,
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, enable));
+}
+
+static int nbl_disp_chan_set_wol_req(void *priv, u8 eth_id, bool enable)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_send_info chan_send;
+	struct nbl_chan_param_set_wol param = {0};
+	struct nbl_common_info *common;
+
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.eth_id = eth_id;
+	param.enable = enable;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_SET_WOL, &param, sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_set_wol_resp(void *priv, u16 src_id, u16 msg_id,
+				       void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	struct nbl_channel_ops *chan_ops;
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_chan_param_set_wol *param;
+	int err = NBL_CHAN_RESP_OK;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+
+	param = (struct nbl_chan_param_set_wol *)data;
+	ret = res_ops->set_wol(NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->eth_id, param->enable);
+	if (ret)
+		err = NBL_CHAN_RESP_ERR;
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_WOL, msg_id, err, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
 static void nbl_disp_chan_get_reg_dump_resp(void *priv, u16 src_id, u16 msg_id,
@@ -6304,28 +7015,12 @@ nbl_disp_chan_deinit_flow_resp(void *priv, u16 src_id, u16 msg_id,
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
-static void nbl_disp_configure_virtio_dev_msix(void *priv, u16 vector)
-{
-	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
-	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-
-	return res_ops->configure_virtio_dev_msix(NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vector);
-}
-
 static void nbl_disp_configure_rdma_msix_off(void *priv, u16 vector)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 
 	return res_ops->configure_rdma_msix_off(NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vector);
-}
-
-static void nbl_disp_configure_virtio_dev_ready(void *priv)
-{
-	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
-	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
-
-	return res_ops->configure_virtio_dev_ready(NBL_DISP_MGT_TO_RES_PRIV(disp_mgt));
 }
 
 static int nbl_disp_set_eth_mac_addr(void *priv, u8 *mac, u8 eth_id)
@@ -6786,6 +7481,14 @@ static void nbl_disp_adapt_desc_gother(void *priv)
 	NBL_OPS_CALL(res_ops->adapt_desc_gother, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
 }
 
+static void nbl_disp_set_desc_high_throughput(void *priv)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	NBL_OPS_CALL(res_ops->set_desc_high_throughput, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
+}
+
 static void nbl_disp_flr_clear_rdma(void *priv, u16 vf_id)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -6865,6 +7568,24 @@ static void nbl_disp_unmask_all_interrupts(void *priv)
 
 	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->unmask_all_interrupts,
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt));
+}
+
+static u32 nbl_disp_get_perf_dump_length(void *priv)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_perf_dump_length,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt));
+}
+
+static u32 nbl_disp_get_perf_dump_data(void *priv, u8 *buffer, u32 size)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_perf_dump_data,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), buffer, size);
 }
 
 static void nbl_disp_keep_alive_req(void *priv)
@@ -7843,6 +8564,300 @@ static void nbl_disp_register_func_mac(void *priv, u8 *mac, u16 func_id)
 		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), mac, func_id));
 }
 
+static bool nbl_disp_check_vf_is_active(void *priv, u16 func_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = false;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->check_vf_is_active,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id));
+	return ret;
+}
+
+static bool nbl_disp_chan_check_vf_is_active_req(void *priv, u16 func_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	bool is_active;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_CHECK_VF_IS_ACTIVE, &func_id, sizeof(func_id),
+		      &is_active, sizeof(is_active), 1);
+	chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+
+	return is_active;
+}
+
+static void nbl_disp_chan_check_vf_is_active_resp(void *priv, u16 src_id, u16 msg_id,
+						  void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_chan_ack_info chan_ack;
+	u16 func_id;
+	bool is_active;
+	int err = NBL_CHAN_RESP_OK;
+	int ret = 0;
+
+	func_id = *(u16 *)data;
+
+	is_active = NBL_OPS_CALL(res_ops->check_vf_is_active,
+				 (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_CHECK_VF_IS_ACTIVE, msg_id,
+		     err, &is_active, sizeof(is_active));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "channel send ack failed with ret: %d, msg_type: %d\n",
+			ret, NBL_CHAN_CHECK_VF_IS_ACTIVE);
+}
+
+static int nbl_disp_check_vf_is_vdpa(void *priv, u16 func_id, u8 *is_vdpa)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = false;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->check_vf_is_vdpa,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, is_vdpa));
+	return ret;
+}
+
+static int nbl_disp_chan_check_vf_is_vdpa_req(void *priv, u16 func_id, u8 *is_vdpa)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_CHECK_VF_IS_VDPA, &func_id, sizeof(func_id),
+		      is_vdpa, sizeof(*is_vdpa), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_check_vf_is_vdpa_resp(void *priv, u16 src_id, u16 msg_id,
+						void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct device *dev = NBL_COMMON_TO_DEV(disp_mgt->common);
+	struct nbl_chan_ack_info chan_ack;
+	u16 func_id;
+	int err = NBL_CHAN_RESP_OK;
+	u8 is_vdpa = 0;
+	int ret = 0;
+
+	func_id = *(u16 *)data;
+
+	err = NBL_OPS_CALL(res_ops->check_vf_is_vdpa,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, &is_vdpa));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_CHECK_VF_IS_VDPA, msg_id,
+		     err, &is_vdpa, sizeof(is_vdpa));
+	ret = chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+	if (ret)
+		dev_err(dev, "channel send ack failed with ret: %d, msg_type: %d\n",
+			ret, NBL_CHAN_CHECK_VF_IS_VDPA);
+}
+
+static int nbl_disp_get_vdpa_vf_stats(void *priv, u16 func_id, struct nbl_vf_stats *vf_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = false;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->get_vdpa_vf_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, vf_stats));
+	return ret;
+}
+
+static int nbl_disp_chan_get_vdpa_vf_stats_req(void *priv, u16 func_id,
+					       struct nbl_vf_stats *vf_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common), NBL_CHAN_MSG_GET_VDPA_VF_STATS,
+		      &func_id, sizeof(func_id), vf_stats, sizeof(*vf_stats), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_vdpa_vf_stats_resp(void *priv, u16 src_id, u16 msg_id,
+						 void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_ack_info chan_ack;
+	u16 func_id;
+	struct nbl_vf_stats vf_stats = {0};
+	int err = NBL_CHAN_RESP_OK;
+
+	func_id = *(u16 *)data;
+
+	err = NBL_OPS_CALL(res_ops->get_vdpa_vf_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, &vf_stats));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_VDPA_VF_STATS, msg_id,
+		     err, &vf_stats, sizeof(vf_stats));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_get_uvn_pkt_drop_stats(void *priv, u16 vsi_id,
+					   u16 num_queues, u32 *uvn_stat_pkt_drop)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	int ret = 0;
+
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_uvn_pkt_drop_stats,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+				vsi_id, num_queues, uvn_stat_pkt_drop);
+	return ret;
+}
+
+static int nbl_disp_chan_get_uvn_pkt_drop_stats_req(void *priv, u16 vsi_id, u16 num_queues,
+						    u32 *uvn_stat_pkt_drop)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_get_uvn_pkt_drop_stats param = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.vsi_id = vsi_id;
+	param.num_queues = num_queues;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common), NBL_CHAN_GET_UVN_PKT_DROP_STATS,
+		      &param, sizeof(param),
+		      uvn_stat_pkt_drop, num_queues * sizeof(*uvn_stat_pkt_drop), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_uvn_pkt_drop_stats_resp(void *priv, u16 src_id, u16 msg_id,
+						      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_get_uvn_pkt_drop_stats *param = {0};
+	struct nbl_chan_ack_info chan_ack;
+	u32 *uvn_stat_pkt_drop = NULL;
+	int err = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_get_uvn_pkt_drop_stats *)data;
+	uvn_stat_pkt_drop = kcalloc(param->num_queues, sizeof(*uvn_stat_pkt_drop), GFP_KERNEL);
+	if (!uvn_stat_pkt_drop) {
+		err = -ENOMEM;
+		goto send_ack;
+	}
+
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_uvn_pkt_drop_stats,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+			  param->vsi_id, param->num_queues, uvn_stat_pkt_drop);
+send_ack:
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_GET_UVN_PKT_DROP_STATS, msg_id,
+		     err, uvn_stat_pkt_drop, param->num_queues * sizeof(*uvn_stat_pkt_drop));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+
+	kfree(uvn_stat_pkt_drop);
+}
+
+static int nbl_disp_get_ustore_pkt_drop_stats(void *priv)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	int ret = 0;
+
+	ret = NBL_OPS_CALL(res_ops->get_ustore_pkt_drop_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
+	return ret;
+}
+
+static int nbl_disp_chan_get_ustore_pkt_drop_stats_req(void *priv)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common), NBL_CHAN_GET_USTORE_PKT_DROP_STATS,
+		      NULL, 0, NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_ustore_pkt_drop_stats_resp(void *priv, u16 src_id, u16 msg_id,
+							 void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_ack_info chan_ack;
+	int err = NBL_CHAN_RESP_OK;
+
+	err = NBL_OPS_CALL(res_ops->get_ustore_pkt_drop_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_GET_USTORE_PKT_DROP_STATS, msg_id,
+		     err, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_get_ustore_total_pkt_drop_stats(void *priv, u8 eth_id,
+						    struct nbl_ustore_stats *ustore_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	int ret = 0;
+
+	ret = NBL_OPS_CALL(res_ops->get_ustore_total_pkt_drop_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, ustore_stats));
+
+	return ret;
+}
+
+static int nbl_disp_chan_get_ustore_total_pkt_drop_stats_req(void *priv, u8 eth_id,
+							     struct nbl_ustore_stats *ustore_stats)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_GET_USTORE_TOTAL_PKT_DROP_STATS,
+		      &eth_id, sizeof(eth_id), ustore_stats, sizeof(*ustore_stats), 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_get_ustore_total_pkt_drop_stats_resp(void *priv, u16 src_id, u16 msg_id,
+							       void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_ack_info chan_ack;
+	u8 eth_id;
+	struct nbl_ustore_stats ustore_stats = {0};
+	int err = NBL_CHAN_RESP_OK;
+
+	eth_id = *(u8 *)data;
+
+	err = NBL_OPS_CALL(res_ops->get_ustore_total_pkt_drop_stats,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, &ustore_stats));
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_GET_USTORE_TOTAL_PKT_DROP_STATS, msg_id,
+		     err, &ustore_stats, sizeof(ustore_stats));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
 static void nbl_disp_chan_register_func_mac_req(void *priv, u8 *mac, u16 func_id)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -7874,6 +8889,62 @@ static void nbl_disp_chan_register_func_mac_resp(void *priv, u16 src_id, u16 msg
 		     (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->mac, param->func_id));
 
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_REGISTER_FUNC_MAC, msg_id, ret, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_register_func_trust(void *priv, u16 func_id,
+					bool trusted, bool *should_notify)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->register_func_trust,
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id,
+			    trusted, should_notify));
+}
+
+static int nbl_disp_chan_register_func_trust_req(void *priv, u16 func_id,
+						 bool trusted, bool *should_notify)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_register_trust param;
+	bool result;
+	int ret;
+
+	param.func_id = func_id;
+	param.trusted = trusted;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_REGISTER_FUNC_TRUST, &param, sizeof(param),
+		      &result, sizeof(result), 1);
+	ret = chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+	if (!ret)
+		*should_notify = result;
+
+	return ret;
+}
+
+static void nbl_disp_chan_register_func_trust_resp(void *priv, u16 src_id, u16 msg_id,
+						   void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_register_trust *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+	bool notify = false;
+
+	param = (struct nbl_chan_param_register_trust *)data;
+	ret = NBL_OPS_CALL(res_ops->register_func_trust,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->func_id,
+			   param->trusted, &notify));
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_REGISTER_FUNC_TRUST,
+		     msg_id, ret, &notify, sizeof(notify));
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
@@ -7977,25 +9048,26 @@ static void nbl_disp_chan_register_func_rate_resp(void *priv, u16 src_id, u16 ms
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
-static int nbl_disp_set_tx_rate(void *priv, u16 func_id, int tx_rate)
+static int nbl_disp_set_tx_rate(void *priv, u16 func_id, int tx_rate, int burst)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 
 	return NBL_OPS_CALL(res_ops->set_tx_rate,
-			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, tx_rate));
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, tx_rate, burst));
 }
 
-static int nbl_disp_chan_set_tx_rate_req(void *priv, u16 func_id, int tx_rate)
+static int nbl_disp_chan_set_tx_rate_req(void *priv, u16 func_id, int tx_rate, int burst)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
 	struct nbl_chan_send_info chan_send = {0};
-	struct nbl_chan_param_set_tx_rate param;
+	struct nbl_chan_param_set_txrx_rate param;
 	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
 
 	param.func_id = func_id;
-	param.tx_rate = tx_rate;
+	param.txrx_rate = tx_rate;
+	param.burst = burst;
 
 	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
 		      NBL_CHAN_MSG_SET_TX_RATE, &param, sizeof(param), NULL, 0, 1);
@@ -8008,15 +9080,61 @@ static void nbl_disp_chan_set_tx_rate_resp(void *priv, u16 src_id, u16 msg_id,
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
 	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
-	struct nbl_chan_param_set_tx_rate *param;
+	struct nbl_chan_param_set_txrx_rate *param;
 	struct nbl_chan_ack_info chan_ack;
 	int ret = NBL_CHAN_RESP_OK;
 
-	param = (struct nbl_chan_param_set_tx_rate *)data;
+	param = (struct nbl_chan_param_set_txrx_rate *)data;
 	ret = NBL_OPS_CALL(res_ops->set_tx_rate,
-			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->func_id, param->tx_rate));
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->func_id,
+			   param->txrx_rate, param->burst));
 
 	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_TX_RATE, msg_id, ret, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_set_rx_rate(void *priv, u16 func_id, int rx_rate, int burst)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->set_rx_rate,
+			    (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id, rx_rate, burst));
+}
+
+static int nbl_disp_chan_set_rx_rate_req(void *priv, u16 func_id, int rx_rate, int burst)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_set_txrx_rate param;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.func_id = func_id;
+	param.txrx_rate = rx_rate;
+	param.burst = burst;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_SET_RX_RATE, &param, sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_set_rx_rate_resp(void *priv, u16 src_id, u16 msg_id,
+					   void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_set_txrx_rate *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_set_txrx_rate *)data;
+	ret = NBL_OPS_CALL(res_ops->set_rx_rate,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->func_id,
+			   param->txrx_rate, param->burst));
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_RX_RATE, msg_id, ret, NULL, 0);
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
@@ -8141,6 +9259,63 @@ static void nbl_disp_remove_rdma_id(void *priv)
 	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
 
 	NBL_OPS_CALL(res_ops->remove_rdma_id, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
+}
+
+static int nbl_disp_get_max_mtu(void *priv)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->get_max_mtu, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
+	return ret;
+}
+
+static int nbl_disp_set_mtu(void *priv, u16 vsi_id, u16 mtu)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops;
+	int ret = 0;
+
+	res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	ret = NBL_OPS_CALL(res_ops->set_mtu, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, mtu));
+	return ret;
+}
+
+static int nbl_disp_chan_set_mtu_req(void *priv, u16 vsi_id, u16 mtu)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_set_mtu param = {0};
+
+	param.mtu = mtu;
+	param.vsi_id = vsi_id;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common), NBL_CHAN_MSG_MTU_SET,
+		      &param, sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt),
+				  &chan_send);
+}
+
+static void nbl_disp_chan_set_mtu_resp(void *priv,
+				       u16 src_id, u16 msg_id, void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_chan_param_set_mtu *param = NULL;
+	int err = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_set_mtu *)data;
+	err = NBL_OPS_CALL(res_ops->set_mtu,
+			   (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->vsi_id, param->mtu));
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_MTU_SET, msg_id, err, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
 static int nbl_disp_chan_get_fd_flow_req(void *priv, u16 vsi_id, u32 location,
@@ -8515,6 +9690,15 @@ static void nbl_disp_cfg_fd_update_event(void *priv, bool enable)
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), enable);
 }
 
+static void nbl_disp_cfg_mirror_outputport_event(void *priv, bool enable)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->cfg_mirror_outputport_event,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), enable);
+}
+
 static void nbl_disp_dump_fd_flow(void *priv, struct seq_file *m)
 {
 	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
@@ -8585,6 +9769,94 @@ static void nbl_disp_get_active_func_bitmaps(void *priv, unsigned long *bitmap, 
 
 	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_active_func_bitmaps,
 			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), bitmap, max_func);
+}
+
+static int nbl_disp_set_tc_wgt(void *priv, u16 vsi_id, u8 *weight, u8 num_tc)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->set_tc_wgt,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, weight, num_tc);
+}
+
+static int nbl_disp_chan_set_tc_wgt_req(void *priv, u16 vsi_id, u8 *weight, u8 num_tc)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_set_tc_wgt param;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.vsi_id = vsi_id;
+	param.num_tc = num_tc;
+	memcpy(param.weight, weight, num_tc);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_SET_TC_WGT, &param, sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_set_tc_wgt_resp(void *priv, u16 src_id, u16 msg_id,
+					  void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_set_tc_wgt *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_set_tc_wgt *)data;
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->set_tc_wgt,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+				param->vsi_id, param->weight, param->num_tc);
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_TC_WGT, msg_id, ret, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_configure_rdma_bw(void *priv, u8 eth_id, int rdma_bw)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->configure_rdma_bw,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), eth_id, rdma_bw);
+}
+
+static int nbl_disp_chan_configure_rdma_bw_req(void *priv, u8 eth_id, int rdma_bw)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_configure_rdma_bw param;
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.eth_id = eth_id;
+	param.rdma_bw = rdma_bw;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_CONFIGURE_RDMA_BW, &param, sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_configure_rdma_bw_resp(void *priv, u16 src_id, u16 msg_id,
+						 void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_configure_rdma_bw *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_configure_rdma_bw *)data;
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->configure_rdma_bw,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->eth_id, param->rdma_bw);
+
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CONFIGURE_RDMA_BW, msg_id, ret, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
 static int nbl_disp_configure_qos(void *priv, u8 eth_id, u8 *pfc, u8 trust, u8 *dscp2prio_map)
@@ -8755,6 +10027,409 @@ static void nbl_disp_chan_get_pfc_buffer_size_resp(void *priv, u16 src_id, u16 m
 	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
 }
 
+static int nbl_disp_set_rate_limit(void *priv, enum nbl_traffic_type type, u32 rate)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	int ret;
+
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->set_rate_limit,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), 0, type, rate);
+
+	return ret;
+}
+
+static int
+nbl_disp_chan_set_rate_limit_req(void *priv, enum nbl_traffic_type type, u32 rate)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_set_rate_limit param = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.type = type;
+	param.rate = rate;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_SET_RATE_LIMIT, &param, sizeof(param), NULL, 0, 1);
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_set_rate_limit_resp(void *priv, u16 src_id, u16 msg_id,
+					      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_set_rate_limit *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_set_rate_limit *)data;
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->set_rate_limit,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+				src_id, param->type, param->rate);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_SET_RATE_LIMIT, msg_id, ret,
+		     NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static void nbl_disp_register_dev_name(void *priv, u16 vsi_id, char *name)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	 NBL_OPS_CALL_LOCK(disp_mgt, res_ops->register_dev_name,
+			   NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, name);
+}
+
+static void
+nbl_disp_chan_register_dev_name_req(void *priv, u16 vsi_id, char *name)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_pf_name param = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.vsi_id = vsi_id;
+	strscpy(param.dev_name, name, IFNAMSIZ);
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_REGISTER_PF_NAME, &param, sizeof(param), NULL, 0, 1);
+	chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void nbl_disp_chan_register_dev_name_resp(void *priv, u16 src_id, u16 msg_id,
+						 void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_pf_name *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_pf_name *)data;
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->register_dev_name,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->vsi_id, param->dev_name);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_REGISTER_PF_NAME, msg_id, ret, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static void nbl_disp_get_dev_name(void *priv, u16 vsi_id, char *name)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	 NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_dev_name,
+			   NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vsi_id, name);
+}
+
+static void
+nbl_disp_chan_get_dev_name_req(void *priv, u16 vsi_id, char *name)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_pf_name param = {0};
+	struct nbl_chan_param_pf_name resp = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.vsi_id = vsi_id;
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_GET_PF_NAME, &param, sizeof(param), &resp, sizeof(resp), 1);
+	chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+
+	strscpy(name, resp.dev_name, IFNAMSIZ);
+}
+
+static void nbl_disp_chan_get_dev_name_resp(void *priv, u16 src_id, u16 msg_id,
+					    void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_pf_name *param;
+	struct nbl_chan_param_pf_name resp = {0};
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_pf_name *)data;
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_dev_name,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->vsi_id, resp.dev_name);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_PF_NAME, msg_id, ret, &resp, sizeof(resp));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_get_mirror_table_id(void *priv, u16 vsi_id, int dir,
+					bool mirror_en, u8 *mt_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_mirror_table_id,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+				 vsi_id, dir, mirror_en, mt_id);
+}
+
+static int nbl_disp_chan_get_mirror_table_id_req(void *priv, u16 vsi_id, int dir,
+						 bool mirror_en, u8 *mt_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_get_mirror_table_id param = {0};
+	struct nbl_chan_param_get_mirror_table_id resp = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	int ret;
+
+	param.vsi_id = vsi_id;
+	param.dir = dir;
+	param.mirror_en = mirror_en;
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_GET_MIRROR_TABLE_ID, &param, sizeof(param),
+		      &resp, sizeof(resp), 1);
+	ret = chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+
+	*mt_id = resp.mt_id;
+
+	return ret;
+}
+
+static void nbl_disp_chan_get_mirror_table_id_resp(void *priv, u16 src_id, u16 msg_id,
+						   void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_get_mirror_table_id *param;
+	struct nbl_chan_param_get_mirror_table_id resp = {0};
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_get_mirror_table_id *)data;
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->get_mirror_table_id,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+			  param->vsi_id, param->dir, param->mirror_en, &resp.mt_id);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_GET_MIRROR_TABLE_ID, msg_id, ret,
+		     &resp, sizeof(resp));
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_configure_mirror(void *priv, u16 func_id, bool mirror_en, int dir,
+				     u8 mt_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->configure_mirror,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id,
+				 mirror_en, dir, mt_id);
+}
+
+static int nbl_disp_chan_configure_mirror_req(void *priv, u16 func_id, bool mirror_en,
+					      int dir, u8 mt_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_mirror param = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	int ret;
+
+	param.mirror_en = mirror_en;
+	param.dir = dir;
+	param.mt_id = mt_id;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_CONFIGURE_MIRROR, &param, sizeof(param),
+		      NULL, 0, 1);
+	ret = chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+
+	return ret;
+}
+
+static void nbl_disp_chan_configure_mirror_resp(void *priv, u16 src_id, u16 msg_id,
+						void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_mirror *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_mirror *)data;
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->configure_mirror,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+			  src_id, param->mirror_en, param->dir, param->mt_id);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CONFIGURE_MIRROR, msg_id, ret,
+		     NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_configure_mirror_table(void *priv, bool mirror_en,
+					   u16 func_id, u8 mt_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->configure_mirror_table,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), mirror_en,
+				 func_id, mt_id);
+}
+
+static int nbl_disp_chan_configure_mirror_table_req(void *priv, bool mirror_en,
+						    u16 func_id, u8 mt_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_mirror_table param = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	int ret;
+
+	param.mirror_en = mirror_en;
+	param.func_id = func_id;
+	param.mt_id = mt_id;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_CONFIGURE_MIRROR_TABLE, &param, sizeof(param),
+		      NULL, 0, 1);
+	ret = chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+
+	return ret;
+}
+
+static void nbl_disp_chan_configure_mirror_table_resp(void *priv, u16 src_id, u16 msg_id,
+						      void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_param_mirror_table *param;
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	param = (struct nbl_chan_param_mirror_table *)data;
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->configure_mirror_table,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt),
+			  param->mirror_en, param->func_id, param->mt_id);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CONFIGURE_MIRROR_TABLE, msg_id, ret,
+		     NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_clear_mirror_cfg(void *priv, u16 func_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->clear_mirror_cfg,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), func_id);
+}
+
+static int nbl_disp_chan_clear_mirror_cfg_req(void *priv, u16 func_id)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+	int ret;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_CLEAR_MIRROR_CFG, NULL, 0, NULL, 0, 1);
+	ret = chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+
+	return ret;
+}
+
+static void nbl_disp_chan_clear_mirror_cfg_resp(void *priv, u16 src_id, u16 msg_id,
+						void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_ack_info chan_ack;
+	int ret = NBL_CHAN_RESP_OK;
+
+	NBL_OPS_CALL_LOCK(disp_mgt, res_ops->clear_mirror_cfg,
+			  NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), src_id);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CLEAR_MIRROR_CFG, msg_id, ret,
+		     NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static int nbl_disp_check_flow_table_spec(void *priv, u16 vlan_list_cnt,
+					  u16 unicast_mac_cnt, u16 multi_mac_cnt)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL_LOCK(disp_mgt, res_ops->check_flow_table_spec,
+				 NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), vlan_list_cnt,
+				 unicast_mac_cnt, multi_mac_cnt);
+}
+
+static int
+nbl_disp_chan_check_flow_table_spec_req(void *priv, u16 vlan_list_cnt,
+					u16 unicast_mac_cnt, u16 multi_mac_cnt)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_chan_send_info chan_send = {0};
+	struct nbl_chan_param_check_flow_spec param = {0};
+	struct nbl_common_info *common = NBL_DISP_MGT_TO_COMMON(disp_mgt);
+
+	param.vlan_list_cnt = vlan_list_cnt;
+	param.unicast_mac_cnt = unicast_mac_cnt;
+	param.multi_mac_cnt = multi_mac_cnt;
+
+	NBL_CHAN_SEND(chan_send, NBL_COMMON_TO_MGT_PF(common),
+		      NBL_CHAN_MSG_CHECK_FLOWTABLE_SPEC, &param,
+		      sizeof(param), NULL, 0, 1);
+
+	return chan_ops->send_msg(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_send);
+}
+
+static void
+nbl_disp_chan_check_flow_table_spec_resp(void *priv, u16 src_id, u16 msg_id,
+					 void *data, u32 data_len)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_channel_ops *chan_ops = NBL_DISP_MGT_TO_CHAN_OPS(disp_mgt);
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+	struct nbl_chan_ack_info chan_ack;
+	struct nbl_chan_param_check_flow_spec *param = {0};
+	int ret;
+
+	param = (struct nbl_chan_param_check_flow_spec *)data;
+	ret = NBL_OPS_CALL_LOCK(disp_mgt, res_ops->check_flow_table_spec,
+				NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), param->vlan_list_cnt,
+				param->unicast_mac_cnt, param->multi_mac_cnt);
+	NBL_CHAN_ACK(chan_ack, src_id, NBL_CHAN_MSG_CHECK_FLOWTABLE_SPEC,
+		     msg_id, ret, NULL, 0);
+	chan_ops->send_ack(NBL_DISP_MGT_TO_CHAN_PRIV(disp_mgt), &chan_ack);
+}
+
+static u32 nbl_disp_get_dvn_desc_req(void *priv)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	return NBL_OPS_CALL(res_ops->get_dvn_desc_req, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt)));
+}
+
+static void nbl_disp_set_dvn_desc_req(void *priv, u32 desc_req)
+{
+	struct nbl_dispatch_mgt *disp_mgt = (struct nbl_dispatch_mgt *)priv;
+	struct nbl_resource_ops *res_ops = NBL_DISP_MGT_TO_RES_OPS(disp_mgt);
+
+	NBL_OPS_CALL(res_ops->set_dvn_desc_req, (NBL_DISP_MGT_TO_RES_PRIV(disp_mgt), desc_req));
+}
+
 /* NBL_DISP_SET_OPS(disp_op_name, res_func, ctrl_lvl, msg_type, msg_req, msg_resp)
  * ctrl_lvl is to define when this disp_op should go directly to res_op, not sending a channel msg.
  *
@@ -8881,6 +10556,9 @@ do {												\
 	NBL_DISP_SET_OPS(setup_queue, nbl_disp_setup_queue,					\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SETUP_QUEUE,			\
 			 nbl_disp_chan_setup_queue_req, nbl_disp_chan_setup_queue_resp);	\
+	NBL_DISP_SET_OPS(remove_queue, nbl_disp_remove_queue,					\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REMOVE_QUEUE,			\
+			 nbl_disp_chan_remove_queue_req, nbl_disp_chan_remove_queue_resp);	\
 	NBL_DISP_SET_OPS(remove_all_queues, nbl_disp_remove_all_queues,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REMOVE_ALL_QUEUES,			\
 			 nbl_disp_chan_remove_all_queues_req,					\
@@ -8913,6 +10591,9 @@ do {												\
 	NBL_DISP_SET_OPS(del_multi_rule, nbl_disp_del_multi_rule,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_DEL_MULTI_RULE,			\
 			 nbl_disp_chan_del_multi_rule_req, nbl_disp_chan_del_multi_rule_resp);	\
+	NBL_DISP_SET_OPS(cfg_multi_mcast, nbl_disp_cfg_multi_mcast,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CFG_MULTI_MCAST_RULE,		\
+			 nbl_disp_chan_cfg_multi_mcast_req, nbl_disp_chan_cfg_multi_mcast_resp);\
 	NBL_DISP_SET_OPS(setup_multi_group, nbl_disp_setup_multi_group,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SETUP_MULTI_GROUP,			\
 			 nbl_disp_chan_setup_multi_group_req,					\
@@ -8966,9 +10647,6 @@ do {												\
 	NBL_DISP_SET_OPS(cfg_duppkt_mcc, nbl_disp_cfg_duppkt_mcc,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CFG_DUPPKT_MCC,			\
 			 nbl_disp_chan_cfg_duppkt_mcc_req, nbl_disp_chan_cfg_duppkt_mcc_resp);	\
-	NBL_DISP_SET_OPS(cfg_lag_mcc, nbl_disp_cfg_lag_mcc,					\
-			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CFG_LAG_MCC,			\
-			 nbl_disp_chan_cfg_lag_mcc_req, nbl_disp_chan_cfg_lag_mcc_resp);	\
 	NBL_DISP_SET_OPS(cfg_bond_shaping, nbl_disp_cfg_bond_shaping,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CFG_BOND_SHAPING,			\
 			 nbl_disp_chan_cfg_bond_shaping_req,					\
@@ -8993,6 +10671,14 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_BASE_MAC_ADDR,			\
 			 nbl_disp_chan_get_base_mac_addr_req,					\
 			 nbl_disp_chan_get_base_mac_addr_resp);					\
+	NBL_DISP_SET_OPS(get_eth_mac_stats, nbl_disp_get_eth_mac_stats,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_ETH_MAC_STATS,			\
+			 nbl_disp_chan_get_eth_mac_stats_req,					\
+			 nbl_disp_chan_get_eth_mac_stats_resp);					\
+	NBL_DISP_SET_OPS(get_rmon_stats, nbl_disp_get_rmon_stats,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_RMON_STATS,			\
+			 nbl_disp_chan_get_rmon_stats_req,					\
+			 nbl_disp_chan_get_rmon_stats_resp);					\
 	NBL_DISP_SET_OPS(get_tx_headroom, nbl_disp_get_tx_headroom,				\
 			 NBL_DISP_CTRL_LVL_NET, -1,						\
 			 NULL, NULL);								\
@@ -9044,8 +10730,20 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_ETH_STATS,			\
 			 nbl_disp_get_private_stat_data_req,					\
 			 nbl_disp_chan_get_private_stat_data_resp);				\
+	NBL_DISP_SET_OPS(get_eth_ctrl_stats, nbl_disp_get_eth_ctrl_stats,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_ETH_CTRL_STATS,		\
+			 nbl_disp_chan_get_eth_ctrl_stats_req,					\
+			 nbl_disp_chan_get_eth_ctrl_stats_resp);				\
+	NBL_DISP_SET_OPS(get_pause_stats, nbl_disp_get_pause_stats,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_PAUSE_STATS,			\
+			 nbl_disp_chan_get_pause_stats_req,					\
+			 nbl_disp_chan_get_pause_stats_resp);					\
 	NBL_DISP_SET_OPS(fill_private_stat_strings, nbl_disp_fill_private_stat_strings,		\
 			 NBL_DISP_CTRL_LVL_NET, -1, NULL, NULL);				\
+	NBL_DISP_SET_OPS(get_eth_abnormal_stats, nbl_disp_get_eth_abnormal_stats,		\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_ETH_ABNORMAL_STATS,		\
+			 nbl_disp_chan_get_eth_abnormal_stats_req,				\
+			 nbl_disp_chan_get_eth_abnormal_stats_resp);				\
 	NBL_DISP_SET_OPS(get_max_desc_num, nbl_disp_get_max_desc_num,				\
 			 NBL_DISP_CTRL_LVL_NET, -1, NULL, NULL);				\
 	NBL_DISP_SET_OPS(get_min_desc_num, nbl_disp_get_min_desc_num,				\
@@ -9088,6 +10786,9 @@ do {												\
 	NBL_DISP_SET_OPS(get_rxfh_indir, nbl_disp_get_rxfh_indir,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_RXFH_INDIR,			\
 			 nbl_disp_chan_get_rxfh_indir_req, nbl_disp_chan_get_rxfh_indir_resp);	\
+	NBL_DISP_SET_OPS(set_rxfh_indir, nbl_disp_set_rxfh_indir,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_RXFH_INDIR,			\
+			 nbl_disp_chan_set_rxfh_indir_req, nbl_disp_chan_set_rxfh_indir_resp);	\
 	NBL_DISP_SET_OPS(get_rxfh_rss_key, nbl_disp_get_rxfh_rss_key,				\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_RXFH_RSS_KEY,			\
 			 nbl_disp_chan_get_rxfh_rss_key_req,					\
@@ -9096,6 +10797,10 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_RXFH_RSS_ALG_SEL,		\
 			 nbl_disp_chan_get_rxfh_rss_alg_sel_req,				\
 			 nbl_disp_chan_get_rxfh_rss_alg_sel_resp);				\
+	NBL_DISP_SET_OPS(set_rxfh_rss_alg_sel, nbl_disp_set_rxfh_rss_alg_sel,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_RXFH_RSS_ALG_SEL,		\
+			 nbl_disp_chan_set_rxfh_rss_alg_sel_req,				\
+			 nbl_disp_chan_set_rxfh_rss_alg_sel_resp);				\
 	NBL_DISP_SET_OPS(cfg_txrx_vlan, nbl_disp_cfg_txrx_vlan,					\
 			 NBL_DISP_CTRL_LVL_NET,	-1, NULL, NULL);				\
 	NBL_DISP_SET_OPS(setup_rdma_id, nbl_disp_setup_rdma_id,					\
@@ -9411,6 +11116,10 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_PORT_STATE,			\
 			 nbl_disp_chan_get_port_state_req,					\
 			 nbl_disp_chan_get_port_state_resp);					\
+	NBL_DISP_SET_OPS(get_fec_stats, nbl_disp_get_fec_stats,					\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_FEC_STATS,			\
+			 nbl_disp_chan_get_fec_stats_req,					\
+			 nbl_disp_chan_get_fec_stats_resp);					\
 	NBL_DISP_SET_OPS(set_port_advertising, nbl_disp_set_port_advertising,			\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_PORT_ADVERTISING,		\
 			 nbl_disp_chan_set_port_advertising_req,				\
@@ -9427,6 +11136,17 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_LINK_STATE,			\
 			 nbl_disp_chan_get_link_state_req,					\
 			 nbl_disp_chan_get_link_state_resp);					\
+	NBL_DISP_SET_OPS(get_link_down_count, nbl_disp_get_link_down_count,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_LINK_DOWN_COUNT,		\
+			 nbl_disp_chan_get_link_down_count_req,					\
+			 nbl_disp_chan_get_link_down_count_resp);				\
+	NBL_DISP_SET_OPS(get_link_status_opcode, nbl_disp_get_link_status_opcode,		\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_LINK_STATUS_OPCODE,		\
+			 nbl_disp_chan_get_link_status_opcode_req,				\
+			 nbl_disp_chan_get_link_status_opcode_resp);				\
+	NBL_DISP_SET_OPS(set_wol, nbl_disp_set_wol,						\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_WOL,				\
+			 nbl_disp_chan_set_wol_req, nbl_disp_chan_set_wol_resp);		\
 	NBL_DISP_SET_OPS(cfg_eth_bond_event, nbl_disp_cfg_eth_bond_event,			\
 			 NBL_DISP_CTRL_LVL_MGT, -1, NULL, NULL);				\
 	NBL_DISP_SET_OPS(dummy_func, NULL, NBL_DISP_CTRL_LVL_MGT,				\
@@ -9471,13 +11191,7 @@ do {												\
 	NBL_DISP_SET_OPS(dummy_func, NULL, NBL_DISP_CTRL_LVL_MGT,				\
 			 NBL_CHAN_GET_UPCALL_PORT, NULL,					\
 			 nbl_disp_chan_get_upcall_port_resp);					\
-	NBL_DISP_SET_OPS(configure_virtio_dev_msix, nbl_disp_configure_virtio_dev_msix,		\
-			 NBL_DISP_CTRL_LVL_MGT, -1,						\
-			 NULL, NULL);								\
 	NBL_DISP_SET_OPS(configure_rdma_msix_off, nbl_disp_configure_rdma_msix_off,		\
-			 NBL_DISP_CTRL_LVL_MGT, -1,						\
-			 NULL, NULL);								\
-	NBL_DISP_SET_OPS(configure_virtio_dev_ready, nbl_disp_configure_virtio_dev_ready,	\
 			 NBL_DISP_CTRL_LVL_MGT, -1,						\
 			 NULL, NULL);								\
 	NBL_DISP_SET_OPS(set_eth_mac_addr, nbl_disp_set_eth_mac_addr,				\
@@ -9537,6 +11251,9 @@ do {												\
 	NBL_DISP_SET_OPS(adapt_desc_gother, nbl_disp_adapt_desc_gother,				\
 			 NBL_DISP_CTRL_LVL_MGT, -1,						\
 			 NULL, NULL);								\
+	NBL_DISP_SET_OPS(set_desc_high_throughput, nbl_disp_set_desc_high_throughput,		\
+			 NBL_DISP_CTRL_LVL_MGT, -1,						\
+			 NULL, NULL);								\
 	NBL_DISP_SET_OPS(flr_clear_net, nbl_disp_flr_clear_net,					\
 			 NBL_DISP_CTRL_LVL_MGT, -1,						\
 			 NULL, NULL);								\
@@ -9582,8 +11299,8 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_USER_QUEUE_INFO,		\
 			 nbl_disp_chan_get_user_queue_info_req,					\
 			 nbl_disp_chan_get_user_queue_info_resp);				\
-	NBL_DISP_SET_OPS(dummy_func, NULL, NBL_DISP_CTRL_LVL_MGT,				\
-			 NBL_CHAN_MSG_GET_BOARD_INFO, NULL,					\
+	NBL_DISP_SET_OPS(get_board_info, nbl_disp_get_board_info, NBL_DISP_CTRL_LVL_MGT,	\
+			 NBL_CHAN_MSG_GET_BOARD_INFO, nbl_disp_chan_get_board_info_req,		\
 			 nbl_disp_chan_get_board_info_resp);					\
 	NBL_DISP_SET_OPS(get_vf_base_vsi_id, nbl_disp_get_vf_base_vsi_id,			\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_VF_BASE_VSI_ID,		\
@@ -9619,6 +11336,34 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_VF_VSI_ID,			\
 			 nbl_disp_chan_get_vf_vsi_id_req,					\
 			 nbl_disp_chan_get_vf_vsi_id_resp);					\
+	NBL_DISP_SET_OPS(check_vf_is_active, nbl_disp_check_vf_is_active,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_CHECK_VF_IS_ACTIVE,			\
+			 nbl_disp_chan_check_vf_is_active_req,					\
+			 nbl_disp_chan_check_vf_is_active_resp);				\
+	NBL_DISP_SET_OPS(check_vf_is_vdpa, nbl_disp_check_vf_is_vdpa,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_CHECK_VF_IS_VDPA,			\
+			 nbl_disp_chan_check_vf_is_vdpa_req,					\
+			 nbl_disp_chan_check_vf_is_vdpa_resp);					\
+	NBL_DISP_SET_OPS(get_vdpa_vf_stats, nbl_disp_get_vdpa_vf_stats,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_VDPA_VF_STATS,			\
+			 nbl_disp_chan_get_vdpa_vf_stats_req,					\
+			 nbl_disp_chan_get_vdpa_vf_stats_resp);					\
+	NBL_DISP_SET_OPS(get_uvn_pkt_drop_stats, nbl_disp_get_uvn_pkt_drop_stats,		\
+			 NBL_DISP_CTRL_LVL_MGT,							\
+			 NBL_CHAN_GET_UVN_PKT_DROP_STATS,					\
+			 nbl_disp_chan_get_uvn_pkt_drop_stats_req,				\
+			 nbl_disp_chan_get_uvn_pkt_drop_stats_resp);				\
+	NBL_DISP_SET_OPS(get_ustore_pkt_drop_stats, nbl_disp_get_ustore_pkt_drop_stats,		\
+			 NBL_DISP_CTRL_LVL_MGT,							\
+			 NBL_CHAN_GET_USTORE_PKT_DROP_STATS,					\
+			 nbl_disp_chan_get_ustore_pkt_drop_stats_req,				\
+			 nbl_disp_chan_get_ustore_pkt_drop_stats_resp);				\
+	NBL_DISP_SET_OPS(get_ustore_total_pkt_drop_stats,					\
+			 nbl_disp_get_ustore_total_pkt_drop_stats,				\
+			 NBL_DISP_CTRL_LVL_MGT,							\
+			 NBL_CHAN_GET_USTORE_TOTAL_PKT_DROP_STATS,				\
+			 nbl_disp_chan_get_ustore_total_pkt_drop_stats_req,			\
+			 nbl_disp_chan_get_ustore_total_pkt_drop_stats_resp);			\
 	NBL_DISP_SET_OPS(set_pmd_debug, nbl_disp_set_pmd_debug,					\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_PMD_DEBUG,			\
 			 NULL, NULL);								\
@@ -9629,6 +11374,9 @@ do {												\
 	NBL_DISP_SET_OPS(set_tx_rate, nbl_disp_set_tx_rate,					\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_TX_RATE,			\
 			 nbl_disp_chan_set_tx_rate_req, nbl_disp_chan_set_tx_rate_resp);	\
+	NBL_DISP_SET_OPS(set_rx_rate, nbl_disp_set_rx_rate,					\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_RX_RATE,			\
+			 nbl_disp_chan_set_rx_rate_req, nbl_disp_chan_set_rx_rate_resp);	\
 	NBL_DISP_SET_OPS(register_func_link_forced, nbl_disp_register_func_link_forced,		\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REGISTER_FUNC_LINK_FORCED,		\
 			 nbl_disp_chan_register_func_link_forced_req,				\
@@ -9638,6 +11386,10 @@ do {												\
 			 nbl_disp_chan_get_link_forced_req, nbl_disp_chan_get_link_forced_resp);\
 	NBL_DISP_SET_OPS(get_driver_version, nbl_disp_get_driver_version,			\
 			 NBL_DISP_CTRL_LVL_MGT, -1, NULL, NULL);				\
+	NBL_DISP_SET_OPS(register_func_trust, nbl_disp_register_func_trust,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REGISTER_FUNC_TRUST,		\
+			 nbl_disp_chan_register_func_trust_req,					\
+			 nbl_disp_chan_register_func_trust_resp);				\
 	NBL_DISP_SET_OPS(register_func_vlan, nbl_disp_register_func_vlan,			\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REGISTER_FUNC_VLAN,		\
 			 nbl_disp_chan_register_func_vlan_req,					\
@@ -9646,6 +11398,12 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REGISTER_FUNC_RATE,		\
 			 nbl_disp_chan_register_func_rate_req,					\
 			 nbl_disp_chan_register_func_rate_resp);				\
+	NBL_DISP_SET_OPS(set_mtu, nbl_disp_set_mtu,						\
+			 NBL_DISP_CTRL_LVL_MGT,	NBL_CHAN_MSG_MTU_SET,				\
+			 nbl_disp_chan_set_mtu_req,						\
+			 nbl_disp_chan_set_mtu_resp);						\
+	NBL_DISP_SET_OPS(get_max_mtu, nbl_disp_get_max_mtu,					\
+			 NBL_DISP_CTRL_LVL_NET,	-1, NULL, NULL);				\
 	NBL_DISP_SET_OPS(get_fd_flow, nbl_disp_get_fd_flow,					\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_FD_FLOW,			\
 			 nbl_disp_chan_get_fd_flow_req, nbl_disp_chan_get_fd_flow_resp);	\
@@ -9680,10 +11438,18 @@ do {												\
 			 NBL_DISP_CTRL_LVL_ALWAYS, -1, NULL, NULL);				\
 	NBL_DISP_SET_OPS(get_active_func_bitmaps, nbl_disp_get_active_func_bitmaps,		\
 			 NBL_DISP_CTRL_LVL_ALWAYS, -1, NULL, NULL);				\
+	NBL_DISP_SET_OPS(configure_rdma_bw, nbl_disp_configure_rdma_bw,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CONFIGURE_RDMA_BW,			\
+			 nbl_disp_chan_configure_rdma_bw_req,					\
+			 nbl_disp_chan_configure_rdma_bw_resp);					\
 	NBL_DISP_SET_OPS(configure_qos, nbl_disp_configure_qos,					\
-			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CONFIGURE_QOS,		\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CONFIGURE_QOS,			\
 			 nbl_disp_chan_configure_qos_req,					\
 			 nbl_disp_chan_configure_qos_resp);					\
+	NBL_DISP_SET_OPS(set_tc_wgt, nbl_disp_set_tc_wgt,					\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_TC_WGT,			\
+			 nbl_disp_chan_set_tc_wgt_req,						\
+			 nbl_disp_chan_set_tc_wgt_resp);					\
 	NBL_DISP_SET_OPS(get_pfc_buffer_size, nbl_disp_get_pfc_buffer_size,			\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_PFC_BUFFER_SIZE,		\
 			 nbl_disp_chan_get_pfc_buffer_size_req,					\
@@ -9692,6 +11458,52 @@ do {												\
 			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_PFC_BUFFER_SIZE,		\
 			 nbl_disp_chan_set_pfc_buffer_size_req,					\
 			 nbl_disp_chan_set_pfc_buffer_size_resp);				\
+	NBL_DISP_SET_OPS(set_rate_limit, nbl_disp_set_rate_limit,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_SET_RATE_LIMIT,			\
+			 nbl_disp_chan_set_rate_limit_req,					\
+			 nbl_disp_chan_set_rate_limit_resp);					\
+	NBL_DISP_SET_OPS(get_perf_dump_length, nbl_disp_get_perf_dump_length,			\
+			 NBL_DISP_CTRL_LVL_MGT, -1,						\
+			 NULL, NULL);								\
+	NBL_DISP_SET_OPS(get_perf_dump_data, nbl_disp_get_perf_dump_data,			\
+			 NBL_DISP_CTRL_LVL_MGT, -1,						\
+			 NULL, NULL);								\
+	NBL_DISP_SET_OPS(register_dev_name, nbl_disp_register_dev_name,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_REGISTER_PF_NAME,			\
+			 nbl_disp_chan_register_dev_name_req,					\
+			 nbl_disp_chan_register_dev_name_resp);					\
+	NBL_DISP_SET_OPS(get_dev_name, nbl_disp_get_dev_name,					\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_PF_NAME,			\
+			 nbl_disp_chan_get_dev_name_req,					\
+			 nbl_disp_chan_get_dev_name_resp);					\
+	NBL_DISP_SET_OPS(get_mirror_table_id, nbl_disp_get_mirror_table_id,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_GET_MIRROR_TABLE_ID,		\
+			 nbl_disp_chan_get_mirror_table_id_req,					\
+			 nbl_disp_chan_get_mirror_table_id_resp);				\
+	NBL_DISP_SET_OPS(configure_mirror, nbl_disp_configure_mirror,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CONFIGURE_MIRROR,			\
+			 nbl_disp_chan_configure_mirror_req,					\
+			 nbl_disp_chan_configure_mirror_resp);					\
+	NBL_DISP_SET_OPS(configure_mirror_table, nbl_disp_configure_mirror_table,		\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CONFIGURE_MIRROR_TABLE,		\
+			 nbl_disp_chan_configure_mirror_table_req,				\
+			 nbl_disp_chan_configure_mirror_table_resp);				\
+	NBL_DISP_SET_OPS(clear_mirror_cfg, nbl_disp_clear_mirror_cfg,				\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CLEAR_MIRROR_CFG,			\
+			 nbl_disp_chan_clear_mirror_cfg_req,					\
+			 nbl_disp_chan_clear_mirror_cfg_resp);					\
+	NBL_DISP_SET_OPS(cfg_mirror_outputport_event, nbl_disp_cfg_mirror_outputport_event,	\
+			 NBL_DISP_CTRL_LVL_MGT, -1, NULL, NULL);				\
+	NBL_DISP_SET_OPS(check_flow_table_spec, nbl_disp_check_flow_table_spec,			\
+			 NBL_DISP_CTRL_LVL_MGT, NBL_CHAN_MSG_CHECK_FLOWTABLE_SPEC,		\
+			 nbl_disp_chan_check_flow_table_spec_req,				\
+			 nbl_disp_chan_check_flow_table_spec_resp);				\
+	NBL_DISP_SET_OPS(get_dvn_desc_req, nbl_disp_get_dvn_desc_req,				\
+			 NBL_DISP_CTRL_LVL_MGT, -1,						\
+			 NULL, NULL);								\
+	NBL_DISP_SET_OPS(set_dvn_desc_req, nbl_disp_set_dvn_desc_req,				\
+			 NBL_DISP_CTRL_LVL_MGT, -1,						\
+			 NULL, NULL);								\
 } while (0)
 
 /* Structure starts here, adding an op should not modify anything below */
@@ -9704,7 +11516,7 @@ static int nbl_disp_setup_msg(struct nbl_dispatch_mgt *disp_mgt)
 					 NBL_CHAN_TYPE_MAILBOX))
 		return 0;
 
-	mutex_init(&disp_mgt->ops_muxtex_lock);
+	mutex_init(&disp_mgt->ops_mutex_lock);
 	spin_lock_init(&disp_mgt->ops_spin_lock);
 	disp_mgt->ops_lock_required = true;
 

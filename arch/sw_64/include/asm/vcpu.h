@@ -56,6 +56,7 @@ struct vcpucb {
 };
 
 #elif CONFIG_SUBARCH_C4
+#define CORE4VM_IRQS 256
 
 struct vcpucb {
 	unsigned long ktp;
@@ -109,7 +110,10 @@ struct vcpucb {
 	unsigned long csr_earg2;
 	unsigned long csr_scratch;
 	unsigned long atc;
-	unsigned long reserved[45];
+	unsigned long reserved1[10];	/* USE IN HMCODE */
+	DECLARE_BITMAP(irqs_pending, CORE4VM_IRQS);	/* Pending virtual interrupts */
+	unsigned long irqs_addr;
+	unsigned long reserved2[30];
 };
 #endif
 

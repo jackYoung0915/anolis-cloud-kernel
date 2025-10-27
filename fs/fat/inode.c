@@ -220,28 +220,29 @@ static void fat_write_failed(struct address_space *mapping, loff_t to)
 	}
 }
 
-static int fat_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len,
-			struct page **pagep, void **fsdata)
+static int fat_write_begin(const struct kiocb *iocb,
+			   struct address_space *mapping,
+			   loff_t pos, unsigned len,
+			   struct folio **foliop, void **fsdata)
 {
 	int err;
 
-	*pagep = NULL;
-	err = cont_write_begin(file, mapping, pos, len,
-				pagep, fsdata, fat_get_block,
+	err = cont_write_begin(iocb, mapping, pos, len,
+				foliop, fsdata, fat_get_block,
 				&MSDOS_I(mapping->host)->mmu_private);
 	if (err < 0)
 		fat_write_failed(mapping, pos + len);
 	return err;
 }
 
-static int fat_write_end(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned copied,
-			struct page *pagep, void *fsdata)
+static int fat_write_end(const struct kiocb *iocb,
+			 struct address_space *mapping,
+			 loff_t pos, unsigned len, unsigned copied,
+			 struct folio *folio, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	int err;
-	err = generic_write_end(file, mapping, pos, len, copied, pagep, fsdata);
+	err = generic_write_end(iocb, mapping, pos, len, copied, folio, fsdata);
 	if (err < len)
 		fat_write_failed(mapping, pos + len);
 	if (!(err < 0) && !(MSDOS_I(inode)->i_attrs & ATTR_ARCH)) {

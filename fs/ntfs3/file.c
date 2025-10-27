@@ -115,7 +115,7 @@ static int ntfs_extend_initialized_size(struct file *file,
 
 	for (;;) {
 		u32 zerofrom, len;
-		struct page *page;
+		struct folio *folio;
 		u8 bits;
 		CLST vcn, lcn, clen;
 
@@ -141,14 +141,13 @@ static int ntfs_extend_initialized_size(struct file *file,
 		if (pos + len > new_valid)
 			len = new_valid - pos;
 
-		err = ntfs_write_begin(file, mapping, pos, len, &page, NULL);
+		err = ntfs_write_begin(NULL, mapping, pos, len, &folio, NULL);
 		if (err)
 			goto out;
 
-		zero_user_segment(page, zerofrom, PAGE_SIZE);
+		folio_zero_range(folio, zerofrom, folio_size(folio));
 
-		/* This function in any case puts page. */
-		err = ntfs_write_end(file, mapping, pos, len, len, page, NULL);
+		err = ntfs_write_end(NULL, mapping, pos, len, len, folio, NULL);
 		if (err < 0)
 			goto out;
 		pos += len;
@@ -299,7 +298,10 @@ static int ntfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 		}
 
 		if (ni->i_valid < to) {
-			inode_lock(inode);
+			if (!inode_trylock(inode)) {
+				err = -EAGAIN;
+				goto out;
+			}
 			err = ntfs_extend_initialized_size(file, ni,
 							   ni->i_valid, to);
 			inode_unlock(inode);
@@ -335,6 +337,7 @@ static int ntfs_extend(struct inode *inode, loff_t pos, size_t count,
 	}
 
 	if (extend_init && !is_compressed(ni)) {
+		WARN_ON(ni->i_valid >= pos);
 		err = ntfs_extend_initialized_size(file, ni, ni->i_valid, pos);
 		if (err)
 			goto out;

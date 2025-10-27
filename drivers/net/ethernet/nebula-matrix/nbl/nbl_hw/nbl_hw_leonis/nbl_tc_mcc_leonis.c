@@ -1,5 +1,7 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2021-2030 nbl, Inc.
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
  */
 #include "nbl_tc_mcc_leonis.h"
 
@@ -112,7 +114,7 @@ void nbl_tc_mcc_add_hw_tbl(struct nbl_resource_mgt *res_mgt, struct nbl_tc_mcc_m
 		else
 			prev_mcc_id = list_prev_entry(mcc_node, node)->mcc_id;
 		phy_ops->add_mcc(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), mcc_node->mcc_id,
-				 prev_mcc_id, mcc_action);
+				 prev_mcc_id, NBL_MCC_ID_INVALID, mcc_action);
 		mcc_add_succ = true;
 	}
 	if (mcc_add_succ)

@@ -2,6 +2,7 @@
 
 #include <linux/clockchips.h>
 #include <linux/clocksource.h>
+#include <linux/cpufreq.h>
 #include <linux/kconfig.h>
 #include <linux/percpu-defs.h>
 #include <linux/sched_clock.h>
@@ -173,7 +174,7 @@ void __init sw64_setup_clocksource(void)
 	else
 		clocksource_register_khz(&clocksource_vtime, mclk_khz);
 #else
-	clocksource_register_hz(&clocksource_tc, get_cpu_freq());
+	clocksource_register_hz(&clocksource_tc, sunway_max_cpu_freq());
 	pr_info("Setup clocksource TC, mult = %d\n", clocksource_tc.mult);
 #endif
 }
@@ -207,23 +208,13 @@ void __init setup_sched_clock(void)
 
 	sc_shift = 7;
 	step = 1UL << sc_shift;
-	sc_multi = step * NSEC_PER_SEC / get_cpu_freq();
+	sc_multi = step * NSEC_PER_SEC / sunway_max_cpu_freq();
 	calibrate_sched_clock();
 
 	pr_info("sched_clock: sc_multi=%llu, sc_shift=%llu\n", sc_multi, sc_shift);
 }
 
-#ifdef CONFIG_GENERIC_SCHED_CLOCK
-static u64 notrace read_sched_clock(void)
-{
-	return (rdtc() - sc_start) >> sc_shift;
-}
-
-void __init sw64_sched_clock_init(void)
-{
-	sched_clock_register(sched_clock_read, BITS_PER_LONG, get_cpu_freq() >> sc_shift);
-}
-#else /* !CONFIG_GENERIC_SCHED_CLOCK */
+#ifndef CONFIG_GENERIC_SCHED_CLOCK
 /*
  * scheduler clock - returns current time in nanoseconds.
  */
@@ -385,18 +376,36 @@ static int timer_set_oneshot(struct clock_event_device *evt)
 	return 0;
 }
 
-void sw64_update_clockevents(unsigned long cpu, u32 freq)
+static void sw64_update_clockevents(void *data)
 {
-	struct clock_event_device *swevt = &per_cpu(timer_events, cpu);
+	struct cpufreq_freqs *freqs = (struct cpufreq_freqs *)data;
+	struct clock_event_device *swevt = this_cpu_ptr(&timer_events);
 
-	if (cpu == smp_processor_id())
-		clockevents_update_freq(swevt, freq);
-	else {
-		clockevents_calc_mult_shift(swevt, freq, 4);
-		swevt->min_delta_ns = clockevent_delta2ns(swevt->min_delta_ticks, swevt);
-		swevt->max_delta_ns = clockevent_delta2ns(swevt->max_delta_ticks, swevt);
-	}
+	clockevents_update_freq(swevt, freqs->new * 1000);
 }
+
+static int sw64_cpufreq_notifier(struct notifier_block *nb,
+					unsigned long val, void *data)
+{
+	struct cpufreq_freqs *freqs = (struct cpufreq_freqs *)data;
+
+	if (val == CPUFREQ_POSTCHANGE)
+		on_each_cpu_mask(freqs->policy->cpus,
+				sw64_update_clockevents, data, 1);
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block sw64_cpufreq_notifier_block = {
+	.notifier_call = sw64_cpufreq_notifier
+};
+
+static int __init register_cpufreq_notifier(void)
+{
+	return cpufreq_register_notifier(&sw64_cpufreq_notifier_block,
+			CPUFREQ_TRANSITION_NOTIFIER);
+}
+arch_initcall(register_cpufreq_notifier);
 
 /*
  * Setup the local timer for this CPU. Copy the initialized values
@@ -409,7 +418,7 @@ void sw64_setup_timer(void)
 	struct clock_event_device *swevt = &per_cpu(timer_events, cpu);
 
 	/* min_delta ticks => 100ns */
-	min_delta = get_cpu_freq()/1000/1000/10;
+	min_delta = sunway_max_cpu_freq()/1000/1000/10;
 
 	if (is_in_guest()) {
 		memcpy(swevt, &vtimer_clockevent, sizeof(*swevt));
@@ -424,7 +433,7 @@ void sw64_setup_timer(void)
 	}
 	swevt->cpumask = cpumask_of(cpu);
 	swevt->set_state_shutdown(swevt);
-	clockevents_config_and_register(swevt, get_cpu_freq(), min_delta, ULONG_MAX);
+	clockevents_config_and_register(swevt, sunway_max_cpu_freq(), min_delta, ULONG_MAX);
 }
 
 void sw64_timer_interrupt(void)

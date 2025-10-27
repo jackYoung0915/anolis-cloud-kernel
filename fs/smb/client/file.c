@@ -2421,7 +2421,7 @@ refind_writable:
 			}
 		}
 	}
-	/* couldn't find useable FH with same pid, try any available */
+	/* couldn't find usable FH with same pid, try any available */
 	if (!any_available) {
 		any_available = true;
 		goto refind_writable;
@@ -3191,15 +3191,15 @@ retry_write:
 	return rc;
 }
 
-static int cifs_write_end(struct file *file, struct address_space *mapping,
+static int cifs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned copied,
-			struct page *page, void *fsdata)
+			struct folio *folio, void *fsdata)
 {
 	int rc;
 	struct inode *inode = mapping->host;
-	struct cifsFileInfo *cfile = file->private_data;
+	struct cifsFileInfo *cfile = iocb->ki_filp->private_data;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(cfile->dentry->d_sb);
-	struct folio *folio = page_folio(page);
+	struct page *page = &folio->page;
 	__u32 pid;
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_RWPIDFORWARD)
@@ -4920,10 +4920,11 @@ bool is_size_safe_to_change(struct cifsInodeInfo *cifsInode, __u64 end_of_file,
 		return true;
 }
 
-static int cifs_write_begin(struct file *file, struct address_space *mapping,
+static int cifs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len,
-			struct page **pagep, void **fsdata)
+			struct folio **foliop, void **fsdata)
 {
+	struct file *file = iocb->ki_filp;
 	int oncethru = 0;
 	pgoff_t index = pos >> PAGE_SHIFT;
 	loff_t offset = pos & (PAGE_SIZE - 1);
@@ -4993,7 +4994,7 @@ start:
 		   this will be written out by write_end so is fine */
 	}
 out:
-	*pagep = page;
+	*foliop = page_folio(page);
 	return rc;
 }
 
@@ -5042,7 +5043,8 @@ void cifs_oplock_break(struct work_struct *work)
 	struct cifsFileInfo *cfile = container_of(work, struct cifsFileInfo,
 						  oplock_break);
 	struct inode *inode = d_inode(cfile->dentry);
-	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
+	struct super_block *sb = inode->i_sb;
+	struct cifs_sb_info *cifs_sb = CIFS_SB(sb);
 	struct cifsInodeInfo *cinode = CIFS_I(inode);
 	struct cifs_tcon *tcon;
 	struct TCP_Server_Info *server;
@@ -5052,6 +5054,12 @@ void cifs_oplock_break(struct work_struct *work)
 	__u64 persistent_fid, volatile_fid;
 	__u16 net_fid;
 
+	/*
+	 * Hold a reference to the superblock to prevent it and its inodes from
+	 * being freed while we are accessing cinode. Otherwise, _cifsFileInfo_put()
+	 * may release the last reference to the sb and trigger inode eviction.
+	 */
+	cifs_sb_active(sb);
 	wait_on_bit(&cinode->flags, CIFS_INODE_PENDING_WRITERS,
 			TASK_UNINTERRUPTIBLE);
 
@@ -5124,6 +5132,7 @@ oplock_break_ack:
 	cifs_put_tlink(tlink);
 out:
 	cifs_done_oplock_break(cinode);
+	cifs_sb_deactive(sb);
 }
 
 /*

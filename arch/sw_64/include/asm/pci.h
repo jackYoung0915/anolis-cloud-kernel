@@ -48,6 +48,7 @@ enum SUNWAY_PIU_IOR0 {
 	PCACHE_ACCESS =		0xb880UL,
 	PCACHE_ITEM_TAG =	0xb900UL,
 	PCACHE_ITEM_DATA0 =	0xb980UL,
+	SUNWAY_PIU_IOR0_SIZE =	0xba00UL,
 };
 
 enum SUNWAY_PIU_IOR1 {
@@ -57,6 +58,7 @@ enum SUNWAY_PIU_IOR1 {
 	RCDEBUGINF1 =		0xc80UL,
 	DCACONTROL =		0x1a00UL,
 	DEVICEID0 =		0x1a80UL,
+	SUNWAY_PIU_IOR1_SIZE =	0x1b00UL,
 };
 
 enum SUNWAY_RC {
@@ -78,7 +80,10 @@ enum SUNWAY_RC {
 	RC_PHY_INT_REG =	0x80000UL,
 	RC_PHY_EXT_GEN1 =	0x82400UL,
 	RC_PHY_EXT_GEN2 =	0x82480UL,
+	SUNWAY_RC_SIZE =	0x82500UL,
 };
+
+#define SUNWAY_DEVMN_SIZE	0x3480UL
 
 struct pci_dev;
 struct pci_bus;
@@ -105,11 +110,11 @@ struct pci_controller {
 	unsigned long sparse_io_base;
 	unsigned long dense_io_base;
 
-	/* This one's for the kernel only.  It's in KSEG somewhere.  */
 	void __iomem *ep_config_space_base;
 	void __iomem *rc_config_space_base;
 	void __iomem *piu_ior0_base;
 	void __iomem *piu_ior1_base;
+	void __iomem *devmn_base;
 
 	unsigned long index;
 	unsigned long node;

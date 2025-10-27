@@ -15,8 +15,8 @@
 #include <linux/page_idle.h>
 #include <linux/slab.h>
 
-static struct damon_ctx **dbgfs_ctxs;
-static int dbgfs_nr_ctxs;
+struct damon_ctx **dbgfs_ctxs;
+int dbgfs_nr_ctxs;
 static struct dentry **dbgfs_dirs;
 static DEFINE_MUTEX(damon_dbgfs_lock);
 
@@ -640,6 +640,9 @@ static int set_init_regions(struct damon_ctx *c, const char *str, ssize_t len)
 	damon_for_each_target(t, c) {
 		damon_for_each_region_safe(r, next, t)
 			damon_destroy_region(r, t);
+		kfree(t->init_regions);
+		t->init_regions = NULL;
+		t->nr_init_regions = 0;
 	}
 
 	while (pos < len) {
@@ -653,12 +656,37 @@ static int set_init_regions(struct damon_ctx *c, const char *str, ssize_t len)
 		pos += parsed;
 	}
 
+	/* Set damon_target->init_regions */
+	damon_for_each_target(t, c) {
+		unsigned int nr_regions = t->nr_regions;
+		int idx = 0;
+
+		t->nr_init_regions = nr_regions;
+		t->init_regions = kmalloc_array(nr_regions, sizeof(struct damon_addr_range),
+				GFP_KERNEL);
+		if (t->init_regions == NULL)
+			goto fail;
+		damon_for_each_region_safe(r, next, t) {
+			/* TODO: Never happen? */
+			if (idx == nr_regions) {
+				pr_alert("nr_regions overflow, init_regions already full.");
+				break;
+			}
+			t->init_regions[idx].start = r->ar.start;
+			t->init_regions[idx].end = r->ar.end;
+			idx++;
+		}
+	}
+
 	return 0;
 
 fail:
 	damon_for_each_target(t, c) {
 		damon_for_each_region_safe(r, next, t)
 			damon_destroy_region(r, t);
+		kfree(t->init_regions);
+		t->init_regions = NULL;
+		t->nr_init_regions = 0;
 	}
 	return err;
 }
@@ -718,6 +746,49 @@ out:
 	return len;
 }
 
+DEFINE_STATIC_KEY_FALSE(numa_stat_enabled_key);
+
+static ssize_t dbgfs_numa_stat_read(struct file *file,
+		char __user *buf, size_t count, loff_t *ppos)
+{
+	char numa_on_buf[5];
+	bool enable = static_branch_unlikely(&numa_stat_enabled_key);
+	int len;
+
+	len = scnprintf(numa_on_buf, 5, enable ? "on\n" : "off\n");
+
+	return simple_read_from_buffer(buf, count, ppos, numa_on_buf, len);
+}
+
+static ssize_t dbgfs_numa_stat_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	ssize_t ret = 0;
+	char *kbuf;
+
+	kbuf = user_input_str(buf, count, ppos);
+	if (IS_ERR(kbuf))
+		return PTR_ERR(kbuf);
+
+	/* Remove white space */
+	if (sscanf(kbuf, "%s", kbuf) != 1) {
+		kfree(kbuf);
+		return -EINVAL;
+	}
+
+	if (!strncmp(kbuf, "on", count))
+		static_branch_enable(&numa_stat_enabled_key);
+	else if (!strncmp(kbuf, "off", count))
+		static_branch_disable(&numa_stat_enabled_key);
+	else
+		ret = -EINVAL;
+
+	if (!ret)
+		ret = count;
+	kfree(kbuf);
+	return ret;
+}
+
 static int damon_dbgfs_open(struct inode *inode, struct file *file)
 {
 	damon_dbgfs_warn_deprecation();
@@ -756,12 +827,17 @@ static const struct file_operations kdamond_pid_fops = {
 	.read = dbgfs_kdamond_pid_read,
 };
 
+static const struct file_operations numa_stat_ops = {
+	.write = dbgfs_numa_stat_write,
+	.read = dbgfs_numa_stat_read,
+};
+
 static void dbgfs_fill_ctx_dir(struct dentry *dir, struct damon_ctx *ctx)
 {
 	const char * const file_names[] = {"attrs", "schemes", "target_ids",
-		"init_regions", "kdamond_pid"};
+		"init_regions", "kdamond_pid", "numa_stat"};
 	const struct file_operations *fops[] = {&attrs_fops, &schemes_fops,
-		&target_ids_fops, &init_regions_fops, &kdamond_pid_fops};
+		&target_ids_fops, &init_regions_fops, &kdamond_pid_fops, &numa_stat_ops};
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(file_names); i++)
@@ -937,10 +1013,18 @@ static int dbgfs_rm_context(char *name)
 		goto out_new_dirs;
 	}
 
-	for (i = 0, j = 0; i < dbgfs_nr_ctxs; i++) {
+	dbgfs_nr_ctxs--;
+	/* Prevent NUMA fault get the wrong value */
+	smp_mb();
+
+	for (i = 0, j = 0; i < dbgfs_nr_ctxs + 1; i++) {
 		if (dbgfs_dirs[i] == dir) {
+			struct damon_ctx *tmp_ctx = dbgfs_ctxs[i];
+
+			rcu_assign_pointer(dbgfs_ctxs[i], NULL);
+			synchronize_rcu();
 			debugfs_remove(dbgfs_dirs[i]);
-			dbgfs_destroy_ctx(dbgfs_ctxs[i]);
+			dbgfs_destroy_ctx(tmp_ctx);
 			continue;
 		}
 		new_dirs[j] = dbgfs_dirs[i];
@@ -952,7 +1036,6 @@ static int dbgfs_rm_context(char *name)
 
 	dbgfs_dirs = new_dirs;
 	dbgfs_ctxs = new_ctxs;
-	dbgfs_nr_ctxs--;
 
 	goto out_dput;
 

@@ -35,4 +35,13 @@ extern int sched_acpu_enable_handler(struct ctl_table *table, int write,
 				     void __user *buffer, size_t *lenp,
 				     loff_t *ppos);
 #endif
+#ifdef CONFIG_GROUP_BALANCER
+extern unsigned int sysctl_sched_group_balancer_enabled;
+extern int sched_group_balancer_enable_handler(struct ctl_table *table, int write,
+					       void __user *buffer, size_t *lenp,
+					       loff_t *ppos);
+#endif
+#ifdef CONFIG_SMP
+extern unsigned int sysctl_sched_push_expellee_interval;
+#endif
 #endif /* _LINUX_SCHED_SYSCTL_H */

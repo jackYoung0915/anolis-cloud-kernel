@@ -753,6 +753,9 @@ void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
 	struct pglist_data *pgdat = zone->zone_pgdat;
 	int nid = pgdat->node_id;
 
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	kidled_free_folio_age(pgdat);
+#endif
 	clear_zone_contiguous(zone);
 
 	if (zone_is_empty(zone))
@@ -1736,8 +1739,12 @@ static void do_migrate_range(unsigned long start_pfn, unsigned long end_pfn)
 		if (PageHWPoison(page)) {
 			if (WARN_ON(folio_test_lru(folio)))
 				folio_isolate_lru(folio);
-			if (folio_mapped(folio))
+			if (folio_mapped(folio)) {
+				folio_lock(folio);
 				try_to_unmap(folio, TTU_IGNORE_MLOCK);
+				folio_unlock(folio);
+			}
+
 			continue;
 		}
 
@@ -1770,6 +1777,7 @@ static void do_migrate_range(unsigned long start_pfn, unsigned long end_pfn)
 		struct migration_target_control mtc = {
 			.nmask = &nmask,
 			.gfp_mask = GFP_USER | __GFP_MOVABLE | __GFP_RETRY_MAYFAIL,
+			.reason = MR_MEMORY_HOTPLUG,
 		};
 		int ret;
 
@@ -2121,6 +2129,9 @@ static int check_no_memblock_for_node_cb(struct memory_block *mem, void *arg)
 void try_offline_node(int nid)
 {
 	int rc;
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	pg_data_t *pgdat = NODE_DATA(nid);
+#endif
 
 	/*
 	 * If the node still spans pages (especially ZONE_DEVICE), don't
@@ -2142,6 +2153,9 @@ void try_offline_node(int nid)
 	if (check_cpu_on_node(nid))
 		return;
 
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+	kidled_free_folio_age(pgdat);
+#endif
 	/*
 	 * all memory/cpu of this node are removed, we can offline this
 	 * node now.

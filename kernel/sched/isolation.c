@@ -325,7 +325,7 @@ void update_wilds_cpumask(cpumask_var_t new_allowed, cpumask_var_t old_allowed)
 {
 	struct task_struct *g, *task;
 
-	rcu_read_lock();
+	read_lock(&tasklist_lock);
 	for_each_process_thread(g, task) {
 		if (task->flags & PF_KTHREAD)
 			continue;
@@ -335,7 +335,7 @@ void update_wilds_cpumask(cpumask_var_t new_allowed, cpumask_var_t old_allowed)
 
 		set_cpus_allowed_ptr(task, new_allowed);
 	}
-	rcu_read_unlock();
+	read_unlock(&tasklist_lock);
 }
 
 static DEFINE_MUTEX(dyn_isolcpus_mutex);
@@ -394,6 +394,7 @@ static ssize_t write_dyn_isolcpus(struct file *file, const char __user *buf,
 	update_wilds_cpumask(new_allowed, old_allowed);
 
 	rebuild_sched_domains();
+	update_group_balancer_root_cpumask();
 	workqueue_set_unbound_cpumask(new_allowed);
 
 free_all:

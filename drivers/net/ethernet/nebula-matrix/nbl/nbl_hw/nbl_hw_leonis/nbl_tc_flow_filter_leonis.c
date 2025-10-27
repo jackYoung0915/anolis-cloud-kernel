@@ -8,6 +8,7 @@
 #include "nbl_p4_actions.h"
 #include "nbl_tc_tun_leonis.h"
 #include "nbl_tc_flow_leonis.h"
+#include "nbl_tc_pedit.h"
 
 #define NBL_ACT_OFT 16
 #define NBL_GET_ACT_INFO(data, idx) (*(u16 *)&(data) + ((idx) << NBL_ACT_OFT))
@@ -199,8 +200,7 @@ static int nbl_flow_ht_assign_proc(struct nbl_resource_mgt *res_mgt,
 			     tcam_item->key_mode == NBL_TC_KT_HALF_MODE)) {
 				tcam_item->tcam_flag = true;
 				nbl_debug(common, NBL_DEBUG_FLOW,
-					  "tc flow tcam:pp%d ht0=%x,cnt=%d,ht1=%x,cnt=%d, "
-					  "put it to tcam.\n",
+					  "tc flow :pp%d ht0=%x,cnt=%d,ht1=%x,cnt=%d, to tcam.\n",
 					  mt_input->pp_type, ht0_hash,
 					  pp_ht0_node->ref_cnt, ht1_hash,
 					  pp_ht1_node->ref_cnt);
@@ -479,6 +479,344 @@ nbl_flow_tunnel_decap_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *ite
 	return 0;
 }
 
+static u32 nbl_flow_set_pedit_act(struct nbl_resource_mgt *res_mgt,
+				  struct nbl_tc_pedit_entry *in_e,
+				  enum nbl_flow_ped_type pedit_type, u32 act_id)
+{
+	u32 act = 0;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(tc_flow_mgt->res_mgt);
+
+	/* ref_node no need write ped cuz first node had done it */
+	if (!NBL_TC_PEDIT_GET_NODE_VAL(in_e))
+		phy_ops->write_ped_tbl(NBL_RES_MGT_TO_PHY_PRIV(tc_flow_mgt->res_mgt),
+				       in_e->key, nbl_tc_pedit_get_hw_id(in_e), pedit_type);
+	act = nbl_tc_pedit_get_hw_id(in_e) + (act_id << 16);
+
+	return act;
+}
+
+static int nbl_flow_set_sip_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				    struct nbl_edit_item *edit_item,
+				    struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 act_idx = *item;
+	void *out_e = NULL;
+	struct nbl_tc_pedit_entry in_e;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	enum nbl_flow_ped_type pedit_type;
+
+	memset(&in_e, 0, sizeof(in_e));
+	/* ipv4 should write in the high 32-bits of ped_tbl */
+	in_e.ip[1] = be32_to_cpu(action->tc_pedit_info.val.ip4.saddr);
+	if (action->flag & NBL_FLOW_ACTION_EGRESS)
+		pedit_type = NBL_FLOW_PED_DIP_TYPE;
+	else
+		pedit_type = NBL_FLOW_PED_UIP_TYPE;
+
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 1);
+	ret = nbl_tc_pedit_add_node(&tc_flow_mgt->pedit_mgt, &in_e, &out_e, pedit_type);
+	if (ret) {
+		nbl_info(common, NBL_DEBUG_FLOW, "nbl_set_sip error");
+		return -ENOMEM;
+	}
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%d-%u):sip:%u, hw-idx:%u",
+		  pedit_type, action->tc_pedit_info.pedit_node.pedits,
+		  action->tc_pedit_info.val.ip4.saddr, nbl_tc_pedit_get_hw_id(&in_e));
+
+	buf[act_idx] = nbl_flow_set_pedit_act(res_mgt, &in_e, pedit_type, NBL_ACT_REP_IPV4_SIP);
+	NBL_TC_PEDIT_SET_NODE_RES_VAL(action->tc_pedit_info.pedit_node);
+	NBL_TC_PEDIT_SET_NODE_RES_ENTRY(action->tc_pedit_info.pedit_node, pedit_type, out_e);
+	return ret;
+}
+
+static int nbl_flow_set_dip_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				    struct nbl_edit_item *edit_item,
+				    struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 act_idx = *item;
+	struct nbl_tc_pedit_entry in_e;
+	void *out_e = NULL;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	enum nbl_flow_ped_type pedit_type;
+
+	memset(&in_e, 0, sizeof(in_e));
+	/* ipv4 should write in the high 32-bits of ped_tbl */
+	in_e.ip[1] = be32_to_cpu(action->tc_pedit_info.val.ip4.daddr);
+	if (action->flag & NBL_FLOW_ACTION_EGRESS)
+		pedit_type = NBL_FLOW_PED_DIP_TYPE;
+	else
+		pedit_type = NBL_FLOW_PED_UIP_TYPE;
+
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 1);
+	ret = nbl_tc_pedit_add_node(&tc_flow_mgt->pedit_mgt, &in_e, &out_e, pedit_type);
+	if (ret) {
+		nbl_info(common, NBL_DEBUG_FLOW, "nbl_set_dip error");
+		return -ENOMEM;
+	}
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%d-%u):dip:%u, hw-idx:%u",
+		  pedit_type, action->tc_pedit_info.pedit_node.pedits,
+		  action->tc_pedit_info.val.ip4.daddr, nbl_tc_pedit_get_hw_id(&in_e));
+	buf[act_idx] = nbl_flow_set_pedit_act(res_mgt, &in_e, pedit_type, NBL_ACT_REP_IPV4_DIP);
+	NBL_TC_PEDIT_SET_NODE_RES_VAL(action->tc_pedit_info.pedit_node);
+
+	/* update pedit_type, for dst ip store in _D_TYPE */
+	NBL_TC_PEDIT_SET_D_TYPE(pedit_type);
+	NBL_TC_PEDIT_SET_NODE_RES_ENTRY(action->tc_pedit_info.pedit_node, pedit_type, out_e);
+	return ret;
+}
+
+static int nbl_flow_set_sip6_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				     struct nbl_edit_item *edit_item,
+				     struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 act_idx = *item;
+	struct nbl_tc_pedit_entry in_e;
+	void *out_e = NULL;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	enum nbl_flow_ped_type pedit_type;
+	int idx;
+	char ip6[128];
+	int oft = 0;
+	u32 *cur_ip_s = (u32 *)&in_e.ip6;
+	u32 *ip = &action->tc_pedit_info.val.ip6.saddr.in6_u.u6_addr32[3];
+
+	memset(&in_e, 0, sizeof(in_e));
+	for (idx = 0; idx < 4; ++idx) {
+		*cur_ip_s = be32_to_cpu(*ip);
+		oft += snprintf(&ip6[oft], 128, "-%x", *cur_ip_s);
+		--ip;
+		++cur_ip_s;
+	}
+
+	if (action->flag & NBL_FLOW_ACTION_EGRESS)
+		pedit_type = NBL_FLOW_PED_DIP_TYPE;
+	else
+		pedit_type = NBL_FLOW_PED_UIP_TYPE;
+
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 4);
+	NBL_TC_PEDIT_SET_NODE_H(&in_e);
+	ret = nbl_tc_pedit_add_node(&tc_flow_mgt->pedit_mgt, &in_e, &out_e, pedit_type);
+	if (ret) {
+		nbl_info(common, NBL_DEBUG_FLOW, "nbl_set_sip6 error");
+		return -ENOMEM;
+	}
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%d-%u):sip6:%s, hw-idx:%u",
+		  pedit_type, action->tc_pedit_info.pedit_node.pedits, ip6,
+		  nbl_tc_pedit_get_hw_id(&in_e));
+	buf[act_idx] = nbl_flow_set_pedit_act(res_mgt, &in_e,
+					      NBL_TC_PEDIT_GET_IP6_PHY_TYPE(pedit_type),
+					      NBL_ACT_REP_IPV6_SIP);
+
+	NBL_TC_PEDIT_SET_NODE_RES_VAL(action->tc_pedit_info.pedit_node);
+	NBL_TC_PEDIT_SET_NODE_RES_ENTRY(action->tc_pedit_info.pedit_node, pedit_type, out_e);
+	return ret;
+}
+
+static int nbl_flow_set_dip6_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				     struct nbl_edit_item *edit_item,
+				     struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 act_idx = *item;
+	struct nbl_tc_pedit_entry in_e;
+	void *out_e = NULL;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	enum nbl_flow_ped_type pedit_type;
+	int idx;
+	char ip6[128];
+	int oft = 0;
+	u32 *cur_ip_s = (u32 *)&in_e.ip6;
+	u32 *ip = &action->tc_pedit_info.val.ip6.daddr.in6_u.u6_addr32[3];
+
+	memset(&in_e, 0, sizeof(in_e));
+	for (idx = 0; idx < 4; ++idx) {
+		*cur_ip_s = be32_to_cpu(*ip);
+		oft += snprintf(&ip6[oft], 128 - oft, "-%x", *cur_ip_s);
+		--ip;
+		++cur_ip_s;
+	}
+
+	if (action->flag & NBL_FLOW_ACTION_EGRESS)
+		pedit_type = NBL_FLOW_PED_DIP_TYPE;
+	else
+		pedit_type = NBL_FLOW_PED_UIP_TYPE;
+
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 4);
+	NBL_TC_PEDIT_SET_NODE_H(&in_e);
+	ret = nbl_tc_pedit_add_node(&tc_flow_mgt->pedit_mgt, &in_e, &out_e, pedit_type);
+	if (ret) {
+		nbl_info(common, NBL_DEBUG_FLOW, "nbl_set_dip6 error");
+		return -ENOMEM;
+	}
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%u-%d):dip6:%s, hw-idx:%u",
+		  pedit_type, action->tc_pedit_info.pedit_node.pedits, ip6,
+		  nbl_tc_pedit_get_hw_id(&in_e));
+	buf[act_idx] = nbl_flow_set_pedit_act(res_mgt, &in_e,
+					      NBL_TC_PEDIT_GET_IP6_PHY_TYPE(pedit_type),
+					      NBL_ACT_REP_IPV6_DIP);
+
+	NBL_TC_PEDIT_SET_NODE_RES_VAL(action->tc_pedit_info.pedit_node);
+	/* update pedit_type, for dst ip store in _D_TYPE */
+	NBL_TC_PEDIT_SET_D_TYPE(pedit_type);
+	NBL_TC_PEDIT_SET_NODE_RES_ENTRY(action->tc_pedit_info.pedit_node, pedit_type, out_e);
+	return ret;
+}
+
+static int nbl_flow_set_smac_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				     struct nbl_edit_item *edit_item,
+				     struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 act_idx = *item;
+	struct nbl_tc_pedit_entry in_e;
+	void *out_e = NULL;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	enum nbl_flow_ped_type pedit_type;
+	int idx;
+	char mac[128];
+	int oft = 0;
+	u8 *cur_mac_s = (u8 *)&in_e.mac;
+
+	memset(&in_e, 0, sizeof(in_e));
+	/* update mac offset, for low 16-bit must be 0 */
+	NBL_TC_UPDATE_MAC_OFT(cur_mac_s);
+	for (idx = 0; idx < ETH_ALEN; ++idx) {
+		*cur_mac_s = action->tc_pedit_info.val.eth.h_source[ETH_ALEN - 1 - idx];
+		oft += snprintf(&mac[oft], 128 - oft, "-%x", *cur_mac_s);
+		++cur_mac_s;
+	}
+
+	if (action->flag & NBL_FLOW_ACTION_EGRESS)
+		pedit_type = NBL_FLOW_PED_DMAC_TYPE;
+	else
+		pedit_type = NBL_FLOW_PED_UMAC_TYPE;
+
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 2);
+	ret = nbl_tc_pedit_add_node(&tc_flow_mgt->pedit_mgt, &in_e, &out_e, pedit_type);
+	if (ret) {
+		nbl_info(common, NBL_DEBUG_FLOW, "nbl_set_smac error");
+		return -ENOMEM;
+	}
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%d-%u):smac:%s, hw-idx:%u",
+		  pedit_type, action->tc_pedit_info.pedit_node.pedits, mac,
+		  nbl_tc_pedit_get_hw_id(&in_e));
+	buf[act_idx] = nbl_flow_set_pedit_act(res_mgt, &in_e, pedit_type, NBL_ACT_REP_SMAC);
+	NBL_TC_PEDIT_SET_NODE_RES_VAL(action->tc_pedit_info.pedit_node);
+	NBL_TC_PEDIT_SET_NODE_RES_ENTRY(action->tc_pedit_info.pedit_node, pedit_type, out_e);
+	return ret;
+}
+
+static int nbl_flow_set_dmac_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				     struct nbl_edit_item *edit_item,
+				     struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 act_idx = *item;
+	struct nbl_tc_pedit_entry in_e;
+	void *out_e = NULL;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	enum nbl_flow_ped_type pedit_type;
+	int idx;
+	char mac[128];
+	int oft = 0;
+	u8 *cur_mac_s = in_e.mac;
+
+	memset(&in_e, 0, sizeof(in_e));
+	/* update mac offset, for low 16-bit must be 0 */
+	NBL_TC_UPDATE_MAC_OFT(cur_mac_s);
+	for (idx = 0; idx < ETH_ALEN; ++idx) {
+		*cur_mac_s = action->tc_pedit_info.val.eth.h_dest[ETH_ALEN - 1 - idx];
+		oft += snprintf(&mac[oft], 128 - oft, "-%x", *cur_mac_s);
+		++cur_mac_s;
+	}
+
+	if (action->flag & NBL_FLOW_ACTION_EGRESS)
+		pedit_type = NBL_FLOW_PED_DMAC_TYPE;
+	else
+		pedit_type = NBL_FLOW_PED_UMAC_TYPE;
+
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 2);
+	ret = nbl_tc_pedit_add_node(&tc_flow_mgt->pedit_mgt, &in_e, &out_e, pedit_type);
+	if (ret) {
+		nbl_info(common, NBL_DEBUG_FLOW, "nbl_set_dmac error");
+		return -ENOMEM;
+	}
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%d-%u):dmac:%s, hw-idx:%u",
+		  pedit_type, action->tc_pedit_info.pedit_node.pedits, mac,
+		  nbl_tc_pedit_get_hw_id(&in_e));
+	buf[act_idx] = nbl_flow_set_pedit_act(res_mgt, &in_e, pedit_type, NBL_ACT_REP_DMAC);
+	NBL_TC_PEDIT_SET_NODE_RES_VAL(action->tc_pedit_info.pedit_node);
+
+	/* update pedit_type, for dst mac store in _D_TYPE */
+	NBL_TC_PEDIT_SET_D_TYPE(pedit_type);
+	NBL_TC_PEDIT_SET_NODE_RES_ENTRY(action->tc_pedit_info.pedit_node, pedit_type, out_e);
+	return ret;
+}
+
+static int nbl_flow_set_sp_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				   struct nbl_edit_item *edit_item,
+				   struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 port = 0;
+	u16 act_idx = *item;
+	bool is_udp = NBL_TC_PEDIT_GET_NODE_RES_PRO(action->tc_pedit_info.pedit_node);
+
+	if (!is_udp)
+		port = be16_to_cpu(action->tc_pedit_info.val.tcp.source);
+	else
+		port = be16_to_cpu(action->tc_pedit_info.val.udp.source);
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%u):sp:%s-%u",
+		  action->tc_pedit_info.pedit_node.pedits,
+		  is_udp ? "udp" : "tcp", port);
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 1);
+
+	buf[act_idx] = port + (NBL_ACT_REP_SPORT << 16);
+	return ret;
+}
+
+static int nbl_flow_set_dp_act_2hw(struct nbl_rule_action *action, u32 *buf, u16 *item,
+				   struct nbl_edit_item *edit_item,
+				   struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	u16 port = 0;
+	u16 act_idx = *item;
+	bool is_udp = NBL_TC_PEDIT_GET_NODE_RES_PRO(action->tc_pedit_info.pedit_node);
+
+	if (!is_udp)
+		port = be16_to_cpu(action->tc_pedit_info.val.tcp.dest);
+	else
+		port = be16_to_cpu(action->tc_pedit_info.val.udp.dest);
+
+	nbl_debug(common, NBL_DEBUG_FLOW, "nbl_pedit_act(%u):dp:%s-%u",
+		  action->tc_pedit_info.pedit_node.pedits,
+		  is_udp ? "udp" : "tcp", port);
+	NBL_TC_PEDIT_DEC_NODE_RES_EDITS(action->tc_pedit_info.pedit_node, 1);
+
+	buf[act_idx] = port + (NBL_ACT_REP_DPORT << 16);
+	return ret;
+}
+
 static struct nbl_flow_action_2hw acts_2hw[] = {
 	{ NBL_FLOW_ACTION_PORT_ID, nbl_flow_port_id_action_2hw },
 	{ NBL_FLOW_ACTION_DROP, nbl_flow_drop_2hw },
@@ -490,6 +828,14 @@ static struct nbl_flow_action_2hw acts_2hw[] = {
 	{ NBL_FLOW_ACTION_POP_INNER_VLAN, nbl_flow_pop_inner_vlan_2hw },
 	{ NBL_FLOW_ACTION_TUNNEL_ENCAP, nbl_flow_tunnel_encap_act_2hw },
 	{ NBL_FLOW_ACTION_TUNNEL_DECAP, nbl_flow_tunnel_decap_act_2hw },
+	{ NBL_FLOW_ACTION_SET_IPV4_SRC_IP, nbl_flow_set_sip_act_2hw },
+	{ NBL_FLOW_ACTION_SET_IPV4_DST_IP, nbl_flow_set_dip_act_2hw },
+	{ NBL_FLOW_ACTION_SET_IPV6_SRC_IP, nbl_flow_set_sip6_act_2hw },
+	{ NBL_FLOW_ACTION_SET_IPV6_DST_IP, nbl_flow_set_dip6_act_2hw },
+	{ NBL_FLOW_ACTION_SET_SRC_MAC, nbl_flow_set_smac_act_2hw },
+	{ NBL_FLOW_ACTION_SET_DST_MAC, nbl_flow_set_dmac_act_2hw },
+	{ NBL_FLOW_ACTION_SET_SRC_PORT, nbl_flow_set_sp_act_2hw },
+	{ NBL_FLOW_ACTION_SET_DST_PORT, nbl_flow_set_dp_act_2hw },
 };
 
 static int nbl_flow_at_num_proc(struct nbl_resource_mgt *res_mgt,
@@ -734,9 +1080,9 @@ static int nbl_flow_del_ht_2hw(struct nbl_tc_ht_item *ht_item, u8 pp_type,
 			ret = nbl_cmdq_flow_ht_clear_2hw(ht_item, pp_type, res_mgt);
 			if (ret) {
 				nbl_err(common, NBL_DEBUG_FLOW,
-					"tc flow failed to del cmdq ht 2hw,pp%d ht0_hash=%d,ht1_hash=%d,tbl_id=%d.\n",
+					"tc flow failed to del cmdq ht 2hw,pp%d ht0_hash=%d,ht1_hash=%d,tbl_id=%d., ret %d\n",
 					pp_type, ht_item->ht0_hash,
-					ht_item->ht1_hash, ht_item->tbl_id);
+					ht_item->ht1_hash, ht_item->tbl_id, ret);
 				return ret;
 			}
 
@@ -746,9 +1092,9 @@ static int nbl_flow_del_ht_2hw(struct nbl_tc_ht_item *ht_item, u8 pp_type,
 					       ht_item->tbl_id);
 			if (ret) {
 				nbl_err(common, NBL_DEBUG_FLOW,
-					"tc flow failed to del ht,pp%d ht0_hash=%d,ht1_hash=%d,tbl_id=%d.\n",
+					"tc flow failed to del ht,pp%d ht0_hash=%d,ht1_hash=%d,tbl_id=%d, ret %d.\n",
 					pp_type, ht_item->ht0_hash,
-					ht_item->ht1_hash, ht_item->tbl_id);
+					ht_item->ht1_hash, ht_item->tbl_id, ret);
 				return ret;
 			}
 		} else {
@@ -770,9 +1116,9 @@ static int nbl_flow_del_ht_2hw(struct nbl_tc_ht_item *ht_item, u8 pp_type,
 			ret = nbl_cmdq_flow_ht_clear_2hw(ht_item, pp_type, res_mgt);
 			if (ret) {
 				nbl_err(common, NBL_DEBUG_FLOW,
-					"tc flow failed to del cmdq ht 2hw,pp%d ht0_hash=%d,ht1_hash=%d,tbl_id=%d.\n",
+					"tc flow failed to del cmdq ht 2hw,pp%d ht0_hash=%d,ht1_hash=%d,tbl_id=%d, ret %d.\n",
 					pp_type, ht_item->ht0_hash,
-					ht_item->ht1_hash, ht_item->tbl_id);
+					ht_item->ht1_hash, ht_item->tbl_id, ret);
 				return ret;
 			}
 
@@ -782,9 +1128,9 @@ static int nbl_flow_del_ht_2hw(struct nbl_tc_ht_item *ht_item, u8 pp_type,
 					       ht_item->tbl_id);
 			if (ret) {
 				nbl_err(common, NBL_DEBUG_FLOW,
-					"tc flow failed to del ht, pp%d ht1_hash=%d, ht0_hash=%d, tbl_id=%d.\n",
+					"tc flow failed to del ht, pp%d ht1_hash=%d, ht0_hash=%d, tbl_id=%d, ret %d.\n",
 					pp_type, ht_item->ht1_hash,
-					ht_item->ht0_hash, ht_item->tbl_id);
+					ht_item->ht0_hash, ht_item->tbl_id, ret);
 				return ret;
 			}
 		} else {
@@ -833,8 +1179,6 @@ static int nbl_flow_del_at_2hw(struct nbl_resource_mgt *res_mgt,
 					  act_collect->act_key[0].act[5],
 					  act_collect->act_key[0].act[6],
 					  act_collect->act_key[0].act[7]);
-			} else {
-				ret = -1;
 			}
 		}
 	}
@@ -855,8 +1199,6 @@ static int nbl_flow_del_at_2hw(struct nbl_resource_mgt *res_mgt,
 					  act_collect->act_key[1].act[5],
 					  act_collect->act_key[1].act[6],
 					  act_collect->act_key[1].act[7]);
-			} else {
-				ret = -1;
 			}
 		}
 	}
@@ -1231,8 +1573,7 @@ nbl_cmdq_send_flow_ktat(struct nbl_tc_ht_item *ht_item,
 		ktat.info.at_size = 1;
 		memcpy(&ktat.info.at_data, &at1.info, sizeof(at1));
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow kt index=0x%x,at_hw_index=0x%x,"
-			  "at data:0x%x-%x-%x-%x-%x-%x-%x-%x.",
+			  "tc flow kt index=0x%x,hw_index=0x%x, data:0x%x-%x-%x-%x-%x-%x-%x-%x.",
 			  ktat.info.kt_index, at_item->act_collect.act_hw_index,
 			  at1.info.at1, at1.info.at2, at1.info.at3, at1.info.at4,
 			  at1.info.at5, at1.info.at6, at1.info.at7, at1.info.at8);
@@ -1515,7 +1856,7 @@ static int nbl_flow_tab_add(struct nbl_flow_tab_filter *node,
 		if (ret) {
 			spin_unlock(&tc_flow_mgt->flow_lock);
 			nbl_debug(common, NBL_DEBUG_FLOW,
-				  "tc flow failed to alloc id for full table.\n");
+				  "tc flow failed to alloc id for full table, ret %d.\n", ret);
 			return -ENOSPC;
 		}
 	} else {
@@ -1526,7 +1867,7 @@ static int nbl_flow_tab_add(struct nbl_flow_tab_filter *node,
 		if (ret) {
 			spin_unlock(&tc_flow_mgt->flow_lock);
 			nbl_debug(common, NBL_DEBUG_FLOW,
-				  "tc flow failed to alloc id for half table.\n");
+				  "tc flow failed to alloc id for half table, ret %d.\n", ret);
 			return -ENOSPC;
 		}
 	}
@@ -1658,7 +1999,7 @@ static int nbl_flow_tab_del(struct nbl_flow_tab_filter *node, struct nbl_resourc
 
 	ret = nbl_flow_del_at_2hw(res_mgt, &node->act_collect, select_input->pp_type);
 	if (ret) {
-		nbl_err(common, NBL_DEBUG_FLOW, "tc flow failed to del at 2hw\n");
+		nbl_err(common, NBL_DEBUG_FLOW, "tc flow failed to del at 2hw, ret %d\n", ret);
 		goto ret_fail;
 	}
 
@@ -1684,6 +2025,7 @@ static int nbl_flow_tab_ht_at(struct nbl_flow_tab_filter *node,
 	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
 	struct nbl_profile_msg *profile_msg =
 		&tc_flow_mgt->profile_msg[idx_info->profile_id];
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
 
 	if (!node || !idx_info)
 		return -EINVAL;
@@ -1691,8 +2033,11 @@ static int nbl_flow_tab_ht_at(struct nbl_flow_tab_filter *node,
 	mt_input.key_full = profile_msg->key_full;
 	ret = nbl_tc_set_pp_related_value(&select_input, &mt_input, tc_flow_mgt,
 					  idx_info->profile_id);
-	if (ret)
+	if (ret) {
+		nbl_err(common, NBL_DEBUG_FLOW, "tc flow set pp failed, profile_id %u.\n",
+			profile_msg->key_full);
 		return ret;
+	}
 
 	if (opcode == NBL_OPCODE_ADD)
 		ret = nbl_flow_tab_add(node, action, res_mgt, idx_info, &mt_input, &select_input);
@@ -1709,9 +2054,12 @@ static int nbl_flow_tbl_op(void *ptr, struct nbl_rule_action *action,
 {
 	struct nbl_flow_tab_filter *flow_tab_node = NULL;
 	int ret = 0;
+	const struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
 
-	if (opcode == NBL_OPCODE_ADD && !action)
+	if (opcode == NBL_OPCODE_ADD && !action) {
+		nbl_err(common, NBL_DEBUG_FLOW, "tc flow add failed as action is NULL.\n");
 		return -EINVAL;
+	}
 
 	flow_tab_node = (struct nbl_flow_tab_filter *)ptr;
 	ret = nbl_flow_tab_ht_at(flow_tab_node, action, opcode, res_mgt, idx_info);
@@ -1729,7 +2077,7 @@ static int nbl_off_flow_op(void *ptr, struct nbl_rule_action *act,
 
 	if (!ptr) {
 		nbl_err(common, NBL_DEBUG_FLOW,
-			"tc flow offload op failed. op:%u\n", opcode);
+			"tc flow offload op failed, flow node is NULL. op:%u\n", opcode);
 		return -EINVAL;
 	}
 

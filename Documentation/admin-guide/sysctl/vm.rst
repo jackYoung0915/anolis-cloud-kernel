@@ -65,6 +65,7 @@ Currently, these files are in /proc/sys/vm:
 - page_lock_unfairness
 - panic_on_oom
 - percpu_pagelist_high_fraction
+- percpu_pagelist_batch_scale_max
 - stat_interval
 - stat_refresh
 - numa_stat
@@ -76,6 +77,7 @@ Currently, these files are in /proc/sys/vm:
 - watermark_scale_factor
 - zone_reclaim_mode
 - enable_context_readahead
+- enable_brk_thp_aligned
 
 
 admin_reserve_kbytes
@@ -850,6 +852,15 @@ online CPUs.  If the user writes '0' to this sysctl, it will revert to
 this default behavior.
 
 
+percpu_pagelist_batch_scale_max
+==============================
+In page allocator, PCP (Per-CPU pageset) is refilled and drained in
+batches.  The batch number is scaled automatically to improve page
+allocation/free throughput.  But too large scale factor may hurt
+latency.  This option sets the upper limit of scale factor to limit
+the maximum latency.
+
+
 stat_interval
 =============
 
@@ -1061,3 +1072,19 @@ To disable context readahead:
 
 To enable context readahead again:
        echo 1 > /proc/sys/vm/enable_context_readahead
+
+
+enable_brk_thp_aligned
+===========================
+
+The brk_thp_aligned feature optimizes workloads that involve frequent creation and
+access of heap memory by aligning and managing heap vmas according to THP size.
+This reduces memory fragmentation, lowers TLB miss, and enhances memory access efficiency.
+
+Default it is disabled.
+
+To disable brk_thp_aligned:
+       echo 0 > /proc/sys/vm/enable_brk_thp_aligned
+
+To enable brk_thp_aligned:
+       echo 1 > /proc/sys/vm/enable_brk_thp_aligned

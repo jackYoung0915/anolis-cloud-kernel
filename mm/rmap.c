@@ -1619,6 +1619,13 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	if (flags & TTU_SYNC)
 		pvmw.flags = PVMW_SYNC;
 
+	/*
+	 * If the same mapping offset of a file is alreadly mapped with
+	 * zeropage, the zeropage mapping needs to be unmapped.
+	 */
+	if (flags & TTU_ZEROPAGE)
+		pvmw.flags = PVMW_ZEROPAGE;
+
 	if (flags & TTU_SPLIT_HUGE_PMD)
 		split_huge_pmd_address(vma, address, false, folio);
 
@@ -1649,6 +1656,16 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	while (page_vma_mapped_walk(&pvmw)) {
 		/* Unexpected PMD-mapped THP? */
 		VM_BUG_ON_FOLIO(!pvmw.pte, folio);
+
+		/*
+		 * If the page is zeropage, we just unmap it and return.
+		 * Because currently compound page is not supported.
+		 */
+		if (flags & TTU_ZEROPAGE) {
+			ptep_clear_flush(vma, pvmw.address, pvmw.pte);
+			page_vma_mapped_walk_done(&pvmw);
+			break;
+		}
 
 		/*
 		 * If the folio is in an mlock()d vma, we must not swap it out.
@@ -1912,6 +1929,32 @@ static bool invalid_migration_vma(struct vm_area_struct *vma, void *arg)
 static int folio_not_mapped(struct folio *folio)
 {
 	return !folio_mapped(folio);
+}
+
+/**
+ * try_to_unmap_zeropage - try to remove all page table mappings to a zero page
+ * with the same offset. If the flag doesn't contain TTU_ZEROPAGE, this function
+ * does no thing.
+ * @page: the page to get unmapped
+ * @flags: action and flags
+ *
+ * Tries to remove all the page table entries which are mapping zero
+ * page with the same offset, used in the pageout path.  Caller must hold the page
+ * lock of the newly allocated page.
+ *
+ * During rmap_walk, it holds the i_mmap_sem to avoid modify VMA which not expected.
+ */
+void try_to_unmap_zero_folio(struct folio *folio, enum ttu_flags flags)
+{
+	struct rmap_walk_control rwc = {
+		.rmap_one = try_to_unmap_one,
+		.arg = (void *)flags,
+	};
+
+	if (!(flags & TTU_ZEROPAGE))
+		return;
+
+	rmap_walk(folio, &rwc);
 }
 
 /**

@@ -78,7 +78,9 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 /* Number of pointers that fit on a page:  this will go away. */
 #define PTRS_PER_PAGE	(1UL << (PAGE_SHIFT - 3))
 
-#define VMALLOC_START	(-2 * PGDIR_SIZE)
+#define MODULES_VADDR	0xfffff00000000000
+#define MODULES_END	0xfffff0007fffffff
+#define VMALLOC_START	0xfffff00080000000
 #ifndef CONFIG_SPARSEMEM_VMEMMAP
 #define VMALLOC_END	(-PGDIR_SIZE)
 #else
@@ -188,6 +190,7 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 #define PAGE_NONE		__pgprot(__ACCESS_BITS | _PAGE_FOR | _PAGE_FOW | _PAGE_FOE | _PAGE_LEAF | _PAGE_PROTNONE)
 #define PAGE_KERNEL		__pgprot(_PAGE_VALID | _PAGE_KERN | _PAGE_LEAF)
 #define _PAGE_NORMAL(x)		__pgprot(_PAGE_VALID | __ACCESS_BITS | _PAGE_LEAF | (x))
+#define _PAGE_IOREMAP		pgprot_val(PAGE_KERNEL)
 
 #define page_valid_kern(x)	((x & (_PAGE_VALID | _PAGE_KERN)) == (_PAGE_VALID | _PAGE_KERN))
 #endif
@@ -705,6 +708,8 @@ static inline int pgd_devmap(pgd_t pgd)
 #endif
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
+#define pmd_thp_or_huge(pmd)	(pmd_huge(pmd) || pmd_trans_huge(pmd))
+
 #define __HAVE_ARCH_PMDP_GET_AND_CLEAR
 static inline pmd_t pmdp_get_and_clear(struct mm_struct *mm,
 				       unsigned long addr, pmd_t *pmdp)
@@ -829,7 +834,7 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 	pr_err("%s: %d: bad pgd %016lx.\n", __FILE__, __LINE__, pgd_val(e))
 extern void paging_init(void);
 
-/* We have our own get_unmapped_area to cope with ADDR_LIMIT_32BIT.  */
 #define HAVE_ARCH_UNMAPPED_AREA
+#define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
 
 #endif /* _ASM_SW64_PGTABLE_H */

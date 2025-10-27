@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -26,6 +26,11 @@ struct nbl_phy_mgt {
 	bool should_lock;
 	u8 resv[3];
 	enum nbl_hw_status hw_status;
+};
+
+struct nbl_phy_ped_tbl {
+	u64 addr:56;
+	u64 addr_len:8;
 };
 
 #define NBL_DELAY_MIN_TIME_FOR_REGS		400 /* 200us for palladium,3us for s2c */

@@ -191,6 +191,7 @@ struct perf_missing_features {
 	bool code_page_size;
 	bool weight_struct;
 	bool read_lost;
+	bool branch_counters;
 };
 
 extern struct perf_missing_features perf_missing_features;
@@ -251,6 +252,8 @@ struct tep_event *event_format__new(const char *sys, const char *name);
 void evsel__init(struct evsel *evsel, struct perf_event_attr *attr, int idx);
 void evsel__exit(struct evsel *evsel);
 void evsel__delete(struct evsel *evsel);
+
+void evsel__set_priv_destructor(void (*destructor)(void *priv));
 
 struct callchain_param;
 

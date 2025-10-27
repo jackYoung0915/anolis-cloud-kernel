@@ -1026,7 +1026,8 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 		.gfp_mask = (GFP_HIGHUSER_MOVABLE & ~__GFP_RECLAIM) | __GFP_NOWARN |
 			__GFP_NOMEMALLOC | GFP_NOWAIT,
 		.nid = target_nid,
-		.nmask = &allowed_mask
+		.nmask = &allowed_mask,
+		.reason = MR_DEMOTION,
 	};
 
 	if (list_empty(demote_folios))
@@ -1160,8 +1161,10 @@ retry:
 		 * 2) Global or new memcg reclaim encounters a folio that is
 		 *    not marked for immediate reclaim, or the caller does not
 		 *    have __GFP_FS (or __GFP_IO if it's simply going to swap,
-		 *    not to fs). In this case mark the folio for immediate
-		 *    reclaim and continue scanning.
+		 *    not to fs), or the folio belongs to a mapping where
+		 *    waiting on writeback during reclaim may lead to a deadlock.
+		 *    In this case mark the folio for immediate reclaim and
+		 *    continue scanning.
 		 *
 		 *    Require may_enter_fs() because we would wait on fs, which
 		 *    may not have submitted I/O yet. And the loop driver might
@@ -1186,6 +1189,8 @@ retry:
 		 * takes to write them to disk.
 		 */
 		if (folio_test_writeback(folio)) {
+			mapping = folio_mapping(folio);
+
 			/* Case 1 above */
 			if (current_is_kswapd() &&
 			    folio_test_reclaim(folio) &&
@@ -1196,7 +1201,9 @@ retry:
 			/* Case 2 above */
 			} else if (writeback_throttling_sane(sc) ||
 			    !folio_test_reclaim(folio) ||
-			    !may_enter_fs(folio, sc->gfp_mask)) {
+			    !may_enter_fs(folio, sc->gfp_mask) ||
+			    (mapping &&
+			     mapping_writeback_may_deadlock_on_reclaim(mapping))) {
 				/*
 				 * This is slightly racy -
 				 * folio_end_writeback() might have
@@ -2295,7 +2302,7 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 	 * Flush the memory cgroup stats, so that we read accurate per-memcg
 	 * lruvec stats for heuristics.
 	 */
-	mem_cgroup_flush_stats();
+	mem_cgroup_flush_stats(sc->target_mem_cgroup);
 
 	/*
 	 * Determine the scan balance between anon and file LRUs.
@@ -2628,6 +2635,8 @@ DEFINE_STATIC_KEY_ARRAY_TRUE(lru_gen_caps, NR_LRU_GEN_CAPS);
 DEFINE_STATIC_KEY_ARRAY_FALSE(lru_gen_caps, NR_LRU_GEN_CAPS);
 #define get_cap(cap)	static_branch_unlikely(&lru_gen_caps[cap])
 #endif
+
+EXPORT_SYMBOL(lru_gen_caps);
 
 static bool should_walk_mmu(void)
 {
@@ -4308,6 +4317,7 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 		       int tier_idx)
 {
 	bool success;
+	bool dirty, writeback;
 	int gen = folio_lru_gen(folio);
 	int type = folio_is_file_lru(folio);
 	int zone = folio_zonenum(folio);
@@ -4362,9 +4372,17 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 		return true;
 	}
 
+	dirty = folio_test_dirty(folio);
+	writeback = folio_test_writeback(folio);
+	if (type == LRU_GEN_FILE && dirty) {
+		sc->nr.file_taken += delta;
+		if (!writeback)
+			sc->nr.unqueued_dirty += delta;
+	}
+
 	/* waiting for writeback */
-	if (folio_test_locked(folio) || folio_test_writeback(folio) ||
-	    (type == LRU_GEN_FILE && folio_test_dirty(folio))) {
+	if (folio_test_locked(folio) || writeback ||
+	    (type == LRU_GEN_FILE && dirty)) {
 		gen = folio_inc_gen(lruvec, folio, true);
 		list_move(&folio->lru, &lrugen->folios[gen][type][zone]);
 		return true;
@@ -4477,6 +4495,9 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 	__count_memcg_events(memcg, item, isolated);
 	__count_memcg_events(memcg, PGREFILL, sorted);
 	__count_vm_events(PGSCAN_ANON + type, isolated);
+
+	if (type == LRU_GEN_FILE)
+		sc->nr.file_taken += isolated;
 
 	/*
 	 * There might not be eligible folios due to reclaim_idx. Check the
@@ -4606,6 +4627,7 @@ static int evict_folios(struct lruvec *lruvec, struct scan_control *sc, int swap
 		return scanned;
 retry:
 	reclaimed = shrink_folio_list(&list, pgdat, sc, &stat, false);
+	sc->nr.unqueued_dirty += stat.nr_unqueued_dirty;
 	sc->nr_reclaimed += reclaimed;
 
 	list_for_each_entry_safe_reverse(folio, next, &list, lru) {
@@ -4819,6 +4841,13 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 
 		cond_resched();
 	}
+
+	/*
+	 * If too many file cache in the coldest generation can't be evicted
+	 * due to being dirty, wake up the flusher.
+	 */
+	if (sc->nr.unqueued_dirty && sc->nr.unqueued_dirty == sc->nr.file_taken)
+		wakeup_flusher_threads(WB_REASON_VMSCAN);
 
 	/* whether this lruvec should be rotated */
 	return nr_to_scan < 0;
@@ -5206,6 +5235,12 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 		caps = -1;
 	else if (kstrtouint(buf, 0, &caps))
 		return -EINVAL;
+
+	if (caps && (is_kidled_enabled())) {
+		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs enabled\n",
+			__func__);
+		return -EINVAL;
+	}
 
 	for (i = 0; i < NR_LRU_GEN_CAPS; i++) {
 		bool enabled = caps & BIT(i);
@@ -5950,6 +5985,7 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	bool reclaimable = false;
 
 	if (lru_gen_enabled() && root_reclaim(sc)) {
+		memset(&sc->nr, 0, sizeof(sc->nr));
 		lru_gen_shrink_node(pgdat, sc);
 		return;
 	}
@@ -6234,6 +6270,29 @@ static void snapshot_refaults(struct mem_cgroup *target_memcg, pg_data_t *pgdat)
 	target_lruvec->refaults[WORKINGSET_FILE] = refaults;
 }
 
+#ifdef CONFIG_MEMCG
+static bool memcg_can_shrink(struct scan_control *sc)
+{
+	struct mem_cgroup *memcg = sc->target_mem_cgroup;
+	unsigned long file;
+
+	if (cgroup_reclaim(sc) && memcg->min_cache_pages) {
+		file = memcg_page_state(memcg, NR_ACTIVE_FILE) +
+			memcg_page_state(memcg, NR_INACTIVE_FILE);
+		sc->file_is_reserved = file < memcg->min_cache_pages;
+		if (sc->file_is_reserved && !mem_cgroup_swappiness(memcg))
+			return false;
+	}
+
+	return true;
+}
+#else
+static inline bool memcg_can_shrink(struct scan_control *sc)
+{
+	return true;
+}
+#endif
+
 /*
  * This is the main entry point to direct page reclaim.
  *
@@ -6266,6 +6325,9 @@ retry:
 	do {
 		if (current_is_kswapd() && cgroup_reclaim(sc) &&
 		    is_wmark_ok(sc->target_mem_cgroup, false))
+			break;
+
+		if (!memcg_can_shrink(sc))
 			break;
 
 		if (!sc->proactive)
@@ -7680,6 +7742,7 @@ void __memcg_pagecache_shrink(struct mem_cgroup *memcg,
 		nr_should_reclaim = memcg->pgcache_limit_reclaim_bytes;
 
 	sc.nr_to_reclaim = max(nr_should_reclaim, SWAP_CLUSTER_MAX);
+	set_task_reclaim_state(current, &sc.reclaim_state);
 	do {
 		if (!is_memcg_pgcache_limit_enabled(memcg))
 			break;
@@ -7708,5 +7771,6 @@ void __memcg_pagecache_shrink(struct mem_cgroup *memcg,
 		if (__pagecache_shrink(memcg, &sc) < 0)
 			break;
 	} while (--sc.priority >= 0);
+	set_task_reclaim_state(current, NULL);
 }
 #endif

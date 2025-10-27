@@ -575,9 +575,9 @@ PAGEFLAG(Reclaim, reclaim, PF_NO_TAIL)
 PAGEFLAG(Readahead, readahead, PF_NO_COMPOUND)
 	TESTCLEARFLAG(Readahead, readahead, PF_NO_COMPOUND)
 
-PAGEFLAG(Dropbehind, dropbehind, PF_NO_COMPOUND)
-	TESTCLEARFLAG(Dropbehind, dropbehind, PF_HEAD)
-	__SETPAGEFLAG(Dropbehind, dropbehind, PF_HEAD)
+FOLIO_FLAG(dropbehind, FOLIO_HEAD_PAGE)
+	FOLIO_TEST_CLEAR_FLAG(dropbehind, FOLIO_HEAD_PAGE)
+	__FOLIO_SET_FLAG(dropbehind, FOLIO_HEAD_PAGE)
 
 #ifdef CONFIG_HIGHMEM
 /*
@@ -588,6 +588,13 @@ PAGEFLAG(Dropbehind, dropbehind, PF_NO_COMPOUND)
 #define folio_test_highmem(__f)	is_highmem_idx(folio_zonenum(__f))
 #else
 PAGEFLAG_FALSE(HighMem, highmem)
+#endif
+
+/* Does kmap_local_folio() only allow access to one page of the folio? */
+#ifdef CONFIG_DEBUG_KMAP_LOCAL_FORCE_MAP
+#define folio_test_partial_kmap(f)	true
+#else
+#define folio_test_partial_kmap(f)	folio_test_highmem(f)
 #endif
 
 #ifdef CONFIG_SWAP
@@ -760,6 +767,25 @@ TESTPAGEFLAG_FALSE(Ksm, ksm)
 #endif
 
 u64 stable_page_flags(struct page *page);
+
+/**
+ * folio_xor_flags_has_waiters - Change some folio flags.
+ * @folio: The folio.
+ * @mask: Bits set in this word will be changed.
+ *
+ * This must only be used for flags which are changed with the folio
+ * lock held.  For example, it is unsafe to use for PG_dirty as that
+ * can be set without the folio lock held.  It can also only be used
+ * on flags which are in the range 0-6 as some of the implementations
+ * only affect those bits.
+ *
+ * Return: Whether there are tasks waiting on the folio.
+ */
+static inline bool folio_xor_flags_has_waiters(struct folio *folio,
+		unsigned long mask)
+{
+	return xor_unlock_is_negative_byte(mask, folio_flags(folio, 0));
+}
 
 /**
  * folio_test_uptodate - Is this folio up to date?
@@ -1136,13 +1162,15 @@ static __always_inline void __ClearPageAnonExclusive(struct page *page)
 /*
  * Flags checked when a page is freed.  Pages being freed should not have
  * these flags set.  If they are, there is a problem.
+ * To avoid conflict with kidled, we skip to check LRU_GEN_MASK.
+ * FIXME: Revisit this logic. Skipping LRU_GEN_MASK check may have side effects.
  */
 #define PAGE_FLAGS_CHECK_AT_FREE				\
 	(1UL << PG_lru		| 1UL << PG_locked	|	\
 	 1UL << PG_private	| 1UL << PG_private_2	|	\
 	 1UL << PG_writeback	| 1UL << PG_reserved	|	\
 	 1UL << PG_slab		| 1UL << PG_active 	|	\
-	 1UL << PG_unevictable	| __PG_MLOCKED | LRU_GEN_MASK | \
+	 1UL << PG_unevictable	| __PG_MLOCKED	| \
 	 __PG_DUP)
 
 /*

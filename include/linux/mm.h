@@ -530,7 +530,7 @@ static inline bool fault_flag_allow_retry_first(enum fault_flag flags)
  * pgoff should be used in favour of virtual_address, if possible.
  */
 struct vm_fault {
-	const struct {
+	struct {
 		struct vm_area_struct *vma;	/* Target VMA */
 		gfp_t gfp_mask;			/* gfp mask to be used for allocations */
 		pgoff_t pgoff;			/* Logical page offset based on vma */
@@ -648,7 +648,7 @@ struct vm_operations_struct {
 	 * policy.
 	 */
 	struct mempolicy *(*get_policy)(struct vm_area_struct *vma,
-					unsigned long addr);
+					unsigned long addr, pgoff_t *ilx);
 #endif
 	/*
 	 * Called by vm_normal_page() for special PTEs to find the
@@ -1929,6 +1929,88 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
+#ifdef CONFIG_KIDLED
+#ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
+static inline int kidled_get_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	u8 *age, age_val;
+
+	rcu_read_lock();
+	age = rcu_dereference(pgdat->node_folio_age);
+
+	if (unlikely(!age)) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
+
+	age += (pfn - pgdat->node_start_pfn);
+	age_val = *age;
+	rcu_read_unlock();
+	return age_val;
+}
+
+static inline int kidled_inc_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	u8 *age, age_val;
+
+	rcu_read_lock();
+	age = rcu_dereference(pgdat->node_folio_age);
+	if (unlikely(!age)) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
+
+	age += (pfn - pgdat->node_start_pfn);
+	age_val = ++*age;
+	rcu_read_unlock();
+
+	return age_val;
+}
+
+static inline void kidled_set_folio_age(pg_data_t *pgdat,
+					unsigned long pfn, int val)
+{
+	u8 *age;
+
+	rcu_read_lock();
+	age = rcu_dereference(pgdat->node_folio_age);
+	if (unlikely(!age)) {
+		rcu_read_unlock();
+		return;
+	}
+
+	age += (pfn - pgdat->node_start_pfn);
+	*age = val;
+	rcu_read_unlock();
+}
+#else
+static inline int kidled_get_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	struct folio *folio = pfn_folio(pfn);
+
+	return (folio->flags >> KIDLED_AGE_PGSHIFT) & KIDLED_AGE_MASK;
+}
+
+extern int kidled_inc_folio_age(pg_data_t *pgdat, unsigned long pfn);
+extern void kidled_set_folio_age(pg_data_t *pgdat, unsigned long pfn, int val);
+#endif /* KIDLED_AGE_NOT_IN_PAGE_FLAGS */
+#else  /* !CONFIG_KIDLED */
+static inline int kidled_get_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	return -EINVAL;
+}
+
+static inline int kidled_inc_folio_age(pg_data_t *pgdat, unsigned long pfn)
+{
+	return -EINVAL;
+}
+
+static inline void kidled_set_folio_age(pg_data_t *pgdat,
+					unsigned long pfn, int val)
+{
+}
+#endif /* CONFIG_KIDLED */
+
 /**
  * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
  * @folio: The folio.
@@ -2541,6 +2623,10 @@ long get_user_pages_unlocked(unsigned long start, unsigned long nr_pages,
 		    struct page **pages, unsigned int gup_flags);
 long pin_user_pages_unlocked(unsigned long start, unsigned long nr_pages,
 		    struct page **pages, unsigned int gup_flags);
+long memfd_pin_folios(struct file *memfd, loff_t start, loff_t end,
+		      struct folio **folios, unsigned int max_folios,
+		      pgoff_t *offset);
+int folio_add_pins(struct folio *folio, unsigned int pins);
 
 int get_user_pages_fast(unsigned long start, int nr_pages,
 			unsigned int gup_flags, struct page **pages);
@@ -2628,6 +2714,11 @@ static inline bool get_user_page_fast_only(unsigned long addr,
 static inline unsigned long get_mm_counter(struct mm_struct *mm, int member)
 {
 	return percpu_counter_read_positive(&mm->rss_stat[member]);
+}
+
+static inline unsigned long get_mm_counter_sum(struct mm_struct *mm, int member)
+{
+	return percpu_counter_sum_positive(&mm->rss_stat[member]);
 }
 
 void mm_trace_rss_stat(struct mm_struct *mm, int member);
@@ -2988,6 +3079,21 @@ static inline bool ptlock_init(struct ptdesc *ptdesc) { return true; }
 static inline void ptlock_free(struct ptdesc *ptdesc) {}
 #endif /* USE_SPLIT_PTE_PTLOCKS */
 
+static inline void pagetable_dtor(struct ptdesc *ptdesc)
+{
+	struct folio *folio = ptdesc_folio(ptdesc);
+
+	ptlock_free(ptdesc);
+	__folio_clear_pgtable(folio);
+	lruvec_stat_sub_folio(folio, NR_PAGETABLE);
+}
+
+static inline void pagetable_dtor_free(struct ptdesc *ptdesc)
+{
+	pagetable_dtor(ptdesc);
+	pagetable_free(ptdesc);
+}
+
 static inline bool pagetable_pte_ctor(struct ptdesc *ptdesc)
 {
 	struct folio *folio = ptdesc_folio(ptdesc);
@@ -2997,15 +3103,6 @@ static inline bool pagetable_pte_ctor(struct ptdesc *ptdesc)
 	__folio_set_pgtable(folio);
 	lruvec_stat_add_folio(folio, NR_PAGETABLE);
 	return true;
-}
-
-static inline void pagetable_pte_dtor(struct ptdesc *ptdesc)
-{
-	struct folio *folio = ptdesc_folio(ptdesc);
-
-	ptlock_free(ptdesc);
-	__folio_clear_pgtable(folio);
-	lruvec_stat_sub_folio(folio, NR_PAGETABLE);
 }
 
 pte_t *__pte_offset_map(pmd_t *pmd, unsigned long addr, pmd_t *pmdvalp);
@@ -3077,14 +3174,6 @@ static inline bool pmd_ptlock_init(struct ptdesc *ptdesc)
 	return ptlock_init(ptdesc);
 }
 
-static inline void pmd_ptlock_free(struct ptdesc *ptdesc)
-{
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	VM_BUG_ON_PAGE(ptdesc->pmd_huge_pte, ptdesc_page(ptdesc));
-#endif
-	ptlock_free(ptdesc);
-}
-
 #define pmd_huge_pte(mm, pmd) (pmd_ptdesc(pmd)->pmd_huge_pte)
 
 #else
@@ -3095,7 +3184,6 @@ static inline spinlock_t *pmd_lockptr(struct mm_struct *mm, pmd_t *pmd)
 }
 
 static inline bool pmd_ptlock_init(struct ptdesc *ptdesc) { return true; }
-static inline void pmd_ptlock_free(struct ptdesc *ptdesc) {}
 
 #define pmd_huge_pte(mm, pmd) ((mm)->pmd_huge_pte)
 
@@ -3120,15 +3208,6 @@ static inline bool pagetable_pmd_ctor(struct ptdesc *ptdesc)
 	return true;
 }
 
-static inline void pagetable_pmd_dtor(struct ptdesc *ptdesc)
-{
-	struct folio *folio = ptdesc_folio(ptdesc);
-
-	pmd_ptlock_free(ptdesc);
-	__folio_clear_pgtable(folio);
-	lruvec_stat_sub_folio(folio, NR_PAGETABLE);
-}
-
 /*
  * No scalability reason to split PUD locks yet, but follow the same pattern
  * as the PMD locks to make it easier if we decide to.  The VM should not be
@@ -3146,6 +3225,22 @@ static inline spinlock_t *pud_lock(struct mm_struct *mm, pud_t *pud)
 
 	spin_lock(ptl);
 	return ptl;
+}
+
+static inline void pagetable_pud_ctor(struct ptdesc *ptdesc)
+{
+	struct folio *folio = ptdesc_folio(ptdesc);
+
+	__folio_set_pgtable(folio);
+	lruvec_stat_add_folio(folio, NR_PAGETABLE);
+}
+
+static inline void pagetable_p4d_ctor(struct ptdesc *ptdesc)
+{
+	struct folio *folio = ptdesc_folio(ptdesc);
+
+	__folio_set_pgtable(folio);
+	lruvec_stat_add_folio(folio, NR_PAGETABLE);
 }
 
 extern void __init pagecache_init(void);
@@ -4231,6 +4326,11 @@ int async_fork_cpr_fast(struct vm_area_struct *vma,
 void async_fork_cpr_rest(void);
 void async_fork_cpr_done(struct mm_struct *mm, bool recover,
 			 bool locked);
+/* Should be called with mmap lock held */
+static inline bool is_async_fork_mm(struct mm_struct *mm)
+{
+	return mm && READ_ONCE(mm->async_fork_mm);
+}
 #else
 static inline void async_fork_cpr_bind(struct mm_struct *oldmm,
 				       struct mm_struct *mm, int err)
@@ -4253,6 +4353,24 @@ static inline void async_fork_fixup_pmd(struct vm_area_struct *mpnt, pmd_t *pmd,
 }
 static inline void async_fork_fixup_vma(struct vm_area_struct *mpnt)
 {
+}
+static inline bool is_async_fork_mm(struct mm_struct *mm)
+{
+	return false;
+}
+#endif
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+/* Static key for brk_thp_aligned feature, default is false (off) */
+DECLARE_STATIC_KEY_FALSE(brk_thp_aligned_key);
+static inline bool brk_thp_aligned_enabled(void)
+{
+	return static_branch_unlikely(&brk_thp_aligned_key);
+}
+#else
+static inline bool brk_thp_aligned_enabled(void)
+{
+	return false;
 }
 #endif
 

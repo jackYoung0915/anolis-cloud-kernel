@@ -24,6 +24,11 @@ MODULE_PARM_DESC(force_legacy,
 		 "Force legacy mode for transitional virtio 1 devices");
 #endif
 
+static bool anolis_no_surp_rm_break;
+module_param(anolis_no_surp_rm_break, bool, 0644);
+MODULE_PARM_DESC(anolis_no_surp_rm_break,
+		 "Anolis workaround: set true to workaround surprise removal issue.");
+
 /* wait for pending irq handlers */
 void vp_synchronize_vectors(struct virtio_device *vdev)
 {
@@ -590,7 +595,7 @@ static void virtio_pci_remove(struct pci_dev *pci_dev)
 	 * Device is marked broken on surprise removal so that virtio upper
 	 * layers can abort any ongoing operation.
 	 */
-	if (!pci_device_is_present(pci_dev))
+	if (!anolis_no_surp_rm_break && !pci_device_is_present(pci_dev))
 		virtio_break_device(&vp_dev->vdev);
 
 	pci_disable_sriov(pci_dev);

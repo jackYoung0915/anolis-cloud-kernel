@@ -2202,7 +2202,7 @@ static int grab_tail_page(struct inode *inode,
 	/* start within the page of the last block in the file */
 	start = (offset / blocksize) * blocksize;
 
-	error = __block_write_begin(page, start, offset - start,
+	error = __block_write_begin(page_folio(page), start, offset - start,
 				    reiserfs_get_block_create_0);
 	if (error)
 		goto unlock;
@@ -2739,26 +2739,27 @@ static void reiserfs_truncate_failed_write(struct inode *inode)
 	reiserfs_truncate_file(inode, 0);
 }
 
-static int reiserfs_write_begin(struct file *file,
+static int reiserfs_write_begin(const struct kiocb *iocb,
 				struct address_space *mapping,
 				loff_t pos, unsigned len,
-				struct page **pagep, void **fsdata)
+				struct folio **foliop, void **fsdata)
 {
 	struct inode *inode;
-	struct page *page;
+	struct folio *folio;
 	pgoff_t index;
 	int ret;
 	int old_ref = 0;
 
  	inode = mapping->host;
 	index = pos >> PAGE_SHIFT;
-	page = grab_cache_page_write_begin(mapping, index);
-	if (!page)
-		return -ENOMEM;
-	*pagep = page;
+	folio = __filemap_get_folio(mapping, index, FGP_WRITEBEGIN,
+			mapping_gfp_mask(mapping));
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
+	*foliop = folio;
 
 	reiserfs_wait_on_write_block(inode->i_sb);
-	fix_tail_page_for_writing(page);
+	fix_tail_page_for_writing(&folio->page);
 	if (reiserfs_transaction_running(inode->i_sb)) {
 		struct reiserfs_transaction_handle *th;
 		th = (struct reiserfs_transaction_handle *)current->
@@ -2768,7 +2769,7 @@ static int reiserfs_write_begin(struct file *file,
 		old_ref = th->t_refcount;
 		th->t_refcount++;
 	}
-	ret = __block_write_begin(page, pos, len, reiserfs_get_block);
+	ret = __block_write_begin(folio, pos, len, reiserfs_get_block);
 	if (ret && reiserfs_transaction_running(inode->i_sb)) {
 		struct reiserfs_transaction_handle *th = current->journal_info;
 		/*
@@ -2798,8 +2799,8 @@ static int reiserfs_write_begin(struct file *file,
 		}
 	}
 	if (ret) {
-		unlock_page(page);
-		put_page(page);
+		folio_unlock(folio);
+		folio_put(folio);
 		/* Truncate allocated blocks */
 		reiserfs_truncate_failed_write(inode);
 	}
@@ -2828,7 +2829,7 @@ int __reiserfs_write_begin(struct page *page, unsigned from, unsigned len)
 		th->t_refcount++;
 	}
 
-	ret = __block_write_begin(page, from, len, reiserfs_get_block);
+	ret = __block_write_begin(page_folio(page), from, len, reiserfs_get_block);
 	if (ret && reiserfs_transaction_running(inode->i_sb)) {
 		struct reiserfs_transaction_handle *th = current->journal_info;
 		/*
@@ -2866,12 +2867,11 @@ static sector_t reiserfs_aop_bmap(struct address_space *as, sector_t block)
 	return generic_block_bmap(as, block, reiserfs_bmap);
 }
 
-static int reiserfs_write_end(struct file *file, struct address_space *mapping,
+static int reiserfs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			      loff_t pos, unsigned len, unsigned copied,
-			      struct page *page, void *fsdata)
+			      struct folio *folio, void *fsdata)
 {
-	struct folio *folio = page_folio(page);
-	struct inode *inode = page->mapping->host;
+	struct inode *inode = folio->mapping->host;
 	int ret = 0;
 	int update_sd = 0;
 	struct reiserfs_transaction_handle *th;
@@ -2893,7 +2893,7 @@ static int reiserfs_write_end(struct file *file, struct address_space *mapping,
 	}
 	flush_dcache_folio(folio);
 
-	reiserfs_commit_page(inode, page, start, start + copied);
+	reiserfs_commit_page(inode, &folio->page, start, start + copied);
 
 	/*
 	 * generic_commit_write does this for us, but does not update the
@@ -2948,8 +2948,8 @@ static int reiserfs_write_end(struct file *file, struct address_space *mapping,
 out:
 	if (locked)
 		reiserfs_write_unlock(inode->i_sb);
-	unlock_page(page);
-	put_page(page);
+	folio_unlock(folio);
+	folio_put(folio);
 
 	if (pos + len > inode->i_size)
 		reiserfs_truncate_failed_write(inode);

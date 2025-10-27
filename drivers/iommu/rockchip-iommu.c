@@ -26,6 +26,8 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 
+#include "iommu-pages.h"
+
 /** MMU register offsets */
 #define RK_MMU_DTE_ADDR		0x00	/* Directory table address */
 #define RK_MMU_STATUS		0x04
@@ -113,7 +115,6 @@ struct rk_iommu {
 	struct iommu_device iommu;
 	struct list_head node; /* entry in rk_iommu_domain.iommus */
 	struct iommu_domain *domain; /* domain to which iommu is attached */
-	struct iommu_group *group;
 };
 
 struct rk_iommudata {
@@ -728,14 +729,15 @@ static u32 *rk_dte_get_page_table(struct rk_iommu_domain *rk_domain,
 	if (rk_dte_is_pt_valid(dte))
 		goto done;
 
-	page_table = (u32 *)get_zeroed_page(GFP_ATOMIC | rk_ops->gfp_flags);
+	page_table = iommu_alloc_pages_sz(GFP_ATOMIC | rk_ops->gfp_flags,
+					  SPAGE_SIZE);
 	if (!page_table)
 		return ERR_PTR(-ENOMEM);
 
 	pt_dma = dma_map_single(dma_dev, page_table, SPAGE_SIZE, DMA_TO_DEVICE);
 	if (dma_mapping_error(dma_dev, pt_dma)) {
 		dev_err(dma_dev, "DMA mapping error while allocating page table\n");
-		free_page((unsigned long)page_table);
+		iommu_free_pages(page_table);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -817,7 +819,8 @@ unwind:
 }
 
 static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
-			phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+			phys_addr_t paddr, size_t size, size_t count,
+			int prot, gfp_t gfp, size_t *mapped)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	unsigned long flags;
@@ -850,12 +853,14 @@ static int rk_iommu_map(struct iommu_domain *domain, unsigned long _iova,
 				paddr, size, prot);
 
 	spin_unlock_irqrestore(&rk_domain->dt_lock, flags);
+	if (!ret)
+		*mapped = size;
 
 	return ret;
 }
 
 static size_t rk_iommu_unmap(struct iommu_domain *domain, unsigned long _iova,
-			     size_t size, struct iommu_iotlb_gather *gather)
+			     size_t size, size_t count, struct iommu_iotlb_gather *gather)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	unsigned long flags;
@@ -1059,7 +1064,8 @@ static struct iommu_domain *rk_iommu_domain_alloc_paging(struct device *dev)
 	 * Each level1 (dt) and level2 (pt) table has 1024 4-byte entries.
 	 * Allocate one 4 KiB page for each table.
 	 */
-	rk_domain->dt = (u32 *)get_zeroed_page(GFP_KERNEL | rk_ops->gfp_flags);
+	rk_domain->dt = iommu_alloc_pages_sz(GFP_KERNEL | rk_ops->gfp_flags,
+					     SPAGE_SIZE);
 	if (!rk_domain->dt)
 		goto err_free_domain;
 
@@ -1081,7 +1087,7 @@ static struct iommu_domain *rk_iommu_domain_alloc_paging(struct device *dev)
 	return &rk_domain->domain;
 
 err_free_dt:
-	free_page((unsigned long)rk_domain->dt);
+	iommu_free_pages(rk_domain->dt);
 err_free_domain:
 	kfree(rk_domain);
 
@@ -1102,13 +1108,13 @@ static void rk_iommu_domain_free(struct iommu_domain *domain)
 			u32 *page_table = phys_to_virt(pt_phys);
 			dma_unmap_single(dma_dev, pt_phys,
 					 SPAGE_SIZE, DMA_TO_DEVICE);
-			free_page((unsigned long)page_table);
+			iommu_free_pages(page_table);
 		}
 	}
 
 	dma_unmap_single(dma_dev, rk_domain->dt_dma,
 			 SPAGE_SIZE, DMA_TO_DEVICE);
-	free_page((unsigned long)rk_domain->dt);
+	iommu_free_pages(rk_domain->dt);
 
 	kfree(rk_domain);
 }
@@ -1137,17 +1143,8 @@ static void rk_iommu_release_device(struct device *dev)
 	device_link_del(data->link);
 }
 
-static struct iommu_group *rk_iommu_device_group(struct device *dev)
-{
-	struct rk_iommu *iommu;
-
-	iommu = rk_iommu_from_dev(dev);
-
-	return iommu_group_ref_get(iommu->group);
-}
-
 static int rk_iommu_of_xlate(struct device *dev,
-			     struct of_phandle_args *args)
+			     const struct of_phandle_args *args)
 {
 	struct platform_device *iommu_dev;
 	struct rk_iommudata *data;
@@ -1159,7 +1156,6 @@ static int rk_iommu_of_xlate(struct device *dev,
 	iommu_dev = of_find_device_by_node(args->np);
 
 	data->iommu = platform_get_drvdata(iommu_dev);
-	data->iommu->domain = &rk_identity_domain;
 	dev_iommu_priv_set(dev, data);
 
 	platform_device_put(iommu_dev);
@@ -1172,13 +1168,13 @@ static const struct iommu_ops rk_iommu_ops = {
 	.domain_alloc_paging = rk_iommu_domain_alloc_paging,
 	.probe_device = rk_iommu_probe_device,
 	.release_device = rk_iommu_release_device,
-	.device_group = rk_iommu_device_group,
+	.device_group = generic_single_device_group,
 	.pgsize_bitmap = RK_IOMMU_PGSIZE_BITMAP,
 	.of_xlate = rk_iommu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= rk_iommu_attach_device,
-		.map		= rk_iommu_map,
-		.unmap		= rk_iommu_unmap,
+		.map_pages	= rk_iommu_map,
+		.unmap_pages	= rk_iommu_unmap,
 		.iova_to_phys	= rk_iommu_iova_to_phys,
 		.free		= rk_iommu_domain_free,
 	}
@@ -1196,6 +1192,8 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	iommu = devm_kzalloc(dev, sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
 		return -ENOMEM;
+
+	iommu->domain = &rk_identity_domain;
 
 	platform_set_drvdata(pdev, iommu);
 	iommu->dev = dev;
@@ -1260,15 +1258,9 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	iommu->group = iommu_group_alloc();
-	if (IS_ERR(iommu->group)) {
-		err = PTR_ERR(iommu->group);
-		goto err_unprepare_clocks;
-	}
-
 	err = iommu_device_sysfs_add(&iommu->iommu, dev, NULL, dev_name(dev));
 	if (err)
-		goto err_put_group;
+		goto err_unprepare_clocks;
 
 	err = iommu_device_register(&iommu->iommu, &rk_iommu_ops, dev);
 	if (err)
@@ -1305,8 +1297,6 @@ err_pm_disable:
 	pm_runtime_disable(dev);
 err_remove_sysfs:
 	iommu_device_sysfs_remove(&iommu->iommu);
-err_put_group:
-	iommu_group_put(iommu->group);
 err_unprepare_clocks:
 	clk_bulk_unprepare(iommu->num_clocks, iommu->clocks);
 	return err;

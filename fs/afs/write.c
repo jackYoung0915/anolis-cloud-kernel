@@ -65,10 +65,11 @@ static int afs_flush_conflicting_write(struct address_space *mapping,
 /*
  * prepare to perform part of a write to a page
  */
-int afs_write_begin(struct file *file, struct address_space *mapping,
+int afs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 		    loff_t pos, unsigned len,
-		    struct page **_page, void **fsdata)
+		    struct folio **foliop, void **fsdata)
 {
+	struct file *file = iocb->ki_filp;
 	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 	struct folio *folio;
 	unsigned long priv;
@@ -116,7 +117,7 @@ try_again:
 			goto flush_conflicting_write;
 	}
 
-	*_page = folio_file_page(folio, pos / PAGE_SIZE);
+	*foliop = folio;
 	_leave(" = 0");
 	return 0;
 
@@ -150,11 +151,11 @@ error:
 /*
  * finalise part of a write to a page
  */
-int afs_write_end(struct file *file, struct address_space *mapping,
+int afs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 		  loff_t pos, unsigned len, unsigned copied,
-		  struct page *subpage, void *fsdata)
+		  struct folio *folio, void *fsdata)
 {
-	struct folio *folio = page_folio(subpage);
+	struct file *file = iocb->ki_filp;
 	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 	unsigned long priv;
 	unsigned int f, from = offset_in_folio(folio, pos);

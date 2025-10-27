@@ -10,11 +10,26 @@
 #include "nbl_hw/nbl_hw_leonis/base/nbl_ppe.h"
 #include "nbl_hw/nbl_hw_leonis/base/nbl_intf.h"
 #include "nbl_hw/nbl_hw_leonis/base/nbl_datapath_dped.h"
+#include "nbl_phy_leonis_regs.h"
 
 static int dvn_descreq_num_cfg = DEFAULT_DVN_DESCREQ_NUMCFG; /* default 8 and 8 */
 module_param(dvn_descreq_num_cfg, int, 0);
-MODULE_PARM_DESC(dvn_descreq_num_cfg, "bit[31:16]:split ring,support 8/16,"
-		 " bit[15:0]:packed ring, support 8/12/16/20/24/28/32");
+/* checkpatch:ignore SPLIT_STRING */
+MODULE_PARM_DESC(dvn_descreq_num_cfg,
+		 "bit[31:16]:split ring,support 8/16,bit[15:0]:packed ring, support 4*n,n:2-8");
+
+static u32 nbl_phy_dump_registers[] = {
+	NBL_UVN_DIF_DELAY_REQ,
+	NBL_UVN_DIF_DELAY_TIME,
+	NBL_UVN_DIF_DELAY_MAX,
+	NBL_UVN_DESC_PRE_DESC_REQ_NULL,
+	NBL_UVN_DESC_PRE_DESC_REQ_LACK,
+	NBL_UVN_DESC_RD_DROP_DESC_LACK,
+	NBL_DVN_DESCRD_L2_UNAVAIL_CNT,
+	NBL_DVN_DESCRD_L2_NOAVAIL_CNT,
+	NBL_USTORE_BUF_TOTAL_DROP_PKT,
+	NBL_USTORE_BUF_TOTAL_TRUN_PKT
+};
 
 static u32 nbl_phy_get_quirks(void *priv)
 {
@@ -183,114 +198,6 @@ static void nbl_phy_fem_clear_tcam_ad(struct nbl_phy_mgt *phy_mgt)
 			nbl_hw_rd32(phy_mgt, NBL_FEM_EM_TCAM_TABLE_REG(i, 1));
 		}
 	}
-}
-
-static int nbl_phy_fem_em0_pt_phy_l2_init(struct nbl_phy_mgt *phy_mgt, int pt_idx)
-{
-	union nbl_fem_profile_tbl_u em0_pt_tbl = {.info = {0}};
-
-	em0_pt_tbl.info.pt_vld = 1;
-	em0_pt_tbl.info.pt_hash_sel0 = 0;
-	em0_pt_tbl.info.pt_hash_sel1 = 3;
-
-	switch (pt_idx) {
-	case NBL_EM0_PT_PHY_UP_TUNNEL_UNICAST_L2:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_12;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	case NBL_EM0_PT_PHY_UP_UNICAST_L2:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_12;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	case NBL_EM0_PT_PHY_DOWN_UNICAST_L2:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_4;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	case NBL_EM0_PT_PHY_UP_MULTICAST_L2:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_0;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_68;
-		em0_pt_tbl.info.pt_act_num = 2;
-	break;
-	case NBL_EM0_PT_PHY_DOWN_MULTICAST_L2:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_0;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_60;
-		em0_pt_tbl.info.pt_act_num = 2;
-	break;
-	case NBL_EM0_PT_PHY_UP_MULTICAST_L3:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_0;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_36;
-		em0_pt_tbl.info.pt_act_num = 2;
-	break;
-	case NBL_EM0_PT_PHY_DOWN_MULTICAST_L3:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_0;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_LEN_28;
-		em0_pt_tbl.info.pt_act_num = 2;
-	break;
-	case NBL_EM0_PT_PHY_DPRBAC_IPV4:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_0;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_SEC_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	case NBL_EM0_PT_PHY_DPRBAC_IPV6:
-		em0_pt_tbl.info.pt_key_size = 1;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_64 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_128;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_SEC_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	case NBL_EM0_PT_PHY_UL4S_IPV4:
-		em0_pt_tbl.info.pt_key_size = 0;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_32;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_SEC_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	case NBL_EM0_PT_PHY_UL4S_IPV6:
-		em0_pt_tbl.info.pt_key_size = 1;
-		em0_pt_tbl.info.pt_mask_bmap0 = NBL_EM_PT_MASK_LEN_0 >> 2;
-		em0_pt_tbl.info.pt_mask_bmap1 = NBL_EM_PT_MASK1_LEN_112;
-		em0_pt_tbl.info.pt_mask_bmap2 = NBL_EM_PT_MASK2_SEC_72;
-		em0_pt_tbl.info.pt_act_num = 1;
-	break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	nbl_hw_write_regs(phy_mgt, NBL_FEM0_PROFILE_TABLE(pt_idx), em0_pt_tbl.data,
-			  NBL_FEM_PROFILE_TBL_WIDTH);
-	return 0;
-}
-
-static __maybe_unused int nbl_phy_fem_em0_pt_init(struct nbl_phy_mgt *phy_mgt)
-{
-	int i, ret = 0;
-
-	for (i = NBL_EM0_PT_PHY_UP_TUNNEL_UNICAST_L2; i <= NBL_EM0_PT_PHY_UL4S_IPV6; i++) {
-		ret = nbl_phy_fem_em0_pt_phy_l2_init(phy_mgt, i);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
 }
 
 static int nbl_phy_set_ht(void *priv, u16 hash, u16 hash_other, u8 ht_table,
@@ -478,14 +385,20 @@ static void nbl_phy_del_tcam(void *priv, u32 index, u8 key_type, u8 pp_type)
 			  ad_table.hash_key, NBL_FLOW_AD_TOTAL_LEN);
 }
 
-static int nbl_phy_add_mcc(void *priv, u16 mcc_id, u16 prev_mcc_id, u16 action)
+static int nbl_phy_add_mcc(void *priv, u16 mcc_id, u16 prev_mcc_id, u16 next_mcc_id, u16 action)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	struct nbl_mcc_tbl node = {0};
 
 	node.vld = 1;
-	node.next_pntr = 0;
-	node.tail = 1;
+	if (next_mcc_id == NBL_MCC_ID_INVALID) {
+		node.next_pntr = 0;
+		node.tail = 1;
+	} else {
+		node.next_pntr = next_mcc_id;
+		node.tail = 0;
+	}
+
 	node.stateid_filter = 1;
 	node.flowid_filter = 1;
 	node.dport_act = action;
@@ -525,6 +438,25 @@ static void nbl_phy_del_mcc(void *priv, u16 mcc_id, u16 prev_mcc_id, u16 next_mc
 
 	memset(&node, 0, sizeof(node));
 	nbl_hw_write_regs(phy_mgt, NBL_MCC_LEAF_NODE_TABLE(mcc_id), (u8 *)&node, sizeof(node));
+}
+
+static void nbl_phy_update_mcc_next_node(void *priv, u16 mcc_id, u16 next_mcc_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_mcc_tbl node = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_MCC_LEAF_NODE_TABLE(mcc_id),
+			 (u8 *)&node, sizeof(node));
+	if (next_mcc_id != NBL_MCC_ID_INVALID) {
+		node.next_pntr = next_mcc_id;
+		node.tail = 0;
+	} else {
+		node.next_pntr = 0;
+		node.tail = 1;
+	}
+
+	nbl_hw_write_regs(phy_mgt, NBL_MCC_LEAF_NODE_TABLE(mcc_id),
+			  (u8 *)&node, sizeof(node));
 }
 
 static int nbl_phy_add_tnl_encap(void *priv, const u8 encap_buf[], u16 encap_idx,
@@ -668,6 +600,8 @@ static void nbl_shaping_eth_init(struct nbl_phy_mgt *phy_mgt, u8 eth_id, u8 spee
 static int nbl_shaping_init(struct nbl_phy_mgt *phy_mgt, u8 speed)
 {
 	struct dsch_psha_en psha_en = {0};
+	struct nbl_shaping_net net_shaping = {0};
+
 	int i;
 
 	for (i = 0; i < NBL_MAX_ETHERNET; i++)
@@ -676,6 +610,9 @@ static int nbl_shaping_init(struct nbl_phy_mgt *phy_mgt, u8 speed)
 	psha_en.en = 0xF;
 	nbl_hw_write_regs(phy_mgt, NBL_DSCH_PSHA_EN_ADDR, (u8 *)&psha_en, sizeof(psha_en));
 
+	for (i = 0; i < NBL_MAX_FUNC; i++)
+		nbl_hw_write_regs(phy_mgt, NBL_SHAPING_NET_REG(i),
+				  (u8 *)&net_shaping, sizeof(net_shaping));
 	return 0;
 }
 
@@ -717,6 +654,11 @@ static int nbl_ustore_init(struct nbl_phy_mgt *phy_mgt, u8 eth_num)
 	for (i = 0; i < 4; i++)
 		nbl_hw_write_regs(phy_mgt, NBL_USTORE_PORT_DROP_TH_REG_ARR(i),
 				  (u8 *)&drop_th, sizeof(drop_th));
+
+	for (i = 0; i < NBL_MAX_ETHERNET; i++) {
+		nbl_hw_rd32(phy_mgt, NBL_USTORE_BUF_PORT_DROP_PKT(i));
+		nbl_hw_rd32(phy_mgt, NBL_USTORE_BUF_PORT_TRUN_PKT(i));
+	}
 
 	return 0;
 }
@@ -772,8 +714,9 @@ static int nbl_ul4s_init(struct nbl_phy_mgt *phy_mgt)
 	return 0;
 }
 
-static void nbl_dvn_descreq_num_cfg(struct nbl_phy_mgt *phy_mgt, u32 descreq_num)
+static void nbl_dvn_descreq_num_cfg(void *priv, u32 descreq_num)
 {
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	struct nbl_dvn_descreq_num_cfg descreq_num_cfg = { 0 };
 	u32 packet_ring_prefect_num = descreq_num & 0xffff;
 	u32 split_ring_prefect_num = (descreq_num >> 16) & 0xffff;
@@ -788,6 +731,42 @@ static void nbl_dvn_descreq_num_cfg(struct nbl_phy_mgt *phy_mgt, u32 descreq_num
 
 	nbl_hw_write_regs(phy_mgt, NBL_DVN_DESCREQ_NUM_CFG,
 			  (u8 *)&descreq_num_cfg, sizeof(descreq_num_cfg));
+}
+
+static u32 nbl_dvn_descreq_num_get(void *priv)
+{
+	u16 split_req;
+	u16 packed_req;
+	struct nbl_dvn_descreq_num_cfg descreq_num_cfg = { 0 };
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+
+	nbl_hw_read_regs(phy_mgt, NBL_DVN_DESCREQ_NUM_CFG,
+			 (u8 *)&descreq_num_cfg, sizeof(descreq_num_cfg));
+
+	split_req = (descreq_num_cfg.avring_cfg_num + 1) * 8;
+	packed_req = descreq_num_cfg.packed_l1_num * 4 + 8;
+
+	return (split_req << 16) + packed_req;
+}
+
+static void nbl_phy_cfg_dvn_bp_mask(struct dvn_back_pressure_mask *mask, u8 eth_id, bool enable)
+{
+	switch (eth_id) {
+	case 0:
+		mask->dstore_port0_flag = enable;
+		break;
+	case 1:
+		mask->dstore_port1_flag = enable;
+		break;
+	case 2:
+		mask->dstore_port2_flag = enable;
+		break;
+	case 3:
+		mask->dstore_port3_flag = enable;
+		break;
+	default:
+		return;
+	}
 }
 
 static int nbl_dvn_init(struct nbl_phy_mgt *phy_mgt, u8 speed)
@@ -821,9 +800,15 @@ static int nbl_uvn_init(struct nbl_phy_mgt *phy_mgt)
 	struct uvn_desc_prefetch_init prefetch_init = {0};
 	u32 timeout = 119760; /* 200us 200000/1.67 */
 	u32 quirks;
+	struct uvn_desc_wr_timeout desc_wr_timeout = {0};
+	u16 wr_timeout = 0x12c;
 
 	pdev = NBL_COMMON_TO_PDEV(phy_mgt->common);
 	nbl_hw_wr32(phy_mgt, NBL_UVN_DESC_RD_WAIT, timeout);
+
+	desc_wr_timeout.num = wr_timeout;
+	nbl_hw_write_regs(phy_mgt, NBL_UVN_DESC_WR_TIMEOUT,
+			  (u8 *)&desc_wr_timeout, sizeof(desc_wr_timeout));
 
 	flag.avail_rd = 1;
 	flag.desc_rd = 1;
@@ -852,6 +837,7 @@ static int nbl_uvn_init(struct nbl_phy_mgt *phy_mgt)
 
 static int nbl_uqm_init(struct nbl_phy_mgt *phy_mgt)
 {
+	struct nbl_uqm_que_type que_type = {0};
 	u32 cnt = 0;
 	int i;
 
@@ -879,6 +865,9 @@ static int nbl_uqm_init(struct nbl_phy_mgt *phy_mgt)
 	for (i = 0; i < NBL_UQM_DPORT_DROP_DEPTH; i++)
 		nbl_hw_write_regs(phy_mgt, NBL_UQM_DPORT_DROP_CNT + (sizeof(cnt) * i),
 				  (u8 *)&cnt, sizeof(cnt));
+
+	que_type.bp_drop = 0;
+	nbl_hw_write_regs(phy_mgt, NBL_UQM_QUE_TYPE, (u8 *)&que_type, sizeof(que_type));
 
 	return 0;
 }
@@ -1032,17 +1021,31 @@ static int nbl_intf_init(struct nbl_phy_mgt *phy_mgt)
 	return 0;
 }
 
+static void nbl_rdma_init(struct nbl_phy_mgt *phy_mgt)
+{
+	u32 data;
+
+	data = nbl_hw_rd32(phy_mgt, NBL_TOP_CTRL_LB_CLK);
+	data |= NBL_TOP_CTRL_RDMA_LB_CLK;
+	nbl_hw_wr32(phy_mgt, NBL_TOP_CTRL_LB_CLK, data);
+
+	data = nbl_hw_rd32(phy_mgt, NBL_TOP_CTRL_LB_RST);
+	data &= ~NBL_TOP_CTRL_RDMA_LB_RST;
+	nbl_hw_wr32(phy_mgt, NBL_TOP_CTRL_LB_RST, data);
+}
 static int nbl_phy_init_chip_module(void *priv, u8 eth_speed, u8 eth_num)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 
 	nbl_info(NBL_PHY_MGT_TO_COMMON(phy_mgt), NBL_DEBUG_PHY, "phy_chip_init");
 
+	nbl_rdma_init(phy_mgt);
 	nbl_dp_init(phy_mgt, eth_speed, eth_num);
 	nbl_ppe_init(phy_mgt);
 	nbl_intf_init(phy_mgt);
 
-	phy_mgt->version = nbl_hw_rd32(phy_mgt, 0x1300904);
+	nbl_write_all_regs(phy_mgt);
+	phy_mgt->version = nbl_hw_rd32(phy_mgt, NBL_HW_DUMMY_REG);
 
 	return 0;
 }
@@ -1198,10 +1201,12 @@ static int nbl_phy_set_vnet_queue_info(void *priv, struct nbl_vnet_queue_info_pa
 	host_vnet_qinfo.valid = param->valid;
 	host_vnet_qinfo.msix_idx = param->msix_idx;
 	host_vnet_qinfo.msix_idx_valid = param->msix_idx_valid;
+
 	if (phy_mgt_leonis->ro_enable) {
 		host_vnet_qinfo.ido_en = 1;
 		host_vnet_qinfo.rlo_en = 1;
 	}
+
 
 	nbl_hw_write_regs(phy_mgt, NBL_PADPT_HOST_VNET_QINFO_REG_ARR(queue_id),
 			  (u8 *)&host_vnet_qinfo, sizeof(host_vnet_qinfo));
@@ -1514,7 +1519,8 @@ static void nbl_phy_deactive_shaping(void *priv, u16 func_id)
 			  (u8 *)&sha2net, sizeof(sha2net));
 }
 
-static int nbl_phy_set_shaping(void *priv, u16 func_id, u64 total_tx_rate, u8 vld, bool active)
+static int nbl_phy_set_shaping(void *priv, u16 func_id, u64 total_tx_rate, u64 burst,
+			       u8 vld, bool active)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	struct nbl_shaping_net shaping_net = {0};
@@ -1539,7 +1545,11 @@ static int nbl_phy_set_shaping(void *priv, u16 func_id, u64 total_tx_rate, u8 vl
 		shaping_net.cir = total_tx_rate;
 		/* pir equal cir */
 		shaping_net.pir = shaping_net.cir;
-		shaping_net.depth = max(shaping_net.cir * 2, NBL_LR_LEONIS_NET_BUCKET_DEPTH);
+		if (burst)
+			shaping_net.depth = burst;
+		else
+			shaping_net.depth = max(shaping_net.cir * 2,
+						NBL_LR_LEONIS_NET_BUCKET_DEPTH);
 		shaping_net.cbs = shaping_net.depth;
 		shaping_net.pbs = shaping_net.depth;
 	}
@@ -1593,6 +1603,64 @@ static void nbl_phy_set_offload_shaping(struct nbl_phy_mgt *phy_mgt,
 	}
 }
 
+static int nbl_phy_set_ucar(void *priv, u16 vsi_id, u64 totel_rx_rate, u64 burst,
+			    u8 vld)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_common_info *common = NBL_PHY_MGT_TO_COMMON(phy_mgt);
+	union ucar_flow_u ucar_flow = {.info = {0}};
+	union epro_vpt_u epro_vpt = {.info = {0}};
+	int car_id = 0;
+	int index = 0;
+
+	nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+			 (u8 *)&epro_vpt, sizeof(epro_vpt));
+	if (vld) {
+		if (epro_vpt.info.car_en) {
+			car_id = epro_vpt.info.car_id;
+		} else {
+			epro_vpt.info.car_en = 1;
+			for (; index < 1024; index++) {
+				nbl_hw_read_regs(phy_mgt, NBL_UCAR_FLOW_REG(index),
+						 (u8 *)&ucar_flow, sizeof(ucar_flow));
+				if (ucar_flow.info.valid == 0) {
+					car_id = index;
+					break;
+				}
+			}
+			if (car_id == 1024) {
+				nbl_err(common, NBL_DEBUG_PHY, "Car ID exceeds the valid range!");
+				return -ENOMEM;
+			}
+			epro_vpt.info.car_id = car_id;
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+					  (u8 *)&epro_vpt, sizeof(epro_vpt));
+		}
+	} else {
+		epro_vpt.info.car_en = 0;
+		car_id = epro_vpt.info.car_id;
+		epro_vpt.info.car_id = 0;
+		nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+				  (u8 *)&epro_vpt, sizeof(epro_vpt));
+	}
+
+	if (vld) {
+		ucar_flow.info.valid = 1;
+		ucar_flow.info.cir = totel_rx_rate;
+		ucar_flow.info.pir = totel_rx_rate;
+		if (burst)
+			ucar_flow.info.depth = burst;
+		else
+			ucar_flow.info.depth = NBL_UCAR_MAX_BUCKET_DEPTH;
+		ucar_flow.info.cbs = ucar_flow.info.depth;
+		ucar_flow.info.pbs = ucar_flow.info.depth;
+	}
+	nbl_hw_write_regs(phy_mgt, NBL_UCAR_FLOW_REG(car_id),
+			  (u8 *)&ucar_flow, sizeof(ucar_flow));
+
+	return 0;
+}
+
 static void nbl_phy_set_shaping_dport_vld(void *priv, u8 eth_id, bool vld)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
@@ -1639,7 +1707,8 @@ static int nbl_phy_cfg_dsch_net_to_group(void *priv, u16 func_id, u16 group_id, 
 	return 0;
 }
 
-static int nbl_phy_cfg_epro_rss_ret(void *priv, u32 index, u8 size_type, u32 q_num, u16 *queue_list)
+static int nbl_phy_cfg_epro_rss_ret(void *priv, u32 index, u8 size_type, u32 q_num,
+				    u16 *queue_list, const u32 *indir)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	struct nbl_common_info *common = NBL_PHY_MGT_TO_COMMON(phy_mgt);
@@ -1647,7 +1716,7 @@ static int nbl_phy_cfg_epro_rss_ret(void *priv, u32 index, u8 size_type, u32 q_n
 	u32 table_id, table_end, group_count, odd_num, queue_id = 0;
 
 	group_count = NBL_EPRO_RSS_ENTRY_SIZE_UNIT << size_type;
-	if (group_count > 256) {
+	if (group_count > NBL_EPRO_RSS_ENTRY_MAX_COUNT) {
 		nbl_err(common, NBL_DEBUG_QUEUE,
 			"Rss group entry size type %u exceed the max value %u",
 			size_type, NBL_EPRO_RSS_ENTRY_SIZE_256);
@@ -1673,34 +1742,63 @@ static int nbl_phy_cfg_epro_rss_ret(void *priv, u32 index, u8 size_type, u32 q_n
 	nbl_hw_read_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
 			 (u8 *)&rss_ret, sizeof(rss_ret));
 
-	if (odd_num) {
-		rss_ret.vld1 = 1;
-		rss_ret.dqueue1 = queue_list[queue_id++];
-		nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
-				  (u8 *)&rss_ret, sizeof(rss_ret));
-		table_id++;
-	}
+	if (indir) {
+		if (odd_num) {
+			rss_ret.vld1 = 1;
+			rss_ret.dqueue1 = indir[queue_id++];
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+					  (u8 *)&rss_ret, sizeof(rss_ret));
+			table_id++;
+		}
 
-	queue_id = queue_id % q_num;
-	for (; table_id < table_end; table_id++) {
-		rss_ret.vld0 = 1;
-		rss_ret.dqueue0 = queue_list[queue_id++];
+		for (; table_id < table_end; table_id++) {
+			rss_ret.vld0 = 1;
+			rss_ret.dqueue0 = indir[queue_id++];
+			rss_ret.vld1 = 1;
+			rss_ret.dqueue1 = indir[queue_id++];
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+					  (u8 *)&rss_ret, sizeof(rss_ret));
+		}
+
+		nbl_hw_read_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+				 (u8 *)&rss_ret, sizeof(rss_ret));
+
+		if (odd_num) {
+			rss_ret.vld0 = 1;
+			rss_ret.dqueue0 = indir[queue_id++];
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+					  (u8 *)&rss_ret, sizeof(rss_ret));
+		}
+	} else {
+		if (odd_num) {
+			rss_ret.vld1 = 1;
+			rss_ret.dqueue1 = queue_list[queue_id++];
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+					  (u8 *)&rss_ret, sizeof(rss_ret));
+			table_id++;
+		}
+
 		queue_id = queue_id % q_num;
-		rss_ret.vld1 = 1;
-		rss_ret.dqueue1 = queue_list[queue_id++];
-		queue_id = queue_id % q_num;
-		nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
-				  (u8 *)&rss_ret, sizeof(rss_ret));
-	}
+		for (; table_id < table_end; table_id++) {
+			rss_ret.vld0 = 1;
+			rss_ret.dqueue0 = queue_list[queue_id++];
+			queue_id = queue_id % q_num;
+			rss_ret.vld1 = 1;
+			rss_ret.dqueue1 = queue_list[queue_id++];
+			queue_id = queue_id % q_num;
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+					  (u8 *)&rss_ret, sizeof(rss_ret));
+		}
 
-	nbl_hw_read_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
-			 (u8 *)&rss_ret, sizeof(rss_ret));
+		nbl_hw_read_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+				 (u8 *)&rss_ret, sizeof(rss_ret));
 
-	if (odd_num) {
-		rss_ret.vld0 = 1;
-		rss_ret.dqueue0 = queue_list[queue_id++];
-		nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
-				  (u8 *)&rss_ret, sizeof(rss_ret));
+		if (odd_num) {
+			rss_ret.vld0 = 1;
+			rss_ret.dqueue0 = queue_list[queue_id++];
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_RET_TABLE(table_id),
+					  (u8 *)&rss_ret, sizeof(rss_ret));
+		}
 	}
 
 	return 0;
@@ -1762,17 +1860,39 @@ static void nbl_phy_read_rss_indir(void *priv, u16 vsi_id, u32 *rss_indir,
 	}
 }
 
-static void nbl_phy_get_rss_alg_sel(void *priv, u8 eth_id, u8 *alg_sel)
+static void nbl_phy_get_rss_alg_sel(void *priv, u16 vsi_id, u8 *alg_sel)
 {
-	struct nbl_epro_ept_tbl ept_tbl = {0};
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_epro_vpt_tbl epro_vpt_tbl = {0};
 
-	nbl_hw_read_regs(priv, NBL_EPRO_EPT_TABLE(eth_id), (u8 *)&ept_tbl,
-			 sizeof(struct nbl_epro_ept_tbl));
+	nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_TABLE(vsi_id), (u8 *)&epro_vpt_tbl,
+			 sizeof(epro_vpt_tbl));
 
-	if (ept_tbl.lag_alg_sel == NBL_EPRO_RSS_ALG_TOEPLITZ_HASH)
+	if (epro_vpt_tbl.rss_alg_sel == NBL_EPRO_RSS_ALG_TOEPLITZ_HASH)
 		*alg_sel = ETH_RSS_HASH_TOP;
-	else if (ept_tbl.lag_alg_sel == NBL_EPRO_RSS_ALG_CRC32)
+	else if (epro_vpt_tbl.rss_alg_sel == NBL_EPRO_RSS_ALG_CRC32)
 		*alg_sel = ETH_RSS_HASH_CRC32;
+}
+
+static int nbl_phy_set_rss_alg_sel(void *priv, u16 vsi_id, u8 alg_sel)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_epro_vpt_tbl epro_vpt_tbl = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_TABLE(vsi_id), (u8 *)&epro_vpt_tbl,
+			 sizeof(epro_vpt_tbl));
+
+	if (alg_sel == ETH_RSS_HASH_TOP)
+		epro_vpt_tbl.rss_alg_sel = NBL_EPRO_RSS_ALG_TOEPLITZ_HASH;
+	else if (alg_sel == ETH_RSS_HASH_CRC32)
+		epro_vpt_tbl.rss_alg_sel = NBL_EPRO_RSS_ALG_CRC32;
+	else
+		return -EOPNOTSUPP;
+
+	nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_TABLE(vsi_id),
+			  (u8 *)&epro_vpt_tbl,
+			  sizeof(struct nbl_epro_vpt_tbl));
+	return 0;
 }
 
 static int nbl_phy_init_epro_vpt_tbl(void *priv, u16 vsi_id)
@@ -1816,13 +1936,25 @@ static int nbl_phy_set_epro_rss_pt(void *priv, u16 vsi_id, u16 rss_ret_base, u16
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	struct nbl_epro_rss_pt_tbl epro_rss_pt_tbl = {0};
 	struct nbl_epro_vpt_tbl epro_vpt_tbl;
+	u16 entry_size;
+
+	if (rss_entry_size > NBL_EPRO_RSS_ENTRY_MAX_SIZE)
+		entry_size = NBL_EPRO_RSS_ENTRY_MAX_SIZE;
+	else
+		entry_size = rss_entry_size;
 
 	epro_rss_pt_tbl.vld = 1;
-	epro_rss_pt_tbl.entry_size = rss_entry_size;
+	epro_rss_pt_tbl.entry_size = entry_size;
 	epro_rss_pt_tbl.offset0_vld = 1;
 	epro_rss_pt_tbl.offset0 = rss_ret_base;
-	epro_rss_pt_tbl.offset1_vld = 0;
-	epro_rss_pt_tbl.offset1 = 0;
+	if (rss_entry_size > NBL_EPRO_RSS_ENTRY_MAX_SIZE) {
+		epro_rss_pt_tbl.offset1_vld = 1;
+		epro_rss_pt_tbl.offset1 =
+				rss_ret_base + (NBL_EPRO_RSS_ENTRY_SIZE_UNIT << entry_size);
+	} else {
+		epro_rss_pt_tbl.offset1_vld = 0;
+		epro_rss_pt_tbl.offset1 = 0;
+	}
 
 	nbl_hw_write_regs(phy_mgt, NBL_EPRO_RSS_PT_TABLE(vsi_id), (u8 *)&epro_rss_pt_tbl,
 			  sizeof(epro_rss_pt_tbl));
@@ -1874,13 +2006,13 @@ static int nbl_phy_disable_uvn(void *priv, u16 queue_id)
 	return 0;
 }
 
-static bool nbl_phy_is_txq_drain_out(struct nbl_phy_mgt *phy_mgt, u16 queue_id)
+static bool nbl_phy_is_txq_drain_out(struct nbl_phy_mgt *phy_mgt, u16 queue_id,
+				     struct dsch_vn_tc_q_list_tbl *tc_q_list)
 {
-	struct dsch_vn_tc_q_list_tbl tc_q_list = {0};
 
 	nbl_hw_read_regs(phy_mgt, NBL_DSCH_VN_TC_Q_LIST_TABLE_REG_ARR(queue_id),
-			 (u8 *)&tc_q_list, sizeof(tc_q_list));
-	if (!tc_q_list.regi && !tc_q_list.fly && !tc_q_list.vld)
+			 (u8 *)tc_q_list, sizeof(*tc_q_list));
+	if (!tc_q_list->regi && !tc_q_list->fly)
 		return true;
 
 	return false;
@@ -1902,17 +2034,25 @@ static int nbl_phy_lso_dsch_drain(void *priv, u16 queue_id)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	struct nbl_common_info *common = NBL_PHY_MGT_TO_COMMON(phy_mgt);
+	struct dsch_vn_tc_q_list_tbl tc_q_list = {0};
+	struct dsch_vn_q2tc_cfg_tbl info;
 	int i = 0;
 
+	nbl_hw_read_regs(phy_mgt, NBL_DSCH_VN_Q2TC_CFG_TABLE_REG_ARR(queue_id),
+			 (u8 *)&info, sizeof(info));
+	info.vld = 0;
+	nbl_hw_write_regs(phy_mgt, NBL_DSCH_VN_Q2TC_CFG_TABLE_REG_ARR(queue_id),
+			  (u8 *)&info, sizeof(info));
 	do {
-		if (nbl_phy_is_txq_drain_out(phy_mgt, queue_id))
+		if (nbl_phy_is_txq_drain_out(phy_mgt, queue_id, &tc_q_list))
 			break;
 
 		usleep_range(10, 20);
 	} while (++i < NBL_DRAIN_WAIT_TIMES);
 
 	if (i >= NBL_DRAIN_WAIT_TIMES) {
-		nbl_err(common, NBL_DEBUG_QUEUE, "nbl queue %u lso dsch drain\n", queue_id);
+		nbl_err(common, NBL_DEBUG_QUEUE, "nbl queue %u lso dsch drain, regi %u, fly %u, vld %u\n",
+			queue_id, tc_q_list.regi, tc_q_list.fly, tc_q_list.vld);
 		return -1;
 	}
 
@@ -2364,6 +2504,44 @@ static void nbl_phy_configure_trust(void *priv, u8 eth_id, u8 trust, u8 *dscp2pr
 	}
 }
 
+static void nbl_phy_configure_rdma_bw(void *priv, u8 eth_id, int rdma_bw)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_shaping_dport dport = {0};
+	struct nbl_shaping_dvn_dport dvn_dport = {0};
+	struct nbl_shaping_rdma_dport rdma_dport = {0};
+	u32 rate, rdma_rate, dvn_rate;
+
+	nbl_hw_read_regs(phy_mgt, NBL_SHAPING_DPORT_REG(eth_id), (u8 *)&dport, sizeof(dport));
+
+	rate = dport.cir;
+	rdma_rate = rate * rdma_bw / 100;
+	dvn_rate = rate - rdma_rate;
+
+	nbl_hw_read_regs(phy_mgt, NBL_SHAPING_DVN_DPORT_REG(eth_id),
+			 (u8 *)&dvn_dport, sizeof(dvn_dport));
+	dvn_dport.cir = dvn_rate;
+	dvn_dport.pir = rate;
+	dvn_dport.depth = dport.depth;
+	dvn_dport.cbs = dvn_dport.depth;
+	dvn_dport.pbs = dvn_dport.depth;
+	dvn_dport.valid = 1;
+
+	nbl_hw_read_regs(phy_mgt, NBL_SHAPING_RDMA_DPORT_REG(eth_id),
+			 (u8 *)&rdma_dport, sizeof(rdma_dport));
+	rdma_dport.cir = rdma_rate;
+	rdma_dport.pir = rate;
+	rdma_dport.depth = dport.depth;
+	rdma_dport.cbs = rdma_dport.depth;
+	rdma_dport.pbs = rdma_dport.depth;
+	rdma_dport.valid = 1;
+
+	nbl_hw_write_regs(phy_mgt, NBL_SHAPING_DVN_DPORT_REG(eth_id),
+			  (u8 *)&dvn_dport, sizeof(dvn_dport));
+	nbl_hw_write_regs(phy_mgt, NBL_SHAPING_RDMA_DPORT_REG(eth_id),
+			  (u8 *)&rdma_dport, sizeof(rdma_dport));
+}
+
 static void nbl_phy_configure_qos(void *priv, u8 eth_id, u8 *pfc, u8 trust, u8 *dscp2prio_map)
 {
 	nbl_phy_configure_pfc(priv, eth_id, pfc);
@@ -2398,6 +2576,48 @@ static void nbl_phy_get_pfc_buffer_size(void *priv, u8 eth_id, u8 prio, int *xof
 			 (u8 *)(&ustore_cos_fc_th), sizeof(ustore_cos_fc_th));
 	*xoff = ustore_cos_fc_th.xoff_th;
 	*xon = ustore_cos_fc_th.xon_th;
+}
+
+static void nbl_phy_set_rate_limit(void *priv, u16 func_id, enum nbl_traffic_type type, u32 rate)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_shaping_net net_shaping = {0};
+	struct dsch_rdma_net2sha_map_tbl rdma_net2sha_map = {0};
+	struct dsch_rdma_sha2net_map_tbl rdma_sha2net_map = {0};
+	struct dsch_vn_sha2net_map_tbl sha2net = {0};
+	struct dsch_vn_net2sha_map_tbl net2sha = {0};
+	u64 addr;
+
+	if (type == NBL_TRAFFIC_RDMA_TYPE) {
+		nbl_hw_read_regs(phy_mgt, NBL_DSCH_RDMA_NET2SHA_MAP_TBL_REG(func_id),
+				 (u8 *)&rdma_net2sha_map, sizeof(rdma_net2sha_map));
+		rdma_sha2net_map.rdma_vf_id = func_id; /* only pf */
+		rdma_sha2net_map.vld = 1;
+		nbl_hw_read_regs(phy_mgt, NBL_DSCH_RDMA_SHA2NET_MAP_TBL_REG(func_id),
+				 (u8 *)&rdma_sha2net_map, sizeof(rdma_sha2net_map));
+		if (rdma_net2sha_map.vld)
+			addr = NBL_SHAPING_NET_REG(rdma_net2sha_map.net_shaping_id);
+		else
+			addr = NBL_SHAPING_NET_REG(func_id + NBL_NET_SHAPING_RDMA_BASE_ID);
+	} else {
+		sha2net.vld = 1;
+		nbl_hw_write_regs(phy_mgt, NBL_DSCH_VN_SHA2NET_MAP_TABLE_REG_ARR(func_id),
+				  (u8 *)&sha2net, sizeof(sha2net));
+
+		net2sha.vld = 1;
+		nbl_hw_write_regs(phy_mgt, NBL_DSCH_VN_NET2SHA_MAP_TABLE_REG_ARR(func_id),
+				  (u8 *)&net2sha, sizeof(net2sha));
+		addr = NBL_SHAPING_NET_REG(func_id);
+	}
+
+	net_shaping.cir = rate;
+	net_shaping.pir = rate;
+	net_shaping.depth = max(net_shaping.cir * 2, NBL_LR_LEONIS_NET_BUCKET_DEPTH);
+	net_shaping.cbs = net_shaping.depth;
+	net_shaping.pbs = net_shaping.depth;
+	net_shaping.valid = 1;
+
+	nbl_hw_write_regs(phy_mgt, addr, (u8 *)&net_shaping, sizeof(net_shaping));
 }
 
 static void nbl_phy_enable_mailbox_irq(void *priv, u16 func_id, bool enable_msix,
@@ -2555,7 +2775,7 @@ static void nbl_phy_update_mailbox_queue_tail_ptr(void *priv, u16 tail_ptr, u8 t
 	u32 local_qid = txrx;
 	u32 value = ((u32)tail_ptr << 16) | local_qid;
 
-	/* wmb for mbx notify */
+	/* wmb for doorbell */
 	wmb();
 	nbl_mbx_wr32(priv, NBL_MAILBOX_NOTIFY_ADDR, value);
 }
@@ -2642,13 +2862,64 @@ static u32 nbl_phy_get_host_pf_mask(void *priv)
 	return data;
 }
 
-static u32 nbl_phy_get_host_pf_fid(void *priv, u8 func_id)
+static u32 nbl_phy_get_host_pf_fid(void *priv, u16 func_id)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
 	u32 data;
 
 	nbl_hw_read_regs(phy_mgt, NBL_PCIE_HOST_K_PF_FID(func_id), (u8 *)&data, sizeof(data));
 	return data;
+}
+
+static u32 nbl_phy_get_real_bus(void *priv)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	u32 data;
+
+	data = nbl_hw_rd32(phy_mgt, NBL_PCIE_HOST_TL_CFG_BUSDEV);
+	return data >> 5;
+}
+
+static u64 nbl_phy_get_pf_bar_addr(void *priv, u16 func_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	u64 addr;
+	u32 val;
+	u32 selector;
+
+	selector = NBL_LB_PF_CONFIGSPACE_SELECT_OFFSET +
+		   func_id * NBL_LB_PF_CONFIGSPACE_SELECT_STRIDE;
+	nbl_hw_wr32(phy_mgt, NBL_LB_PCIEX16_TOP_AHB, selector);
+
+	val = nbl_hw_rd32(phy_mgt, NBL_LB_PF_CONFIGSPACE_BASE_ADDR + PCI_BASE_ADDRESS_0);
+	addr = (u64)(val & PCI_BASE_ADDRESS_MEM_MASK);
+
+	val = nbl_hw_rd32(phy_mgt, NBL_LB_PF_CONFIGSPACE_BASE_ADDR + PCI_BASE_ADDRESS_0 + 4);
+	addr |= ((u64)val << 32);
+
+	return addr;
+}
+
+static u64 nbl_phy_get_vf_bar_addr(void *priv, u16 func_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	u64 addr;
+	u32 val;
+	u32 selector;
+
+	selector = NBL_LB_PF_CONFIGSPACE_SELECT_OFFSET +
+		   func_id * NBL_LB_PF_CONFIGSPACE_SELECT_STRIDE;
+	nbl_hw_wr32(phy_mgt, NBL_LB_PCIEX16_TOP_AHB, selector);
+
+	val = nbl_hw_rd32(phy_mgt, NBL_LB_PF_CONFIGSPACE_BASE_ADDR +
+				   NBL_SRIOV_CAPS_OFFSET + PCI_SRIOV_BAR);
+	addr = (u64)(val & PCI_BASE_ADDRESS_MEM_MASK);
+
+	val = nbl_hw_rd32(phy_mgt, NBL_LB_PF_CONFIGSPACE_BASE_ADDR +
+			  NBL_SRIOV_CAPS_OFFSET + PCI_SRIOV_BAR + 4);
+	addr |= ((u64)val << 32);
+
+	return addr;
 }
 
 static void nbl_phy_cfg_mailbox_qinfo(void *priv, u16 func_id, u16 bus, u16 devid, u16 function)
@@ -2743,6 +3014,20 @@ static int nbl_phy_set_spoof_check_addr(void *priv, u16 vsi_id, u8 *mac)
 	return 0;
 }
 
+static int nbl_phy_set_vsi_mtu(void *priv, u16 vsi_id, u16 mtu_sel)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_ipro_dn_src_port_tbl dpsport = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TABLE(vsi_id),
+			 (u8 *)&dpsport, sizeof(struct nbl_ipro_dn_src_port_tbl));
+	dpsport.mtu_sel = mtu_sel;
+	nbl_hw_write_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TABLE(vsi_id),
+			  (u8 *)&dpsport, sizeof(struct nbl_ipro_dn_src_port_tbl));
+
+	return 0;
+}
+
 static int nbl_phy_set_spoof_check_enable(void *priv, u16 vsi_id, u8 enable)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
@@ -2829,7 +3114,7 @@ static void nbl_phy_enable_adminq_irq(void *priv, bool enable_msix, u16 global_v
 	struct nbl_common_info *common = NBL_PHY_MGT_TO_COMMON(phy_mgt);
 	struct nbl_adminq_qinfo_map_table adminq_qinfo_map = { 0 };
 
-	adminq_qinfo_map.bus = common->bus;
+	adminq_qinfo_map.bus = common->hw_bus;
 	adminq_qinfo_map.devid = common->devid;
 	adminq_qinfo_map.function = NBL_COMMON_TO_PCI_FUNC_ID(common);
 
@@ -2851,7 +3136,7 @@ static void nbl_phy_update_adminq_queue_tail_ptr(void *priv, u16 tail_ptr, u8 tx
 	u32 local_qid = txrx;
 	u32 value = ((u32)tail_ptr << 16) | local_qid;
 
-	/* wmb for adminq notify */
+	/* wmb for doorbell */
 	wmb();
 	nbl_mbx_wr32(priv, NBL_ADMINQ_NOTIFY_ADDR, value);
 }
@@ -3378,7 +3663,7 @@ static void nbl_phy_init_uprbac(void *priv)
 static u32 nbl_phy_get_fw_ping(void *priv)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
-	u32 ping;
+	unsigned long ping;
 
 	nbl_hw_read_mbx_regs(phy_mgt, NBL_FW_HEARTBEAT_PING, (u8 *)&ping, sizeof(ping));
 
@@ -3414,6 +3699,26 @@ static void nbl_phy_load_p4(void *priv, u32 addr, u32 size, u8 *data)
 	nbl_hw_write_be_regs(priv, addr, data, size);
 }
 
+static void nbl_phy_ipro_chksum_err_ctrl(void *priv, u8 status)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	union ipro_errcode_tbl_u errcode;
+	u8 index = NBL_ERROR_CODE_L3_CHKSUM;
+
+	nbl_hw_read_regs(phy_mgt, NBL_IPRO_ERRCODE_TBL_REG(index),
+			 (u8 *)errcode.data, sizeof(errcode));
+	errcode.info.vld = status;
+	nbl_hw_write_regs(phy_mgt, NBL_IPRO_ERRCODE_TBL_REG(index),
+			  (u8 *)errcode.data, sizeof(errcode));
+
+	index = NBL_ERROR_CODE_L4_CHKSUM;
+	nbl_hw_read_regs(phy_mgt, NBL_IPRO_ERRCODE_TBL_REG(index),
+			 (u8 *)errcode.data, sizeof(errcode));
+	errcode.info.vld = status;
+	nbl_hw_write_regs(phy_mgt, NBL_IPRO_ERRCODE_TBL_REG(index),
+			  (u8 *)errcode.data, sizeof(errcode));
+}
+
 static int nbl_phy_init_offload_fwd(void *priv, u16 vsi_id)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
@@ -3437,6 +3742,10 @@ static int nbl_phy_init_offload_fwd(void *priv, u16 vsi_id)
 	vpt.info.rss_key_type_btm = NBL_KEY_IP4_L4_RSS_BIT | NBL_KEY_IP6_L4_RSS_BIT;
 	nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id), (u8 *)vpt.data,
 			  NBL_EPRO_VPT_DWLEN * NBL_BYTES_IN_REG);
+
+	/* drop packets with wrong chksums, to prevent PED from correcting them */
+	nbl_phy_ipro_chksum_err_ctrl(phy_mgt, 1);
+
 	return 0;
 }
 
@@ -4724,6 +5033,7 @@ static void nbl_read_parsed_reg(struct nbl_phy_mgt *phy_mgt,
 {
 	u32 reg_len = reg_info->data_len;
 
+	// in this mode, both or-data and and-data are sent
 	if (reg_info->mode == NBL_FLOW_READ_OR_AND_WRITE_MODE)
 		reg_len = reg_len / 2;
 
@@ -4797,9 +5107,7 @@ static int nbl_phy_offload_flow_rule(void *priv, void *param)
 	u8 i;
 
 	nbl_debug(NBL_PHY_MGT_TO_COMMON(phy_mgt), NBL_DEBUG_FLOW,
-		  "send regs: flow regs received: to parse and read/write: "
-		  "regs info: count %u, total size %u, "
-		  "1st reg: table %u, mode %u, size %u, depth %u, data %u",
+		  "count %u, total size %u, 1st reg: tab %u, mode %u, size %u, depth %u, data %u",
 		  hdr_info->item_cnt, hdr_info->data_len,
 		  reg_info->tbl_name, reg_info->mode, reg_info->data_len,
 		  reg_info->depth, reg_info->data[0]);
@@ -4822,9 +5130,8 @@ static int nbl_phy_offload_flow_rule(void *priv, void *param)
 			nbl_write_parsed_reg(phy_mgt, reg_info, value);
 		} else {
 			nbl_err(NBL_PHY_MGT_TO_COMMON(phy_mgt), NBL_DEBUG_FLOW,
-				"failed parsing reg info: unrecognized mode: "
-				"tab %u, mode %u, size %u, ", reg_info->tbl_name,
-				reg_info->mode, reg_info->data_len);
+				"failed: unrecognized mode: tab %u, mode %u, size %u, ",
+				reg_info->tbl_name, reg_info->mode, reg_info->data_len);
 		}
 
 		reg_info = (struct nbl_chan_regs_info *)
@@ -5044,6 +5351,71 @@ static u32 nbl_phy_get_chip_temperature(void *priv, enum nbl_hwmon_type type, u3
 		break;
 	}
 	return temp;
+}
+
+static struct nbl_phy_ped_tbl ped_tbl[NBL_FLOW_PED_RECORD_MAX] = {
+	[NBL_FLOW_PED_UMAC_TYPE] = {.addr = NBL_UPED_TAB_REPLACE_ADDR,
+				    .addr_len = NBL_UPED_TAB_REPLACE_DWLEN,},
+	[NBL_FLOW_PED_DMAC_TYPE] = {.addr = NBL_DPED_TAB_REPLACE_ADDR,
+				    .addr_len = NBL_DPED_TAB_REPLACE_DWLEN,},
+	[NBL_FLOW_PED_UIP_TYPE] = {.addr = NBL_UPED_TAB_REPLACE_ADDR,
+				    .addr_len = NBL_UPED_TAB_REPLACE_DWLEN,},
+	[NBL_FLOW_PED_DIP_TYPE] = {.addr = NBL_DPED_TAB_REPLACE_ADDR,
+				    .addr_len = NBL_DPED_TAB_REPLACE_DWLEN,},
+	[NBL_FLOW_PED_UIP6_TYPE] = {.addr = NBL_UPED_TAB_REPLACE_ADDR,
+				    .addr_len = NBL_UPED_TAB_REPLACE_DWLEN,},
+	[NBL_FLOW_PED_DIP6_TYPE] = {.addr = NBL_DPED_TAB_REPLACE_ADDR,
+				    .addr_len = NBL_DPED_TAB_REPLACE_DWLEN,},
+};
+
+static void nbl_phy_write_ped_tbl(void *priv, u8 *data, u16 idx, enum nbl_flow_ped_type ped_type)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	u64 reg;
+
+#define NBL_PHY_PED_ADDR_REG(addr, idx, size) ((addr) + (idx) * (size) * 4)
+	/* if ped type is ipv6 ,we need write ped_h */
+	if (ped_type == NBL_FLOW_PED_UIP6_TYPE || ped_type == NBL_FLOW_PED_DIP6_TYPE) {
+		/* write high 64-bit first then update data and idx for common write */
+		data += ped_tbl[ped_type].addr_len * 4;
+		reg =  NBL_PHY_PED_ADDR_REG(ped_tbl[ped_type].addr, idx,
+					    ped_tbl[ped_type].addr_len);
+		nbl_hw_write_regs(phy_mgt, reg, data, ped_tbl[ped_type].addr_len * 4);
+		idx += NBL_TC_MAX_PED_H_IDX;
+		data -= ped_tbl[ped_type].addr_len * 4;
+	}
+
+	reg = NBL_PHY_PED_ADDR_REG(ped_tbl[ped_type].addr, idx, ped_tbl[ped_type].addr_len);
+	nbl_hw_write_regs(phy_mgt, reg, data, ped_tbl[ped_type].addr_len * 4);
+}
+
+static int nbl_phy_set_mtu(void *priv, u16 mtu_index, u16 mtu)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_ipro_mtu_sel ipro_mtu_sel = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_IPRO_MTU_SEL_REG(mtu_index / 2),
+			 (u8 *)&ipro_mtu_sel, sizeof(ipro_mtu_sel));
+
+	if (mtu_index % 2 == 0)
+		ipro_mtu_sel.mtu_0 = mtu;
+	else
+		ipro_mtu_sel.mtu_1 = mtu;
+
+	nbl_hw_write_regs(phy_mgt, NBL_IPRO_MTU_SEL_REG(mtu_index / 2),
+			  (u8 *)&ipro_mtu_sel, sizeof(ipro_mtu_sel));
+
+	return 0;
+}
+
+static u16 nbl_phy_get_mtu_index(void *priv, u16 vsi_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_ipro_dn_src_port_tbl ipro_dn_src_port_tbl = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+			 (u8 *)&ipro_dn_src_port_tbl, sizeof(ipro_dn_src_port_tbl));
+	return ipro_dn_src_port_tbl.mtu_sel;
 }
 
 static int nbl_phy_process_abnormal_queue(struct nbl_phy_mgt *phy_mgt, u16 queue_id, int type,
@@ -5297,20 +5669,6 @@ static int nbl_phy_cfg_lag_member_up_attr(void *priv, u16 eth_id, u16 lag_id, bo
 	return 0;
 }
 
-static int nbl_phy_cfg_lag_mcc(void *priv, u16 mcc_id, u16 action)
-{
-	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
-	struct nbl_mcc_tbl node = {0};
-
-	nbl_hw_read_regs(phy_mgt, NBL_MCC_LEAF_NODE_TABLE(mcc_id), (u8 *)&node, sizeof(node));
-
-	node.dport_act = action;
-
-	nbl_hw_write_regs(phy_mgt, NBL_MCC_LEAF_NODE_TABLE(mcc_id), (u8 *)&node, sizeof(node));
-
-	return 0;
-}
-
 static void nbl_phy_get_board_info(void *priv, struct nbl_board_port_info *board_info)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
@@ -5388,27 +5746,8 @@ static int nbl_phy_cfg_bond_shaping(void *priv, u8 eth_id, u8 speed, bool enable
 	rdma_dport.valid = 1;
 	nbl_hw_write_regs(phy_mgt, NBL_SHAPING_RDMA_DPORT_REG(eth_id),
 			  (u8 *)&rdma_dport, sizeof(rdma_dport));
-	return 0;
-}
 
-static void nbl_phy_cfg_dvn_bp_mask(struct dvn_back_pressure_mask *mask, u8 eth_id, bool enable)
-{
-	switch (eth_id) {
-	case 0:
-		mask->dstore_port0_flag = enable;
-		break;
-	case 1:
-		mask->dstore_port1_flag = enable;
-		break;
-	case 2:
-		mask->dstore_port2_flag = enable;
-		break;
-	case 3:
-		mask->dstore_port3_flag = enable;
-		break;
-	default:
-		return;
-	}
+	return 0;
 }
 
 static void nbl_phy_set_bond_fc_th(struct nbl_phy_mgt *phy_mgt,
@@ -5475,6 +5814,7 @@ static void nbl_phy_cfg_bgid_back_pressure(void *priv, u8 main_eth_id, u8 other_
 					   bool enable, u8 speed)
 {
 	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+
 	struct dvn_back_pressure_mask mask = {0};
 
 	nbl_hw_read_regs(phy_mgt, NBL_DVN_BACK_PRESSURE_MASK, (u8 *)&mask, sizeof(mask));
@@ -6577,6 +6917,238 @@ static enum nbl_hw_status nbl_phy_get_hw_status(void *priv)
 	return phy_mgt->hw_status;
 };
 
+static u32 nbl_phy_get_perf_dump_length(void *priv)
+{
+	return sizeof(nbl_phy_dump_registers);
+};
+
+static u32 nbl_phy_get_perf_dump_data(void *priv, u8 *buffer, u32 length)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	u32 copy_len = min_t(u32, length, sizeof(nbl_phy_dump_registers));
+	int i;
+
+	for (i = 0; i < copy_len / 4; i++) {
+		nbl_hw_read_regs(phy_mgt, nbl_phy_dump_registers[i], buffer, 4);
+		buffer += 4;
+	}
+
+	return copy_len;
+};
+
+static int nbl_phy_get_mirror_table_id(void *priv, u16 vsi_id, int dir,
+				       bool mirror_en, u8 *mt_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	union ipro_dn_src_port_tbl_u ipro_dn_src_port_tbl = {{0}};
+	union epro_vpt_u epro_vpt = {{0}};
+	union epro_mt_u epro_mt = {{0}};
+	int index = 0;
+
+	if (dir == 0) {
+		nbl_hw_read_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+				 (u8 *)&ipro_dn_src_port_tbl,
+				 sizeof(ipro_dn_src_port_tbl));
+		if (!mirror_en && !ipro_dn_src_port_tbl.info.mirror_en) {
+			*mt_id = NBL_EPRO_MT_MAX;
+		} else if (!mirror_en && ipro_dn_src_port_tbl.info.mirror_en) {
+			*mt_id = ipro_dn_src_port_tbl.info.mirror_id;
+		} else if (mirror_en && ipro_dn_src_port_tbl.info.mirror_en) {
+			*mt_id = ipro_dn_src_port_tbl.info.mirror_id;
+		} else if (mirror_en && !ipro_dn_src_port_tbl.info.mirror_en) {
+			for (; index < NBL_EPRO_MT_MAX; index++) {
+				nbl_hw_read_regs(phy_mgt, NBL_EPRO_MT_REG(index),
+						 (u8 *)&epro_mt, sizeof(epro_mt));
+				if (epro_mt.info.vld == 0) {
+					*mt_id = index;
+					return 0;
+				}
+			}
+			*mt_id = NBL_EPRO_MT_MAX;
+		}
+	} else {
+		nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+				 (u8 *)&epro_vpt, sizeof(epro_vpt));
+		if (!mirror_en && !epro_vpt.info.mirror_en) {
+			*mt_id = NBL_EPRO_MT_MAX;
+		} else if (!mirror_en && epro_vpt.info.mirror_en) {
+			*mt_id = epro_vpt.info.mirror_id;
+		} else if (mirror_en && epro_vpt.info.mirror_en) {
+			*mt_id = epro_vpt.info.mirror_id;
+		} else if (mirror_en && !epro_vpt.info.mirror_en) {
+			for (; index < NBL_EPRO_MT_MAX; index++) {
+				nbl_hw_read_regs(phy_mgt, NBL_EPRO_MT_REG(index),
+						 (u8 *)&epro_mt, sizeof(epro_mt));
+				if (epro_mt.info.vld == 0) {
+					*mt_id = index;
+					return 0;
+				}
+			}
+			*mt_id = NBL_EPRO_MT_MAX;
+		}
+	}
+
+	return 0;
+}
+
+static int nbl_phy_configure_mirror(void *priv, u16 vsi_id, bool mirror_en,
+				    int dir, u8 mt_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	union ipro_dn_src_port_tbl_u ipro_dn_src_port_tbl = {{0}};
+	union epro_vpt_u epro_vpt = {{0}};
+
+	if (!mirror_en) {
+		if (dir == 0) {
+			nbl_hw_read_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+					 (u8 *)&ipro_dn_src_port_tbl,
+					 sizeof(ipro_dn_src_port_tbl));
+			ipro_dn_src_port_tbl.info.mirror_en = 0;
+			ipro_dn_src_port_tbl.info.mirror_pr = 0;
+			ipro_dn_src_port_tbl.info.mirror_id = 0;
+			nbl_hw_write_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+					  (u8 *)&ipro_dn_src_port_tbl,
+					  sizeof(ipro_dn_src_port_tbl));
+		} else {
+			nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+					 (u8 *)&epro_vpt, sizeof(epro_vpt));
+			epro_vpt.info.mirror_en = 0;
+			epro_vpt.info.mirror_id = 0;
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id), (u8 *)&epro_vpt,
+					  sizeof(epro_vpt));
+		}
+	} else {
+		if (dir == 0) {
+			nbl_hw_read_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+					 (u8 *)&ipro_dn_src_port_tbl, sizeof(ipro_dn_src_port_tbl));
+			ipro_dn_src_port_tbl.info.mirror_en = mirror_en;
+			ipro_dn_src_port_tbl.info.mirror_pr = 3;
+			ipro_dn_src_port_tbl.info.mirror_id = mt_id;
+			nbl_hw_write_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+					  (u8 *)&ipro_dn_src_port_tbl,
+					  sizeof(ipro_dn_src_port_tbl));
+		} else {
+			nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+					 (u8 *)&epro_vpt, sizeof(epro_vpt));
+			epro_vpt.info.mirror_en = mirror_en;
+			epro_vpt.info.mirror_id = mt_id;
+			nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id), (u8 *)&epro_vpt,
+					  sizeof(epro_vpt));
+		}
+	}
+	return 0;
+}
+
+static int nbl_phy_configure_mirror_table(void *priv, bool mirror_en,
+					  u16 mirror_vsi_id, u16 mirror_queue_id, u8 mt_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	union epro_mt_u epro_mt = {{0}};
+
+	if (!mirror_en) {
+		nbl_hw_read_regs(phy_mgt, NBL_EPRO_MT_REG(mt_id), (u8 *)&epro_mt,
+				 sizeof(epro_mt));
+		epro_mt.info.dport = 0;
+		epro_mt.info.dqueue = 0;
+		epro_mt.info.vld = mirror_en;
+		nbl_hw_write_regs(phy_mgt, NBL_EPRO_MT_REG(mt_id), (u8 *)&epro_mt,
+				  sizeof(epro_mt));
+	} else {
+		nbl_hw_read_regs(phy_mgt, NBL_EPRO_MT_REG(mt_id), (u8 *)&epro_mt,
+				 sizeof(epro_mt));
+		epro_mt.info.dport = mirror_vsi_id;
+		epro_mt.info.dqueue = mirror_queue_id;
+		epro_mt.info.vld = mirror_en;
+		nbl_hw_write_regs(phy_mgt, NBL_EPRO_MT_REG(mt_id), (u8 *)&epro_mt,
+				  sizeof(epro_mt));
+	}
+
+	return 0;
+}
+
+static int nbl_phy_clear_mirror_cfg(void *priv, u16 vsi_id)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	union ipro_dn_src_port_tbl_u ipro_dn_src_port_tbl = {{0}};
+	union epro_vpt_u epro_vpt = {{0}};
+	union epro_mt_u epro_mt = {{0}};
+
+	nbl_hw_read_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+			 (u8 *)&ipro_dn_src_port_tbl, sizeof(ipro_dn_src_port_tbl));
+	if (ipro_dn_src_port_tbl.info.mirror_en) {
+		nbl_hw_write_regs(phy_mgt, NBL_EPRO_MT_REG(ipro_dn_src_port_tbl.info.mirror_id),
+				  (u8 *)&epro_mt, sizeof(epro_mt));
+		ipro_dn_src_port_tbl.info.mirror_en = 0;
+		ipro_dn_src_port_tbl.info.mirror_pr = 0;
+		ipro_dn_src_port_tbl.info.mirror_id = 0;
+		nbl_hw_write_regs(phy_mgt, NBL_IPRO_DN_SRC_PORT_TBL_REG(vsi_id),
+				  (u8 *)&ipro_dn_src_port_tbl,
+				  sizeof(ipro_dn_src_port_tbl));
+	}
+
+	nbl_hw_read_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id),
+			 (u8 *)&epro_vpt, sizeof(epro_vpt));
+	if (epro_vpt.info.mirror_en) {
+		nbl_hw_write_regs(phy_mgt, NBL_EPRO_MT_REG(epro_vpt.info.mirror_id),
+				  (u8 *)&epro_mt, sizeof(epro_mt));
+		epro_vpt.info.mirror_en = 0;
+		epro_vpt.info.mirror_id = 0;
+		nbl_hw_write_regs(phy_mgt, NBL_EPRO_VPT_REG(vsi_id), (u8 *)&epro_vpt,
+				  sizeof(epro_vpt));
+	}
+
+	return 0;
+}
+
+static int nbl_phy_get_dstat_vsi_stat(void *priv, u16 vsi_id, u64 *fwd_pkt, u64 *fwd_byte)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_dstat_vsi_stat dstat_vsi_stat = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_DSTAT_VSI_STAT(vsi_id),
+			 (u8 *)&dstat_vsi_stat, sizeof(dstat_vsi_stat));
+
+	*fwd_pkt = dstat_vsi_stat.fwd_pkt_cnt_low +
+			((u64)(dstat_vsi_stat.fwd_pkt_cnt_high) << 32);
+	*fwd_byte = dstat_vsi_stat.fwd_byte_cnt_low +
+			((u64)(dstat_vsi_stat.fwd_byte_cnt_high) << 32);
+
+	return 0;
+}
+
+static int nbl_phy_get_ustat_vsi_stat(void *priv, u16 vsi_id, u64 *fwd_pkt, u64 *fwd_byte)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+	struct nbl_ustat_vsi_stat ustat_vsi_stat = {0};
+
+	nbl_hw_read_regs(phy_mgt, NBL_USTAT_VSI_STAT(vsi_id),
+			 (u8 *)&ustat_vsi_stat, sizeof(ustat_vsi_stat));
+
+	*fwd_pkt = ustat_vsi_stat.fwd_pkt_cnt_low +
+			((u64)(ustat_vsi_stat.fwd_pkt_cnt_high) << 32);
+	*fwd_byte = ustat_vsi_stat.fwd_byte_cnt_low +
+			((u64)(ustat_vsi_stat.fwd_byte_cnt_high) << 32);
+
+	return 0;
+}
+
+static int nbl_phy_get_uvn_pkt_drop_stats(void *priv, u16 global_queue_id, u32 *uvn_stat_pkt_drop)
+{
+	*uvn_stat_pkt_drop = nbl_hw_rd32(priv, NBL_UVN_STATIS_PKT_DROP(global_queue_id));
+	return 0;
+}
+
+static int nbl_phy_get_ustore_pkt_drop_stats(void *priv, u8 eth_id,
+					     struct nbl_ustore_stats *ustore_stats)
+{
+	struct nbl_phy_mgt *phy_mgt = (struct nbl_phy_mgt *)priv;
+
+	ustore_stats->rx_drop_packets = nbl_hw_rd32(phy_mgt, NBL_USTORE_BUF_PORT_DROP_PKT(eth_id));
+	ustore_stats->rx_trun_packets = nbl_hw_rd32(phy_mgt, NBL_USTORE_BUF_PORT_TRUN_PKT(eth_id));
+
+	return 0;
+}
+
 static struct nbl_phy_ops phy_ops = {
 	.init_chip_module		= nbl_phy_init_chip_module,
 	.init_qid_map_table		= nbl_phy_init_qid_map_table,
@@ -6602,11 +7174,13 @@ static struct nbl_phy_ops phy_ops = {
 	.active_shaping			= nbl_phy_active_shaping,
 	.deactive_shaping		= nbl_phy_deactive_shaping,
 	.set_shaping			= nbl_phy_set_shaping,
+	.set_ucar			= nbl_phy_set_ucar,
 	.cfg_dsch_net_to_group		= nbl_phy_cfg_dsch_net_to_group,
 	.init_epro_rss_key		= nbl_phy_init_epro_rss_key,
 	.read_rss_key			= nbl_phy_read_epro_rss_key,
 	.read_rss_indir			= nbl_phy_read_rss_indir,
 	.get_rss_alg_sel		= nbl_phy_get_rss_alg_sel,
+	.set_rss_alg_sel		= nbl_phy_set_rss_alg_sel,
 	.init_epro_vpt_tbl		= nbl_phy_init_epro_vpt_tbl,
 	.set_epro_rss_default		= nbl_phy_set_epro_rss_default,
 	.cfg_epro_rss_ret		= nbl_phy_cfg_epro_rss_ret,
@@ -6626,6 +7200,10 @@ static struct nbl_phy_ops phy_ops = {
 	.cfg_phy_flow			= nbl_phy_cfg_phy_flow,
 	.cfg_eth_port_priority_replace  = nbl_phy_cfg_eth_port_priority_replace,
 	.get_chip_temperature		= nbl_phy_get_chip_temperature,
+	.write_ped_tbl			= nbl_phy_write_ped_tbl,
+	.set_vsi_mtu			= nbl_phy_set_vsi_mtu,
+	.set_mtu			= nbl_phy_set_mtu,
+	.get_mtu_index			= nbl_phy_get_mtu_index,
 
 	.configure_msix_map		= nbl_phy_configure_msix_map,
 	.configure_msix_info		= nbl_phy_configure_msix_info,
@@ -6639,6 +7217,7 @@ static struct nbl_phy_ops phy_ops = {
 	.del_tcam			= nbl_phy_del_tcam,
 	.add_mcc			= nbl_phy_add_mcc,
 	.del_mcc			= nbl_phy_del_mcc,
+	.update_mcc_next_node		= nbl_phy_update_mcc_next_node,
 	.add_tnl_encap			= nbl_phy_add_tnl_encap,
 	.del_tnl_encap			= nbl_phy_del_tnl_encap,
 	.init_fem			= nbl_phy_init_fem,
@@ -6659,6 +7238,9 @@ static struct nbl_phy_ops phy_ops = {
 	.check_mailbox_dma_err		= nbl_phy_check_mailbox_dma_err,
 	.get_host_pf_mask		= nbl_phy_get_host_pf_mask,
 	.get_host_pf_fid		= nbl_phy_get_host_pf_fid,
+	.get_real_bus			= nbl_phy_get_real_bus,
+	.get_pf_bar_addr		= nbl_phy_get_pf_bar_addr,
+	.get_vf_bar_addr		= nbl_phy_get_vf_bar_addr,
 	.cfg_mailbox_qinfo		= nbl_phy_cfg_mailbox_qinfo,
 	.enable_mailbox_irq		= nbl_phy_enable_mailbox_irq,
 	.enable_abnormal_irq		= nbl_phy_enable_abnormal_irq,
@@ -6722,8 +7304,10 @@ static struct nbl_phy_ops phy_ops = {
 	.load_p4			= nbl_phy_load_p4,
 
 	.configure_qos			= nbl_phy_configure_qos,
+	.configure_rdma_bw		= nbl_phy_configure_rdma_bw,
 	.set_pfc_buffer_size		= nbl_phy_set_pfc_buffer_size,
 	.get_pfc_buffer_size		= nbl_phy_get_pfc_buffer_size,
+	.set_rate_limit			= nbl_phy_set_rate_limit,
 
 	.init_offload_fwd		= nbl_phy_init_offload_fwd,
 	.init_cmdq			= nbl_phy_cmdq_init,
@@ -6737,6 +7321,7 @@ static struct nbl_phy_ops phy_ops = {
 	.offload_flow_rule		= nbl_phy_offload_flow_rule,
 	.init_rep			= nbl_phy_init_rep,
 	.clear_profile_table_action	= nbl_phy_clear_profile_table_action,
+	.ipro_chksum_err_ctrl		= nbl_phy_ipro_chksum_err_ctrl,
 
 	.init_vdpaq			= nbl_phy_init_vdpaq,
 	.destroy_vdpaq			= nbl_phy_destroy_vdpaq,
@@ -6751,7 +7336,6 @@ static struct nbl_phy_ops phy_ops = {
 	.cfg_lag_member_fwd		= nbl_phy_cfg_lag_member_fwd,
 	.cfg_lag_member_list		= nbl_phy_cfg_lag_member_list,
 	.cfg_lag_member_up_attr		= nbl_phy_cfg_lag_member_up_attr,
-	.cfg_lag_mcc			= nbl_phy_cfg_lag_mcc,
 	.get_lag_fwd			= nbl_phy_get_lag_fwd,
 	.cfg_bond_shaping		= nbl_phy_cfg_bond_shaping,
 	.cfg_bgid_back_pressure		= nbl_phy_cfg_bgid_back_pressure,
@@ -6774,6 +7358,20 @@ static struct nbl_phy_ops phy_ops = {
 	.set_fd_action_ram		= nbl_phy_set_fd_action_ram,
 	.set_hw_status			= nbl_phy_set_hw_status,
 	.get_hw_status			= nbl_phy_get_hw_status,
+
+	.get_perf_dump_length		= nbl_phy_get_perf_dump_length,
+	.get_perf_dump_data		= nbl_phy_get_perf_dump_data,
+
+	.get_mirror_table_id		= nbl_phy_get_mirror_table_id,
+	.configure_mirror		= nbl_phy_configure_mirror,
+	.configure_mirror_table		= nbl_phy_configure_mirror_table,
+	.clear_mirror_cfg		= nbl_phy_clear_mirror_cfg,
+	.set_dvn_desc_req		= nbl_dvn_descreq_num_cfg,
+	.get_dvn_desc_req		= nbl_dvn_descreq_num_get,
+	.get_dstat_vsi_stat		= nbl_phy_get_dstat_vsi_stat,
+	.get_ustat_vsi_stat		= nbl_phy_get_ustat_vsi_stat,
+	.get_uvn_pkt_drop_stats		= nbl_phy_get_uvn_pkt_drop_stats,
+	.get_ustore_pkt_drop_stats	= nbl_phy_get_ustore_pkt_drop_stats,
 };
 
 /* Structure starts here, adding an op should not modify anything below */
@@ -6827,7 +7425,7 @@ static void nbl_phy_remove_ops(struct nbl_common_info *common, struct nbl_phy_op
 	*phy_ops_tbl = NULL;
 }
 
-static void nbl_phy_disable_rx_err_report(struct pci_dev *pdev)
+static void __maybe_unused nbl_phy_disable_rx_err_report(struct pci_dev *pdev)
 {
 #define  NBL_RX_ERR_BIT		0
 #define  NBL_BAD_TLP_BIT	6
@@ -6908,7 +7506,7 @@ int nbl_phy_init_leonis(void *p, struct nbl_init_param *param)
 	if (ret)
 		goto setup_ops_fail;
 
-	nbl_phy_disable_rx_err_report(pdev);
+	/* nbl_phy_disable_rx_err_report(pdev); */
 
 	(*phy_mgt_leonis)->ro_enable = pcie_relaxed_ordering_enabled(pdev);
 
@@ -6952,3 +7550,4 @@ void nbl_phy_remove_leonis(void *p)
 
 	nbl_phy_remove_ops(common, phy_ops_tbl);
 }
+

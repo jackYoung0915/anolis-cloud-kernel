@@ -1545,12 +1545,12 @@ bool afs_dirty_folio(struct address_space *, struct folio *);
 #else
 #define afs_dirty_folio filemap_dirty_folio
 #endif
-extern int afs_write_begin(struct file *file, struct address_space *mapping,
+extern int afs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len,
-			struct page **pagep, void **fsdata);
-extern int afs_write_end(struct file *file, struct address_space *mapping,
+			struct folio **foliop, void **fsdata);
+extern int afs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned copied,
-			struct page *page, void *fsdata);
+			struct folio *folio, void *fsdata);
 extern int afs_writepage(struct page *, struct writeback_control *);
 extern int afs_writepages(struct address_space *, struct writeback_control *);
 extern ssize_t afs_file_write(struct kiocb *, struct iov_iter *);

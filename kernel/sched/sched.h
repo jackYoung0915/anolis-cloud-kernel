@@ -104,6 +104,122 @@
 
 struct rq;
 struct cpuidle_state;
+#ifdef CONFIG_GROUP_BALANCER
+struct group_balancer_sched_domain;
+#endif
+
+#ifdef CONFIG_SMP
+enum migration_type {
+	migrate_load = 0,
+	migrate_util,
+	migrate_task,
+	migrate_misfit,
+	migrate_identity
+};
+
+/*
+ * 'group_type' describes the group of CPUs at the moment of load balancing.
+ *
+ * The enum is ordered by pulling priority, with the group with lowest priority
+ * first so the group_type can simply be compared when selecting the busiest
+ * group. See update_sd_pick_busiest().
+ */
+enum group_type {
+	/* The group has spare capacity that can be used to run more tasks.  */
+	group_has_spare = 0,
+	/*
+	 * The group is fully used and the tasks don't compete for more CPU
+	 * cycles. Nevertheless, some tasks might wait before running.
+	 */
+	group_fully_busy,
+	/*
+	 * One task doesn't fit with CPU's capacity and must be migrated to a
+	 * more powerful CPU.
+	 */
+	group_misfit_task,
+	/*
+	 * Balance SMT group that's fully busy. Can benefit from migration
+	 * a task on SMT with busy sibling to another CPU on idle core.
+	 */
+	group_smt_balance,
+	/*
+	 * SD_ASYM_PACKING only: One local CPU with higher capacity is available,
+	 * and the task should be migrated to it instead of running on the
+	 * current CPU.
+	 */
+	group_asym_packing,
+	/*
+	 * The tasks' affinity constraints previously prevented the scheduler
+	 * from balancing the load across the system.
+	 */
+	group_imbalanced,
+	/*
+	 * The CPU is overloaded and can't provide expected CPU cycles to all
+	 * tasks.
+	 */
+	group_overloaded
+};
+
+enum fbq_type { regular, remote, all };
+
+/*
+ * sg_lb_stats - stats of a sched_group required for load_balancing
+ */
+struct sg_lb_stats {
+	unsigned long avg_load; /*Avg load across the CPUs of the group */
+	unsigned long group_load; /* Total load over the CPUs of the group */
+	unsigned long group_capacity;
+	unsigned long group_util; /* Total utilization over the CPUs of the group */
+	unsigned long group_runnable; /* Total runnable time over the CPUs of the group */
+	unsigned int sum_nr_running; /* Nr of tasks running in the group */
+	unsigned int sum_h_nr_running; /* Nr of CFS tasks running in the group */
+	unsigned int idle_cpus;
+	unsigned int group_weight;
+	enum group_type group_type;
+	unsigned int group_asym_packing; /* Tasks should be moved to preferred CPU */
+	unsigned int group_smt_balance;  /* Task on busy SMT be moved */
+	unsigned long group_misfit_task_load; /* A CPU has a task too big for its capacity */
+#ifdef CONFIG_NUMA_BALANCING
+	unsigned int nr_numa_running;
+	unsigned int nr_preferred_running;
+#endif
+};
+
+struct lb_env {
+	struct sched_domain	*sd;
+
+	struct rq		*src_rq;
+	int			src_cpu;
+
+	int			dst_cpu;
+	struct rq		*dst_rq;
+
+	struct cpumask		*dst_grpmask;
+	int			new_dst_cpu;
+	enum cpu_idle_type	idle;
+	long			imbalance;
+	/* The set of CPUs under consideration for load-balancing */
+	struct cpumask		*cpus;
+
+	unsigned int		flags;
+
+	unsigned int		loop;
+	unsigned int		loop_break;
+	unsigned int		loop_max;
+
+	enum fbq_type		fbq_type;
+	enum migration_type	migration_type;
+	struct list_head	tasks;
+	bool			id_need_redo;
+#ifdef CONFIG_GROUP_BALANCER
+	bool			gb_need_redo;
+#endif
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	struct sg_lb_stats	local;
+	struct sg_lb_stats	busiest;
+#endif
+};
+#endif
 
 /* task_struct::on_rq states: */
 #define TASK_ON_RQ_QUEUED	1
@@ -248,6 +364,9 @@ static inline int task_has_dl_policy(struct task_struct *p)
 }
 
 extern int task_is_idle(struct task_struct *p);
+#ifdef CONFIG_SMP
+extern void update_sched_idle_avg(struct rq *rq, u64 delta);
+#endif
 
 #define cap_scale(v, s) ((v)*(s) >> SCHED_CAPACITY_SHIFT)
 
@@ -490,6 +609,8 @@ struct task_group {
 	u64			slice;
 
 #ifdef	CONFIG_SMP
+	unsigned long		numa_affine_ts;
+	int			prefer_node;
 	/*
 	 * load_avg can be heavily contended at clock tick time, so put
 	 * it in its own cacheline separated from the fields above which
@@ -538,6 +659,21 @@ struct task_group {
 
 #ifdef CONFIG_SCHED_SLI
 	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
+#endif
+
+#ifdef CONFIG_GROUP_BALANCER
+	const cpumask_t		*soft_cpus_allowed_ptr;
+	cpumask_t		soft_cpus_allowed;
+	int			soft_cpus_version;
+	int			specs_ratio;
+	struct rb_node		gb_node;
+	struct group_balancer_sched_domain *gb_sd;
+	struct task_group	*gb_tg;
+	bool			group_balancer;
+	bool			leap_level;
+	unsigned long		leap_level_timestamp;
+	unsigned long		adjust_level_timestamp;
+	raw_spinlock_t		gb_lock;
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -792,6 +928,7 @@ struct cfs_rq {
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 	unsigned long		nr_uninterruptible;
+	struct list_head	expel_list;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1225,7 +1362,7 @@ struct rq {
 	 * one CPU and if it got migrated afterwards it may decrease
 	 * it on another CPU. Always updated under the runqueue lock:
 	 */
-	unsigned int		nr_uninterruptible;
+	unsigned long 		nr_uninterruptible;
 
 	struct task_struct __rcu	*curr;
 	struct task_struct	*idle;
@@ -1269,7 +1406,6 @@ struct rq {
 	struct sched_domain __rcu	*sd;
 
 	unsigned long		cpu_capacity;
-	unsigned long		cpu_capacity_orig;
 
 	struct balance_callback *balance_callback;
 
@@ -1299,6 +1435,9 @@ struct rq {
 #endif
 	u64			idle_stamp;
 	u64			avg_idle;
+	u64			idle_exec_stamp;
+	u64			idle_exec_sum;
+	u64			avg_sched_idle;
 
 	unsigned long		wake_stamp;
 	u64			wake_avg_idle;
@@ -1401,6 +1540,14 @@ struct rq {
 	u64 last_acpu_update_time_task;
 #endif
 
+#ifdef CONFIG_GROUP_BALANCER
+	struct group_balancer_sched_domain *gb_sd;
+#endif
+	u64			last_push_expellee;
+	bool			booked;
+	bool			pulled;
+	bool			on_expel;
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -1455,6 +1602,7 @@ DECLARE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
 #define raw_rq()		raw_cpu_ptr(&runqueues)
 
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p);
 struct sched_group;
 #ifdef CONFIG_SCHED_CORE
 enum sched_cookie_flags {
@@ -1591,7 +1739,7 @@ static inline bool sched_group_cookie_match(struct rq *rq,
 	if (!sched_core_enabled(rq))
 		return true;
 
-	for_each_cpu_and(cpu, sched_group_span(group), p->cpus_ptr) {
+	for_each_cpu_and(cpu, sched_group_span(group), task_allowed_cpu(p)) {
 		if (sched_core_cookie_match(cpu_rq(cpu), p))
 			return true;
 	}
@@ -2395,7 +2543,7 @@ enum {
  * To support run-time toggling of sched features, all the translation units
  * (but core.c) reference the sysctl_sched_features defined in core.c.
  */
-extern const_debug unsigned int sysctl_sched_features;
+extern const_debug u64 sysctl_sched_features;
 
 #ifdef CONFIG_JUMP_LABEL
 #define SCHED_FEAT(name, enabled)					\
@@ -2771,7 +2919,7 @@ extern void set_cpus_allowed_common(struct task_struct *p, struct affinity_conte
 static inline bool task_allowed_on_cpu(struct task_struct *p, int cpu)
 {
 	/* When not in the task's cpumask, no point in looking further. */
-	if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+	if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)))
 		return false;
 
 	/* Can @cpu run a user thread? */
@@ -2888,6 +3036,7 @@ extern void init_entity_runnable_average(struct sched_entity *se);
 extern void post_init_entity_util_avg(struct task_struct *p);
 
 #ifdef CONFIG_NO_HZ_FULL
+extern bool id_can_stop_tick(struct rq *rq);
 extern bool sched_can_stop_tick(struct rq *rq);
 extern int __init sched_tick_offload_init(void);
 
@@ -3492,11 +3641,6 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags) {}
 #endif
 
 #ifdef CONFIG_SMP
-static inline unsigned long capacity_orig_of(int cpu)
-{
-	return cpu_rq(cpu)->cpu_capacity_orig;
-}
-
 bool update_other_load_avgs(struct rq *rq);
 
 unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
@@ -4166,4 +4310,87 @@ void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx);
 
 #include "ext.h"
 
+/* Only allow task run on task_group's prefern_node.
+ * If this conflicts with cpus_allowed, follow cpus_allowed.
+ */
+#if defined(CONFIG_SMP) && defined(CONFIG_FAIR_GROUP_SCHED)
+DECLARE_PER_CPU(struct cpumask, cpus_allowed_alt);
+#endif
+#ifdef CONFIG_GROUP_BALANCER
+extern bool group_balancer_enabled(void);
+#endif
+static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
+{
+	int __maybe_unused node;
+	struct cpumask __maybe_unused *cpus_allowed;
+
+#ifdef CONFIG_GROUP_BALANCER
+	if (group_balancer_enabled()) {
+		struct task_group *tg = task_group(p);
+
+		if (unlikely(p->soft_cpus_version != tg->soft_cpus_version)) {
+			cpumask_and(&p->cpus_allowed_alt, p->cpus_ptr,
+				    tg->soft_cpus_allowed_ptr);
+			p->soft_cpus_version = tg->soft_cpus_version;
+		}
+		if (!cpumask_empty(&p->cpus_allowed_alt))
+			return &p->cpus_allowed_alt;
+	}
+#endif
+#if defined(CONFIG_SMP) && defined(CONFIG_FAIR_GROUP_SCHED)
+	if (!sched_feat(NUMA_AFFINE))
+		return p->cpus_ptr;
+
+	node = task_group(p)->prefer_node;
+	if (node < 0 || node >= MAX_NUMNODES || !node_online(node))
+		return p->cpus_ptr;
+
+	cpus_allowed = this_cpu_ptr(&cpus_allowed_alt);
+	cpumask_and(cpus_allowed, p->cpus_ptr, cpumask_of_node(node));
+	if (!cpumask_empty(cpus_allowed))
+		return cpus_allowed;
+#endif
+	return p->cpus_ptr;
+}
+
+#ifdef CONFIG_GROUP_BALANCER
+static inline void tg_inc_soft_cpus_version(struct task_group *tg)
+{
+	tg->soft_cpus_version++;
+	if (unlikely(tg->soft_cpus_version < 0))
+		tg->soft_cpus_version = 0;
+}
+
+static inline bool tg_group_balancer_enabled(struct task_group *tg)
+{
+	return tg->group_balancer;
+}
+
+extern void sched_init_group_balancer_sched_domains(void);
+extern void sched_clear_group_balancer_sched_domains(void);
+extern void tg_set_specs_ratio(struct task_group *tg);
+extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
+						    struct group_balancer_sched_domain *target,
+						    bool enable);
+extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg, bool disable);
+extern void update_group_balancer_root_cpumask(void);
+extern void tg_specs_change(struct task_group *tg);
+extern unsigned long cfs_h_load(struct cfs_rq *cfs_rq);
+extern bool gb_cpu_overutilized(int cpu);
+extern void gb_load_balance(struct lb_env *env);
+extern void task_tick_gb(struct task_struct *p);
+#else
+static inline void tg_set_specs_ratio(struct task_group *tg) { }
+static inline void update_group_balancer_root_cpumask(void) { }
+static inline void tg_specs_change(struct task_group *tg) { }
+#ifdef CONFIG_SMP
+static inline void gb_load_balance(struct lb_env *env) { }
+#endif
+static inline void task_tick_gb(struct task_struct *p) { }
+#endif
+#ifdef CONFIG_SMP
+extern void task_tick_gi(struct rq *rq);
+#else
+static inline void task_tick_gi(struct rq *rq) { }
+#endif
 #endif /* _KERNEL_SCHED_SCHED_H */

@@ -168,13 +168,14 @@ static void bfs_write_failed(struct address_space *mapping, loff_t to)
 		truncate_pagecache(inode, inode->i_size);
 }
 
-static int bfs_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len,
-			struct page **pagep, void **fsdata)
+static int bfs_write_begin(const struct kiocb *iocb,
+			     struct address_space *mapping,
+			     loff_t pos, unsigned len,
+			     struct folio **foliop, void **fsdata)
 {
 	int ret;
 
-	ret = block_write_begin(mapping, pos, len, pagep, bfs_get_block);
+	ret = block_write_begin(mapping, pos, len, foliop, bfs_get_block);
 	if (unlikely(ret))
 		bfs_write_failed(mapping, pos + len);
 

@@ -26,6 +26,7 @@
 #include "psp-dev.h"
 
 #include "hygon/sp-dev.h"
+#include "hygon/ccp-mdev.h"
 
 /* used for version string AA.BB.CC.DD */
 #define AA				GENMASK(31, 24)
@@ -362,6 +363,14 @@ static int sp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto free_irqs;
 
+	if (is_vendor_hygon()) {
+		ret = ccp_dev_wrapper_alloc(pdev);
+		if (ret) {
+			dev_err(dev, "ccp_dev_wrapper_alloc failed (%d)\n", ret);
+			goto free_irqs;
+		}
+	}
+
 	return 0;
 
 free_irqs:
@@ -389,6 +398,9 @@ static void sp_pci_remove(struct pci_dev *pdev)
 
 	if (!sp)
 		return;
+
+	if (is_vendor_hygon())
+		ccp_dev_wrapper_free(pdev);
 
 	sp_destroy(sp);
 
@@ -579,6 +591,7 @@ static const struct pci_device_id sp_pci_table[] = {
 	{ PCI_VDEVICE(AMD, 0x14CA), (kernel_ulong_t)&dev_vdata[5] },
 	{ PCI_VDEVICE(AMD, 0x15C7), (kernel_ulong_t)&dev_vdata[6] },
 	{ PCI_VDEVICE(AMD, 0x1649), (kernel_ulong_t)&dev_vdata[6] },
+	{ PCI_VDEVICE(AMD, 0x1134), (kernel_ulong_t)&dev_vdata[7] },
 	{ PCI_VDEVICE(AMD, 0x17E0), (kernel_ulong_t)&dev_vdata[7] },
 	{ PCI_VDEVICE(AMD, 0x156E), (kernel_ulong_t)&dev_vdata[8] },
 	{ PCI_VDEVICE(HYGON, 0x1456), (kernel_ulong_t)&hygon_dev_vdata[0] },

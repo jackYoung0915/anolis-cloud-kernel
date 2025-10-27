@@ -11,7 +11,6 @@
 #include <asm/tlb.h>
 
 #ifdef CONFIG_MMU
-#define __HAVE_ARCH_PUD_ALLOC_ONE
 #define __HAVE_ARCH_PUD_FREE
 #include <asm-generic/pgalloc.h>
 
@@ -79,15 +78,6 @@ static inline void pgd_populate_safe(struct mm_struct *mm, pgd_t *pgd,
 	}
 }
 
-#define pud_alloc_one pud_alloc_one
-static inline pud_t *pud_alloc_one(struct mm_struct *mm, unsigned long addr)
-{
-	if (pgtable_l4_enabled)
-		return __pud_alloc_one(mm, addr);
-
-	return NULL;
-}
-
 #define pud_free pud_free
 static inline void pud_free(struct mm_struct *mm, pud_t *pud)
 {
@@ -100,20 +90,23 @@ static inline void pud_free(struct mm_struct *mm, pud_t *pud)
 #define p4d_alloc_one p4d_alloc_one
 static inline p4d_t *p4d_alloc_one(struct mm_struct *mm, unsigned long addr)
 {
-	if (pgtable_l5_enabled) {
-		gfp_t gfp = GFP_PGTABLE_USER;
+	p4d_t *p4d;
+	gfp_t gfp = GFP_PGTABLE_USER;
 
-		if (mm == &init_mm)
-			gfp = GFP_PGTABLE_KERNEL;
-		return (p4d_t *)get_zeroed_page(gfp);
-	}
+	if (mm == &init_mm)
+		gfp = GFP_PGTABLE_KERNEL;
+	p4d = (p4d_t *)get_zeroed_page(gfp);
+	if (!p4d)
+		return NULL;
 
-	return NULL;
+	pagetable_p4d_ctor(virt_to_ptdesc(p4d));
+	return p4d;
 }
 
 static inline void __p4d_free(struct mm_struct *mm, p4d_t *p4d)
 {
 	BUG_ON((unsigned long)p4d & (PAGE_SIZE-1));
+	pagetable_dtor(virt_to_ptdesc(p4d));
 	free_page((unsigned long)p4d);
 }
 
@@ -155,7 +148,7 @@ static inline pgd_t *pgd_alloc(struct mm_struct *mm)
 
 #define __pte_free_tlb(tlb, pte, buf)			\
 do {							\
-	pagetable_pte_dtor(page_ptdesc(pte));		\
+	pagetable_dtor(page_ptdesc(pte));		\
 	tlb_remove_page_ptdesc((tlb), page_ptdesc(pte));\
 } while (0)
 #endif /* CONFIG_MMU */

@@ -292,6 +292,9 @@ int min_free_kbytes = 1024;
 int user_min_free_kbytes = -1;
 static int watermark_boost_factor __read_mostly = 15000;
 static int watermark_scale_factor = 10;
+static int pcp_batch_scale_max __read_mostly = CONFIG_PCP_BATCH_SCALE_MAX;
+static const int sysctl_pcp_batch_scale_min;
+static const int sysctl_pcp_batch_scale_max = 6;
 
 /* movable_zone is the "real" zone pages in ZONE_MOVABLE are taken from */
 int movable_zone;
@@ -307,7 +310,6 @@ EXPORT_SYMBOL(nr_online_nodes);
 static bool page_contains_unaccepted(struct page *page, unsigned int order);
 static void accept_page(struct page *page, unsigned int order);
 static bool cond_accept_memory(struct zone *zone, unsigned int order);
-static inline bool has_unaccepted_memory(void);
 static bool __free_unaccepted(struct page *page);
 
 int page_group_by_mobility_disabled __read_mostly;
@@ -1146,6 +1148,21 @@ __always_inline bool free_pages_prepare(struct page *page,
 					continue;
 				}
 			}
+
+			/*
+			 * The page age information is stored in page flags
+			 * or node's page array. We need to explicitly clear
+			 * it in both cases. Otherwise, the stale age will
+			 * be provided when it's allocated again. Also, we
+			 * maintain age information for each page in the
+			 * compound page, So we have to clear them one by one.
+			 */
+#if defined(CONFIG_KIDLED) && !defined(KIDLED_AGE_NOT_IN_PAGE_FLAGS)
+			(page + i)->flags &= ~(KIDLED_AGE_MASK << KIDLED_AGE_PGSHIFT);
+#else
+			kidled_set_folio_age(page_pgdat(page + i),
+					    page_to_pfn(page + i), 0);
+#endif
 			(page + i)->flags &= ~PAGE_FLAGS_CHECK_AT_PREP;
 		}
 	}
@@ -1164,6 +1181,11 @@ __always_inline bool free_pages_prepare(struct page *page,
 	}
 
 	page_cpupid_reset_last(page);
+#if defined(CONFIG_KIDLED) && !defined(KIDLED_AGE_NOT_IN_PAGE_FLAGS)
+	page->flags &= ~(KIDLED_AGE_MASK << KIDLED_AGE_PGSHIFT);
+#else
+	kidled_set_folio_age(page_pgdat(page), page_to_pfn(page), 0);
+#endif
 	page->flags &= ~PAGE_FLAGS_CHECK_AT_PREP | __PG_KFENCE;
 	reset_page_owner(page, order);
 	page_table_check_free(page, order);
@@ -2197,17 +2219,19 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 int decay_pcp_high(struct zone *zone, struct per_cpu_pages *pcp)
 {
 	int high_min, to_drain, batch;
-	int todo = 0;
+	int todo = 0, batch_scale_max;
 
 	high_min = READ_ONCE(pcp->high_min);
 	batch = READ_ONCE(pcp->batch);
+	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
+
 	/*
 	 * Decrease pcp->high periodically to try to free possible
 	 * idle PCP pages.  And, avoid to free too many pages to
 	 * control latency.  This caps pcp->high decrement too.
 	 */
 	if (pcp->high > high_min) {
-		pcp->high = max3(pcp->count - (batch << CONFIG_PCP_BATCH_SCALE_MAX),
+		pcp->high = max3(pcp->count - (batch << batch_scale_max),
 				 pcp->high - (pcp->high >> 3), high_min);
 		if (pcp->high > high_min)
 			todo++;
@@ -2250,14 +2274,13 @@ void drain_zone_pages(struct zone *zone, struct per_cpu_pages *pcp)
 static void drain_pages_zone(unsigned int cpu, struct zone *zone)
 {
 	struct per_cpu_pages *pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
-	int count;
+	int count, batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	do {
 		spin_lock(&pcp->lock);
 		count = pcp->count;
 		if (count) {
-			int to_drain = min(count,
-				pcp->batch << CONFIG_PCP_BATCH_SCALE_MAX);
+			int to_drain = min(count, pcp->batch << batch_scale_max);
 
 			free_pcppages_bulk(zone, to_drain, pcp, 0);
 			count -= to_drain;
@@ -2395,10 +2418,11 @@ static bool free_unref_page_prepare(struct page *page, unsigned long pfn,
 static int nr_pcp_free(struct per_cpu_pages *pcp, int batch, int high, bool free_high)
 {
 	int min_nr_free, max_nr_free;
+	int batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	/* Free as much as possible if batch freeing high-order pages. */
 	if (unlikely(free_high))
-		return min(pcp->count, batch << CONFIG_PCP_BATCH_SCALE_MAX);
+		return min(pcp->count, batch << batch_scale_max);
 
 	/* Check for PCP disabled or boot pageset */
 	if (unlikely(high < batch))
@@ -2420,17 +2444,18 @@ static int nr_pcp_free(struct per_cpu_pages *pcp, int batch, int high, bool free
 static int nr_pcp_high(struct per_cpu_pages *pcp, struct zone *zone,
 		       int batch, bool free_high)
 {
-	int high, high_min, high_max;
+	int high, high_min, high_max, batch_scale_max;
 
 	high_min = READ_ONCE(pcp->high_min);
 	high_max = READ_ONCE(pcp->high_max);
 	high = pcp->high = clamp(pcp->high, high_min, high_max);
+	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	if (unlikely(!high))
 		return 0;
 
 	if (unlikely(free_high)) {
-		pcp->high = max(high - (batch << CONFIG_PCP_BATCH_SCALE_MAX),
+		pcp->high = max(high - (batch << batch_scale_max),
 				high_min);
 		return 0;
 	}
@@ -2469,7 +2494,7 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 				   struct page *page, int migratetype,
 				   unsigned int order)
 {
-	int high, batch;
+	int high, batch, batch_scale_max;
 	int pindex;
 	bool free_high = false;
 
@@ -2486,6 +2511,7 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 	pcp->count += 1 << order;
 
 	batch = READ_ONCE(pcp->batch);
+	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 	/*
 	 * As high-order pages other than THP's stored on PCP can contribute
 	 * to fragmentation, limit the number stored when PCP is heavily
@@ -2493,7 +2519,7 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 	 * stops will be drained from vmstat refresh context.
 	 */
 	if (order && order <= PAGE_ALLOC_COSTLY_ORDER) {
-		free_high = (pcp->free_count >= batch &&
+		free_high = (pcp->free_count >= (batch + pcp->high_min / 2) &&
 			     (pcp->flags & PCPF_PREV_FREE_HIGH_ORDER) &&
 			     (!(pcp->flags & PCPF_FREE_HIGH_BATCH) ||
 			      pcp->count >= READ_ONCE(batch)));
@@ -2501,7 +2527,7 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 	} else if (pcp->flags & PCPF_PREV_FREE_HIGH_ORDER) {
 		pcp->flags &= ~PCPF_PREV_FREE_HIGH_ORDER;
 	}
-	if (pcp->free_count < (batch << CONFIG_PCP_BATCH_SCALE_MAX))
+	if (pcp->free_count < (batch << batch_scale_max))
 		pcp->free_count += (1 << order);
 	high = nr_pcp_high(pcp, zone, batch, free_high);
 	if (pcp->count >= high) {
@@ -2808,12 +2834,13 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 static int nr_pcp_alloc(struct per_cpu_pages *pcp, struct zone *zone, int order)
 {
 	int high, base_batch, batch, max_nr_alloc;
-	int high_max, high_min;
+	int high_max, high_min, batch_scale_max;
 
 	base_batch = READ_ONCE(pcp->batch);
 	high_min = READ_ONCE(pcp->high_min);
 	high_max = READ_ONCE(pcp->high_max);
 	high = pcp->high = clamp(pcp->high, high_min, high_max);
+	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	/* Check for PCP disabled or boot pageset */
 	if (unlikely(high < base_batch))
@@ -2838,7 +2865,7 @@ static int nr_pcp_alloc(struct per_cpu_pages *pcp, struct zone *zone, int order)
 		 * subsequent allocation of order-0 pages without any freeing.
 		 */
 		if (batch <= max_nr_alloc &&
-		    pcp->alloc_factor < CONFIG_PCP_BATCH_SCALE_MAX)
+		    pcp->alloc_factor < batch_scale_max)
 			pcp->alloc_factor++;
 		batch = min(batch, max_nr_alloc);
 	}
@@ -4273,6 +4300,14 @@ restart:
 	}
 
 retry:
+	/*
+	 * Deal with possible cpuset update races or zonelist updates to avoid
+	 * infinite retries.
+	 */
+	if (check_retry_cpuset(cpuset_mems_cookie, ac) ||
+	    check_retry_zonelist(zonelist_iter_cookie))
+		goto restart;
+
 	/* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
 	if (alloc_flags & ALLOC_KSWAPD)
 		wake_all_kswapds(order, gfp_mask, ac);
@@ -6086,7 +6121,7 @@ void calculate_min_free_kbytes(void)
 	if (new_min_free_kbytes > user_min_free_kbytes)
 		min_free_kbytes = clamp(new_min_free_kbytes, 128, 262144);
 	else
-		pr_warn("min_free_kbytes is not updated to %d because user defined value %d is preferred\n",
+		pr_warn_once("min_free_kbytes is not updated to %d because user defined value %d is preferred\n",
 				new_min_free_kbytes, user_min_free_kbytes);
 
 }
@@ -6390,6 +6425,15 @@ static struct ctl_table page_alloc_sysctl_table[] = {
 		.extra1		= SYSCTL_ZERO,
 	},
 	{
+		.procname	= "percpu_pagelist_batch_scale_max",
+		.data		= &pcp_batch_scale_max,
+		.maxlen		= sizeof(pcp_batch_scale_max),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= (int *)&sysctl_pcp_batch_scale_min,
+		.extra2		= (int *)&sysctl_pcp_batch_scale_max,
+	},
+	{
 		.procname	= "lowmem_reserve_ratio",
 		.data		= &sysctl_lowmem_reserve_ratio,
 		.maxlen		= sizeof(sysctl_lowmem_reserve_ratio),
@@ -6466,6 +6510,7 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 	struct migration_target_control mtc = {
 		.nid = zone_to_nid(cc->zone),
 		.gfp_mask = GFP_USER | __GFP_MOVABLE | __GFP_RETRY_MAYFAIL,
+		.reason = MR_CONTIG_RANGE,
 	};
 
 	lru_cache_disable();
@@ -7005,9 +7050,6 @@ bool has_managed_dma(void)
 
 #ifdef CONFIG_UNACCEPTED_MEMORY
 
-/* Counts number of zones with unaccepted pages. */
-static DEFINE_STATIC_KEY_FALSE(zones_with_unaccepted_pages);
-
 static bool lazy_accept = true;
 
 static int __init accept_memory_parse(char *p)
@@ -7043,7 +7085,6 @@ static bool try_to_accept_memory_one(struct zone *zone)
 {
 	unsigned long flags;
 	struct page *page;
-	bool last;
 
 	spin_lock_irqsave(&zone->lock, flags);
 	page = list_first_entry_or_null(&zone->unaccepted_pages,
@@ -7054,7 +7095,6 @@ static bool try_to_accept_memory_one(struct zone *zone)
 	}
 
 	list_del(&page->lru);
-	last = list_empty(&zone->unaccepted_pages);
 
 	__mod_zone_freepage_state(zone, -MAX_ORDER_NR_PAGES, MIGRATE_MOVABLE);
 	__mod_zone_page_state(zone, NR_UNACCEPTED, -MAX_ORDER_NR_PAGES);
@@ -7064,9 +7104,6 @@ static bool try_to_accept_memory_one(struct zone *zone)
 
 	__free_pages_ok(page, MAX_ORDER, FPI_TO_TAIL);
 
-	if (last)
-		static_branch_dec(&zones_with_unaccepted_pages);
-
 	return true;
 }
 
@@ -7074,9 +7111,6 @@ static bool cond_accept_memory(struct zone *zone, unsigned int order)
 {
 	long to_accept, wmark;
 	bool ret = false;
-
-	if (!has_unaccepted_memory())
-		return false;
 
 	if (list_empty(&zone->unaccepted_pages))
 		return false;
@@ -7107,29 +7141,19 @@ static bool cond_accept_memory(struct zone *zone, unsigned int order)
 	return ret;
 }
 
-static inline bool has_unaccepted_memory(void)
-{
-	return static_branch_unlikely(&zones_with_unaccepted_pages);
-}
-
 static bool __free_unaccepted(struct page *page)
 {
 	struct zone *zone = page_zone(page);
 	unsigned long flags;
-	bool first = false;
 
 	if (!lazy_accept)
 		return false;
 
 	spin_lock_irqsave(&zone->lock, flags);
-	first = list_empty(&zone->unaccepted_pages);
 	list_add_tail(&page->lru, &zone->unaccepted_pages);
 	__mod_zone_freepage_state(zone, MAX_ORDER_NR_PAGES, MIGRATE_MOVABLE);
 	__mod_zone_page_state(zone, NR_UNACCEPTED, MAX_ORDER_NR_PAGES);
 	spin_unlock_irqrestore(&zone->lock, flags);
-
-	if (first)
-		static_branch_inc(&zones_with_unaccepted_pages);
 
 	return true;
 }
@@ -7146,11 +7170,6 @@ static void accept_page(struct page *page, unsigned int order)
 }
 
 static bool cond_accept_memory(struct zone *zone, unsigned int order)
-{
-	return false;
-}
-
-static inline bool has_unaccepted_memory(void)
 {
 	return false;
 }

@@ -985,29 +985,27 @@ static u32 ne6x_get_rss_table_size(struct net_device *netdev)
 	return rss_info->ind_table_size;
 }
 
-static int ne6x_get_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh)
+static int ne6x_get_rxfh(struct net_device *netdev, u32 *p, u8 *key, u8 *hfunc)
 {
 	struct ne6x_adapter *adpt = ne6x_netdev_to_adpt(netdev);
 	struct ne6x_rss_info *rss_info = &adpt->rss_info;
 	unsigned int n = rss_info->ind_table_size;
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
 
-	if (rxfh->indir) {
+	if (p) {
 		while (n--)
-			rxfh->indir[n] = rss_info->ind_table[n];
+			p[n] = rss_info->ind_table[n];
 	}
 
-	if (rxfh->key)
-		memcpy(rxfh->key, rss_info->hash_key, ne6x_get_rxfh_key_size(netdev));
+	if (key)
+		memcpy(key, rss_info->hash_key, ne6x_get_rxfh_key_size(netdev));
 
 	return 0;
 }
 
-static int ne6x_set_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh,
-			 struct netlink_ext_ack *extack)
+static int ne6x_set_rxfh(struct net_device *netdev, const u32 *p, const u8 *key, const u8 hfunc)
 {
 	struct ne6x_adapter *adpt = ne6x_netdev_to_adpt(netdev);
 	struct ne6x_rss_info *rss_info = &adpt->rss_info;
@@ -1015,19 +1013,19 @@ static int ne6x_set_rxfh(struct net_device *netdev,
 	int status;
 
 	/* We do not allow change in unsupported parameters */
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE && rxfh->hfunc != ETH_RSS_HASH_TOP)
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
 	/* Fill out the redirection table */
-	if (rxfh->indir) {
+	if (p) {
 		/* Allow at least 2 queues w/ SR-IOV. */
 		for (i = 0; i < rss_info->ind_table_size; i++)
-			rss_info->ind_table[i] = rxfh->indir[i];
+			rss_info->ind_table[i] = p[i];
 	}
 
 	/* Fill out the rss hash key */
-	if (rxfh->key)
-		memcpy(&rss_info->hash_key[0], rxfh->key, ne6x_get_rxfh_key_size(netdev));
+	if (key)
+		memcpy(&rss_info->hash_key[0], key, ne6x_get_rxfh_key_size(netdev));
 
 	status = ne6x_dev_set_rss(adpt, rss_info);
 

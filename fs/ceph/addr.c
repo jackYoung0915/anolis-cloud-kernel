@@ -1501,22 +1501,22 @@ static int ceph_netfs_check_write_begin(struct file *file, loff_t pos, unsigned 
  * We are only allowed to write into/dirty the page if the page is
  * clean, or already dirty within the same snap context.
  */
-static int ceph_write_begin(struct file *file, struct address_space *mapping,
+static int ceph_write_begin(const struct kiocb *iocb,
+			    struct address_space *mapping,
 			    loff_t pos, unsigned len,
-			    struct page **pagep, void **fsdata)
+			    struct folio **foliop, void **fsdata)
 {
+	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
 	struct ceph_inode_info *ci = ceph_inode(inode);
-	struct folio *folio = NULL;
 	int r;
 
-	r = netfs_write_begin(&ci->netfs, file, inode->i_mapping, pos, len, &folio, NULL);
+	r = netfs_write_begin(&ci->netfs, file, inode->i_mapping, pos, len, foliop, NULL);
 	if (r < 0)
 		return r;
 
-	folio_wait_fscache(folio);
-	WARN_ON_ONCE(!folio_test_locked(folio));
-	*pagep = &folio->page;
+	folio_wait_fscache(*foliop);
+	WARN_ON_ONCE(!folio_test_locked(*foliop));
 	return 0;
 }
 
@@ -1524,11 +1524,12 @@ static int ceph_write_begin(struct file *file, struct address_space *mapping,
  * we don't do anything in here that simple_write_end doesn't do
  * except adjust dirty page accounting
  */
-static int ceph_write_end(struct file *file, struct address_space *mapping,
-			  loff_t pos, unsigned len, unsigned copied,
-			  struct page *subpage, void *fsdata)
+static int ceph_write_end(const struct kiocb *iocb,
+			  struct address_space *mapping, loff_t pos,
+			  unsigned len, unsigned copied,
+			  struct folio *folio, void *fsdata)
 {
-	struct folio *folio = page_folio(subpage);
+	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
 	bool check_cap = false;
 

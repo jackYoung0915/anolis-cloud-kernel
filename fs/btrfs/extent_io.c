@@ -816,7 +816,7 @@ static void submit_extent_page(struct btrfs_bio_ctrl *bio_ctrl,
 		}
 
 		if (bio_ctrl->wbc)
-			wbc_account_cgroup_owner(bio_ctrl->wbc, page, len);
+			wbc_account_cgroup_owner(bio_ctrl->wbc, page_folio(page), len);
 
 		size -= len;
 		pg_offset += len;
@@ -1680,8 +1680,9 @@ static noinline_for_stack void write_one_eb(struct extent_buffer *eb,
 			clear_page_dirty_for_io(p);
 			wbc->nr_to_write--;
 		}
+
 		__bio_add_page(&bbio->bio, p, eb->len, eb->start - page_offset(p));
-		wbc_account_cgroup_owner(wbc, p, eb->len);
+		wbc_account_cgroup_owner(wbc, page_folio(p), eb->len);
 		unlock_page(p);
 	} else {
 		for (int i = 0; i < num_extent_pages(eb); i++) {
@@ -1691,7 +1692,7 @@ static noinline_for_stack void write_one_eb(struct extent_buffer *eb,
 			clear_page_dirty_for_io(p);
 			set_page_writeback(p);
 			__bio_add_page(&bbio->bio, p, PAGE_SIZE, 0);
-			wbc_account_cgroup_owner(wbc, p, PAGE_SIZE);
+			wbc_account_cgroup_owner(wbc, page_folio(p), PAGE_SIZE);
 			wbc->nr_to_write--;
 			unlock_page(p);
 		}
@@ -3565,10 +3566,10 @@ struct extent_buffer *find_extent_buffer(struct btrfs_fs_info *fs_info,
 	return eb;
 }
 
-#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
 struct extent_buffer *alloc_test_extent_buffer(struct btrfs_fs_info *fs_info,
 					u64 start)
 {
+#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
 	struct extent_buffer *eb, *exists = NULL;
 	int ret;
 
@@ -3604,8 +3605,11 @@ again:
 free_eb:
 	btrfs_release_extent_buffer(eb);
 	return exists;
-}
+#else
+	/* Stub to avoid linker error when compiled with optimizations turned off. */
+	return NULL;
 #endif
+}
 
 static struct extent_buffer *grab_extent_buffer(
 		struct btrfs_fs_info *fs_info, struct page *page)

@@ -58,16 +58,20 @@
 
 #include "internal.h"
 
-bool __maybe_unused enable_brk_thp_aligned;
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+DEFINE_STATIC_KEY_FALSE(brk_thp_aligned_key);
+extern int sysctl_brk_thp_aligned;
 
 static int __init parse_enable_brk_thp_aligned(char *str)
 {
-	enable_brk_thp_aligned = true;
-	pr_info("Enabling brk thp aligned\n");
+	static_branch_enable(&brk_thp_aligned_key);
+	sysctl_brk_thp_aligned = 1;
 
+	pr_info("Enabling brk thp aligned\n");
 	return 0;
 }
 __setup("brk_thp_aligned", parse_enable_brk_thp_aligned);
+#endif
 
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
@@ -187,19 +191,20 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *brkvma,
 		unsigned long addr, unsigned long request, unsigned long flags);
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
-	unsigned long newbrk, oldbrk, origbrk;
+	unsigned long newbrk, oldbrk, origbrk, orig_aligned_brk;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *brkvma, *next = NULL;
 	unsigned long min_brk;
 	bool populate = false;
 	LIST_HEAD(uf);
 	struct vma_iterator vmi;
-	unsigned long __maybe_unused newbrk_aligned, oldbrk_aligned;
+	bool brk_thp_aligned = brk_thp_aligned_enabled();
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
 
 	origbrk = mm->brk;
+	orig_aligned_brk = mm->aligned_brk;
 
 #ifdef CONFIG_COMPAT_BRK
 	/*
@@ -245,34 +250,52 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto success;
 	}
 
-	/* Always allow shrinking brk. */
-	if (brk <= mm->brk) {
-		if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned)
-			oldbrk = oldbrk_aligned;
+	/*
+	 * Use aligned_brk to track the current end of the heap VMA.
+	 * This ensures correct heap management regardless of THP alignment settings.
+	 */
+	if (mm->aligned_brk == 0UL)
+		mm->aligned_brk = oldbrk;
+	oldbrk = mm->aligned_brk;
+
+	/*
+	 * Always allow shrinking brk.
+	 *
+	 * Add a new shrink condition: after disabling heap THP alignment,
+	 * if the extended heap does not reach the 2M-aligned boundary,
+	 * the heap VMA should also be shrunk (unmapped).
+	 */
+	if (brk <= mm->brk || (!brk_thp_aligned && newbrk < oldbrk)) {
 		/* Search one past newbrk */
 		vma_iter_init(&vmi, mm, newbrk);
 		brkvma = vma_find(&vmi, oldbrk);
 		if (!brkvma || brkvma->vm_start >= oldbrk)
 			goto out; /* mapping intersects with an existing non-brk vma. */
 		/*
-		 * mm->brk must be protected by write mmap_lock.
+		 * mm->brk and mm->aligned_brk must be protected by write mmap_lock.
 		 * do_vma_munmap() will drop the lock on success,  so update it
 		 * before calling do_vma_munmap().
 		 */
 		mm->brk = brk;
+		mm->aligned_brk = newbrk;
 		if (do_vma_munmap(&vmi, brkvma, newbrk, oldbrk, &uf, true))
 			goto out;
 
 		goto success_unlocked;
 	}
 
-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned) {
-		if (newbrk <= oldbrk_aligned) {
+	/*
+	 * When heap THP alignment is enabled, expand the existing heap VMA
+	 * to the next HPAGE_SIZE boundary to facilitate THP usage.
+	 * If the new brk does not exceed the old heap end, return early;
+	 * otherwise, align newbrk upwards to the HPAGE_SIZE boundary.
+	 */
+	if (brk_thp_aligned) {
+		if (newbrk <= oldbrk) {
 			mm->brk = brk;
 			goto success;
 		}
-		newbrk = newbrk_aligned;
-		oldbrk = oldbrk_aligned;
+		newbrk = ALIGN(brk, HPAGE_SIZE);
 	}
 
 	if (check_brk_limits(oldbrk, newbrk - oldbrk))
@@ -293,6 +316,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto out;
 
 	mm->brk = brk;
+	mm->aligned_brk = newbrk;
 	if (mm->def_flags & VM_LOCKED)
 		populate = true;
 
@@ -306,6 +330,7 @@ success_unlocked:
 
 out:
 	mm->brk = origbrk;
+	mm->aligned_brk = orig_aligned_brk;
 	mmap_write_unlock(mm);
 	return origbrk;
 }
@@ -676,9 +701,13 @@ int vma_expand(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	bool remove_next = false;
 	struct vma_prepare vp;
 
+	async_fork_fixup_vma(vma);
+
 	vma_start_write(vma);
 	if (next && (vma != next) && (end == next->vm_end)) {
 		int ret;
+
+		async_fork_fixup_vma(next);
 
 		remove_next = true;
 		vma_start_write(next);
@@ -2465,7 +2494,13 @@ int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	init_vma_prep(&vp, vma);
 	vp.insert = new;
 	vma_prepare(&vp);
+	/*
+	 * Get rid of huge pages and shared page tables straddling the split
+	 * boundary.
+	 */
 	vma_adjust_trans_huge(vma, vma->vm_start, addr, 0);
+	if (is_vm_hugetlb_page(vma))
+		hugetlb_split(vma, addr);
 
 	if (new_below) {
 		vma->vm_start = addr;

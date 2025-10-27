@@ -522,7 +522,8 @@ struct blk_mq_tag_set {
 	struct list_head	tag_list;
 	struct srcu_struct	*srcu;
 
-	CK_KABI_RESERVE(1)
+	/* number of static alloc rqs if dyn_alloc flag is set */
+	CK_KABI_REPLACE(CK_KABI_RESERVE(1), unsigned int nr_static_rqs)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -685,6 +686,8 @@ enum {
 	BLK_MQ_F_ALLOC_POLICY_START_BIT = 8,
 	BLK_MQ_F_ALLOC_POLICY_BITS = 1,
 
+	BLK_MQ_F_DYN_ALLOC	= 1 << 31,
+
 	BLK_MQ_S_STOPPED	= 0,
 	BLK_MQ_S_TAG_ACTIVE	= 1,
 	BLK_MQ_S_SCHED_RESTART	= 2,
@@ -692,7 +695,7 @@ enum {
 	/* hw queue is inactive after all its CPUs become offline */
 	BLK_MQ_S_INACTIVE	= 3,
 
-	BLK_MQ_MAX_DEPTH	= 10240,
+	BLK_MQ_MAX_DEPTH	= 65536,
 
 	BLK_MQ_CPU_WORK_BATCH	= 8,
 };
@@ -1176,6 +1179,10 @@ static inline int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 
 	return __blk_rq_map_sg(q, rq, sglist, &last_sg);
 }
+
+int blk_rq_map_sg_bidir(struct request_queue *q, struct request *rq,
+	struct scatterlist *sglist_write, struct scatterlist *sglist_read);
+
 void blk_dump_rq_flags(struct request *, char *);
 
 #ifdef CONFIG_BLK_DEV_ZONED

@@ -86,7 +86,7 @@ static bool page_idle_clear_pte_refs_one(struct folio *folio,
 	return true;
 }
 
-static void page_idle_clear_pte_refs(struct folio *folio)
+void page_idle_clear_pte_refs(struct folio *folio)
 {
 	/*
 	 * Since rwc.try_lock is unused, rwc is effectively immutable, so we

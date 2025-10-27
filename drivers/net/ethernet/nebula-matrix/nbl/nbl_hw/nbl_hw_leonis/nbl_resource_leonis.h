@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -11,7 +11,7 @@
 
 #define NBL_MAX_PF_LEONIS			8
 /* product NO(ASIC SNIC as 3)-V NO.R NO.B NO.SP NO */
-#define NBL_LEONIS_DRIVER_VERSION	"3-3.1.312.1"
+#define NBL_LEONIS_DRIVER_VERSION	"3-3.1.512.2"
 
 int nbl_flow_mgt_start_leonis(struct nbl_resource_mgt *res_mgt);
 void nbl_flow_mgt_stop_leonis(struct nbl_resource_mgt *res_mgt);

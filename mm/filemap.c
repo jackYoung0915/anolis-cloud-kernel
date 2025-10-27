@@ -1266,13 +1266,6 @@ static void folio_wake_bit(struct folio *folio, int bit_nr)
 	spin_unlock_irqrestore(&q->lock, flags);
 }
 
-static void folio_wake(struct folio *folio, int bit)
-{
-	if (!folio_test_waiters(folio))
-		return;
-	folio_wake_bit(folio, bit);
-}
-
 /*
  * A choice of three behaviors for folio_wait_bit_common():
  */
@@ -1573,29 +1566,6 @@ void folio_add_wait_queue(struct folio *folio, wait_queue_entry_t *waiter)
 }
 EXPORT_SYMBOL_GPL(folio_add_wait_queue);
 
-#ifndef clear_bit_unlock_is_negative_byte
-
-/*
- * PG_waiters is the high bit in the same byte as PG_lock.
- *
- * On x86 (and on many other architectures), we can clear PG_lock and
- * test the sign bit at the same time. But if the architecture does
- * not support that special operation, we just do this all by hand
- * instead.
- *
- * The read of PG_waiters has to be after (or concurrently with) PG_locked
- * being cleared, but a memory barrier should be unnecessary since it is
- * in the same byte as PG_locked.
- */
-static inline bool clear_bit_unlock_is_negative_byte(long nr, volatile void *mem)
-{
-	clear_bit_unlock(nr, mem);
-	/* smp_mb__after_atomic(); */
-	return test_bit(PG_waiters, mem);
-}
-
-#endif
-
 /**
  * folio_unlock - Unlock a locked folio.
  * @folio: The folio.
@@ -1611,7 +1581,7 @@ void folio_unlock(struct folio *folio)
 	BUILD_BUG_ON(PG_waiters != 7);
 	BUILD_BUG_ON(PG_locked > 7);
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
-	if (clear_bit_unlock_is_negative_byte(PG_locked, folio_flags(folio, 0)))
+	if (folio_xor_flags_has_waiters(folio, 1 << PG_locked))
 		folio_wake_bit(folio, PG_locked);
 }
 EXPORT_SYMBOL(folio_unlock);
@@ -1632,9 +1602,17 @@ EXPORT_SYMBOL(folio_unlock);
  */
 void folio_end_read(struct folio *folio, bool success)
 {
+	unsigned long mask = 1 << PG_locked;
+
+	/* Must be in bottom byte for x86 to work */
+	BUILD_BUG_ON(PG_uptodate > 7);
+	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+	VM_BUG_ON_FOLIO(folio_test_uptodate(folio), folio);
+
 	if (likely(success))
-		folio_mark_uptodate(folio);
-	folio_unlock(folio);
+		mask |= 1 << PG_uptodate;
+	if (folio_xor_flags_has_waiters(folio, mask))
+		folio_wake_bit(folio, PG_locked);
 }
 EXPORT_SYMBOL(folio_end_read);
 
@@ -1696,13 +1674,30 @@ int folio_wait_private_2_killable(struct folio *folio)
 }
 EXPORT_SYMBOL(folio_wait_private_2_killable);
 
+static void filemap_end_dropbehind(struct folio *folio)
+{
+	struct address_space *mapping = folio->mapping;
+
+	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+
+	if (folio_test_writeback(folio) || folio_test_dirty(folio))
+		return;
+	if (!folio_test_clear_dropbehind(folio))
+		return;
+	if (mapping)
+		folio_unmap_invalidate(mapping, folio, 0);
+}
+
 /*
  * If folio was marked as dropbehind, then pages should be dropped when writeback
  * completes. Do that now. If we fail, it's likely because of a big folio -
  * just reset dropbehind for that case and latter completions should invalidate.
  */
-static void folio_end_dropbehind_write(struct folio *folio)
+static void filemap_end_dropbehind_write(struct folio *folio)
 {
+	if (!folio_test_dropbehind(folio))
+		return;
+
 	/*
 	 * Hitting !in_task() should not happen off RWF_DONTCACHE writeback,
 	 * but can happen if normal writeback just happens to find dirty folios
@@ -1711,8 +1706,7 @@ static void folio_end_dropbehind_write(struct folio *folio)
 	 * invalidation in that case.
 	 */
 	if (in_task() && folio_trylock(folio)) {
-		if (folio->mapping)
-			folio_unmap_invalidate(folio->mapping, folio, 0);
+		filemap_end_dropbehind(folio);
 		folio_unlock(folio);
 	}
 }
@@ -1720,10 +1714,14 @@ static void folio_end_dropbehind_write(struct folio *folio)
 /**
  * folio_end_writeback - End writeback against a folio.
  * @folio: The folio.
+ *
+ * The folio must actually be under writeback.
+ *
+ * Context: May be called from process or interrupt context.
  */
 void folio_end_writeback(struct folio *folio)
 {
-	bool folio_dropbehind = false;
+	VM_BUG_ON_FOLIO(!folio_test_writeback(folio), folio);
 
 	/*
 	 * folio_test_clear_reclaim() could be used here but it is an
@@ -1741,16 +1739,13 @@ void folio_end_writeback(struct folio *folio)
 	 * Writeback does not hold a folio reference of its own, relying
 	 * on truncation to wait for the clearing of PG_writeback.
 	 * But here we must make sure that the folio is not freed and
-	 * reused before the folio_wake().
+	 * reused before the folio_wake_bit().
 	 */
 	folio_get(folio);
-	if (!folio_test_dirty(folio))
-		folio_dropbehind = folio_test_clear_dropbehind(folio);
-	if (!__folio_end_writeback(folio))
-		BUG();
+	if (__folio_end_writeback(folio))
+		folio_wake_bit(folio, PG_writeback);
 
-	smp_mb__after_atomic();
-	folio_wake(folio, PG_writeback);
+	filemap_end_dropbehind_write(folio);
 	acct_reclaim_writeback(folio);
 
 	if (folio_dropbehind)
@@ -2059,8 +2054,8 @@ no_page:
 		if (WARN_ON_ONCE(!(fgp_flags & (FGP_LOCK | FGP_FOR_MMAP))))
 			fgp_flags |= FGP_LOCK;
 
-		if (!mapping_large_folio_support(mapping))
-			order = 0;
+		if (order > mapping_max_folio_order(mapping))
+			order = mapping_max_folio_order(mapping);
 
 		orders = file_orders_always() | BIT(0);
 		orders &= BIT(order + 1) - 1;
@@ -2078,6 +2073,7 @@ no_page:
 			folio = filemap_alloc_folio(alloc_gfp, order);
 			if (!folio) {
 				/* Try lower order */
+				count_mthp_stat(order, MTHP_STAT_FILE_FALLBACK);
 				order = next_order(&orders, order);
 				continue;
 			}
@@ -2094,6 +2090,7 @@ no_page:
 			folio_put(folio);
 			folio = NULL;
 
+			count_mthp_stat(order, MTHP_STAT_FILE_FALLBACK);
 			order = next_order(&orders, order);
 		};
 
@@ -2779,16 +2776,14 @@ static inline bool pos_same_folio(loff_t pos1, loff_t pos2, struct folio *folio)
 	return (pos1 >> shift == pos2 >> shift);
 }
 
-static void filemap_end_dropbehind_read(struct address_space *mapping,
-					struct folio *folio)
+static void filemap_end_dropbehind_read(struct folio *folio)
 {
 	if (!folio_test_dropbehind(folio))
 		return;
 	if (folio_test_writeback(folio) || folio_test_dirty(folio))
 		return;
 	if (folio_trylock(folio)) {
-		if (folio_test_clear_dropbehind(folio))
-			folio_unmap_invalidate(mapping, folio, 0);
+		filemap_end_dropbehind(folio);
 		folio_unlock(folio);
 	}
 }
@@ -2916,7 +2911,7 @@ put_folios:
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
 
-			filemap_end_dropbehind_read(mapping, folio);
+			filemap_end_dropbehind_read(folio);
 			folio_put(folio);
 		}
 		folio_batch_init(&fbatch);
@@ -3822,7 +3817,10 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 			folio_unlock(folio);
 			folio_put(folio);
 			folio = d_folio;
-			folio_lock(folio);
+			if (!folio_trylock(folio)) {
+				folio_put(folio);
+				continue;
+			}
 		}
 
 		if (!folio_test_large(folio))
@@ -4174,8 +4172,7 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 	ssize_t written = 0;
 
 	do {
-		struct page *page = NULL;
-		struct folio *folio;
+		struct folio *folio = NULL;
 		size_t offset;		/* Offset into folio */
 		size_t bytes;		/* Bytes to write to folio */
 		size_t copied;		/* Bytes copied from user */
@@ -4211,14 +4208,13 @@ retry:
 		 * can go away and just pass iocb or iocb flags.
 		 */
 		if (iocb->ki_flags & IOCB_DONTCACHE)
-			page = pagep_dropbehind;
+			folio = foliop_dropbehind;
 
-		status = a_ops->write_begin(file, mapping, pos, bytes,
-						&page, &fsdata);
+		status = a_ops->write_begin(iocb, mapping, pos, bytes,
+						&folio, &fsdata);
 		if (unlikely(status < 0))
 			break;
 
-		folio = page_folio(page);
 		offset = offset_in_folio(folio, pos);
 		if (bytes > folio_size(folio) - offset)
 			bytes = folio_size(folio) - offset;
@@ -4229,8 +4225,8 @@ retry:
 		copied = copy_folio_from_iter_atomic(folio, offset, bytes, i);
 		flush_dcache_folio(folio);
 
-		status = a_ops->write_end(file, mapping, pos, bytes, copied,
-						page, fsdata);
+		status = a_ops->write_end(iocb, mapping, pos, bytes, copied,
+						folio, fsdata);
 		if (unlikely(status != copied)) {
 			iov_iter_revert(i, copied - max(status, 0L));
 			if (unlikely(status < 0))
@@ -4402,6 +4398,9 @@ static void filemap_cachestat(struct address_space *mapping,
 	XA_STATE(xas, &mapping->i_pages, first_index);
 	struct folio *folio;
 
+	/* Flush stats (and potentially sleep) outside the RCU read section. */
+	mem_cgroup_flush_stats_ratelimited(NULL);
+
 	rcu_read_lock();
 	xas_for_each(&xas, folio, last_index) {
 		int order;
@@ -4465,7 +4464,7 @@ static void filemap_cachestat(struct address_space *mapping,
 					goto resched;
 			}
 #endif
-			if (workingset_test_recent(shadow, true, &workingset))
+			if (workingset_test_recent(shadow, true, &workingset, false))
 				cs->nr_recently_evicted += nr_pages;
 
 			goto resched;

@@ -1437,6 +1437,9 @@ endif
 if PPC
 source "arch/powerpc/crypto/Kconfig"
 endif
+if RISCV
+source "arch/riscv/crypto/Kconfig"
+endif
 if S390
 source "arch/s390/crypto/Kconfig"
 endif
@@ -1445,6 +1448,9 @@ source "arch/sparc/crypto/Kconfig"
 endif
 if X86
 source "arch/x86/crypto/Kconfig"
+endif
+if SW64
+source "arch/sw_64/crypto/Kconfig"
 endif
 endif
 

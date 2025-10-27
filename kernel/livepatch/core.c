@@ -395,6 +395,20 @@ out:
 	return count;
 }
 
+static void klp_module_enable_ro(const struct module *mod, bool after_init)
+{
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+	module_enable_ro(mod, after_init);
+#endif
+}
+
+static void klp_module_disable_ro(const struct module *mod)
+{
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+	module_disable_ro(mod);
+#endif
+}
+
 static ssize_t enabled_show(struct kobject *kobj,
 			    struct kobj_attribute *attr, char *buf)
 {
@@ -834,9 +848,14 @@ static int klp_init_object_loaded(struct klp_patch *patch,
 		 * written earlier during the initialization of the klp module
 		 * itself.
 		 */
+		klp_module_disable_ro(patch->mod);
 		ret = klp_apply_object_relocs(patch, obj);
-		if (ret)
+		if (ret) {
+			pr_err("apply object relocation failed, ret=%d\n", ret);
+			klp_module_enable_ro(patch->mod, true);
 			return ret;
+		}
+		klp_module_enable_ro(patch->mod, true);
 	}
 
 	klp_for_each_func(obj, func) {

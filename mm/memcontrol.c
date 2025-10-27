@@ -97,7 +97,12 @@ EXPORT_PER_CPU_SYMBOL_GPL(int_active_memcg);
 static bool cgroup_memory_nosocket __ro_after_init;
 
 /* Kernel memory accounting disabled? */
-static bool cgroup_memory_nokmem __ro_after_init;
+bool cgroup_memory_nokmem __ro_after_init;
+
+#ifdef CONFIG_MEMSLI
+/* Cgroup memory SLI disabled? */
+static DEFINE_STATIC_KEY_FALSE(cgroup_memory_nosli);
+#endif /* CONFIG_MEMSLI */
 
 #ifdef CONFIG_MEMSLI
 /* Cgroup memory SLI disabled? */
@@ -228,6 +233,14 @@ enum res_type {
 	_KMEM,
 	_TCP,
 };
+
+/* for encoding cft->private value on file related with kidled */
+#ifdef CONFIG_KIDLED
+enum kidled_stats_type {
+	KIDLED_LOCAL = 0,
+	KIDLED_HIERARCHY,
+};
+#endif
 
 #define MEMFILE_PRIVATE(x, val)	((x) << 16 | (val))
 #define MEMFILE_TYPE(val)	((val) >> 16 & 0xffff)
@@ -593,116 +606,6 @@ mem_cgroup_largest_soft_limit_node(struct mem_cgroup_tree_per_node *mctz)
 	return mz;
 }
 
-/*
- * memcg and lruvec stats flushing
- *
- * Many codepaths leading to stats update or read are performance sensitive and
- * adding stats flushing in such codepaths is not desirable. So, to optimize the
- * flushing the kernel does:
- *
- * 1) Periodically and asynchronously flush the stats every 2 seconds to not let
- *    rstat update tree grow unbounded.
- *
- * 2) Flush the stats synchronously on reader side only when there are more than
- *    (MEMCG_CHARGE_BATCH * nr_cpus) update events. Though this optimization
- *    will let stats be out of sync by atmost (MEMCG_CHARGE_BATCH * nr_cpus) but
- *    only for 2 seconds due to (1).
- */
-static void flush_memcg_stats_dwork(struct work_struct *w);
-static DECLARE_DEFERRABLE_WORK(stats_flush_dwork, flush_memcg_stats_dwork);
-static DEFINE_PER_CPU(unsigned int, stats_updates);
-static atomic_t stats_flush_ongoing = ATOMIC_INIT(0);
-static atomic_t stats_flush_threshold = ATOMIC_INIT(0);
-static u64 flush_next_time;
-
-#define FLUSH_TIME (2UL*HZ)
-
-/*
- * Accessors to ensure that preemption is disabled on PREEMPT_RT because it can
- * not rely on this as part of an acquired spinlock_t lock. These functions are
- * never used in hardirq context on PREEMPT_RT and therefore disabling preemtion
- * is sufficient.
- */
-static void memcg_stats_lock(void)
-{
-	preempt_disable_nested();
-	VM_WARN_ON_IRQS_ENABLED();
-}
-
-static void __memcg_stats_lock(void)
-{
-	preempt_disable_nested();
-}
-
-static void memcg_stats_unlock(void)
-{
-	preempt_enable_nested();
-}
-
-static inline void memcg_rstat_updated(struct mem_cgroup *memcg, int val)
-{
-	unsigned int x;
-
-	if (!val)
-		return;
-
-	cgroup_rstat_updated(memcg->css.cgroup, smp_processor_id());
-
-	x = __this_cpu_add_return(stats_updates, abs(val));
-	if (x > MEMCG_CHARGE_BATCH) {
-		/*
-		 * If stats_flush_threshold exceeds the threshold
-		 * (>num_online_cpus()), cgroup stats update will be triggered
-		 * in __mem_cgroup_flush_stats(). Increasing this var further
-		 * is redundant and simply adds overhead in atomic update.
-		 */
-		if (atomic_read(&stats_flush_threshold) <= num_online_cpus())
-			atomic_add(x / MEMCG_CHARGE_BATCH, &stats_flush_threshold);
-		__this_cpu_write(stats_updates, 0);
-	}
-}
-
-static void do_flush_stats(void)
-{
-	/*
-	 * We always flush the entire tree, so concurrent flushers can just
-	 * skip. This avoids a thundering herd problem on the rstat global lock
-	 * from memcg flushers (e.g. reclaim, refault, etc).
-	 */
-	if (atomic_read(&stats_flush_ongoing) ||
-	    atomic_xchg(&stats_flush_ongoing, 1))
-		return;
-
-	WRITE_ONCE(flush_next_time, jiffies_64 + 2*FLUSH_TIME);
-
-	cgroup_rstat_flush(root_mem_cgroup->css.cgroup);
-
-	atomic_set(&stats_flush_threshold, 0);
-	atomic_set(&stats_flush_ongoing, 0);
-}
-
-void mem_cgroup_flush_stats(void)
-{
-	if (atomic_read(&stats_flush_threshold) > num_online_cpus())
-		do_flush_stats();
-}
-
-void mem_cgroup_flush_stats_ratelimited(void)
-{
-	if (time_after64(jiffies_64, READ_ONCE(flush_next_time)))
-		mem_cgroup_flush_stats();
-}
-
-static void flush_memcg_stats_dwork(struct work_struct *w)
-{
-	/*
-	 * Always flush here so that flushing in latency-sensitive paths is
-	 * as cheap as possible.
-	 */
-	do_flush_stats();
-	queue_delayed_work(system_unbound_wq, &stats_flush_dwork, FLUSH_TIME);
-}
-
 /* Subset of vm_event_item to report for memcg event stats */
 static const unsigned int memcg_vm_event_stat[] = {
 	PGPGIN,
@@ -749,6 +652,15 @@ static inline int memcg_events_index(enum vm_event_item idx)
 }
 
 struct memcg_vmstats_percpu {
+	/* Stats updates since the last flush */
+	unsigned int			stats_updates;
+
+	/* Cached pointers for fast iteration in memcg_rstat_updated() */
+	struct memcg_vmstats_percpu	*parent;
+	struct memcg_vmstats		*vmstats;
+
+	/* The above should fit a single cacheline for memcg_rstat_updated() */
+
 	/* Local (CPU and cgroup) page state & events */
 	long			state[MEMCG_NR_STAT];
 	unsigned long		events[NR_MEMCG_EVENTS];
@@ -777,7 +689,134 @@ struct memcg_vmstats {
 	/* Pending child counts during tree propagation */
 	long			state_pending[MEMCG_NR_STAT];
 	unsigned long		events_pending[NR_MEMCG_EVENTS];
+
+	/* Stats updates since the last flush */
+	atomic64_t		stats_updates;
 };
+
+/*
+ * memcg and lruvec stats flushing
+ *
+ * Many codepaths leading to stats update or read are performance sensitive and
+ * adding stats flushing in such codepaths is not desirable. So, to optimize the
+ * flushing the kernel does:
+ *
+ * 1) Periodically and asynchronously flush the stats every 2 seconds to not let
+ *    rstat update tree grow unbounded.
+ *
+ * 2) Flush the stats synchronously on reader side only when there are more than
+ *    (MEMCG_CHARGE_BATCH * nr_cpus) update events. Though this optimization
+ *    will let stats be out of sync by atmost (MEMCG_CHARGE_BATCH * nr_cpus) but
+ *    only for 2 seconds due to (1).
+ */
+static void flush_memcg_stats_dwork(struct work_struct *w);
+static DECLARE_DEFERRABLE_WORK(stats_flush_dwork, flush_memcg_stats_dwork);
+static u64 flush_last_time;
+
+#define FLUSH_TIME (2UL*HZ)
+
+/*
+ * Accessors to ensure that preemption is disabled on PREEMPT_RT because it can
+ * not rely on this as part of an acquired spinlock_t lock. These functions are
+ * never used in hardirq context on PREEMPT_RT and therefore disabling preemtion
+ * is sufficient.
+ */
+static void memcg_stats_lock(void)
+{
+	preempt_disable_nested();
+	VM_WARN_ON_IRQS_ENABLED();
+}
+
+static void __memcg_stats_lock(void)
+{
+	preempt_disable_nested();
+}
+
+static void memcg_stats_unlock(void)
+{
+	preempt_enable_nested();
+}
+
+
+static bool memcg_vmstats_needs_flush(struct memcg_vmstats *vmstats)
+{
+	return atomic64_read(&vmstats->stats_updates) >
+		MEMCG_CHARGE_BATCH * num_online_cpus();
+}
+
+static inline void memcg_rstat_updated(struct mem_cgroup *memcg, int val)
+{
+	struct memcg_vmstats_percpu *statc;
+	int cpu = smp_processor_id();
+	unsigned int stats_updates;
+
+	if (!val)
+		return;
+
+	cgroup_rstat_updated(memcg->css.cgroup, cpu);
+	statc = this_cpu_ptr(memcg->vmstats_percpu);
+	for (; statc; statc = statc->parent) {
+		stats_updates = READ_ONCE(statc->stats_updates) + abs(val);
+		WRITE_ONCE(statc->stats_updates, stats_updates);
+		if (stats_updates < MEMCG_CHARGE_BATCH)
+			continue;
+
+		/*
+		 * If @memcg is already flush-able, increasing stats_updates is
+		 * redundant. Avoid the overhead of the atomic update.
+		 */
+		if (!memcg_vmstats_needs_flush(statc->vmstats))
+			atomic64_add(stats_updates,
+				     &statc->vmstats->stats_updates);
+		WRITE_ONCE(statc->stats_updates, 0);
+	}
+}
+
+static void do_flush_stats(struct mem_cgroup *memcg)
+{
+	if (mem_cgroup_is_root(memcg))
+		WRITE_ONCE(flush_last_time, jiffies_64);
+
+	cgroup_rstat_flush(memcg->css.cgroup);
+}
+
+/*
+ * mem_cgroup_flush_stats - flush the stats of a memory cgroup subtree
+ * @memcg: root of the subtree to flush
+ *
+ * Flushing is serialized by the underlying global rstat lock. There is also a
+ * minimum amount of work to be done even if there are no stat updates to flush.
+ * Hence, we only flush the stats if the updates delta exceeds a threshold. This
+ * avoids unnecessary work and contention on the underlying lock.
+ */
+void mem_cgroup_flush_stats(struct mem_cgroup *memcg)
+{
+	if (mem_cgroup_disabled())
+		return;
+
+	if (!memcg)
+		memcg = root_mem_cgroup;
+
+	if (memcg_vmstats_needs_flush(memcg->vmstats))
+		do_flush_stats(memcg);
+}
+
+void mem_cgroup_flush_stats_ratelimited(struct mem_cgroup *memcg)
+{
+	/* Only flush if the periodic flusher is one full cycle late */
+	if (time_after64(jiffies_64, READ_ONCE(flush_last_time) + 2*FLUSH_TIME))
+		mem_cgroup_flush_stats(memcg);
+}
+
+static void flush_memcg_stats_dwork(struct work_struct *w)
+{
+	/*
+	 * Deliberately ignore memcg_vmstats_needs_flush() here so that flushing
+	 * in latency-sensitive paths is as cheap as possible.
+	 */
+	do_flush_stats(root_mem_cgroup);
+	queue_delayed_work(system_unbound_wq, &stats_flush_dwork, FLUSH_TIME);
+}
 
 unsigned long memcg_page_state(struct mem_cgroup *memcg, int idx)
 {
@@ -787,6 +826,22 @@ unsigned long memcg_page_state(struct mem_cgroup *memcg, int idx)
 		x = 0;
 #endif
 	return x;
+}
+
+static int memcg_page_state_unit(int item);
+
+/*
+ * Normalize the value passed into memcg_rstat_updated() to be in pages. Round
+ * up non-zero sub-page updates to 1 page as zero page updates are ignored.
+ */
+static int memcg_state_val_in_pages(int idx, int val)
+{
+	int unit = memcg_page_state_unit(idx);
+
+	if (!val || unit == PAGE_SIZE)
+		return val;
+	else
+		return max(val * unit / PAGE_SIZE, 1UL);
 }
 
 /**
@@ -801,7 +856,7 @@ void __mod_memcg_state(struct mem_cgroup *memcg, int idx, int val)
 		return;
 
 	__this_cpu_add(memcg->vmstats_percpu->state[idx], val);
-	memcg_rstat_updated(memcg, val);
+	memcg_rstat_updated(memcg, memcg_state_val_in_pages(idx, val));
 }
 
 /* idx can be of type enum memcg_stat_item or node_stat_item. */
@@ -852,7 +907,7 @@ void __mod_memcg_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
 	/* Update lruvec */
 	__this_cpu_add(pn->lruvec_stats_percpu->state[idx], val);
 
-	memcg_rstat_updated(memcg, val);
+	memcg_rstat_updated(memcg, memcg_state_val_in_pages(idx, val));
 	memcg_stats_unlock();
 }
 
@@ -1420,7 +1475,6 @@ void mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 {
 	struct mem_cgroup *iter;
 	int ret = 0;
-	int i = 0;
 
 	for_each_mem_cgroup_tree(iter, memcg) {
 		struct css_task_iter it;
@@ -1428,10 +1482,9 @@ void mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 
 		css_task_iter_start(&iter->css, CSS_TASK_ITER_PROCS, &it);
 		while (!ret && (task = css_task_iter_next(&it))) {
-			/* Avoid potential softlockup warning */
-			if ((++i & 1023) == 0)
-				cond_resched();
 			ret = fn(task, arg);
+			/* Avoid potential softlockup warning */
+			cond_resched();
 		}
 		css_task_iter_end(&it);
 		if (ret) {
@@ -1733,7 +1786,7 @@ static const struct memory_stat memory_stats[] = {
 	{ "workingset_nodereclaim",	WORKINGSET_NODERECLAIM		},
 };
 
-/* Translate stat items to the correct unit for memory.stat output */
+/* The actual unit of the state item, not the same as the output unit */
 static int memcg_page_state_unit(int item)
 {
 	switch (item) {
@@ -1741,13 +1794,6 @@ static int memcg_page_state_unit(int item)
 	case MEMCG_ZSWAP_B:
 	case NR_SLAB_RECLAIMABLE_B:
 	case NR_SLAB_UNRECLAIMABLE_B:
-	case WORKINGSET_REFAULT_ANON:
-	case WORKINGSET_REFAULT_FILE:
-	case WORKINGSET_ACTIVATE_ANON:
-	case WORKINGSET_ACTIVATE_FILE:
-	case WORKINGSET_RESTORE_ANON:
-	case WORKINGSET_RESTORE_FILE:
-	case WORKINGSET_NODERECLAIM:
 		return 1;
 	case NR_KERNEL_STACK_KB:
 		return SZ_1K;
@@ -1756,10 +1802,39 @@ static int memcg_page_state_unit(int item)
 	}
 }
 
+/* Translate stat items to the correct unit for memory.stat output */
+static int memcg_page_state_output_unit(int item)
+{
+	/*
+	 * Workingset state is actually in pages, but we export it to userspace
+	 * as a scalar count of events, so special case it here.
+	 */
+	switch (item) {
+	case WORKINGSET_REFAULT_ANON:
+	case WORKINGSET_REFAULT_FILE:
+	case WORKINGSET_ACTIVATE_ANON:
+	case WORKINGSET_ACTIVATE_FILE:
+	case WORKINGSET_RESTORE_ANON:
+	case WORKINGSET_RESTORE_FILE:
+	case WORKINGSET_NODERECLAIM:
+		return 1;
+	default:
+		return memcg_page_state_unit(item);
+	}
+}
+
 static inline unsigned long memcg_page_state_output(struct mem_cgroup *memcg,
 						    int item)
 {
-	return memcg_page_state(memcg, item) * memcg_page_state_unit(item);
+	return memcg_page_state(memcg, item) *
+		memcg_page_state_output_unit(item);
+}
+
+static inline unsigned long memcg_page_state_local_output(
+		struct mem_cgroup *memcg, int item)
+{
+	return memcg_page_state_local(memcg, item) *
+		memcg_page_state_output_unit(item);
 }
 
 static void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
@@ -1776,7 +1851,7 @@ static void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
 	 *
 	 * Current memory state:
 	 */
-	mem_cgroup_flush_stats();
+	mem_cgroup_flush_stats(memcg);
 
 	for (i = 0; i < ARRAY_SIZE(memory_stats); i++) {
 		u64 size;
@@ -2603,7 +2678,7 @@ static void reclaim_wmark(struct mem_cgroup *memcg)
 	pre_oom_enter();
 	start = ktime_get_ns();
 	psi_memstall_enter(&pflags);
-	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, true);
+	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, MEMCG_RECLAIM_MAY_SWAP);
 	psi_memstall_leave(&pflags);
 	duration = ktime_get_ns() - start;
 	pre_oom_leave();
@@ -3154,6 +3229,10 @@ int memcg_alloc_slab_cgroups(struct slab *slab, struct kmem_cache *s,
 	unsigned long memcg_data;
 	void *vec;
 
+	/* extra allocate an special pointer for cold slab */
+	if (kidled_available_slab(slab_folio(slab), s))
+		objects += 1;
+
 	gfp &= ~OBJCGS_CLEAR_MASK;
 	vec = kcalloc_node(objects, sizeof(struct obj_cgroup *), gfp,
 			   slab_nid(slab));
@@ -3190,7 +3269,7 @@ struct mem_cgroup *mem_cgroup_from_obj_folio(struct folio *folio, void *p)
 	 * Memcg membership data for each individual object is saved in
 	 * slab->memcg_data.
 	 */
-	if (folio_test_slab(folio)) {
+	if (folio_test_slab(folio) && !page_has_slab_age(folio_slab(folio))) {
 		struct obj_cgroup **objcgs;
 		struct slab *slab;
 		unsigned int off;
@@ -4253,6 +4332,290 @@ static ssize_t mem_cgroup_reset(struct kernfs_open_file *of, char *buf,
 	return nbytes;
 }
 
+#ifdef CONFIG_KIDLED
+static int mem_cgroup_idle_page_stats_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *iter, *memcg = mem_cgroup_from_css(seq_css(m));
+	struct kidled_scan_control scan_control;
+	struct idle_page_stats *stats, *cache;
+	unsigned long page_scans, slab_scans;
+	bool has_hierarchy = !!seq_cft(m)->private;
+	bool no_buckets = false;
+	int i, j, t;
+
+	stats = kmalloc(sizeof(struct idle_page_stats) * 2, GFP_KERNEL);
+	if (!stats)
+		return -ENOMEM;
+	cache = stats + 1;
+
+	down_read(&memcg->idle_stats_rwsem);
+	*stats = memcg->idle_stats[memcg->idle_stable_idx];
+	page_scans = memcg->idle_page_scans;
+	slab_scans = memcg->idle_slab_scans;
+	scan_control = memcg->scan_control;
+	up_read(&memcg->idle_stats_rwsem);
+
+	/* Nothing will be outputed with invalid buckets */
+	if (KIDLED_IS_BUCKET_INVALID(stats->buckets)) {
+		no_buckets = true;
+		page_scans = 0;
+		slab_scans = 0;
+		goto output;
+	}
+
+	/* Zeroes will be output with mismatched scan period */
+	if (!kidled_is_scan_period_equal(&scan_control)) {
+		memset(&stats->count, 0, sizeof(stats->count));
+		scan_control = kidled_get_current_scan_control();
+		page_scans = 0;
+		slab_scans = 0;
+		goto output;
+	}
+
+	/* Zeroes will be output with mismatched scan type */
+	if (!kidled_is_scan_target_equal(&scan_control)) {
+		bool page_disabled = false;
+		bool slab_disabled = false;
+
+		kidled_get_reset_type(&scan_control, &page_disabled, &slab_disabled);
+		if (slab_disabled) {
+			memset(&stats->count[KIDLE_SLAB], 0,
+			       sizeof(stats->count[KIDLE_SLAB]));
+			slab_scans = 0;
+		}
+		if (page_disabled) {
+			int i;
+
+			for (i = 0; i < KIDLE_NR_TYPE - 1; i++) {
+				memset(&stats->count[i], 0, sizeof(stats->count[i]));
+				page_scans = 0;
+			}
+		}
+	} else {
+		if (kidled_has_slab_target_only(&scan_control) && page_scans != 0)
+			page_scans = 0;
+		if (kidled_has_page_target_only(&scan_control) && slab_scans != 0)
+			slab_scans = 0;
+	}
+
+	if (has_hierarchy) {
+		for_each_mem_cgroup_tree(iter, memcg) {
+			struct kidled_scan_control scan_control;
+
+			/* The root memcg was just accounted */
+			if (iter == memcg)
+				continue;
+
+			down_read(&iter->idle_stats_rwsem);
+			*cache = iter->idle_stats[iter->idle_stable_idx];
+			scan_control = memcg->scan_control;
+			up_read(&iter->idle_stats_rwsem);
+
+			/*
+			 * Skip to account if the scan period is mismatched
+			 * or buckets are invalid.
+			 */
+			if (!kidled_is_scan_period_equal(&scan_control) ||
+			    KIDLED_IS_BUCKET_INVALID(cache->buckets))
+				continue;
+
+			/*
+			 * The buckets of current memory cgroup might be
+			 * mismatched with that of root memory cgroup. We
+			 * charge the current statistics to the possibly
+			 * largest bucket. The users need to apply the
+			 * consistent buckets into the memory cgroups in
+			 * the hierarchy tree.
+			 */
+			for (i = 0; i < NUM_KIDLED_BUCKETS; i++) {
+				for (j = 0; j < NUM_KIDLED_BUCKETS - 1; j++) {
+					if (cache->buckets[i] <=
+					    stats->buckets[j])
+						break;
+				}
+
+				for (t = 0; t < KIDLE_NR_TYPE; t++)
+					stats->count[t][j] +=
+						cache->count[t][i];
+			}
+		}
+	}
+
+
+output:
+	seq_printf(m, "# version: %s\n", KIDLED_VERSION);
+	seq_printf(m, "# page_scans: %lu\n", page_scans);
+	seq_printf(m, "# slab_scans: %lu\n", slab_scans);
+	seq_printf(m, "# scan_period_in_seconds: %u\n", scan_control.duration);
+	seq_puts(m, "# buckets: ");
+	if (no_buckets) {
+		seq_puts(m, "no valid bucket available\n");
+		goto out;
+	}
+
+	for (i = 0; i < NUM_KIDLED_BUCKETS; i++) {
+		seq_printf(m, "%d", stats->buckets[i]);
+
+		if ((i == NUM_KIDLED_BUCKETS - 1) ||
+		    !stats->buckets[i + 1]) {
+			seq_puts(m, "\n");
+			j = i + 1;
+			break;
+		}
+		seq_puts(m, ",");
+	}
+	seq_puts(m, "#\n");
+
+	seq_puts(m, "#   _-----=> clean/dirty\n");
+	seq_puts(m, "#  / _----=> swap/file\n");
+	seq_puts(m, "# | / _---=> evict/unevict\n");
+	seq_puts(m, "# || / _--=> inactive/active\n");
+	seq_puts(m, "# ||| / _-=> slab\n");
+	seq_puts(m, "# |||| /\n");
+
+	seq_printf(m, "# %-8s", "|||||");
+	for (i = 0; i < j; i++) {
+		char region[20];
+
+		if (i == j - 1) {
+			snprintf(region, sizeof(region), "[%d,+inf)",
+				 stats->buckets[i]);
+		} else {
+			snprintf(region, sizeof(region), "[%d,%d)",
+				 stats->buckets[i],
+				 stats->buckets[i + 1]);
+		}
+
+		seq_printf(m, " %14s", region);
+	}
+	seq_puts(m, "\n");
+
+	for (t = 0; t < KIDLE_NR_TYPE; t++) {
+		char kidled_type_str[5];
+
+		if (t & KIDLE_SLAB)
+			memcpy(kidled_type_str, "slab", 5);
+		else {
+			kidled_type_str[0] = t & KIDLE_DIRTY   ? 'd' : 'c';
+			kidled_type_str[1] = t & KIDLE_FILE    ? 'f' : 's';
+			kidled_type_str[2] = t & KIDLE_UNEVICT ? 'u' : 'e';
+			kidled_type_str[3] = t & KIDLE_ACTIVE  ? 'a' : 'i';
+			kidled_type_str[4] = '\0';
+		}
+		seq_printf(m, "  %-8s", kidled_type_str);
+
+		for (i = 0; i < j; i++) {
+			seq_printf(m, " %14lu", stats->count[t][i]);
+		}
+
+		seq_puts(m, "\n");
+	}
+
+out:
+	kfree(stats);
+	return 0;
+}
+
+static ssize_t mem_cgroup_idle_page_stats_write(struct kernfs_open_file *of,
+						char *buf, size_t nbytes,
+						loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	struct idle_page_stats *stable_stats, *unstable_stats;
+	int buckets[NUM_KIDLED_BUCKETS] = { 0 }, i = 0, err;
+	unsigned long prev = 0, curr;
+	char *next;
+
+	buf = strstrip(buf);
+	while (*buf) {
+		if (i >= NUM_KIDLED_BUCKETS)
+			return -E2BIG;
+
+		/* Get next entry */
+		next = buf + 1;
+		while (*next && *next >= '0' && *next <= '9')
+			next++;
+		while (*next && (*next == ' ' || *next == ','))
+			*next++ = '\0';
+
+		/* Should be monotonically increasing */
+		err = kstrtoul(buf, 10, &curr);
+		if (err ||  curr > KIDLED_MAX_IDLE_AGE || curr <= prev)
+			return -EINVAL;
+
+		buckets[i++] = curr;
+		prev = curr;
+		buf = next;
+	}
+
+	/* No buckets set, mark it invalid */
+	if (i == 0)
+		KIDLED_MARK_BUCKET_INVALID(buckets);
+	if (down_write_killable(&memcg->idle_stats_rwsem))
+		return -EINTR;
+	stable_stats = mem_cgroup_get_stable_idle_stats(memcg);
+	unstable_stats = mem_cgroup_get_unstable_idle_stats(memcg);
+	memcpy(stable_stats->buckets, buckets, sizeof(buckets));
+
+	/*
+	 * We will clear the stats without check the buckets whether
+	 * has been changed, it works when user only wants to reset
+	 * stats but not to reset the buckets.
+	 */
+	memset(stable_stats->count, 0, sizeof(stable_stats->count));
+
+	/*
+	 * It's safe that the kidled reads the unstable buckets without
+	 * holding any read side locks.
+	 */
+	KIDLED_MARK_BUCKET_INVALID(unstable_stats->buckets);
+	memcg->idle_page_scans = 0;
+	memcg->idle_slab_scans = 0;
+	up_write(&memcg->idle_stats_rwsem);
+
+	return nbytes;
+}
+
+static void kidled_memcg_init(struct mem_cgroup *memcg)
+{
+	int type;
+
+	init_rwsem(&memcg->idle_stats_rwsem);
+	for (type = 0; type < KIDLED_STATS_NR_TYPE; type++) {
+		memcpy(memcg->idle_stats[type].buckets,
+		       kidled_default_buckets,
+		       sizeof(kidled_default_buckets));
+	}
+}
+
+static void kidled_memcg_inherit_parent_buckets(struct mem_cgroup *parent,
+						struct mem_cgroup *memcg)
+{
+	int idle_buckets[NUM_KIDLED_BUCKETS], type;
+
+	down_read(&parent->idle_stats_rwsem);
+	memcpy(idle_buckets,
+	       parent->idle_stats[parent->idle_stable_idx].buckets,
+	       sizeof(idle_buckets));
+	up_read(&parent->idle_stats_rwsem);
+
+	for (type = 0; type < KIDLED_STATS_NR_TYPE; type++) {
+		memcpy(memcg->idle_stats[type].buckets,
+		       idle_buckets,
+		       sizeof(idle_buckets));
+	}
+}
+#else
+static void kidled_memcg_init(struct mem_cgroup *memcg)
+{
+}
+
+static void kidled_memcg_inherit_parent_buckets(struct mem_cgroup *parent,
+						struct mem_cgroup *memcg)
+{
+}
+#endif /* CONFIG_KIDLED */
+
 static u64 mem_cgroup_move_charge_read(struct cgroup_subsys_state *css,
 					struct cftype *cft)
 {
@@ -4350,7 +4713,7 @@ static int memcg_numa_stat_show(struct seq_file *m, void *v)
 	int nid;
 	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
 
-	mem_cgroup_flush_stats();
+	mem_cgroup_flush_stats(memcg);
 
 	for (stat = stats; stat < stats + ARRAY_SIZE(stats); stat++) {
 		seq_printf(m, "%s=%lu", stat->name,
@@ -4392,6 +4755,10 @@ static const unsigned int memcg1_stats[] = {
 	WORKINGSET_REFAULT_ANON,
 	WORKINGSET_REFAULT_FILE,
 	MEMCG_SWAP,
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	MEMCG_ZSWAP_B,
+	MEMCG_ZSWAPPED,
+#endif
 };
 
 static const char *const memcg1_stat_names[] = {
@@ -4407,6 +4774,10 @@ static const char *const memcg1_stat_names[] = {
 	"workingset_refault_anon",
 	"workingset_refault_file",
 	"swap",
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	"zswap",
+	"zswapped",
+#endif
 };
 
 /* Universal VM events cgroup1 shows, original sort order */
@@ -4425,16 +4796,15 @@ static void memcg1_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
 
 	BUILD_BUG_ON(ARRAY_SIZE(memcg1_stat_names) != ARRAY_SIZE(memcg1_stats));
 
-	mem_cgroup_flush_stats();
+	mem_cgroup_flush_stats(memcg);
 
 	for (i = 0; i < ARRAY_SIZE(memcg1_stats); i++) {
 		unsigned long nr;
 
 		if (memcg1_stats[i] == MEMCG_SWAP && !do_memsw_account())
 			continue;
-		nr = memcg_page_state_local(memcg, memcg1_stats[i]);
-		seq_buf_printf(s, "%s %lu\n", memcg1_stat_names[i],
-			   nr * memcg_page_state_unit(memcg1_stats[i]));
+		nr = memcg_page_state_local_output(memcg, memcg1_stats[i]);
+		seq_buf_printf(s, "%s %lu\n", memcg1_stat_names[i], nr);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(memcg1_events); i++)
@@ -4463,9 +4833,9 @@ static void memcg1_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
 
 		if (memcg1_stats[i] == MEMCG_SWAP && !do_memsw_account())
 			continue;
-		nr = memcg_page_state(memcg, memcg1_stats[i]);
+		nr = memcg_page_state_output(memcg, memcg1_stats[i]);
 		seq_buf_printf(s, "total_%s %llu\n", memcg1_stat_names[i],
-			   (u64)nr * memcg_page_state_unit(memcg1_stats[i]));
+				(u64)nr);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(memcg1_events); i++)
@@ -5487,7 +5857,7 @@ void mem_cgroup_wb_stats(struct bdi_writeback *wb, unsigned long *pfilepages,
 	struct mem_cgroup *memcg = mem_cgroup_from_css(wb->memcg_css);
 	struct mem_cgroup *parent;
 
-	mem_cgroup_flush_stats();
+	mem_cgroup_flush_stats_ratelimited(memcg);
 
 	*pdirty = memcg_page_state(memcg, NR_FILE_DIRTY);
 	*pwriteback = memcg_page_state(memcg, NR_WRITEBACK);
@@ -5947,6 +6317,28 @@ static int mem_cgroup_slab_show(struct seq_file *m, void *p)
 
 static int memory_stat_show(struct seq_file *m, void *v);
 
+static u64 mem_cgroup_min_cache_read(struct cgroup_subsys_state *css,
+				     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->min_cache_pages << (PAGE_SHIFT - 10);
+}
+
+static int mem_cgroup_min_cache_write(struct cgroup_subsys_state *css,
+				      struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+	u64 max = READ_ONCE(memcg->memory.max);
+	u64 min_cache_pages = val >> (PAGE_SHIFT - 10);
+
+	if (min_cache_pages > max / 2)
+		return -EINVAL;
+
+	memcg->min_cache_pages = min_cache_pages;
+	return 0;
+}
+
 #ifdef CONFIG_TEXT_UNEVICTABLE
 static u64 mem_cgroup_allow_unevictable_read(struct cgroup_subsys_state *css,
 					     struct cftype *cft)
@@ -6034,15 +6426,18 @@ static ssize_t mem_cgroup_pgcache_limit_size_write(struct kernfs_open_file *of,
 						   loff_t off)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	struct mem_cgroup *p = parent_mem_cgroup(memcg);
 	struct page_counter *counter = &memcg->memory;
 	unsigned long size, max = counter->max * PAGE_SIZE;
 
 	buf = strstrip(buf);
 	size = (unsigned long)memparse(buf, NULL);
 	if (size > max)
-		memcg->pgcache_limit_size = max;
-	else
-		memcg->pgcache_limit_size = size;
+		return -EINVAL;
+	if (p && is_memcg_pgcache_limit_enabled(p) &&
+	    p->pgcache_limit_size != 0 && p->pgcache_limit_size < size)
+		return -EINVAL;
+	memcg->pgcache_limit_size = size;
 
 	return nbytes;
 }
@@ -6562,6 +6957,11 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.read_u64 = memcg_pre_oom_read,
 	},
 #endif
+	{
+		.name = "min_cache_kbytes",
+		.read_u64 = mem_cgroup_min_cache_read,
+		.write_u64 = mem_cgroup_min_cache_write,
+	},
 	{ },	/* terminate */
 };
 
@@ -6713,6 +7113,9 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	for_each_node(node)
 		free_mem_cgroup_per_node_info(memcg, node);
 	kfree(memcg->vmstats);
+#ifdef CONFIG_RECLAIM_COLDPGS
+	free_percpu(memcg->coldpgs_stats);
+#endif
 	free_percpu(memcg->vmstats_percpu);
 	free_percpu(memcg->exstat_cpu);
 #ifdef CONFIG_MEMSLI
@@ -6728,10 +7131,11 @@ static void mem_cgroup_free(struct mem_cgroup *memcg)
 	__mem_cgroup_free(memcg);
 }
 
-static struct mem_cgroup *mem_cgroup_alloc(void)
+static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
 {
+	struct memcg_vmstats_percpu *statc, *pstatc;
 	struct mem_cgroup *memcg;
-	int node;
+	int node, cpu;
 	int __maybe_unused i;
 	long error = -ENOMEM;
 
@@ -6767,6 +7171,21 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	memcg->exstat_cpu = alloc_percpu(struct mem_cgroup_exstat_cpu);
 	if (!memcg->exstat_cpu)
 		goto fail;
+
+	for_each_possible_cpu(cpu) {
+		if (parent)
+			pstatc = per_cpu_ptr(parent->vmstats_percpu, cpu);
+		statc = per_cpu_ptr(memcg->vmstats_percpu, cpu);
+		statc->parent = parent ? pstatc : NULL;
+		statc->vmstats = memcg->vmstats;
+	}
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	init_rwsem(&memcg->coldpgs_control.rwsem);
+	memcg->coldpgs_stats = alloc_percpu(struct reclaim_coldpgs_stats);
+	if (!memcg->coldpgs_stats)
+		goto fail;
+#endif
 
 	for_each_node(node)
 		if (alloc_mem_cgroup_per_node_info(memcg, node))
@@ -6805,6 +7224,7 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 #ifdef CONFIG_DUPTEXT
 	memcg->duptext_nodes = node_states[N_MEMORY];
 #endif
+	kidled_memcg_init(memcg);
 	lru_gen_init_memcg(memcg);
 	return memcg;
 fail:
@@ -6820,7 +7240,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	struct mem_cgroup *memcg, *old_memcg;
 
 	old_memcg = set_active_memcg(parent);
-	memcg = mem_cgroup_alloc();
+	memcg = mem_cgroup_alloc(parent);
 	set_active_memcg(old_memcg);
 	if (IS_ERR(memcg))
 		return ERR_CAST(memcg);
@@ -6829,6 +7249,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	WRITE_ONCE(memcg->soft_limit, PAGE_COUNTER_MAX);
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	memcg->zswap_max = PAGE_COUNTER_MAX;
+#endif
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	memcg->reclaim_coldpgs_max = PAGE_COUNTER_MAX;
 #endif
 	page_counter_set_high(&memcg->swap, PAGE_COUNTER_MAX);
 #ifdef CONFIG_TEXT_UNEVICTABLE
@@ -6844,8 +7267,10 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 		/* Default gap is 0.5% max limit */
 		memcg->wmark_scale_factor = parent->wmark_scale_factor ?
 					    : 50;
+		kidled_memcg_inherit_parent_buckets(parent, memcg);
 #ifdef CONFIG_PAGECACHE_LIMIT
 		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
+		memcg->pgcache_limit_size = parent->pgcache_limit_size;
 		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
 		memcg->pgcache_limit_reclaim_interval = parent->pgcache_limit_reclaim_interval;
 		memcg->pgcache_limit_reclaim_bytes = parent->pgcache_limit_reclaim_bytes;
@@ -6860,6 +7285,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #ifdef CONFIG_ASYNC_FORK
 		memcg->async_fork = parent->async_fork;
 #endif
+		memcg->min_cache_pages = parent->min_cache_pages;
 		page_counter_init(&memcg->memory, &parent->memory);
 		page_counter_init(&memcg->swap, &parent->swap);
 		page_counter_init(&memcg->kmem, &parent->kmem);
@@ -7137,6 +7563,10 @@ static void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
 			}
 		}
 	}
+	WRITE_ONCE(statc->stats_updates, 0);
+	/* We are in a per-cpu loop here, only do the atomic write once */
+	if (atomic64_read(&memcg->vmstats->stats_updates))
+		atomic64_set(&memcg->vmstats->stats_updates, 0);
 }
 
 #ifdef CONFIG_MMU
@@ -7367,6 +7797,8 @@ static int mem_cgroup_move_account(struct page *page,
 
 	ret = 0;
 	nid = folio_nid(folio);
+
+	kidled_mem_cgroup_move_stats(from, to, folio, nr_pages << PAGE_SHIFT);
 
 	local_irq_disable();
 	mem_cgroup_charge_statistics(to, nr_pages);
@@ -8200,7 +8632,8 @@ static int memory_stat_show(struct seq_file *m, void *v)
 static inline unsigned long lruvec_page_state_output(struct lruvec *lruvec,
 						     int item)
 {
-	return lruvec_page_state(lruvec, item) * memcg_page_state_unit(item);
+	return lruvec_page_state(lruvec, item) *
+		memcg_page_state_output_unit(item);
 }
 
 static int memory_numa_stat_show(struct seq_file *m, void *v)
@@ -8208,7 +8641,7 @@ static int memory_numa_stat_show(struct seq_file *m, void *v)
 	int i;
 	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
 
-	mem_cgroup_flush_stats();
+	mem_cgroup_flush_stats(memcg);
 
 	for (i = 0; i < ARRAY_SIZE(memory_stats); i++) {
 		int nid;
@@ -8429,6 +8862,11 @@ static struct cftype memory_files[] = {
 		.read_u64 = memcg_reap_background_read,
 		.write_u64 = memcg_reap_background_write,
 	},
+	{
+		.name = "min_cache_kbytes",
+		.read_u64 = mem_cgroup_min_cache_read,
+		.write_u64 = mem_cgroup_min_cache_write,
+	},
 #ifdef CONFIG_PAGECACHE_LIMIT
 	{
 		.name = "pagecache_limit.enable",
@@ -8480,6 +8918,25 @@ static struct cftype memory_files[] = {
 		.name = "pre_oom",
 		.write_u64 = memcg_pre_oom_write,
 		.read_u64 = memcg_pre_oom_read,
+	},
+#endif
+#ifdef CONFIG_KIDLED
+	/*
+	 * This sysfs name was extracted from Michel Lespinasse's patch,
+	 * but the contents have a big difference. See
+	 * Documentation/vm/kidled.rst for more details.
+	 */
+	{
+		.name = "idle_page_stats",
+		.private = KIDLED_HIERARCHY,
+		.seq_show = mem_cgroup_idle_page_stats_show,
+		.write = mem_cgroup_idle_page_stats_write,
+	},
+	{
+		.name = "idle_page_stats.local",
+		.private = KIDLED_LOCAL,
+		.seq_show = mem_cgroup_idle_page_stats_show,
+		.write = mem_cgroup_idle_page_stats_write,
 	},
 #endif
 	{ }	/* terminate */
@@ -9528,6 +9985,20 @@ static struct cftype memsw_files[] = {
 		.write = mem_cgroup_reset,
 		.read_u64 = mem_cgroup_read_u64,
 	},
+#ifdef CONFIG_KIDLED
+	{
+		.name = "idle_page_stats",
+		.private = KIDLED_HIERARCHY,
+		.seq_show = mem_cgroup_idle_page_stats_show,
+		.write = mem_cgroup_idle_page_stats_write,
+	},
+	{
+		.name = "idle_page_stats.local",
+		.private = KIDLED_LOCAL,
+		.seq_show = mem_cgroup_idle_page_stats_show,
+		.write = mem_cgroup_idle_page_stats_write,
+	},
+#endif
 	{ },	/* terminate */
 };
 
@@ -9549,9 +10020,6 @@ bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
 	struct mem_cgroup *memcg, *original_memcg;
 	bool ret = true;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return true;
-
 	original_memcg = get_mem_cgroup_from_objcg(objcg);
 	for (memcg = original_memcg; !mem_cgroup_is_root(memcg);
 	     memcg = parent_mem_cgroup(memcg)) {
@@ -9565,7 +10033,11 @@ bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
 			break;
 		}
 
-		cgroup_rstat_flush(memcg->css.cgroup);
+		/*
+		 * mem_cgroup_flush_stats() ignores small changes. Use
+		 * do_flush_stats() directly to get accurate stats for charging.
+		 */
+		do_flush_stats(memcg);
 		pages = memcg_page_state(memcg, MEMCG_ZSWAP_B) / PAGE_SIZE;
 		if (pages < max)
 			continue;
@@ -9587,9 +10059,6 @@ bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
 void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
-
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
 
 	VM_WARN_ON_ONCE(!(current->flags & PF_MEMALLOC));
 
@@ -9615,9 +10084,6 @@ void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
-
 	obj_cgroup_uncharge(objcg, size);
 
 	rcu_read_lock();
@@ -9630,8 +10096,10 @@ void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size)
 static u64 zswap_current_read(struct cgroup_subsys_state *css,
 			      struct cftype *cft)
 {
-	cgroup_rstat_flush(css->cgroup);
-	return memcg_page_state(mem_cgroup_from_css(css), MEMCG_ZSWAP_B);
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	mem_cgroup_flush_stats(memcg);
+	return memcg_page_state(memcg, MEMCG_ZSWAP_B);
 }
 
 static int zswap_max_show(struct seq_file *m, void *v)
@@ -9671,6 +10139,22 @@ static struct cftype zswap_files[] = {
 	},
 	{ }	/* terminate */
 };
+
+/* We need it in v1 as well */
+static struct cftype zswap_files_legacy[] = {
+	{
+		.name = "zswap.current",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = zswap_current_read,
+	},
+	{
+		.name = "zswap.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = zswap_max_show,
+		.write = zswap_max_write,
+	},
+	{ }	/* terminate */
+};
 #endif /* CONFIG_MEMCG_KMEM && CONFIG_ZSWAP */
 
 static int __init mem_cgroup_swap_init(void)
@@ -9682,6 +10166,8 @@ static int __init mem_cgroup_swap_init(void)
 	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, memsw_files));
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files));
+	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys,
+					  zswap_files_legacy));
 #endif
 	return 0;
 }

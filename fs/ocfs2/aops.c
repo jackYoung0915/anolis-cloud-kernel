@@ -931,7 +931,7 @@ static void ocfs2_write_failure(struct inode *inode,
 				ocfs2_jbd2_inode_add_write(wc->w_handle, inode,
 							   user_pos, user_len);
 
-			block_commit_write(tmppage, from, to);
+			block_commit_write(page_folio(tmppage), from, to);
 		}
 	}
 }
@@ -1644,7 +1644,7 @@ static int ocfs2_zero_tail(struct inode *inode, struct buffer_head *di_bh,
 
 int ocfs2_write_begin_nolock(struct address_space *mapping,
 			     loff_t pos, unsigned len, ocfs2_write_type_t type,
-			     struct page **pagep, void **fsdata,
+			     struct folio **foliop, void **fsdata,
 			     struct buffer_head *di_bh, struct page *mmap_page)
 {
 	int ret, cluster_of_pages, credits = OCFS2_INODE_UPDATE_CREDITS;
@@ -1827,8 +1827,8 @@ try_again:
 		ocfs2_free_alloc_context(meta_ac);
 
 success:
-	if (pagep)
-		*pagep = wc->w_target_page;
+	if (foliop)
+		*foliop = page_folio(wc->w_target_page);
 	*fsdata = wc;
 	return 0;
 out_quota:
@@ -1878,9 +1878,10 @@ out:
 	return ret;
 }
 
-static int ocfs2_write_begin(struct file *file, struct address_space *mapping,
+static int ocfs2_write_begin(const struct kiocb *iocb,
+			     struct address_space *mapping,
 			     loff_t pos, unsigned len,
-			     struct page **pagep, void **fsdata)
+			     struct folio **foliop, void **fsdata)
 {
 	int ret;
 	struct buffer_head *di_bh = NULL;
@@ -1902,7 +1903,7 @@ static int ocfs2_write_begin(struct file *file, struct address_space *mapping,
 	down_write(&OCFS2_I(inode)->ip_alloc_sem);
 
 	ret = ocfs2_write_begin_nolock(mapping, pos, len, OCFS2_WRITE_BUFFER,
-				       pagep, fsdata, di_bh, NULL);
+				       foliop, fsdata, di_bh, NULL);
 	if (ret) {
 		mlog_errno(ret);
 		goto out_fail;
@@ -2033,7 +2034,8 @@ int ocfs2_write_end_nolock(struct address_space *mapping,
 				ocfs2_jbd2_inode_add_write(handle, inode,
 							   start_byte, length);
 			}
-			block_commit_write(tmppage, from, to);
+
+			block_commit_write(page_folio(tmppage), from, to);
 		}
 	}
 
@@ -2075,9 +2077,10 @@ out:
 	return copied;
 }
 
-static int ocfs2_write_end(struct file *file, struct address_space *mapping,
+static int ocfs2_write_end(const struct kiocb *iocb,
+			   struct address_space *mapping,
 			   loff_t pos, unsigned len, unsigned copied,
-			   struct page *page, void *fsdata)
+			   struct folio *folio, void *fsdata)
 {
 	int ret;
 	struct inode *inode = mapping->host;

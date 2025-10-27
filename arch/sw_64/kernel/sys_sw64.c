@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/syscalls.h>
+
 #include <asm/fpu.h>
+#include <asm/syscall.h>
 
 SYSCALL_DEFINE5(getsysinfo, unsigned long, op, void __user *, buffer,
 		unsigned long, nbytes, int __user *, start, void __user *, arg)
@@ -335,3 +337,60 @@ SYSCALL_DEFINE0(pfh_ops)
 }
 
 #endif /* CONFIG_SUBARCH_C4 */
+
+asmlinkage void noinstr do_entSys(struct pt_regs *regs)
+{
+	long ret = -ENOSYS;
+	unsigned long nr;
+	unsigned long ti_flags = current_thread_info()->flags;
+
+	regs->orig_r0 = regs->regs[0];
+	regs->orig_r19 = regs->regs[19];
+	nr = regs->orig_r0;
+
+	if (ti_flags & _TIF_SYSCALL_WORK) {
+		nr = syscall_trace_enter();
+		/*
+		 * The de-facto standard way to skip a system call using ptrace
+		 * is to set the system call to -1 (NO_SYSCALL) and set r0 to a
+		 * suitable error code for consumption by userspace. However,
+		 * this cannot be distinguished from a user-issued syscall(-1)
+		 * and so we must set r0 to -ENOSYS here in case the tracer doesn't
+		 * issue the skip and we fall into trace_exit with r0 preserved.
+		 *
+		 * This is slightly odd because it also means that if a tracer
+		 * sets the system call number to -1 but does not initialise r0,
+		 * then r0 will be preserved for all system calls apart from a
+		 * user-issued syscall(-1). However, requesting a skip and not
+		 * setting the return value is unlikely to do anything sensible
+		 * anyway.
+		 */
+		if (regs->orig_r0 == NO_SYSCALL)
+			syscall_set_return_value(current, regs, -ENOSYS, 0);
+		if (nr == NO_SYSCALL)
+			goto syscall_out;
+	}
+
+	if (nr < __NR_syscalls) {
+		syscall_fn_t syscall_fn = sys_call_table[nr];
+
+		ret = syscall_fn(regs->regs[16], regs->regs[17], regs->regs[18],
+				regs->regs[19], regs->regs[20], regs->regs[21]);
+	} else {
+		syscall_set_return_value(current, regs, -ENOSYS, 0);
+		goto syscall_out;
+	}
+
+	if ((nr != __NR_sigreturn) && (nr != __NR_rt_sigreturn)) {
+		if (likely((ret >= 0) || regs->orig_r0 == NO_SYSCALL))
+			syscall_set_return_value(current, regs, 0, ret);
+		else
+			syscall_set_return_value(current, regs, ret, 0);
+	}
+
+syscall_out:
+	rseq_syscall(regs);
+
+	if (ti_flags & _TIF_SYSCALL_WORK)
+		syscall_trace_leave();
+}

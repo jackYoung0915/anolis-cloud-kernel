@@ -857,7 +857,19 @@ void cxl_event_trace_record(const struct cxl_memdev *cxlmd,
 			    enum cxl_event_type event_type,
 			    const uuid_t *uuid, union cxl_event *evt)
 {
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
+
 	if (event_type == CXL_CPER_EVENT_MEM_MODULE) {
+		if (type == CXL_EVENT_TYPE_FATAL)
+			dev_err(cxlds->dev, "Memory module fatal event detected: "
+				"event_type %u, health_status %#x, media_status %#x, "
+				"addition_status %#x, life_used %u\n",
+				evt->mem_module.event_type,
+				evt->mem_module.info.health_status,
+				evt->mem_module.info.media_status,
+				evt->mem_module.info.add_status,
+				evt->mem_module.info.life_used);
+
 		trace_cxl_memory_module(cxlmd, type, &evt->mem_module);
 		return;
 	}
@@ -866,6 +878,17 @@ void cxl_event_trace_record(const struct cxl_memdev *cxlmd,
 		return;
 	}
 	if (event_type == CXL_CPER_EVENT_ALISCM_SPECIFIC) {
+		if (type == CXL_EVENT_TYPE_FATAL)
+			dev_err(cxlds->dev, "AliSCM specific fatal event detected: "
+				"event_type %u, error_source %u, error_detail %u, "
+				"health_status %#x, addition_status %#x, vendor_status %#x\n",
+				evt->aliscm_specific.event_type,
+				evt->aliscm_specific.info.err_src,
+				evt->aliscm_specific.info.err_detail,
+				evt->aliscm_specific.info.health_status,
+				__le32_to_cpu(evt->aliscm_specific.info.add_status),
+				__le32_to_cpu(evt->aliscm_specific.info.vendor_ext_status));
+
 		trace_cxl_aliscm_specific(cxlmd, type, &evt->aliscm_specific);
 		return;
 	}
@@ -887,11 +910,23 @@ void cxl_event_trace_record(const struct cxl_memdev *cxlmd,
 		if (cxlr)
 			hpa = cxl_trace_hpa(cxlr, cxlmd, dpa);
 
-		if (event_type == CXL_CPER_EVENT_GEN_MEDIA)
+		if (event_type == CXL_CPER_EVENT_GEN_MEDIA) {
+			if (type == CXL_EVENT_TYPE_FATAL)
+				dev_err(cxlds->dev, "General media fatal event detected: "
+					"DPA %#llx, event_descriptor %#x, "
+					"event_type %u, transaction_type %#x\n",
+					dpa, evt->gen_media.descriptor,
+					evt->gen_media.type,
+					evt->gen_media.transaction_type);
+
 			trace_cxl_general_media(cxlmd, type, cxlr, hpa,
 						&evt->gen_media);
-		else if (event_type == CXL_CPER_EVENT_DRAM)
+		} else if (event_type == CXL_CPER_EVENT_DRAM) {
+			if (type == CXL_EVENT_TYPE_FATAL)
+				dev_err(cxlds->dev, "DRAM fatal event detected!\n");
+
 			trace_cxl_dram(cxlmd, type, cxlr, hpa, &evt->dram);
+		}
 	}
 }
 EXPORT_SYMBOL_NS_GPL(cxl_event_trace_record, CXL);

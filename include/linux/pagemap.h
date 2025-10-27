@@ -70,8 +70,8 @@ static inline int filemap_write_and_wait(struct address_space *mapping)
  * and the ->write_begin() handler on a file system supporting FOP_DONTCACHE
  * must check for this and pass FGP_DONTCACHE for folio creation.
  */
-#define pagep_dropbehind		((struct page *) 0xfee1c001)
-#define pagep_is_dropbehind(pagep)	(*(pagep) == pagep_dropbehind)
+#define foliop_dropbehind		((struct folio *) 0xfee1c001)
+#define foliop_is_dropbehind(foliop)	(*(foliop) == foliop_dropbehind)
 
 /**
  * filemap_set_wb_err - set a writeback error on an address_space
@@ -211,14 +211,24 @@ enum mapping_flags {
 	AS_EXITING	= 4, 	/* final truncate in progress */
 	/* writeback related tags are not used */
 	AS_NO_WRITEBACK_TAGS = 5,
-	AS_LARGE_FOLIO_SUPPORT = 6,
-	AS_RELEASE_ALWAYS,	/* Call ->release_folio(), even if no private data */
-	AS_STABLE_WRITES,	/* must wait for writeback before modifying
+	AS_RELEASE_ALWAYS = 6,	/* Call ->release_folio(), even if no private data */
+	AS_STABLE_WRITES = 7,	/* must wait for writeback before modifying
 				   folio contents */
-	AS_UNMOVABLE,		/* The mapping cannot be moved, ever */
+	AS_UNMOVABLE = 8,	/* The mapping cannot be moved, ever */
+	AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM = 9,
+	/* Bits 16-25 are used for FOLIO_ORDER */
+	AS_FOLIO_ORDER_BITS = 5,
+	AS_FOLIO_ORDER_MIN = 16,
+	AS_FOLIO_ORDER_MAX = AS_FOLIO_ORDER_MIN + AS_FOLIO_ORDER_BITS,
+	AS_ZERO_FOLIO = 26,	/* Filled file hole with zero page */
 
 	AS_FSDAX_NORMAP = 30,
 };
+
+#define AS_FOLIO_ORDER_BITS_MASK ((1u << AS_FOLIO_ORDER_BITS) - 1)
+#define AS_FOLIO_ORDER_MIN_MASK (AS_FOLIO_ORDER_BITS_MASK << AS_FOLIO_ORDER_MIN)
+#define AS_FOLIO_ORDER_MAX_MASK (AS_FOLIO_ORDER_BITS_MASK << AS_FOLIO_ORDER_MAX)
+#define AS_FOLIO_ORDER_MASK (AS_FOLIO_ORDER_MIN_MASK | AS_FOLIO_ORDER_MAX_MASK)
 
 /**
  * mapping_set_error - record a writeback error in the address_space
@@ -334,6 +344,16 @@ static inline bool mapping_unmovable(struct address_space *mapping)
 	return test_bit(AS_UNMOVABLE, &mapping->flags);
 }
 
+static inline void mapping_set_writeback_may_deadlock_on_reclaim(struct address_space *mapping)
+{
+	set_bit(AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM, &mapping->flags);
+}
+
+static inline bool mapping_writeback_may_deadlock_on_reclaim(struct address_space *mapping)
+{
+	return test_bit(AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM, &mapping->flags);
+}
+
 static inline gfp_t mapping_gfp_mask(struct address_space * mapping)
 {
 	return mapping->gfp_mask;
@@ -375,9 +395,51 @@ static inline void mapping_set_gfp_mask(struct address_space *m, gfp_t mask)
 #define MAX_XAS_ORDER		(XA_CHUNK_SHIFT * 2 - 1)
 #define MAX_PAGECACHE_ORDER	min(MAX_XAS_ORDER, PREFERRED_MAX_PAGECACHE_ORDER)
 
+/*
+ * mapping_set_folio_order_range() - Set the orders supported by a file.
+ * @mapping: The address space of the file.
+ * @min: Minimum folio order (between 0-MAX_PAGECACHE_ORDER inclusive).
+ * @max: Maximum folio order (between @min-MAX_PAGECACHE_ORDER inclusive).
+ *
+ * The filesystem should call this function in its inode constructor to
+ * indicate which base size (min) and maximum size (max) of folio the VFS
+ * can use to cache the contents of the file.  This should only be used
+ * if the filesystem needs special handling of folio sizes (ie there is
+ * something the core cannot know).
+ * Do not tune it based on, eg, i_size.
+ *
+ * Context: This should not be called while the inode is active as it
+ * is non-atomic.
+ */
+static inline void mapping_set_folio_order_range(struct address_space *mapping,
+						 unsigned int min,
+						 unsigned int max)
+{
+	if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+		return;
+
+	if (min > MAX_PAGECACHE_ORDER)
+		min = MAX_PAGECACHE_ORDER;
+
+	if (max > MAX_PAGECACHE_ORDER)
+		max = MAX_PAGECACHE_ORDER;
+
+	if (max < min)
+		max = min;
+
+	mapping->flags = (mapping->flags & ~AS_FOLIO_ORDER_MASK) |
+		(min << AS_FOLIO_ORDER_MIN) | (max << AS_FOLIO_ORDER_MAX);
+}
+
+static inline void mapping_set_folio_min_order(struct address_space *mapping,
+					       unsigned int min)
+{
+	mapping_set_folio_order_range(mapping, min, MAX_PAGECACHE_ORDER);
+}
+
 /**
  * mapping_set_large_folios() - Indicate the file supports large folios.
- * @mapping: The file.
+ * @mapping: The address space of the file.
  *
  * The filesystem should call this function in its inode constructor to
  * indicate that the VFS can use large folios to cache the contents of
@@ -388,7 +450,23 @@ static inline void mapping_set_gfp_mask(struct address_space *m, gfp_t mask)
  */
 static inline void mapping_set_large_folios(struct address_space *mapping)
 {
-	__set_bit(AS_LARGE_FOLIO_SUPPORT, &mapping->flags);
+	mapping_set_folio_order_range(mapping, 0, MAX_PAGECACHE_ORDER);
+}
+
+static inline unsigned int
+mapping_max_folio_order(const struct address_space *mapping)
+{
+	if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+		return 0;
+	return (mapping->flags & AS_FOLIO_ORDER_MAX_MASK) >> AS_FOLIO_ORDER_MAX;
+}
+
+static inline unsigned int
+mapping_min_folio_order(const struct address_space *mapping)
+{
+	if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+		return 0;
+	return (mapping->flags & AS_FOLIO_ORDER_MIN_MASK) >> AS_FOLIO_ORDER_MIN;
 }
 
 /**
@@ -411,16 +489,23 @@ static inline void mapping_clear_large_folios(struct address_space *mapping)
  */
 static inline bool mapping_large_folio_support(struct address_space *mapping)
 {
-	return IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
-		test_bit(AS_LARGE_FOLIO_SUPPORT, &mapping->flags);
+	return mapping_max_folio_order(mapping) > 0;
 }
 
 /* Return the maximum folio size for this pagecache mapping, in bytes. */
-static inline size_t mapping_max_folio_size(struct address_space *mapping)
+static inline size_t mapping_max_folio_size(const struct address_space *mapping)
 {
-	if (mapping_large_folio_support(mapping))
-		return PAGE_SIZE << MAX_PAGECACHE_ORDER;
-	return PAGE_SIZE;
+	return PAGE_SIZE << mapping_max_folio_order(mapping);
+}
+
+static inline void mapping_set_zero_folio(struct address_space *mapping)
+{
+	test_and_set_bit(AS_ZERO_FOLIO, &mapping->flags);
+}
+
+static inline bool mapping_zero_folio(struct address_space *mapping)
+{
+	return test_bit(AS_ZERO_FOLIO, &mapping->flags);
 }
 
 static inline int filemap_nr_thps(struct address_space *mapping)
@@ -705,6 +790,33 @@ struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
 		fgf_t fgp_flags, gfp_t gfp);
 struct page *pagecache_get_page(struct address_space *mapping, pgoff_t index,
 		fgf_t fgp_flags, gfp_t gfp);
+
+/**
+ * write_begin_get_folio - Get folio for write_begin with flags.
+ * @iocb: The kiocb passed from write_begin (may be NULL).
+ * @mapping: The address space to search.
+ * @index: The page cache index.
+ * @len: Length of data being written.
+ *
+ * This is a helper for filesystem write_begin() implementations.
+ * It wraps __filemap_get_folio(), setting appropriate flags in
+ * the write begin context.
+ *
+ * Return: A folio or an ERR_PTR.
+ */
+static inline struct folio *write_begin_get_folio(const struct kiocb *iocb,
+		  struct address_space *mapping, pgoff_t index, size_t len)
+{
+        fgf_t fgp_flags = FGP_WRITEBEGIN;
+
+        fgp_flags |= fgf_set_order(len);
+
+        if (iocb && iocb->ki_flags & IOCB_DONTCACHE)
+                fgp_flags |= FGP_DONTCACHE;
+
+        return __filemap_get_folio(mapping, index, fgp_flags,
+                                   mapping_gfp_mask(mapping));
+}
 
 /**
  * filemap_get_folio - Find and get a folio.

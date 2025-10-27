@@ -24,6 +24,7 @@
 #include <linux/shrinker.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
+#include <linux/kidled.h>
 
 struct mem_cgroup;
 struct obj_cgroup;
@@ -212,6 +213,45 @@ struct mem_cgroup_thresholds {
 	struct mem_cgroup_threshold_ary *spare;
 };
 
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+struct reclaim_coldpgs_control {
+	struct rw_semaphore	rwsem;
+	unsigned long		threshold;
+	unsigned long		size;
+	unsigned long		flags;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+};
+
+enum reclaim_coldpgs_stat_item {
+	RECLAIM_COLDPGS_STAT_PCACHE_IN_MIGRATE = 0,
+	RECLAIM_COLDPGS_STAT_PCACHE_OUT_MIGRATE,
+	RECLAIM_COLDPGS_STAT_PCACHE_OUT_DROP,
+	RECLAIM_COLDPGS_STAT_ANON_IN_MIGRATE,
+	RECLAIM_COLDPGS_STAT_ANON_IN_ZSWAP,
+	RECLAIM_COLDPGS_STAT_ANON_IN_SWAP,
+	RECLAIM_COLDPGS_STAT_ANON_OUT_MIGRATE,
+	RECLAIM_COLDPGS_STAT_ANON_OUT_ZSWAP,
+	RECLAIM_COLDPGS_STAT_ANON_OUT_SWAP,
+	RECLAIM_COLDPGS_STAT_SLAB_DROP,
+	RECLIMA_COLDPGS_STAT_MLOCK_DROP,
+	RECLIMA_COLDPGS_STAT_MLOCK_REFAULT,
+	RECLAIM_COLDPGS_STAT_MAX,
+};
+
+struct reclaim_coldpgs_stats {
+	unsigned long		counts[RECLAIM_COLDPGS_STAT_MAX];
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+};
+#endif /* CONFIG_RECLAIM_COLDPGS */
+
 /*
  * Remember four most recent foreign writebacks with dirty pages in this
  * cgroup.  Inode sharing is expected to be uncommon and, even if we miss
@@ -274,6 +314,9 @@ struct mem_cgroup {
 
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	unsigned long zswap_max;
+#endif
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	unsigned long reclaim_coldpgs_max;
 #endif
 
 	unsigned long soft_limit;
@@ -394,6 +437,8 @@ struct mem_cgroup {
 	struct mutex lat_stat_notify_lock;
 #endif
 
+	unsigned long min_cache_pages;
+
 #ifdef CONFIG_TEXT_UNEVICTABLE
 	bool allow_unevictable;
 	unsigned int unevictable_percent;
@@ -440,6 +485,20 @@ struct mem_cgroup {
 	unsigned long async_fork;
 #endif
 
+#ifdef CONFIG_KIDLED
+	struct rw_semaphore idle_stats_rwsem;
+	unsigned long idle_page_scans;
+	unsigned long idle_slab_scans;
+	struct kidled_scan_control scan_control;
+	int idle_stable_idx;
+	struct idle_page_stats idle_stats[KIDLED_STATS_NR_TYPE];
+#endif
+
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
+	struct reclaim_coldpgs_control	coldpgs_control;
+	struct reclaim_coldpgs_stats __percpu *coldpgs_stats;
+#endif
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -457,7 +516,11 @@ struct mem_cgroup {
  * TODO: maybe necessary to use big numbers in big irons or dynamic based of the
  * workload.
  */
+#ifdef CONFIG_ARCH_MEMCG_BATCH_SIZE
+#define MEMCG_CHARGE_BATCH CONFIG_ARCH_MEMCG_BATCH_SIZE
+#else
 #define MEMCG_CHARGE_BATCH 64U
+#endif
 
 extern struct mem_cgroup *root_mem_cgroup;
 
@@ -466,8 +529,10 @@ enum page_memcg_data_flags {
 	MEMCG_DATA_OBJCGS = (1UL << 0),
 	/* page has been accounted as a non-slab kernel page */
 	MEMCG_DATA_KMEM = (1UL << 1),
+	/* page->memcg_data is a pointer to the slab age  */
+	MEMCG_DATA_SLAB_AGE = (1UL << 2),
 	/* the next bit after the last actual flag */
-	__NR_MEMCG_DATA_FLAGS  = (1UL << 2),
+	__NR_MEMCG_DATA_FLAGS  = (1UL << 3),
 };
 
 #define MEMCG_DATA_FLAGS_MASK (__NR_MEMCG_DATA_FLAGS - 1)
@@ -619,7 +684,7 @@ static inline struct mem_cgroup *folio_memcg_check(struct folio *folio)
 	 */
 	unsigned long memcg_data = READ_ONCE(folio->memcg_data);
 
-	if (memcg_data & MEMCG_DATA_OBJCGS)
+	if ((memcg_data & MEMCG_DATA_OBJCGS) || (memcg_data & MEMCG_DATA_SLAB_AGE))
 		return NULL;
 
 	if (memcg_data & MEMCG_DATA_KMEM) {
@@ -831,6 +896,12 @@ static inline void mem_cgroup_uncharge_list(struct list_head *page_list)
 }
 
 void mem_cgroup_migrate(struct folio *old, struct folio *new);
+
+static inline struct mem_cgroup_per_node *
+mem_cgroup_nodeinfo(struct mem_cgroup *memcg, int nid)
+{
+	return memcg->nodeinfo[nid];
+}
 
 /**
  * mem_cgroup_lruvec - get the lru list vector for a memcg & node
@@ -1172,8 +1243,8 @@ static inline unsigned long lruvec_page_state_local(struct lruvec *lruvec,
 	return x;
 }
 
-void mem_cgroup_flush_stats(void);
-void mem_cgroup_flush_stats_ratelimited(void);
+void mem_cgroup_flush_stats(struct mem_cgroup *memcg);
+void mem_cgroup_flush_stats_ratelimited(struct mem_cgroup *memcg);
 
 void __mod_memcg_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
 			      int val);
@@ -1296,6 +1367,29 @@ static inline struct mem_cgroup *rich_container_get_memcg(void)
 	return NULL;
 }
 #endif
+
+#ifdef CONFIG_KIDLED
+static inline struct idle_page_stats *
+mem_cgroup_get_stable_idle_stats(struct mem_cgroup *memcg)
+{
+	return &memcg->idle_stats[memcg->idle_stable_idx];
+}
+
+static inline struct idle_page_stats *
+mem_cgroup_get_unstable_idle_stats(struct mem_cgroup *memcg)
+{
+	return &memcg->idle_stats[KIDLED_STATS_NR_TYPE - 1 -
+				  memcg->idle_stable_idx];
+}
+
+static inline void
+mem_cgroup_idle_page_stats_switch(struct mem_cgroup *memcg)
+{
+	memcg->idle_stable_idx = KIDLED_STATS_NR_TYPE - 1 -
+				 memcg->idle_stable_idx;
+}
+#endif /* CONFIG_KIDLED */
+
 
 static inline bool is_wmark_ok(struct mem_cgroup *memcg, bool high)
 {
@@ -1693,11 +1787,11 @@ static inline unsigned long lruvec_page_state_local(struct lruvec *lruvec,
 	return node_page_state(lruvec_pgdat(lruvec), idx);
 }
 
-static inline void mem_cgroup_flush_stats(void)
+static inline void mem_cgroup_flush_stats(struct mem_cgroup *memcg)
 {
 }
 
-static inline void mem_cgroup_flush_stats_ratelimited(void)
+static inline void mem_cgroup_flush_stats_ratelimited(struct mem_cgroup *memcg)
 {
 }
 

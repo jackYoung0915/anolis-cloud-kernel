@@ -461,7 +461,7 @@ bool cppc_allow_fast_switch(void)
 	struct cpc_desc *cpc_ptr;
 	int cpu;
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		cpc_ptr = per_cpu(cpc_desc_ptr, cpu);
 		desired_reg = &cpc_ptr->cpc_regs[DESIRED_PERF];
 		if (!CPC_IN_SYSTEM_MEMORY(desired_reg) &&
@@ -570,8 +570,11 @@ static int register_pcc_channel(int pcc_ss_idx)
 		pcc_data[pcc_ss_idx]->pcc_nominal = pcc_chan->latency;
 
 		pcc_data[pcc_ss_idx]->pcc_comm_addr =
-			acpi_os_ioremap(pcc_chan->shmem_base_addr,
-					pcc_chan->shmem_size);
+#ifdef CONFIG_ARCH_HISI
+			acpi_os_ioremap_pcc(pcc_chan->shmem_base_addr, pcc_chan->shmem_size);
+#else
+			acpi_os_ioremap(pcc_chan->shmem_base_addr, pcc_chan->shmem_size);
+#endif
 		if (!pcc_data[pcc_ss_idx]->pcc_comm_addr) {
 			pr_err("Failed to ioremap PCC comm region mem for %d\n",
 			       pcc_ss_idx);

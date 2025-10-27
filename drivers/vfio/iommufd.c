@@ -25,6 +25,10 @@ int vfio_df_iommufd_bind(struct vfio_device_file *df)
 
 	lockdep_assert_held(&vdev->dev_set->lock);
 
+	/* Returns 0 to permit device opening under noiommu mode */
+	if (vfio_device_is_noiommu(vdev))
+		return 0;
+
 	return vdev->ops->bind_iommufd(vdev, ictx, &df->devid);
 }
 
@@ -128,7 +132,7 @@ void vfio_iommufd_physical_unbind(struct vfio_device *vdev)
 	lockdep_assert_held(&vdev->dev_set->lock);
 
 	if (vdev->iommufd_attached) {
-		iommufd_device_detach(vdev->iommufd_device);
+		iommufd_device_detach(vdev->iommufd_device, IOMMU_NO_PASID);
 		vdev->iommufd_attached = false;
 	}
 	iommufd_device_unbind(vdev->iommufd_device);
@@ -146,9 +150,11 @@ int vfio_iommufd_physical_attach_ioas(struct vfio_device *vdev, u32 *pt_id)
 		return -EINVAL;
 
 	if (vdev->iommufd_attached)
-		rc = iommufd_device_replace(vdev->iommufd_device, pt_id);
+		rc = iommufd_device_replace(vdev->iommufd_device,
+					    IOMMU_NO_PASID, pt_id);
 	else
-		rc = iommufd_device_attach(vdev->iommufd_device, pt_id);
+		rc = iommufd_device_attach(vdev->iommufd_device,
+					   IOMMU_NO_PASID, pt_id);
 	if (rc)
 		return rc;
 	vdev->iommufd_attached = true;
@@ -163,7 +169,7 @@ void vfio_iommufd_physical_detach_ioas(struct vfio_device *vdev)
 	if (WARN_ON(!vdev->iommufd_device) || !vdev->iommufd_attached)
 		return;
 
-	iommufd_device_detach(vdev->iommufd_device);
+	iommufd_device_detach(vdev->iommufd_device, IOMMU_NO_PASID);
 	vdev->iommufd_attached = false;
 }
 EXPORT_SYMBOL_GPL(vfio_iommufd_physical_detach_ioas);

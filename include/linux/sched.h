@@ -645,6 +645,7 @@ struct sched_entity {
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 	unsigned int			ht_ratio;
 #endif
+	struct list_head		expel_node;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -830,10 +831,8 @@ struct task_struct {
 #endif
 	unsigned int			__state;
 
-#ifdef CONFIG_PREEMPT_RT
 	/* saved state for "spinlock sleepers" */
 	unsigned int			saved_state;
-#endif
 
 	/*
 	 * This begins the randomizable portion of task_struct. Only
@@ -1038,10 +1037,10 @@ struct task_struct {
 	/* Recursion prevention for eventfd_signal() */
 	unsigned			in_eventfd:1;
 #endif
-#ifdef CONFIG_IOMMU_SVA
+#ifdef CONFIG_ARCH_HAS_CPU_PASID
 	unsigned			pasid_activated:1;
 #endif
-#ifdef	CONFIG_CPU_SUP_INTEL
+#ifdef CONFIG_X86_BUS_LOCK_DETECT
 	unsigned			reported_split_lock:1;
 #endif
 #ifdef CONFIG_TASK_DELAY_ACCT
@@ -1341,6 +1340,7 @@ struct task_struct {
 	/* Protected by alloc_lock: */
 	struct mempolicy		*mempolicy;
 	short				il_prev;
+	u8				il_weight;
 	short				pref_node_fork;
 #endif
 #ifdef CONFIG_NUMA_BALANCING
@@ -1634,6 +1634,10 @@ struct task_struct {
 	unsigned long wait_moment;
 	bool				proxy_exec;
 
+#ifdef CONFIG_GROUP_BALANCER
+	struct cpumask			cpus_allowed_alt;
+	int				soft_cpus_version;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -2677,4 +2681,5 @@ static inline bool jbd2_proxy_exec_disabled(void)
 {
 	return !static_branch_unlikely(&__jbd2_proxy_exec_enabled);
 }
+extern void sched_task_release(struct task_struct *p);
 #endif

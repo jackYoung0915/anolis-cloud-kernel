@@ -83,7 +83,7 @@ static int nilfs_prepare_chunk(struct page *page, unsigned int from,
 {
 	loff_t pos = page_offset(page) + from;
 
-	return __block_write_begin(page, pos, to - from, nilfs_get_block);
+	return __block_write_begin(page_folio(page), pos, to - from, nilfs_get_block);
 }
 
 static void nilfs_commit_chunk(struct page *page,
@@ -97,7 +97,7 @@ static void nilfs_commit_chunk(struct page *page,
 	int err;
 
 	nr_dirty = nilfs_page_count_clean_buffers(page, from, to);
-	copied = block_write_end(NULL, mapping, pos, len, len, page, NULL);
+	copied = block_write_end(pos, len, len, page_folio(page));
 	if (pos + copied > dir->i_size)
 		i_size_write(dir, pos + copied);
 	if (IS_DIRSYNC(dir))

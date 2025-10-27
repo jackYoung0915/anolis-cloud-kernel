@@ -27,13 +27,21 @@
 #include <net/netdev_queues.h>
 #include <net/xdp_sock_drv.h>
 
+/* skip virtio_check_driver_offered_feature check for force_xdp  */
+#define virtio_has_feature __virtio_test_bit
+
 static int napi_weight = NAPI_POLL_WEIGHT;
 module_param(napi_weight, int, 0444);
 
-static bool csum = true, gso = true, napi_tx = true;
+static bool csum = true, gso = true, napi_tx = true, force_xdp;
 module_param(csum, bool, 0444);
 module_param(gso, bool, 0444);
 module_param(napi_tx, bool, 0644);
+module_param(force_xdp, bool, 0644);
+
+/* 7 days are long enough by default. */
+static unsigned int cvq_timeout = 7 * 24 * 3600 * 1000;
+module_param(cvq_timeout, uint, 0644);
 
 /* 7 days are long enough by default. */
 static unsigned int cvq_timeout = 7 * 24 * 3600 * 1000;
@@ -65,8 +73,7 @@ static const unsigned long guest_offloads[] = {
 	VIRTIO_NET_F_GUEST_UFO,
 	VIRTIO_NET_F_GUEST_CSUM,
 	VIRTIO_NET_F_GUEST_USO4,
-	VIRTIO_NET_F_GUEST_USO6,
-	VIRTIO_NET_F_GUEST_HDRLEN
+	VIRTIO_NET_F_GUEST_USO6
 };
 
 #define GUEST_OFFLOAD_GRO_HW_MASK ((1ULL << VIRTIO_NET_F_GUEST_TSO4) | \
@@ -507,6 +514,7 @@ struct virtio_net_common_hdr {
 static struct virtio_net_common_hdr xsk_hdr;
 
 static void virtnet_sq_free_unused_buf(struct virtqueue *vq, void *buf);
+static void virtnet_sq_free_unused_buf_done(struct virtqueue *vq);
 static int virtnet_xdp_handler(struct bpf_prog *xdp_prog, struct xdp_buff *xdp,
 			       struct net_device *dev,
 			       unsigned int *xdp_xmit,
@@ -624,7 +632,6 @@ static void __free_old_xmit(struct send_queue *sq, struct netdev_queue *txq,
 			break;
 		}
 	}
-	netdev_tx_completed_queue(txq, stats->napi_packets, stats->napi_bytes);
 }
 
 static void virtnet_free_old_xmit(struct send_queue *sq,
@@ -801,6 +808,26 @@ static unsigned int mergeable_ctx_to_headroom(void *mrg_ctx)
 static unsigned int mergeable_ctx_to_truesize(void *mrg_ctx)
 {
 	return (unsigned long)mrg_ctx & ((1 << MRG_CTX_HEADER_SHIFT) - 1);
+}
+
+static int check_mergeable_len(struct net_device *dev, void *mrg_ctx,
+			       unsigned int len)
+{
+	unsigned int headroom, tailroom, room, truesize;
+
+	truesize = mergeable_ctx_to_truesize(mrg_ctx);
+	headroom = mergeable_ctx_to_headroom(mrg_ctx);
+	tailroom = headroom ? sizeof(struct skb_shared_info) : 0;
+	room = SKB_DATA_ALIGN(headroom + tailroom);
+
+	if (len > truesize - room) {
+		pr_debug("%s: rx error: len %u exceeds truesize %lu\n",
+			 dev->name, len, (unsigned long)(truesize - room));
+		DEV_STATS_INC(dev, rx_length_errors);
+		return -1;
+	}
+
+	return 0;
 }
 
 static struct sk_buff *virtnet_build_skb(void *buf, unsigned int buflen,
@@ -1804,7 +1831,8 @@ static unsigned int virtnet_get_headroom(struct virtnet_info *vi)
  * across multiple buffers (num_buf > 1), and we make sure buffers
  * have enough headroom.
  */
-static struct page *xdp_linearize_page(struct receive_queue *rq,
+static struct page *xdp_linearize_page(struct net_device *dev,
+				       struct receive_queue *rq,
 				       int *num_buf,
 				       struct page *p,
 				       int offset,
@@ -1824,17 +1852,26 @@ static struct page *xdp_linearize_page(struct receive_queue *rq,
 	memcpy(page_address(page) + page_off, page_address(p) + offset, *len);
 	page_off += *len;
 
+	/* Only mergeable mode can go inside this while loop. In small mode,
+	 * *num_buf == 1, so it cannot go inside.
+	 */
 	while (--*num_buf) {
 		unsigned int buflen;
 		void *buf;
+		void *ctx;
 		int off;
 
-		buf = virtnet_rq_get_buf(rq, &buflen, NULL);
+		buf = virtnet_rq_get_buf(rq, &buflen, &ctx);
 		if (unlikely(!buf))
 			goto err_buf;
 
 		p = virt_to_head_page(buf);
 		off = buf - page_address(p);
+
+		if (check_mergeable_len(dev, ctx, buflen)) {
+			put_page(p);
+			goto err_buf;
+		}
 
 		/* guard against a misconfigured or uncooperative backend that
 		 * is sending packet larger than the MTU.
@@ -1924,7 +1961,7 @@ static struct sk_buff *receive_small_xdp(struct net_device *dev,
 		headroom = vi->hdr_len + header_offset;
 		buflen = SKB_DATA_ALIGN(GOOD_PACKET_LEN + headroom) +
 			SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-		xdp_page = xdp_linearize_page(rq, &num_buf, page,
+		xdp_page = xdp_linearize_page(dev, rq, &num_buf, page,
 					      offset, header_offset,
 					      &tlen);
 		if (!xdp_page)
@@ -2259,7 +2296,7 @@ static void *mergeable_xdp_get_buf(struct virtnet_info *vi,
 	 */
 	if (!xdp_prog->aux->xdp_has_frags) {
 		/* linearize data for XDP */
-		xdp_page = xdp_linearize_page(rq, num_buf,
+		xdp_page = xdp_linearize_page(vi->dev, rq, num_buf,
 					      *page, offset,
 					      XDP_PACKET_HEADROOM,
 					      len);
@@ -2518,32 +2555,7 @@ static void virtnet_receive_done(struct virtnet_info *vi, struct receive_queue *
 	struct virtio_net_common_hdr *hdr;
 	struct net_device *dev = vi->dev;
 
-	hdr = skb_vnet_common_hdr(skb);
-	if (dev->features & NETIF_F_RXHASH && vi->has_rss_hash_report)
-		virtio_skb_set_hash(&hdr->hash_v1_hdr, skb);
-
-	if (flags & VIRTIO_NET_HDR_F_DATA_VALID)
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
-
-	if (virtio_net_hdr_to_skb(skb, &hdr->hdr,
-				  virtio_is_little_endian(vi->vdev))) {
-		net_warn_ratelimited("%s: bad gso: type: %u, size: %u\n",
-				     dev->name, hdr->hdr.gso_type,
-				     hdr->hdr.gso_size);
-		goto frame_err;
-	}
-
-	skb_record_rx_queue(skb, vq2rxq(rq->vq));
-	skb->protocol = eth_type_trans(skb, dev);
-	pr_debug("Receiving skb proto 0x%04x len %i type %i\n",
-		 ntohs(skb->protocol), skb->len, skb->pkt_type);
-
-	napi_gro_receive(&rq->napi, skb);
-	return;
-
-frame_err:
-	DEV_STATS_INC(dev, rx_frame_errors);
-	dev_kfree_skb(skb);
+	virtnet_receive_done(vi, rq, skb, flags);
 }
 
 static void receive_buf(struct virtnet_info *vi, struct receive_queue *rq,
@@ -2569,7 +2581,14 @@ static void receive_buf(struct virtnet_info *vi, struct receive_queue *rq,
 	 * virtnet_xdp_set()), so packets marked as
 	 * VIRTIO_NET_HDR_F_NEEDS_CSUM get dropped during XDP processing.
 	 */
-	flags = ((struct virtio_net_common_hdr *)buf)->hdr.flags;
+	if (vi->big_packets && !vi->mergeable_rx_bufs) {
+		void *p;
+
+		p = page_address((struct page *)buf);
+		flags = ((struct virtio_net_common_hdr *)p)->hdr.flags;
+	} else {
+		flags = ((struct virtio_net_common_hdr *)buf)->hdr.flags;
+	}
 
 	if (vi->mergeable_rx_bufs)
 		skb = receive_mergeable(dev, vi, rq, buf, ctx, len, xdp_xmit,
@@ -3214,8 +3233,7 @@ static int xmit_skb(struct send_queue *sq, struct sk_buff *skb, bool orphan)
 		num_sg++;
 	}
 
-	return virtnet_add_outbuf(sq, num_sg, skb,
-				  orphan ? VIRTNET_XMIT_TYPE_SKB_ORPHAN : VIRTNET_XMIT_TYPE_SKB);
+	return virtnet_add_outbuf(sq, num_sg, skb, VIRTNET_XMIT_TYPE_SKB);
 }
 
 static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -3308,7 +3326,7 @@ static int virtnet_rx_resize(struct virtnet_info *vi,
 
 	virtnet_rx_pause(vi, rq);
 
-	err = virtqueue_resize(rq->vq, ring_num, virtnet_rq_unmap_free_buf);
+	err = virtqueue_resize(rq->vq, ring_num, virtnet_rq_unmap_free_buf, NULL);
 	if (err)
 		netdev_err(vi->dev, "resize rx fail: rx queue index: %d err: %d\n", qindex, err);
 
@@ -3371,7 +3389,8 @@ static int virtnet_tx_resize(struct virtnet_info *vi, struct send_queue *sq,
 
 	virtnet_tx_pause(vi, sq);
 
-	err = virtqueue_resize(sq->vq, ring_num, virtnet_sq_free_unused_buf);
+	err = virtqueue_resize(sq->vq, ring_num, virtnet_sq_free_unused_buf,
+			       virtnet_sq_free_unused_buf_done);
 	if (err)
 		netdev_err(vi->dev, "resize tx fail: tx queue index: %d err: %d\n", qindex, err);
 
@@ -5391,11 +5410,11 @@ static int virtnet_get_rxfh(struct net_device *dev,
 
 	if (rxfh->indir) {
 		for (i = 0; i < vi->rss_indir_table_size; ++i)
-			rxfh->indir[i] = vi->rss.indirection_table[i];
+			indir[i] = vi->rss.indirection_table[i];
 	}
 
-	if (rxfh->key)
-		memcpy(rxfh->key, vi->rss.key, vi->rss_key_size);
+	if (key)
+		memcpy(key, vi->rss.key, vi->rss_key_size);
 
 	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
@@ -5419,11 +5438,11 @@ static int virtnet_set_rxfh(struct net_device *dev,
 			return -EOPNOTSUPP;
 
 		for (i = 0; i < vi->rss_indir_table_size; ++i)
-			vi->rss.indirection_table[i] = rxfh->indir[i];
+			vi->rss.indirection_table[i] = indir[i];
 		update = true;
 	}
 
-	if (rxfh->key) {
+	if (key) {
 		/* If either _F_HASH_REPORT or _F_RSS are negotiated, the
 		 * device provides hash calculation capabilities, that is,
 		 * hash_key is configured.
@@ -5431,7 +5450,7 @@ static int virtnet_set_rxfh(struct net_device *dev,
 		if (!vi->has_rss && !vi->has_rss_hash_report)
 			return -EOPNOTSUPP;
 
-		memcpy(vi->rss.key, rxfh->key, vi->rss_key_size);
+		memcpy(vi->rss.key, key, vi->rss_key_size);
 		update = true;
 	}
 
@@ -5704,7 +5723,7 @@ static int virtnet_rq_bind_xsk_pool(struct virtnet_info *vi, struct receive_queu
 
 	virtnet_rx_pause(vi, rq);
 
-	err = virtqueue_reset(rq->vq, virtnet_rq_unmap_free_buf);
+	err = virtqueue_reset(rq->vq, virtnet_rq_unmap_free_buf, NULL);
 	if (err) {
 		netdev_err(vi->dev, "reset rx fail: rx queue index: %d err: %d\n", qindex, err);
 
@@ -5733,7 +5752,8 @@ static int virtnet_sq_bind_xsk_pool(struct virtnet_info *vi,
 
 	virtnet_tx_pause(vi, sq);
 
-	err = virtqueue_reset(sq->vq, virtnet_sq_free_unused_buf);
+	err = virtqueue_reset(sq->vq, virtnet_sq_free_unused_buf,
+			      virtnet_sq_free_unused_buf_done);
 	if (err) {
 		netdev_err(vi->dev, "reset tx fail: tx queue index: %d err: %d\n", qindex, err);
 		pool = NULL;
@@ -6226,6 +6246,10 @@ static void virtnet_sq_free_unused_buf(struct virtqueue *vq, void *buf)
 		xsk_tx_completed(sq->xsk_pool, 1);
 		break;
 	}
+}
+
+static void virtnet_sq_free_unused_buf_done(struct virtqueue *vq)
+{
 }
 
 static void free_unused_bufs(struct virtnet_info *vi)
@@ -7052,7 +7076,7 @@ static struct virtio_device_id id_table[] = {
 	VIRTIO_NET_F_SPEED_DUPLEX, VIRTIO_NET_F_STANDBY, \
 	VIRTIO_NET_F_RSS, VIRTIO_NET_F_HASH_REPORT, VIRTIO_NET_F_NOTF_COAL, \
 	VIRTIO_NET_F_VQ_NOTF_COAL, \
-	VIRTIO_NET_F_GUEST_HDRLEN, VIRTIO_NET_F_DEVICE_STATS
+	VIRTIO_NET_F_DEVICE_STATS
 
 static unsigned int features[] = {
 	VIRTNET_FEATURES,
@@ -7060,6 +7084,22 @@ static unsigned int features[] = {
 
 static unsigned int features_legacy[] = {
 	VIRTNET_FEATURES,
+	VIRTIO_NET_F_GSO,
+	VIRTIO_F_ANY_LAYOUT,
+};
+
+static unsigned int features_force_xdp[] = {
+	VIRTIO_NET_F_CSUM,
+	VIRTIO_NET_F_MAC,
+	VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_HOST_TSO6,
+	VIRTIO_NET_F_HOST_ECN,
+	VIRTIO_NET_F_MRG_RXBUF, VIRTIO_NET_F_STATUS, VIRTIO_NET_F_CTRL_VQ,
+	VIRTIO_NET_F_CTRL_RX, VIRTIO_NET_F_CTRL_VLAN,
+	VIRTIO_NET_F_GUEST_ANNOUNCE, VIRTIO_NET_F_MQ,
+	VIRTIO_NET_F_CTRL_MAC_ADDR,
+	VIRTIO_NET_F_CTRL_GUEST_OFFLOADS,
+	VIRTIO_NET_F_SPEED_DUPLEX, VIRTIO_NET_F_STANDBY,
+	/* legacy */
 	VIRTIO_NET_F_GSO,
 	VIRTIO_F_ANY_LAYOUT,
 };
@@ -7095,6 +7135,17 @@ static __init int virtio_net_driver_init(void)
 				      NULL, virtnet_cpu_dead);
 	if (ret)
 		goto err_dead;
+
+	if (force_xdp) {
+		virtio_net_driver.feature_table = features_force_xdp;
+		virtio_net_driver.feature_table_size =
+			ARRAY_SIZE(features_force_xdp) - 2;
+
+		virtio_net_driver.feature_table_legacy = features_force_xdp;
+		virtio_net_driver.feature_table_size_legacy =
+			ARRAY_SIZE(features_force_xdp);
+	}
+
 	ret = register_virtio_driver(&virtio_net_driver);
 	if (ret)
 		goto err_virtio;

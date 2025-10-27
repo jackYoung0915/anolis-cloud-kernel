@@ -180,7 +180,7 @@ struct page {
 	/* Usage count. *DO NOT USE DIRECTLY*. See page_ref.h */
 	atomic_t _refcount;
 
-#ifdef CONFIG_MEMCG
+#if defined(CONFIG_MEMCG) || defined(CONFIG_KIDLED)
 	unsigned long memcg_data;
 #endif
 
@@ -342,7 +342,7 @@ struct folio {
 			};
 			atomic_t _mapcount;
 			atomic_t _refcount;
-#ifdef CONFIG_MEMCG
+#if defined(CONFIG_MEMCG) || defined(CONFIG_KIDLED)
 			unsigned long memcg_data;
 #endif
 #if defined(WANT_PAGE_VIRTUAL)
@@ -781,6 +781,7 @@ struct mm_cid {
 #endif
 
 struct kioctx_table;
+struct iommu_mm_data;
 struct mm_struct {
 	struct {
 		/*
@@ -918,7 +919,7 @@ struct mm_struct {
 		spinlock_t arg_lock; /* protect the below fields */
 
 		unsigned long start_code, end_code, start_data, end_data;
-		unsigned long start_brk, brk, start_stack;
+		unsigned long start_brk, aligned_brk, brk, start_stack;
 		unsigned long arg_start, arg_end, env_start, env_end;
 
 		unsigned long saved_auxv[AT_VECTOR_SIZE]; /* for /proc/PID/auxv */
@@ -992,8 +993,9 @@ struct mm_struct {
 #endif
 		struct work_struct async_put_work;
 
-#ifdef CONFIG_IOMMU_SVA
+#ifdef CONFIG_IOMMU_MM_DATA
 		u32 pasid;
+		struct iommu_mm_data *iommu_mm;
 #endif
 #ifdef CONFIG_KSM
 		/*
@@ -1036,6 +1038,9 @@ struct mm_struct {
 		struct mm_struct *async_fork_mm;
 		unsigned long async_fork_flags;
 		atomic_t async_fork_refcnt;
+#endif
+#ifdef CONFIG_FUTEX
+		unsigned int futex_nid;
 #endif
 	} __randomize_layout;
 
@@ -1367,7 +1372,7 @@ enum tlb_flush_reason {
  * @FAULT_FLAG_ORIG_PTE_VALID: whether the fault has vmf->orig_pte cached.
  *                        We should only access orig_pte if this flag set.
  * @FAULT_FLAG_VMA_LOCK: The fault is handled under VMA lock.
- *
+ * @FAULT_FLAG_NONZEROPAGE: The fault can not be filled with zero page.
  * About @FAULT_FLAG_ALLOW_RETRY and @FAULT_FLAG_TRIED: we can specify
  * whether we would allow page faults to retry by specifying these two
  * fault flags correctly.  Currently there can be three legal combinations:
@@ -1405,9 +1410,19 @@ enum fault_flag {
 	FAULT_FLAG_UNSHARE =		1 << 10,
 	FAULT_FLAG_ORIG_PTE_VALID =	1 << 11,
 	FAULT_FLAG_VMA_LOCK =		1 << 12,
+	FAULT_FLAG_NONZEROPAGE =	1 << 13,
 };
 
 typedef unsigned int __bitwise zap_flags_t;
+
+/* Flags for clear_young_dirty_ptes(). */
+typedef int __bitwise cydp_t;
+
+/* Clear the access bit */
+#define CYDP_CLEAR_YOUNG		((__force cydp_t)BIT(0))
+
+/* Clear the dirty bit */
+#define CYDP_CLEAR_DIRTY		((__force cydp_t)BIT(1))
 
 /*
  * FOLL_PIN and FOLL_LONGTERM may be used in various combinations with each

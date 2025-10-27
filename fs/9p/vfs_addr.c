@@ -272,13 +272,14 @@ v9fs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	return n ? n : err;
 }
 
-static int v9fs_write_begin(struct file *filp, struct address_space *mapping,
+static int v9fs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 			    loff_t pos, unsigned int len,
-			    struct page **subpagep, void **fsdata)
+			    struct folio **foliop, void **fsdata)
 {
 	int retval;
 	struct folio *folio;
 	struct v9fs_inode *v9inode = V9FS_I(mapping->host);
+	struct file *filp = iocb->ki_filp;
 
 	p9_debug(P9_DEBUG_VFS, "filp %p, mapping %p\n", filp, mapping);
 
@@ -290,17 +291,17 @@ static int v9fs_write_begin(struct file *filp, struct address_space *mapping,
 	if (retval < 0)
 		return retval;
 
-	*subpagep = &folio->page;
+	*foliop = folio;
 	return retval;
 }
 
-static int v9fs_write_end(struct file *filp, struct address_space *mapping,
+static int v9fs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			  loff_t pos, unsigned int len, unsigned int copied,
-			  struct page *subpage, void *fsdata)
+			  struct folio *folio, void *fsdata)
 {
 	loff_t last_pos = pos + copied;
-	struct folio *folio = page_folio(subpage);
 	struct inode *inode = mapping->host;
+	struct file *filp = iocb->ki_filp;
 
 	p9_debug(P9_DEBUG_VFS, "filp %p, mapping %p\n", filp, mapping);
 
