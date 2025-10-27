@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -65,6 +65,7 @@
 #define NBL_CAP_IS_USER(val)			NBL_CAP_TEST_BIT(val, NBL_CAP_HAS_USER_BIT)
 #define NBL_CAP_IS_GRC(val)			NBL_CAP_TEST_BIT(val, NBL_CAP_HAS_GRC_BIT)
 #define NBL_CAP_IS_BLK(val)			NBL_CAP_TEST_BIT(val, NBL_CAP_IS_BLK_BIT)
+#define NBL_CAP_IS_OCP(val)			NBL_CAP_TEST_BIT(val, NBL_CAP_IS_OCP_BIT)
 #define NBL_CAP_IS_DPU_HOST(val)		({ typeof(val) _val = (val);			\
 						!NBL_CAP_TEST_BIT(_val, NBL_CAP_IS_NIC_BIT) &&	\
 						NBL_CAP_TEST_BIT(_val, NBL_CAP_DPU_IS_HOST_BIT); })
@@ -89,6 +90,7 @@ enum {
 	NBL_CAP_IS_BLK_BIT,
 	NBL_CAP_HAS_USER_BIT,
 	NBL_CAP_HAS_GRC_BIT,
+	NBL_CAP_IS_OCP_BIT,
 	NBL_CAP_HAS_FACTORY_CTRL_BIT,
 };
 
@@ -102,6 +104,7 @@ enum nbl_adapter_state {
 	NBL_TESTING,
 	NBL_USER,
 	NBL_FATAL_ERR,
+	NBL_XDP,
 	NBL_STATE_NBITS
 };
 
@@ -143,7 +146,7 @@ struct nbl_adapter {
 
 struct nbl_rep_data {
 	struct net_device *netdev;
-	struct nbl_netdev_rep_attr rep_attr;
+	struct nbl_netdev_name_attr dev_name_attr;
 	struct u64_stats_sync rep_syncp;
 	u64 rx_packets;
 	u64 rx_bytes;
@@ -162,10 +165,8 @@ struct nbl_netdev_priv {
 	u16 rx_queue_num;
 	u16 queue_size;
 	/* default traffic destination in kernel/dpdk/coexist scene */
-	u16 normal_vsi;
-	u16 other_vsi;
-	u16 async_other_vsi;
-	u16 async_pending_vsi;
+	u16 data_vsi;
+	u16 user_vsi;
 	s64 last_st_time;
 };
 
@@ -195,7 +196,7 @@ struct nbl_software_tool_id_entry {
 	u8 refcount;
 };
 
-#define NBL_ST_MAX_DEVICE_NUM			64
+#define NBL_ST_MAX_DEVICE_NUM			96
 struct nbl_software_tool_table {
 	DECLARE_BITMAP(devid, NBL_ST_MAX_DEVICE_NUM);
 	int major;
@@ -205,7 +206,7 @@ struct nbl_software_tool_table {
 
 extern spinlock_t nbl_tc_flow_inst_lock;
 
-#define NBL_TC_FLOW_INST_COUNT			(8)
+#define NBL_TC_FLOW_INST_COUNT			(NBL_DRIVER_DEV_MAX)
 
 struct nbl_adapter *nbl_core_init(struct pci_dev *pdev, struct nbl_init_param *param);
 void nbl_core_remove(struct nbl_adapter *adapter);

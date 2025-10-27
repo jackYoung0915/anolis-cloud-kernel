@@ -349,7 +349,7 @@ static int nbl_uipsec_insert_em_ht(struct nbl_ipsec_ht_mng *ipsec_ht_mng,
 
 	node = ipsec_ht_mng->hash_map[ht_index];
 	if (!node) {
-		node = kzalloc(sizeof(*node), GFP_KERNEL);
+		node = kzalloc(sizeof(*node), GFP_ATOMIC);
 		if (!node)
 			return -ENOMEM;
 		ipsec_ht_mng->hash_map[ht_index] = node;
@@ -449,7 +449,7 @@ static int nbl_res_add_ipsec_rx_flow(void *priv, u32 index, u32 *data, u16 vsi)
 		if (rule->index == index)
 			return -EEXIST;
 
-	rule = kzalloc(sizeof(*rule), GFP_KERNEL);
+	rule = kzalloc(sizeof(*rule), GFP_ATOMIC);
 	if (!rule)
 		return -ENOMEM;
 
@@ -559,7 +559,7 @@ static void nbl_res_del_ipsec_rx_flow(void *priv, u32 index)
 		if (rule->index == index)
 			break;
 
-	if (nbl_list_entry_is_head(rule, &accel_mgt->uprbac_head, node))
+	if (list_entry_is_head(rule, &accel_mgt->uprbac_head, node))
 		return;
 
 	nbl_accel_del_uipsec_rule(res_mgt, &rule->uipsec_entry);

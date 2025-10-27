@@ -441,3 +441,18 @@ void nbl_res_set_hw_status(void *priv, enum nbl_hw_status hw_status)
 
 	phy_ops->set_hw_status(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), hw_status);
 }
+
+int nbl_res_get_pf_vf_num(void *priv, u16 pf_id)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_sriov_info *sriov_info;
+
+	if (pf_id >= NBL_RES_MGT_TO_PF_NUM(res_mgt))
+		return -1;
+
+	sriov_info = NBL_RES_MGT_TO_SRIOV_INFO(res_mgt) + pf_id;
+	if (!sriov_info->num_vfs)
+		return -1;
+
+	return sriov_info->num_vfs;
+}

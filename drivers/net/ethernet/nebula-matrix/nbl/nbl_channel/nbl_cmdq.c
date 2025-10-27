@@ -1,5 +1,7 @@
-/* Nebula-matrix DPDK user-network
- * Copyright(c) 2021-2030 nbl, Inc.
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
  */
 
 #include <linux/string.h>
@@ -583,8 +585,8 @@ nbl_cmdq_do_send(void *priv, const struct nbl_cmd_hdr *hdr,
 		nbl_err(common, NBL_DEBUG_FLOW, "tc flow cmdq firmware timeout!\n");
 	} else {
 		status = NBL_CMDQ_NOHIT_ERR;
-		nbl_err(common, NBL_DEBUG_FLOW, "tc flow cmdq param error, block:%d module:%d "
-			"table:%d.\n", desc->block, desc->module, desc->table);
+		nbl_err(common, NBL_DEBUG_FLOW, "tc flow cmdq param error, block:%d module:%d table:%d.\n",
+			desc->block, desc->module, desc->table);
 	}
 
 	/* mark desc as done by driver */
@@ -676,13 +678,10 @@ static void nbl_cmdq_get_param(void *priv, void *cmdq_param)
 int nbl_chan_send_cmdq(void *priv, const void *hdr, void *cmd)
 {
 	struct nbl_channel_mgt *chan_mgt = (struct nbl_channel_mgt *)priv;
-	struct nbl_common_info *common = chan_mgt->common;
 	int ret;
 
-	if (!chan_mgt->cmdq_mgt) {
-		nbl_err(common, NBL_DEBUG_FLOW, "tc flow cmdq not initialized yet");
+	if (!chan_mgt->cmdq_mgt)
 		return NBL_CMDQ_NOT_READY;
-	}
 
 	ret = nbl_cmdq_send(priv, hdr, cmd);
 	if (ret == (int)NBL_CMDQ_NEED_RESET)
@@ -743,7 +742,7 @@ int nbl_chan_cmdq_mgt_start(struct device *dev, void *priv)
 		ret = nbl_cmdq_init_queue(*cmdq_mgt);
 
 		cmdq_param.vsi_id = common->vsi_id;
-		cmdq_param.bdf_num = (common->bus << 8 | common->devid << 3 |
+		cmdq_param.bdf_num = (u16)(common->hw_bus << 8 | common->devid << 3 |
 				      NBL_COMMON_TO_PCI_FUNC_ID(common));
 		nbl_cmdq_get_param(chan_mgt, &cmdq_param);
 		nbl_cmdq_init(chan_mgt, &cmdq_param);

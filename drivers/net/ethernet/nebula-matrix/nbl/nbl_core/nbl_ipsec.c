@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
+ */
+
 #include "nbl_ipsec.h"
 #ifdef CONFIG_TLS_DEVICE
 static int nbl_validate_xfrm_state(struct net_device *netdev, struct xfrm_state *x)
@@ -102,7 +108,8 @@ static int nbl_validate_xfrm_state(struct net_device *netdev, struct xfrm_state 
 static void nbl_ipsec_update_esn_state(struct xfrm_state *x, struct nbl_ipsec_esn_state *esn_state)
 {
 	bool esn = !!(x->props.flags & XFRM_STATE_ESN);
-	bool inbound = !!(x->xso.flags & XFRM_OFFLOAD_INBOUND);
+	bool inbound = (x->xso.dir == XFRM_DEV_OFFLOAD_IN);
+
 	u32 bottom = 0;
 
 	if (!esn) {
@@ -398,7 +405,7 @@ static int nbl_xfrm_add_state(struct xfrm_state *x, struct netlink_ext_ack *exta
 	nbl_ipsec_update_esn_state(x, &sa_entry->esn_state);
 	nbl_ipsec_build_accel_xfrm_attrs(x, &sa_entry->attrs);
 
-	if (x->xso.flags & XFRM_OFFLOAD_INBOUND) {
+	if (x->xso.dir == XFRM_DEV_OFFLOAD_IN) {
 		index = nbl_ipsec_alloc_rx_index(netdev, &sa_entry->cfg_info);
 		if (index < 0) {
 			netdev_err(netdev, "No enough rx session resources\n");
@@ -467,7 +474,7 @@ static void nbl_xfrm_del_state(struct xfrm_state *x)
 	struct nbl_ipsec_sa_entry *sa_entry = (struct nbl_ipsec_sa_entry *)x->xso.offload_handle;
 	struct net_device *netdev = x->xso.dev;
 
-	if (x->xso.flags & XFRM_OFFLOAD_INBOUND)
+	if (x->xso.dir == XFRM_DEV_OFFLOAD_IN)
 		nbl_ipsec_del_rx_flow(netdev, sa_entry->index);
 	else
 		nbl_ipsec_del_tx_flow(netdev, sa_entry->index);
@@ -478,7 +485,7 @@ static void nbl_xfrm_free_state(struct xfrm_state *x)
 	struct nbl_ipsec_sa_entry *sa_entry = (struct nbl_ipsec_sa_entry *)x->xso.offload_handle;
 	struct net_device *netdev = x->xso.dev;
 
-	if (x->xso.flags & XFRM_OFFLOAD_INBOUND)
+	if (x->xso.dir == XFRM_DEV_OFFLOAD_IN)
 		nbl_ipsec_free_rx_index(netdev, sa_entry->index);
 	else
 		nbl_ipsec_free_tx_index(netdev, sa_entry->index);

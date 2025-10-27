@@ -8,6 +8,7 @@
 #include "nbl_p4_actions.h"
 #include "nbl_fc_leonis.h"
 #include "nbl_tc_tun_leonis.h"
+#include "nbl_tc_pedit.h"
 #include "nbl_resource_leonis.h"
 
 static struct nbl_profile_msg g_prf_msg[NBL_ALL_PROFILE_NUM] = {
@@ -2692,101 +2693,85 @@ static void nbl_debug_print_hash_key(struct nbl_common_info *common,
 
 	if ((prf_msg->key_flag & test_tnl_v4) == test_tnl_v4) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated tv4 profile: id %d, "
-			  "dipv4 0x%x, optdata 0x%x, optclass 0x%x, dport 0x%x\n",
+			  "v4:id %d, dipv4 0x%x, optdata 0x%x, optclass 0x%x, dport 0x%x\n",
 			  p0->info.template, p0->info.dst_ip,
 			  p0->info.option_data, p0->info.option_class,
 			  p0->info.dst_port);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original tv4 profile: id %d, "
-			  "dipv4 0x%x, dport 0x%x\n",
+			  "v4:id %d, dipv4 0x%x, dport 0x%x\n",
 			  prf_msg->profile_id, input->ip_outer.dst_ip.addr,
 			  input->l4_outer.dst_port);
 	} else if ((prf_msg->key_flag & test_tnl_v6) == test_tnl_v6) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated tv6 profile: id %d, "
-			  "dipv6 0x%lx 0x%lx, optdata 0x%x, optclass 0x%x, dport 0x%x\n",
+			  "v6:id %d, dipv6 0x%lx 0x%lx, optdata 0x%x, optclass 0x%x, dport 0x%x\n",
 			  p1->info.template, (unsigned long)p1->info.dst_ipv6_1,
 			  (unsigned long)p1->info.dst_ipv6_2,
 			  p1->info.option_data, p1->info.option_class,
 			  p1->info.dst_port);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw originla tv6 profile: id %d, "
-			  "dipv6 0x%x, dport 0x%x\n",
+			  "v6:id %d, dipv6 0x%x, dport 0x%x\n",
 			  prf_msg->profile_id, input->ip_outer.dst_ip.addr,
 			  input->l4_outer.dst_port);
 	} else if ((prf_msg->key_flag & test_tnl_l2) == test_tnl_l2) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated tnl l2 profile: id %d, "
-			  "vni %d, dstmac 0x%lx, etype 0x%04x, cvlan %d, svlan %d\n",
+			  "l2:id %d,vni %d, dstmac 0x%lx, etype 0x%04x, cvlan %d, svlan %d\n",
 			  p2->info.template, p2->info.vni,
 			  (unsigned long)p2->info.dst_mac, p2->info.ether_type,
 			  p2->info.cvlan_id, p2->info.svlan_id);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original tnl l2 profile: id %d, "
-			  "dstmac 0x%llx, etype 0x%04x, cvlan %d, svlan %d\n",
+			  "l2:id %d, dstmac 0x%llx, etype 0x%04x, cvlan %d, svlan %d\n",
 			  prf_msg->profile_id,
 			  *(u64 *)input->l2_data.dst_mac,
 			  input->l2_data.ether_type, input->cvlan_tag,
 			  input->svlan_tag);
 	} else if ((prf_msg->key_flag & test_l2_notnl) == test_l2_notnl) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated l2 profile: id %d, dstmac 0x%lx, "
-			  "etype 0x%04x, svlan %d, cvlan %d\n",
+			  "l2:id %d, dstmac 0x%lx, etype 0x%04x, svlan %d, cvlan %d\n",
 			  p3->info.template, (unsigned long)p3->info.dst_mac,
 			  p3->info.ether_type, p3->info.svlan_id,
 			  p3->info.cvlan_id);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original l2 profile: id %d, dstmac 0x%llx, "
-			  "etype 0x%04x, svlan %d, cvlan %d\n",
+			  "l2:id %d, dstmac 0x%llx, etype 0x%04x, svlan %d, cvlan %d\n",
 			  prf_msg->profile_id,
 			  *(u64 *)input->l2_data.dst_mac,
 			  input->l2_data.ether_type, input->svlan_tag,
 			  input->cvlan_tag);
 	} else if ((prf_msg->key_flag & test_l3_v4) == test_l3_v4) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated l3 v4: id %d, sip 0x%x, "
-			  "ttl %d, dscp %d\n",
+			  "l3 v4: id %d, dip 0x%x, ttl %d, dscp %d\n",
 			  p4->info.template, p4->info.dst_ip, p4->info.ttl,
 			  p4->info.dscp);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original l3 v4: id %d, sip 0x%x, "
-			  "ttl %d, dscp %d\n",
+			  "l3 v4: id %d, dip 0x%x, ttl %d, dscp %d\n",
 			  prf_msg->profile_id, input->ip.dst_ip.addr,
-			  p4->info.ttl, p4->info.dscp);
+			  input->ip.ttl, input->ip.tos);
 	} else if ((prf_msg->key_flag & test_l3_v6) == test_l3_v6) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated l3 v6: id %d, dip 0x%llx-%llx, "
-			  "ttl %d, dscp %d\n",
+			  "l3 v6: id %d, dip 0x%llx-%llx, ttl %d, dscp %d\n",
 			  p5->info.template, p5->info.dst_ipv6_1,
 			  p5->info.dst_ipv6_2, p5->info.hoplimit, p5->info.dscp);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original l3 v6: id %d, dip 0x%llx-%llx, "
-			  "ttl %d, dscp %d\n",
+			  "l3 v6: id %d, dip 0x%llx-%llx, ttl %d, dscp %d\n",
 			  prf_msg->profile_id,
 			  *(u64 *)input->ip.dst_ip.v6_addr,
 			  *((u64 *)input->ip.dst_ip.v6_addr + 1),
 			  input->ip.ttl, input->ip.tos);
 	} else if ((prf_msg->key_flag & test_t5_ipv4) == test_t5_ipv4) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated t5 ipv4 profile: id %d, sip 0x%x, "
-			  "srcport %d, dstport %d, protocol %d\n",
+			  "ipv4: id %d, sip 0x%x, srcport %d, dstport %d, protocol %d\n",
 			  p8->info.template, p8->info.src_ip, p8->info.src_port,
 			  p8->info.dst_port, p8->info.proto);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original data: sip: 0x%x, srcport %d, "
-			  " dstport %d, protocol %d\n",
+			  "sip: 0x%x, srcport %d, dstport %d, protocol %d\n",
 			  input->ip.src_ip.addr, input->l4.src_port,
 			  input->l4.dst_port, input->ip.proto);
 	} else if ((prf_msg->key_flag & test_t5_ipv6) == test_t5_ipv6) {
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw calculated t5 ipv6 profile: sip 0x%llx-%llx, "
-			  "srcport %d, dstport %d, protocol %d\n",
+			  "ipv6: sip 0x%llx-%llx, srcport %d, dstport %d, protocol %d\n",
 			  p9->info.src_ipv6_1, p9->info.src_ipv6_2,
 			  p9->info.src_port, p9->info.dst_port, p9->info.proto);
 		nbl_debug(common, NBL_DEBUG_FLOW,
-			  "tc flow hw original data: sip: 0x%llx-%llx, srcport %d, "
-			  " dstport %d, protocol %d\n",
+			  "sip: 0x%llx-%llx, srcport %d, dstport %d, protocol %d\n",
 			  *(u64 *)input->ip.src_ip.v6_addr,
 			  *((u64 *)input->ip.src_ip.v6_addr + 1),
 			  input->l4.src_port, input->l4.dst_port,
@@ -3201,8 +3186,7 @@ insert_filter:
 						filter_data.assoc_tbl_id, 0);
 		spin_unlock(&tc_flow_mgt->flow_lock);
 		nbl_info(common, NBL_DEBUG_FLOW,
-			 "tc flow hw failed to insert flow tab filter "
-			 "to hash table %d.\n", ret);
+			 "tc flow hw failed to insert flow tab filter to hash table %d.\n", ret);
 		return ret;
 	}
 
@@ -3236,7 +3220,8 @@ static int nbl_flow_tab_storage(struct nbl_resource_mgt *res_mgt,
 	ret = nbl_flow_tab_hash_add(res_mgt, filter, tc_flow_ptr,
 				    (void **)&flow_tab_node, prof_off_msg);
 	if (ret || !flow_tab_node) {
-		nbl_info(common, NBL_DEBUG_FLOW, "tc flow hw flow_tab hash-list storage fail.\n");
+		nbl_info(common, NBL_DEBUG_FLOW, "tc hw hash-list op fail, ret %d,node %p.\n",
+			 ret, flow_tab_node);
 		return ret;
 	}
 	if (flow_tab_node->ref_cnt > 1)
@@ -3249,7 +3234,7 @@ static int nbl_flow_tab_storage(struct nbl_resource_mgt *res_mgt,
 	idx_info.pt_cmd = prof_off_msg->pt_cmd;
 	ret = nbl_add_nic_hw_flow_tab(flow_tab_node, act, res_mgt, &idx_info);
 	if (ret) {
-		nbl_err(common, NBL_DEBUG_FLOW, "tc flow hw nbl_flow_tab_key_2Nic fail.\n");
+		nbl_err(common, NBL_DEBUG_FLOW, "tc flow hw add flow 2hw fail, ret %d.\n", ret);
 		return ret;
 	}
 	return ret;
@@ -3326,9 +3311,7 @@ fail_flow_tab:
 						 asso_graph->profile_id[i]);
 		if (ret_2 != 0 && ret_2 != -ENONET) {
 			nbl_err(common, NBL_DEBUG_FLOW,
-				"tc flow hw del failed "
-				"when flow table storage failed. "
-				"tnl_flag %d, ret_2 %d.\n",
+				"tc flow hw del failed tnl_flag %d, ret_2 %d.\n",
 				filter->input.tnl_flag, ret_2);
 			return ret_2;
 		}
@@ -3494,12 +3477,17 @@ static int nbl_flow_tab_filter_init(struct nbl_resource_mgt *res_mgt,
 	if (!entries)
 		return  -EINVAL;
 
+	/* hash_buck is 2-bytes wide, update it if needed */
+	entries = entries >= 0xffff ? 0xffff : entries;
 	NBL_HASH_TBL_KEY_INIT(&tbl_key, NBL_COMMON_TO_DEV(common), sizeof(struct nbl_flow_tab_conf),
 			      sizeof(struct nbl_flow_tab_filter), entries, false);
 	tc_flow_mgt->flow_tab_hash[profile_id].flow_tab_hash =
 					nbl_common_init_hash_table(&tbl_key);
 	if (!tc_flow_mgt->flow_tab_hash[profile_id].flow_tab_hash)
 		return -EINVAL;
+
+	nbl_info(common, NBL_DEBUG_FLOW, "tc flow init profile:%u with %u entries",
+		 profile_id, entries);
 
 	return 0;
 }
@@ -3796,7 +3784,7 @@ int nbl_pp_at_lookup(struct nbl_resource_mgt *res_mgt, u8 pp_type, u8 at_type,
 
 	NBL_INDEX_EXTRA_KEY_INIT(&extra_key, 0, 0, true);
 	idx = nbl_common_get_index_with_data(at_tbl, act_key->act, &extra_key, NULL, 0,
-					     (void **)&act_node);
+					     (void **)act_node);
 	return idx;
 }
 
@@ -4033,6 +4021,60 @@ static int nbl_flow_mcc_init(struct nbl_resource_mgt *res_mgt)
 	return 0;
 }
 
+static void nbl_tc_flow_set_pedit_res(struct nbl_tc_pedit_res_info *pedit_res)
+{
+	pedit_res[NBL_FLOW_PED_UMAC_TYPE].pedit_num = NBL_FLOW_TC_PEDIT_MAC;
+	pedit_res[NBL_FLOW_PED_DMAC_TYPE].pedit_num = NBL_FLOW_TC_PEDIT_MAC;
+	pedit_res[NBL_FLOW_PED_UMAC_TYPE].pedit_base_id = NBL_FLOW_TC_PEDIT_MAC_BASE;
+	pedit_res[NBL_FLOW_PED_DMAC_TYPE].pedit_base_id = NBL_FLOW_TC_PEDIT_MAC_BASE;
+
+	pedit_res[NBL_FLOW_PED_UIP_TYPE].pedit_num = NBL_FLOW_TC_PEDIT_IP;
+	pedit_res[NBL_FLOW_PED_DIP_TYPE].pedit_num = NBL_FLOW_TC_PEDIT_IP;
+	pedit_res[NBL_FLOW_PED_UIP_TYPE].pedit_base_id = NBL_FLOW_TC_PEDIT_IP_BASE;
+	pedit_res[NBL_FLOW_PED_DIP_TYPE].pedit_base_id = NBL_FLOW_TC_PEDIT_IP_BASE;
+	/* special handle:leonis ipv6 need 2 ped-addr, v4 & v6 could share the same hw-resource */
+	pedit_res[NBL_FLOW_PED_UIP_TYPE].pedit_num_h = NBL_FLOW_TC_PEDIT_IP6;
+	pedit_res[NBL_FLOW_PED_DIP_TYPE].pedit_num_h = NBL_FLOW_TC_PEDIT_IP6;
+}
+
+static int nbl_tc_flow_init_pedit(struct nbl_resource_mgt *res_mgt)
+{
+	int ret = 0;
+	struct nbl_tc_pedit_mgt *pedit_mgt;
+	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+
+	/* set pedit cap */
+	memset(&tc_flow_mgt->pedit_mgt, 0, sizeof(tc_flow_mgt->pedit_mgt));
+	pedit_mgt = &tc_flow_mgt->pedit_mgt;
+	nbl_tc_flow_set_pedit_res(pedit_mgt->pedit_res);
+	mutex_init(&pedit_mgt->pedit_lock);
+	pedit_mgt->common = common;
+
+	/*set pedit hw-resource */
+	ret = nbl_tc_pedit_init(pedit_mgt);
+
+	if (ret)
+		nbl_info(common, NBL_DEBUG_FLOW, "tc_pedit init failed");
+	else
+		nbl_info(common, NBL_DEBUG_FLOW, "tc_pedit init success");
+
+	return ret;
+}
+
+static void nbl_tc_flow_uninit_pedit(struct nbl_resource_mgt *res_mgt)
+{
+	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	int ret = 0;
+
+	ret = nbl_tc_pedit_uninit(&tc_flow_mgt->pedit_mgt);
+	if (ret)
+		nbl_info(common, NBL_DEBUG_FLOW, "tc_pedit uninit failed");
+	else
+		nbl_info(common, NBL_DEBUG_FLOW, "tc_pedit uninit success");
+}
+
 static struct nbl_flow_info_init flow_info_init_list[] = {
 	{ nbl_flow_pp1_ht0_tbl_hash_init },
 	{ nbl_flow_pp1_ht1_tbl_hash_init },
@@ -4041,6 +4083,7 @@ static struct nbl_flow_info_init flow_info_init_list[] = {
 
 	{ nbl_flow_tcam_init },
 	{ nbl_flow_mcc_init },
+	{ nbl_tc_flow_init_pedit },
 };
 
 static struct nbl_flow_info_uninit flow_info_uninit_list[] = {
@@ -4050,6 +4093,7 @@ static struct nbl_flow_info_uninit flow_info_uninit_list[] = {
 	{ nbl_flow_pp2_ht1_tbl_hash_uninit },
 
 	{ nbl_flow_tcam_uninit },
+	{ nbl_tc_flow_uninit_pedit },
 };
 
 static int nbl_flow_info_init_list(struct nbl_resource_mgt *res_mgt)
@@ -4284,14 +4328,19 @@ static int nbl_tc_flow_add_tc_flow(void *priv, struct nbl_tc_flow_param *param)
 			ret = -ENOMEM;
 			goto out;
 		}
-
 		memcpy(tc_flow_ptr->encap_key, &param->act.encap_key, sizeof(param->act.encap_key));
 	}
+
+	if (NBL_TC_PEDIT_GET_NODE_RES_VAL(param->act.tc_pedit_info.pedit_node))
+		tc_flow_ptr->pedit_node = param->act.tc_pedit_info.pedit_node;
 
 	return ret;
 
 out:
 	nbl_fc_del_stats_leonis(priv, param->key.cookie);
+	if (NBL_TC_PEDIT_GET_NODE_RES_VAL(param->act.tc_pedit_info.pedit_node))
+		nbl_tc_pedit_del_node(&tc_flow_mgt->pedit_mgt,
+				      &param->act.tc_pedit_info.pedit_node);
 stats_out:
 	nbl_tc_flow_delete_index(res_mgt, &param->key);
 flow_idx_err:
@@ -4302,10 +4351,19 @@ static int nbl_tc_flow_del_edit_act(struct nbl_resource_mgt *res_mgt,
 				    struct nbl_tc_flow *tc_flow_node)
 {
 	int ret = 0;
+	struct nbl_tc_pedit_node_res *pedit_node = &tc_flow_node->pedit_node;
+	struct nbl_tc_flow_mgt *tc_flow_mgt = NBL_RES_MGT_TO_TC_FLOW_MGT(res_mgt);
+	struct nbl_common_info *common = NBL_RES_MGT_TO_COMMON(res_mgt);
 
 	if (tc_flow_node->act_flags & NBL_FLOW_ACTION_TUNNEL_ENCAP) {
 		ret = nbl_tc_tun_encap_del(res_mgt, tc_flow_node->encap_key);
 		kfree(tc_flow_node->encap_key);
+	}
+
+	if (NBL_TC_PEDIT_GET_NODE_RES_VAL(*pedit_node)) {
+		ret = nbl_tc_pedit_del_node(&tc_flow_mgt->pedit_mgt, pedit_node);
+		if (ret)
+			nbl_err(common, NBL_DEBUG_FLOW, "del tc_pedit node error");
 	}
 
 	return ret;

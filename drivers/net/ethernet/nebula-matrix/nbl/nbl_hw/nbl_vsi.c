@@ -121,6 +121,9 @@ static void nbl_res_register_func_mac(void *priv, u8 *mac, u16 func_id)
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
 
+	if (func_id >= NBL_MAX_FUNC)
+		return;
+
 	ether_addr_copy(vsi_info->mac_info[func_id].mac, mac);
 }
 
@@ -129,6 +132,9 @@ static int nbl_res_register_func_link_forced(void *priv, u16 func_id, u8 link_fo
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
 
 	resource_info->link_forced_info[func_id] = link_forced;
 	*should_notify = test_bit(func_id, resource_info->func_bitmap);
@@ -142,7 +148,26 @@ static int nbl_res_get_link_forced(void *priv, u16 vsi_id)
 	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
 	u16 func_id = nbl_res_vsi_id_to_func_id(res_mgt, vsi_id);
 
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
+
 	return resource_info->link_forced_info[func_id];
+}
+
+static int nbl_res_register_func_trust(void *priv, u16 func_id,
+				       bool trusted, bool *should_notify)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
+
+	vsi_info->mac_info[func_id].trusted = trusted;
+	*should_notify = test_bit(func_id, resource_info->func_bitmap);
+
+	return 0;
 }
 
 static int nbl_res_register_func_vlan(void *priv, u16 func_id,
@@ -151,6 +176,9 @@ static int nbl_res_register_func_vlan(void *priv, u16 func_id,
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
 
 	vsi_info->mac_info[func_id].vlan_proto = vlan_proto;
 	vsi_info->mac_info[func_id].vlan_tci = vlan_tci;
@@ -163,6 +191,9 @@ static int nbl_res_register_rate(void *priv, u16 func_id, int rate)
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
 
 	vsi_info->mac_info[func_id].rate = rate;
 
@@ -187,7 +218,8 @@ do {										\
 	NBL_VSI_SET_OPS(register_func_link_forced, nbl_res_register_func_link_forced);	\
 	NBL_VSI_SET_OPS(register_func_vlan, nbl_res_register_func_vlan);	\
 	NBL_VSI_SET_OPS(get_link_forced, nbl_res_get_link_forced);		\
-	NBL_VSI_SET_OPS(register_func_rate, nbl_res_register_rate);	\
+	NBL_VSI_SET_OPS(register_func_rate, nbl_res_register_rate);		\
+	NBL_VSI_SET_OPS(register_func_trust, nbl_res_register_func_trust);	\
 } while (0)
 
 /* Structure starts here, adding an op should not modify anything below */

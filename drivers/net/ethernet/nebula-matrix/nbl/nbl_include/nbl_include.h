@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -27,6 +27,7 @@
 #include <linux/errno.h>
 #include <linux/cdev.h>
 #include <linux/kfifo.h>
+#include <linux/termios_internal.h>
 #include <linux/termios.h>
 #ifdef CONFIG_TLS_DEVICE
 #include <net/tls.h>
@@ -34,7 +35,6 @@
 #include <net/inet6_hashtables.h>
 #include <linux/compiler.h>
 #include <linux/netdevice.h>
-
 #include <net/devlink.h>
 #include <net/ipv6.h>
 #include <net/pkt_cls.h>
@@ -43,7 +43,6 @@
 #include <linux/rtnetlink.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
-#include <linux/file.h>
 #include <linux/dma-map-ops.h>
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
@@ -51,6 +50,8 @@
 #include <linux/vfio.h>
 #include <uapi/linux/elf.h>
 #include <linux/crc32.h>
+#include <net/xdp.h>
+#include <linux/bpf.h>
 
 /*  ------  Basic definitions  -------  */
 #define NBL_DRIVER_NAME					"nbl_core"
@@ -64,7 +65,7 @@
  */
 #define NBL_DRIVER_VERSION				"1-1.1.100.0"
 
-#define NBL_DRIVER_DEV_MAX				8
+#define NBL_DRIVER_DEV_MAX				24
 
 #define NBL_PAIR_ID_GET_TX(id)				((id) * 2 + 1)
 #define NBL_PAIR_ID_GET_RX(id)				((id) * 2)
@@ -79,6 +80,7 @@
 
 #define NBL_RATE_MBPS_100G				(100000)
 #define NBL_RATE_MBPS_25G				(25000)
+#define NBL_RATE_MBPS_10G				(10000)
 
 #define NBL_NEXT_ID(id, max)	({ typeof(id) _id = (id); ((_id) == (max) ? 0 : (_id) + 1); })
 #define NBL_IPV6_U32LEN					4
@@ -94,103 +96,112 @@
 #define NBL_IP_VERSION_V4				4
 #define NBL_IP_VERSION_V6				6
 #define NBL_MAX_FUNC					(520)
+#define NBL_MAX_MTU					15
+
+#define NBL_FLOW_TABLE_IPV4_DEFAULT_MASK		0xFFFFFFFF
+#define NBL_FLOW_TABLE_L4_PORT_DEFAULT_MASK		0xFFFF
+#define NBL_TC_MAX_PED_H_IDX 512
+
+#define NBL_TC_PEDIT_SET_NODE_RES_PRO(node) ((node).pedit_proto = 1)
+#define NBL_TC_PEDIT_GET_NODE_RES_PRO(node) ((node).pedit_proto)
+
+#define NBL_TC_PEDIT_INC_NODE_RES_EDITS(node) ((node).pedits++)
+#define NBL_TC_PEDIT_DEC_NODE_RES_EDITS(node, dec) ((node).pedits -= dec)
 
 /* key element: key flag bitmap */
-#define NBL_FLOW_KEY_TABLE_IDX_FLAG			BIT_ULL(0)
-#define NBL_FLOW_KEY_INPORT8_FLAG			BIT_ULL(1)
-#define NBL_FLOW_KEY_INPORT4_FLAG			BIT_ULL(39)
-#define NBL_FLOW_KEY_INPORT2_FLAG			BIT_ULL(40)	// error
-#define NBL_FLOW_KEY_INPORT2L_FLAG			BIT_ULL(41)	// error
-#define NBL_FLOW_KEY_T_DIPV4_FLAG			BIT_ULL(2)
-#define NBL_FLOW_KEY_T_DIPV6_FLAG			BIT_ULL(3)
-#define NBL_FLOW_KEY_T_OPT_DATA_FLAG			BIT_ULL(4)
-#define NBL_FLOW_KEY_T_VNI_FLAG				BIT_ULL(5)
-#define NBL_FLOW_KEY_T_DSTMAC_FLAG			BIT_ULL(6)	// error
-#define NBL_FLOW_KEY_T_SRCMAC_FLAG			BIT_ULL(7)	// error
-#define NBL_FLOW_KEY_T_SVLAN_FLAG			BIT_ULL(8)	// error
-#define NBL_FLOW_KEY_T_CVLAN_FLAG			BIT_ULL(9)	// error
-#define NBL_FLOW_KEY_T_ETHERTYPE_FLAG			BIT_ULL(10)	// error
-#define NBL_FLOW_KEY_T_SRCPORT_FLAG			BIT_ULL(11)
-#define NBL_FLOW_KEY_T_DSTPORT_FLAG			BIT_ULL(12)
-#define NBL_FLOW_KEY_T_NPROTO_FLAG			BIT_ULL(13)	// delete
-#define NBL_FLOW_KEY_T_OPT_CLASS_FLAG			BIT_ULL(14)
-#define NBL_FLOW_KEY_T_PROTOCOL_FLAG			BIT_ULL(15)
-#define NBL_FLOW_KEY_T_TCPSTAT_FLAG			BIT_ULL(16)	// delete
-#define NBL_FLOW_KEY_T_TOS_FLAG				BIT_ULL(17)
-#define NBL_FLOW_KEY_T_TTL_FLAG				BIT_ULL(18)
-#define NBL_FLOW_KEY_SIPV4_FLAG				BIT_ULL(19)
-#define NBL_FLOW_KEY_SIPV6_FLAG				BIT_ULL(20)
-#define NBL_FLOW_KEY_DIPV4_FLAG				BIT_ULL(21)
-#define NBL_FLOW_KEY_DIPV6_FLAG				BIT_ULL(22)
-#define NBL_FLOW_KEY_DSTMAC_FLAG			BIT_ULL(23)
-#define NBL_FLOW_KEY_SRCMAC_FLAG			BIT_ULL(24)
-#define NBL_FLOW_KEY_SVLAN_FLAG				BIT_ULL(25)
-#define NBL_FLOW_KEY_CVLAN_FLAG				BIT_ULL(26)
-#define NBL_FLOW_KEY_ETHERTYPE_FLAG			BIT_ULL(27)
-#define NBL_FLOW_KEY_SRCPORT_FLAG			BIT_ULL(28)
-#define NBL_FLOW_KEY_ICMP_TYPE_FLAG			BIT_ULL(28)
-#define NBL_FLOW_KEY_DSTPORT_FLAG			BIT_ULL(29)
-#define NBL_FLOW_KEY_ICMP_CODE_FLAG			BIT_ULL(29)
-#define NBL_FLOW_KEY_ARP_OP_FLAG			BIT_ULL(30)	// error
-#define NBL_FLOW_KEY_ICMPV6_TYPE_FLAG			BIT_ULL(31)	// error
-#define NBL_FLOW_KEY_PROTOCOL_FLAG			BIT_ULL(32)
-#define NBL_FLOW_KEY_TCPSTAT_FLAG			BIT_ULL(33)
-#define NBL_FLOW_KEY_TOS_FLAG				BIT_ULL(34)
-#define NBL_FLOW_KEY_DSCP_FLAG				BIT_ULL(34)
-#define NBL_FLOW_KEY_TTL_FLAG				BIT_ULL(35)
-#define NBL_FLOW_KEY_HOPLIMIT_FLAG			BIT_ULL(35)
-#define NBL_FLOW_KEY_RDMA_ACK_SEQ_FLAG			BIT_ULL(36)	// error
-#define NBL_FLOW_KEY_RDMA_QPN_FLAG			BIT_ULL(37)	// error
-#define NBL_FLOW_KEY_RDMA_OP_FLAG			BIT_ULL(38)	// error
-#define NBL_FLOW_KEY_EXEHASH_FLAG			BIT_ULL(43)
-#define NBL_FLOW_KEY_DPHASH_FLAG			BIT_ULL(44)
-#define NBL_FLOW_KEY_RECIRC_FLAG			BIT_ULL(63)
+#define NBL_FLOW_KEY_TABLE_IDX_FLAG			(BIT_ULL(0))
+#define NBL_FLOW_KEY_INPORT8_FLAG			(BIT_ULL(1))
+#define NBL_FLOW_KEY_INPORT4_FLAG			(BIT_ULL(39))
+#define NBL_FLOW_KEY_INPORT2_FLAG			(BIT_ULL(40))	// error
+#define NBL_FLOW_KEY_INPORT2L_FLAG			(BIT_ULL(41))	// error
+#define NBL_FLOW_KEY_T_DIPV4_FLAG			(BIT_ULL(2))
+#define NBL_FLOW_KEY_T_DIPV6_FLAG			(BIT_ULL(3))
+#define NBL_FLOW_KEY_T_OPT_DATA_FLAG			(BIT_ULL(4))
+#define NBL_FLOW_KEY_T_VNI_FLAG				(BIT_ULL(5))
+#define NBL_FLOW_KEY_T_DSTMAC_FLAG			(BIT_ULL(6))	// error
+#define NBL_FLOW_KEY_T_SRCMAC_FLAG			(BIT_ULL(7))	// error
+#define NBL_FLOW_KEY_T_SVLAN_FLAG			(BIT_ULL(8))	// error
+#define NBL_FLOW_KEY_T_CVLAN_FLAG			(BIT_ULL(9))	// error
+#define NBL_FLOW_KEY_T_ETHERTYPE_FLAG			(BIT_ULL(10))	// error
+#define NBL_FLOW_KEY_T_SRCPORT_FLAG			(BIT_ULL(11))
+#define NBL_FLOW_KEY_T_DSTPORT_FLAG			(BIT_ULL(12))
+#define NBL_FLOW_KEY_T_NPROTO_FLAG			(BIT_ULL(13))	// delete
+#define NBL_FLOW_KEY_T_OPT_CLASS_FLAG			(BIT_ULL(14))
+#define NBL_FLOW_KEY_T_PROTOCOL_FLAG			(BIT_ULL(15))
+#define NBL_FLOW_KEY_T_TCPSTAT_FLAG			(BIT_ULL(16))	// delete
+#define NBL_FLOW_KEY_T_TOS_FLAG				(BIT_ULL(17))
+#define NBL_FLOW_KEY_T_TTL_FLAG				(BIT_ULL(18))
+#define NBL_FLOW_KEY_SIPV4_FLAG				(BIT_ULL(19))
+#define NBL_FLOW_KEY_SIPV6_FLAG				(BIT_ULL(20))
+#define NBL_FLOW_KEY_DIPV4_FLAG				(BIT_ULL(21))
+#define NBL_FLOW_KEY_DIPV6_FLAG				(BIT_ULL(22))
+#define NBL_FLOW_KEY_DSTMAC_FLAG			(BIT_ULL(23))
+#define NBL_FLOW_KEY_SRCMAC_FLAG			(BIT_ULL(24))
+#define NBL_FLOW_KEY_SVLAN_FLAG				(BIT_ULL(25))
+#define NBL_FLOW_KEY_CVLAN_FLAG				(BIT_ULL(26))
+#define NBL_FLOW_KEY_ETHERTYPE_FLAG			(BIT_ULL(27))
+#define NBL_FLOW_KEY_SRCPORT_FLAG			(BIT_ULL(28))
+#define NBL_FLOW_KEY_ICMP_TYPE_FLAG			(BIT_ULL(28))
+#define NBL_FLOW_KEY_DSTPORT_FLAG			(BIT_ULL(29))
+#define NBL_FLOW_KEY_ICMP_CODE_FLAG			(BIT_ULL(29))
+#define NBL_FLOW_KEY_ARP_OP_FLAG			(BIT_ULL(30))	// error
+#define NBL_FLOW_KEY_ICMPV6_TYPE_FLAG			(BIT_ULL(31))	// error
+#define NBL_FLOW_KEY_PROTOCOL_FLAG			(BIT_ULL(32))
+#define NBL_FLOW_KEY_TCPSTAT_FLAG			(BIT_ULL(33))
+#define NBL_FLOW_KEY_TOS_FLAG				(BIT_ULL(34))
+#define NBL_FLOW_KEY_DSCP_FLAG				(BIT_ULL(34))
+#define NBL_FLOW_KEY_TTL_FLAG				(BIT_ULL(35))
+#define NBL_FLOW_KEY_HOPLIMIT_FLAG			(BIT_ULL(35))
+#define NBL_FLOW_KEY_RDMA_ACK_SEQ_FLAG			(BIT_ULL(36))	// error
+#define NBL_FLOW_KEY_RDMA_QPN_FLAG			(BIT_ULL(37))	// error
+#define NBL_FLOW_KEY_RDMA_OP_FLAG			(BIT_ULL(38))	// error
+#define NBL_FLOW_KEY_EXEHASH_FLAG			(BIT_ULL(43))
+#define NBL_FLOW_KEY_DPHASH_FLAG			(BIT_ULL(44))
+#define NBL_FLOW_KEY_RECIRC_FLAG			(BIT_ULL(63))
 
 /* action flag */
-#define NBL_FLOW_ACTION_METADATA_FLAG			BIT_ULL(1)
-#define NBL_FLOW_ACTION_DROP				BIT_ULL(2)
-#define NBL_FLOW_ACTION_REDIRECT			BIT_ULL(3)
-#define NBL_FLOW_ACTION_MIRRED				BIT_ULL(4)
-#define NBL_FLOW_ACTION_TUNNEL_ENCAP			BIT_ULL(5)
-#define NBL_FLOW_ACTION_TUNNEL_DECAP			BIT_ULL(6)
-#define NBL_FLOW_ACTION_COUNTER				BIT_ULL(7)
-#define NBL_FLOW_ACTION_SET_IPV4_SRC_IP			BIT_ULL(8)
-#define NBL_FLOW_ACTION_SET_IPV4_DST_IP			BIT_ULL(9)
-#define NBL_FLOW_ACTION_SET_IPV6_SRC_IP			BIT_ULL(10)
-#define NBL_FLOW_ACTION_SET_IPV6_DST_IP			BIT_ULL(11)
-#define NBL_FLOW_ACTION_SET_SRC_MAC			BIT_ULL(12)
-#define NBL_FLOW_ACTION_SET_DST_MAC			BIT_ULL(13)
-#define NBL_FLOW_ACTION_SET_SRC_PORT			BIT_ULL(14)
-#define NBL_FLOW_ACTION_SET_DST_PORT			BIT_ULL(15)
-#define NBL_FLOW_ACTION_SET_TTL				BIT_ULL(16)
-#define NBL_FLOW_ACTION_SET_IPV4_DSCP			BIT_ULL(17)
-#define NBL_FLOW_ACTION_SET_IPV6_DSCP			BIT_ULL(18)
-#define NBL_FLOW_ACTION_RSS				BIT_ULL(19)
-#define NBL_FLOW_ACTION_QUEUE				BIT_ULL(20)
-#define NBL_FLOW_ACTION_MARK				BIT_ULL(21)
-#define NBL_FLOW_ACTION_PUSH_INNER_VLAN			BIT_ULL(22)
-#define NBL_FLOW_ACTION_PUSH_OUTER_VLAN			BIT_ULL(23)
-#define NBL_FLOW_ACTION_POP_INNER_VLAN			BIT_ULL(24)
-#define NBL_FLOW_ACTION_POP_OUTER_VLAN			BIT_ULL(25)
-#define NBL_FLOW_ACTION_REPLACE_INNER_VLAN		BIT_ULL(26)
-#define NBL_FLOW_ACTION_REPLACE_SINGLE_INNER_VLAN	BIT_ULL(27)
-#define NBL_FLOW_ACTION_REPLACE_OUTER_VLAN		BIT_ULL(28)
-#define NBL_FLOW_ACTION_PHY_PORT			BIT_ULL(29)
-#define NBL_FLOW_ACTION_PORT_ID				BIT_ULL(30)
-#define NBL_FLOW_ACTION_INGRESS				BIT_ULL(31)
-#define NBL_FLOW_ACTION_EGRESS				BIT_ULL(32)
-#define NBL_FLOW_ACTION_IPV4				BIT_ULL(33)
-#define NBL_FLOW_ACTION_IPV6				BIT_ULL(34)
-#define NBL_FLOW_ACTION_CAR				BIT_ULL(35)
-#define NBL_FLOW_ACTION_MCC				BIT_ULL(36)
-#define NBL_FLOW_ACTION_MIRRED_ENCAP			BIT_ULL(37)
-#define NBL_FLOW_ACTION_META_RECIRC			BIT_ULL(38)
-#define NBL_FLOW_ACTION_STAT				BIT_ULL(39)
-#define NBL_ACTION_FLAG_OFFSET_MAX			BIT_ULL(40)
-
+#define NBL_FLOW_ACTION_METADATA_FLAG			(BIT_ULL(1))
+#define NBL_FLOW_ACTION_DROP				(BIT_ULL(2))
+#define NBL_FLOW_ACTION_REDIRECT			(BIT_ULL(3))
+#define NBL_FLOW_ACTION_MIRRED				(BIT_ULL(4))
+#define NBL_FLOW_ACTION_TUNNEL_ENCAP			(BIT_ULL(5))
+#define NBL_FLOW_ACTION_TUNNEL_DECAP			(BIT_ULL(6))
+#define NBL_FLOW_ACTION_COUNTER				(BIT_ULL(7))
+#define NBL_FLOW_ACTION_SET_IPV4_SRC_IP			(BIT_ULL(8))
+#define NBL_FLOW_ACTION_SET_IPV4_DST_IP			(BIT_ULL(9))
+#define NBL_FLOW_ACTION_SET_IPV6_SRC_IP			(BIT_ULL(10))
+#define NBL_FLOW_ACTION_SET_IPV6_DST_IP			(BIT_ULL(11))
+#define NBL_FLOW_ACTION_SET_SRC_MAC			(BIT_ULL(12))
+#define NBL_FLOW_ACTION_SET_DST_MAC			(BIT_ULL(13))
+#define NBL_FLOW_ACTION_SET_SRC_PORT			(BIT_ULL(14))
+#define NBL_FLOW_ACTION_SET_DST_PORT			(BIT_ULL(15))
+#define NBL_FLOW_ACTION_SET_TTL				(BIT_ULL(16))
+#define NBL_FLOW_ACTION_SET_IPV4_DSCP			(BIT_ULL(17))
+#define NBL_FLOW_ACTION_SET_IPV6_DSCP			(BIT_ULL(18))
+#define NBL_FLOW_ACTION_RSS				(BIT_ULL(19))
+#define NBL_FLOW_ACTION_QUEUE				(BIT_ULL(20))
+#define NBL_FLOW_ACTION_MARK				(BIT_ULL(21))
+#define NBL_FLOW_ACTION_PUSH_INNER_VLAN			(BIT_ULL(22))
+#define NBL_FLOW_ACTION_PUSH_OUTER_VLAN			(BIT_ULL(23))
+#define NBL_FLOW_ACTION_POP_INNER_VLAN			(BIT_ULL(24))
+#define NBL_FLOW_ACTION_POP_OUTER_VLAN			(BIT_ULL(25))
+#define NBL_FLOW_ACTION_REPLACE_INNER_VLAN		(BIT_ULL(26))
+#define NBL_FLOW_ACTION_REPLACE_SINGLE_INNER_VLAN	(BIT_ULL(27))
+#define NBL_FLOW_ACTION_REPLACE_OUTER_VLAN		(BIT_ULL(28))
+#define NBL_FLOW_ACTION_PHY_PORT			(BIT_ULL(29))
+#define NBL_FLOW_ACTION_PORT_ID				(BIT_ULL(30))
+#define NBL_FLOW_ACTION_INGRESS				(BIT_ULL(31))
+#define NBL_FLOW_ACTION_EGRESS				(BIT_ULL(32))
+#define NBL_FLOW_ACTION_IPV4				(BIT_ULL(33))
+#define NBL_FLOW_ACTION_IPV6				(BIT_ULL(34))
+#define NBL_FLOW_ACTION_CAR				(BIT_ULL(35))
+#define NBL_FLOW_ACTION_MCC				(BIT_ULL(36))
+#define NBL_FLOW_ACTION_MIRRED_ENCAP			(BIT_ULL(37))
+#define NBL_FLOW_ACTION_META_RECIRC			(BIT_ULL(38))
+#define NBL_FLOW_ACTION_STAT				(BIT_ULL(39))
+#define NBL_ACTION_FLAG_OFFSET_MAX			(BIT_ULL(40))
 extern struct list_head lag_resource_head;
 extern struct mutex nbl_lag_mutex;
-
 #define SET_DEV_MIN_MTU(netdev, mtu) ((netdev)->min_mtu = (mtu))
 #define SET_DEV_MAX_MTU(netdev, mtu) ((netdev)->max_mtu = (mtu))
 
@@ -211,8 +222,6 @@ do {		\
 
 enum nbl_product_type {
 	NBL_LEONIS_TYPE,
-	NBL_BOOTIS_TYPE,
-	NBL_VIRTIO_TYPE,
 	NBL_PRODUCT_MAX,
 };
 
@@ -230,7 +239,6 @@ enum nbl_fix_cap_type {
 	NBL_TASK_CLEAN_ADMINDQ_CAP,
 	NBL_TASK_CLEAN_MAILBOX_CAP,
 	NBL_TASK_IPSEC_AGE_CAP,
-	NBL_VIRTIO_CAP,
 	NBL_ETH_SUPPORT_NRZ_RS_FEC_544,
 	NBL_RESTOOL_CAP,
 	NBL_HWMON_TEMP_CAP,
@@ -245,13 +253,12 @@ enum nbl_fix_cap_type {
 	NBL_TASK_RESET_CAP,
 	NBL_TASK_RESET_CTRL_CAP,
 	NBL_QOS_SYSFS_CAP,
+	NBL_MIRROR_SYSFS_CAP,
+	NBL_HIGH_THROUGHPUT_CAP,
+	NBL_TASK_HEALTH_REPORT_TEMP_CAP,
+	NBL_TASK_HEALTH_REPORT_REBOOT_CAP,
+	NBL_DVN_DESC_REQ_SYSFS_CAP,
 	NBL_FIX_CAP_NBITS
-};
-
-enum nbl_bootis_port_id {
-	NBL_PORT_ETH0 = 0,
-	NBL_PORT_ETH1,
-	NBL_PORT_MAX,
 };
 
 enum nbl_sfp_module_state {
@@ -304,7 +311,8 @@ struct nbl_func_caps {
 	u32 support_lag:1;
 	u32 has_grc:1;
 	u32 has_factory_ctrl:1;
-	u32 rsv:24;
+	u32 is_ocp:1;
+	u32 rsv:23;
 };
 
 struct nbl_init_param {
@@ -465,6 +473,10 @@ struct nbl_rx_queue_stats {
 	u64 tls_decrypted_packets;
 	u64 tls_resync_req_num;
 #endif
+	u64 xdp_tx_packets;
+	u64 xdp_redirect_packets;
+	u64 xdp_oversize_packets;
+	u64 xdp_drop_packets;
 };
 
 struct nbl_stats {
@@ -478,6 +490,10 @@ struct nbl_stats {
 	u64 tx_dma_busy;
 	u64 tx_multicast_packets;
 	u64 tx_unicast_packets;
+	u64 xdp_tx_packets;
+	u64 xdp_redirect_packets;
+	u64 xdp_oversize_packets;
+	u64 xdp_drop_packets;
 #ifdef CONFIG_TLS_DEVICE
 	u64 tls_encrypted_packets;
 	u64 tls_encrypted_bytes;
@@ -506,6 +522,44 @@ struct nbl_stats {
 struct nbl_priv_stats {
 	u64 total_dvn_pkt_drop_cnt;
 	u64 total_uvn_stat_pkt_drop;
+};
+
+struct nbl_vf_stats {
+	u64 rx_packets;
+	u64 tx_packets;
+	u64 rx_bytes;
+	u64 tx_bytes;
+	u64 broadcast;
+	u64 multicast;
+	u64 rx_dropped;
+	u64 tx_dropped;
+};
+
+struct nbl_ustore_stats {
+	u64 rx_drop_packets;
+	u64 rx_trun_packets;
+};
+
+struct nbl_hw_stats {
+	u64 *total_uvn_stat_pkt_drop;
+	struct nbl_ustore_stats start_ustore_stats;
+};
+
+struct nbl_eth_abnormal_stats {
+	/* detailed rx_errors: */
+	u64 rx_length_errors;
+	u64 rx_over_errors;
+	u64 rx_crc_errors;
+	u64 rx_frame_errors;
+	u64 rx_fifo_errors;
+	u64 rx_missed_errors;
+
+	/* detailed tx_errors */
+	u64 tx_aborted_errors;
+	u64 tx_carrier_errors;
+	u64 tx_fifo_errors;
+	u64 tx_heartbeat_errors;
+	u64 tx_window_errors;
 };
 
 struct nbl_notify_param {
@@ -652,31 +706,6 @@ struct nbl_ctrl_irq_num {
 	int abnormal_irq_num;
 };
 
-#define NBL_PORT_KEY_ILLEGAL 0x0
-#define NBL_PORT_KEY_CAPABILITIES 0x1
-#define NBL_PORT_KEY_ENABLE 0x2 /* BIT(0): NBL_PORT_FLAG_ENABLE_NOTIFY */
-#define NBL_PORT_KEY_DISABLE 0x3
-#define NBL_PORT_KEY_ADVERT 0x4
-#define NBL_PORT_KEY_LOOPBACK 0x5 /* 0: disable eth loopback, 1: enable eth loopback */
-#define NBL_PORT_KEY_MODULE_SWITCH 0x6 /* 0: sfp off, 1: sfp on */
-#define NBL_PORT_KEY_MAC_ADDRESS 0x7
-#define NBL_PORT_KRY_LED_BLINK 0x8
-#define NBL_PORT_KEY_RESTORE_DEFAULTE_CFG 11
-#define NBL_PORT_KEY_SET_PFC_CFG 12
-
-enum {
-	NBL_PORT_SUBOP_READ = 1,
-	NBL_PORT_SUBOP_WRITE = 2,
-};
-
-#define NBL_PORT_FLAG_ENABLE_NOTIFY	BIT(0)
-#define NBL_PORT_ENABLE_LOOPBACK	1
-#define NBL_PORT_DISABLE_LOOPBCK	0
-#define NBL_PORT_SFP_ON			1
-#define NBL_PORT_SFP_OFF		0
-#define NBL_PORT_KEY_KEY_SHIFT		56
-#define NBL_PORT_KEY_DATA_MASK		0xFFFFFFFFFFFF
-
 enum nbl_flow_ctrl {
 	NBL_PORT_TX_PAUSE = 0x1,
 	NBL_PORT_RX_PAUSE = 0x2,
@@ -806,6 +835,24 @@ enum nbl_fw_port_speed {
 	NBL_FW_PORT_SPEED_100G,
 };
 
+static inline u32 nbl_port_speed_to_speed(enum nbl_fw_port_speed port_speed)
+{
+	switch (port_speed) {
+	case NBL_FW_PORT_SPEED_10G:
+		return SPEED_10000;
+	case NBL_FW_PORT_SPEED_25G:
+		return SPEED_25000;
+	case NBL_FW_PORT_SPEED_50G:
+		return SPEED_50000;
+	case NBL_FW_PORT_SPEED_100G:
+		return SPEED_100000;
+	default:
+		return SPEED_25000;
+	}
+
+	return SPEED_25000;
+}
+
 #define PASSTHROUGH_FW_CMD_DATA_LEN			(3072)
 struct nbl_passthrough_fw_cmd_param {
 	u16 opcode;
@@ -902,9 +949,6 @@ static inline int nbl_##_struct##_size_is_not_equal_to_define(void) \
 	return check[0]; \
 }
 
-#define nbl_list_entry_is_head(pos, head, member)	\
-	(&pos->member == (head))
-
 /**
  * list_is_first -- tests whether @ list is the first entry in list @head
  * @list: the entry to test
@@ -936,50 +980,6 @@ static inline int nbl_list_empty(const struct list_head *head)
 	return READ_ONCE(head->next) == head;
 }
 
-/**
- * nbl_read_poll_timeout - Periodically poll an address until a condition is
- *			met or a timeout occurs
- * @op: accessor function (takes @args as its arguments)
- * @val: Variable to read the value into
- * @cond: Break condition (usually involving @val)
- * @sleep_us: Maximum time to sleep between reads in us (0
- *            tight-loops).  Should be less than ~20ms since usleep_range
- *            is used (see Documentation/timers/timers-howto.rst).
- * @timeout_us: Timeout in us, 0 means never timeout
- * @sleep_before_read: if it is true, sleep @sleep_us before read.
- * @args: arguments for @op poll
- *
- * Returns 0 on success and -ETIMEDOUT upon a timeout. In either
- * case, the last read value at @args is stored in @val. Must not
- * be called from atomic context if sleep_us or timeout_us are used.
- *
- * When available, you'll probably want to use one of the specialized
- * macros defined below rather than this macro directly.
- */
-#define nbl_read_poll_timeout(op, val, cond, sleep_us, timeout_us, \
-			      sleep_before_read, args...) \
-({ \
-	u64 __timeout_us = (timeout_us); \
-	unsigned long __sleep_us = (sleep_us); \
-	ktime_t __timeout = ktime_add_us(ktime_get(), __timeout_us); \
-	might_sleep_if((__sleep_us) != 0); \
-	if (sleep_before_read && __sleep_us) \
-		usleep_range((__sleep_us >> 2) + 1, __sleep_us); \
-	for (;;) { \
-		(val) = op(args); \
-		if (cond) \
-			break; \
-		if (__timeout_us && \
-		    ktime_compare(ktime_get(), __timeout) > 0) { \
-			(val) = op(args); \
-			break; \
-		} \
-		if (__sleep_us) \
-			usleep_range((__sleep_us >> 2) + 1, __sleep_us); \
-	} \
-	(cond) ? 0 : -ETIMEDOUT; \
-})
-
 #define NBL_OPS_CALL(func, para)								\
 	({ typeof(func) _func = (func);								\
 	 (!_func) ? 0 : _func para; })
@@ -992,8 +992,8 @@ enum {
 };
 
 struct nbl_tc_port {
-	u32 id;
-	u8 type;
+	u32 id:24;
+	u32 type:8;
 };
 
 enum nbl_cmd_status {
@@ -1051,8 +1051,8 @@ struct nbl_tc_fdir_tnl {
 };
 
 struct nbl_port_mcc {
-	u16 dport_id;
-	u8 port_type;
+	u16 dport_id:12;
+	u16 port_type:4;
 };
 
 #define NBL_VLAN_TYPE_ETH_BASE		1027
@@ -1109,35 +1109,78 @@ union nbl_flow_encap_offset_tbl_u {
 	u32 data[NBL_FLOW_ENCAP_OFFSET_TBL_WIDTH];
 } __packed;
 
+struct nbl_tc_pedit_headers {
+	struct ethhdr   eth;
+	struct iphdr    ip4;
+	struct ipv6hdr  ip6;
+	struct tcphdr   tcp;
+	struct udphdr   udp;
+};
+
+enum nbl_flow_ped_type {
+	/* ped type: default is src dir if ped_type is ip & mac */
+	NBL_FLOW_PED_UMAC_TYPE = 0,
+	NBL_FLOW_PED_DMAC_TYPE,
+	NBL_FLOW_PED_UIP_TYPE,
+	NBL_FLOW_PED_DIP_TYPE,
+
+	/* ped for mac & ip got src and dst, _D_TYPE represents the dst dir */
+	NBL_FLOW_PED_UMAC_D_TYPE,
+	NBL_FLOW_PED_DMAC_D_TYPE,
+	NBL_FLOW_PED_UIP_D_TYPE,
+	NBL_FLOW_PED_DIP_D_TYPE,
+
+	NBL_FLOW_PED_RES_MAX,
+	/* the following no need store rsource */
+	NBL_FLOW_PED_UIP6_TYPE,
+	NBL_FLOW_PED_DIP6_TYPE,
+	NBL_FLOW_PED_RECORD_MAX,
+};
+
+struct nbl_tc_pedit_node_res {
+	void *pedit_node[NBL_FLOW_PED_RES_MAX];
+	u32 pedits:30;
+	u32 pedit_val:1;
+	/* 0 tcp, 1 udp */
+	u32 pedit_proto:1;
+};
+
+struct nbl_tc_pedit_info {
+	struct nbl_tc_pedit_headers val;
+	struct nbl_tc_pedit_headers mask;
+	struct nbl_tc_pedit_node_res pedit_node;
+};
+
 struct nbl_rule_action {
 	u64 flag; /* action flag, eg:set ipv4 src/redirect */
-	u32 drop_flag; /* drop or forward */
-	u32 counter_id;
-	u32 port_id;
-	u8 port_type;
-	u8 action_cnt;  /* different action type total cnt */
+	u32 drop_flag:1; /* drop or forward */
+	u32 counter_id:31;
 
-	u8 next_stg_sel;
+	u32 port_id:15;
+	u32 port_type:8;
+	u32 action_cnt:5;  /* different action type total cnt */
+	u32 next_stg_sel:4;
 
-	u8 dscp;		/* set dscp */
-	/* set ops */
-	struct nbl_fdir_l4 l4_outer;
-	struct nbl_fdir_l2 l2_data_outer;
-	struct nbl_fdir_l3 ip_outer;
-	u8 lag_id;
+	u32 vni;
+	u16 encap_size;
+	u16 encap_idx:15;
+	u16 encap_parse_ok:1;
+
+	u32 encap_out_dev_ifindex:14;
+	u32 encap_in_hw:1;
+	u32 dscp:8;
+	u32 lag_id:4;
+	u32 mcc_cnt:5;
+
 	struct nbl_port_mcc port_mcc[NBL_TC_MCC_MEMBER_MAX];
-	u16 mcc_cnt;
 	struct nbl_vlan vlan;
 	struct ip_tunnel_info *tunnel;
 	struct nbl_encap_key encap_key;
 	union nbl_flow_encap_offset_tbl_u encap_idx_info;
-	u32 vni;
 	u8 encap_buf[NBL_FLOW_ACTION_ENCAP_TOTAL_LEN];
-	u16 encap_size;
-	u16 encap_idx;
-	bool encap_parse_ok;
 	struct net_device *in_port;
 	struct net_device *tc_tun_encap_out_dev;
+	struct nbl_tc_pedit_info tc_pedit_info;
 };
 
 struct nbl_fdir_fltr {
@@ -1189,7 +1232,6 @@ struct nbl_flow_pattern_conf {
 	u8  flow_send;
 	u8  graph_idx;
 	u16 pp_flag;
-	u64 input_set;
 	u64 key_flag;
 };
 
@@ -1350,6 +1392,7 @@ enum nbl_performance_mode {
 };
 
 extern int performance_mode;
+extern int adaptive_rxbuf_len_disable;
 
 struct nbl_vsi_param {
 	u16 vsi_id;
@@ -1370,9 +1413,28 @@ enum nbl_trust_mode {
 	NBL_TRUST_MODE_DSCP
 };
 
-#define NBL_MAX_PFC_PRIORITIES 8
-#define NBL_DSCP_MAX 64
+#define NBL_VSI_MAX_ID 1024
 
+struct nbl_mtu_entry {
+	u32 ref_count;
+	u16 mtu_value;
+};
+
+#define NBL_MAX_PFC_PRIORITIES (8)
+#define NBL_DSCP_MAX (64)
+#define NBL_TC_MAX_BW (100)
+#define NBL_MAX_TC_NUM (8)
+#define NBL_MAX_BW (100)
+
+enum nbl_traffic_type {
+	NBL_TRAFFIC_RDMA_TYPE,
+	NBL_TRAFFIC_NET_TYPE,
+};
+
+struct nbl_napi_struct {
+	struct napi_struct napi;
+	atomic_t is_irq;
+};
 extern int loongarch_low_version;
 #define NBL_LOONGSON64_VF_MAX_QUEUE_NUM 2
 #define NBL_LOONGSON64_MAX_QUEUE_NUM 8
