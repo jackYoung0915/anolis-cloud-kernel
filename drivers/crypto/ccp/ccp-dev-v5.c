@@ -161,6 +161,12 @@ union ccp_function {
 		u16 encrypt:1;
 		u16 step:7;
 	} sm4_ctr;
+	struct {
+		u16 size:7;
+		u16 encrypt:1;
+		u16 rsvd:5;
+		u16 mode:1;
+	} sm4_gcm;
 	u16 raw;
 };
 
@@ -193,6 +199,9 @@ union ccp_function {
 #define	CCP_SM4_CTR_ENCRYPT(p)	((p)->sm4_ctr.encrypt)
 #define	CCP_SM4_CTR_STEP(p)	((p)->sm4_ctr.step)
 #define	CCP_SM4_CTR_SIZE(p)	((p)->sm4_ctr.size)
+#define	CCP_SM4_GCM_SIZE(p)	((p)->sm4_gcm.size)
+#define	CCP_SM4_GCM_ENCRYPT(p)	((p)->sm4_gcm.encrypt)
+#define	CCP_SM4_GCM_MODE(p)	((p)->sm4_gcm.mode)
 
 /* Word 0 */
 #define CCP5_CMD_DW0(p)		((p)->dw0)
@@ -940,6 +949,47 @@ static int ccp5_perform_sm4_ctr(struct ccp_op *op)
 	return ccp5_do_multi_cmds(&desc, op->cmd_q);
 }
 
+static int ccp5_perform_sm4_gcm(struct ccp_op *op)
+{
+	struct ccp5_desc desc;
+	union ccp_function function;
+	u32 key_addr = op->sb_key * LSB_ITEM_SIZE;
+
+	op->cmd_q->total_sm4_gcm_ops++;
+
+	memset(&desc, 0, Q_DESC_SIZE);
+
+	CCP5_CMD_ENGINE(&desc) = CCP_ENGINE_SM4_GCM;
+	CCP5_CMD_SOC(&desc) = op->soc;
+	CCP5_CMD_IOC(&desc) = op->ioc;
+	CCP5_CMD_INIT(&desc) = op->init;
+	CCP5_CMD_EOM(&desc) = op->eom;
+	CCP5_CMD_PROT(&desc) = 0;
+
+	function.raw = 0;
+	CCP_SM4_GCM_ENCRYPT(&function) = op->u.sm4_gcm.action;
+	CCP_SM4_GCM_MODE(&function) = op->u.sm4_gcm.mode;
+	CCP_SM4_GCM_SIZE(&function) = op->u.sm4_gcm.size;
+	CCP5_CMD_FUNCTION(&desc) = function.raw;
+
+	CCP5_CMD_LEN(&desc) = op->src.u.dma.length;
+
+	CCP5_CMD_SRC_LO(&desc) = ccp_addr_lo(&op->src.u.dma);
+	CCP5_CMD_SRC_HI(&desc) = ccp_addr_hi(&op->src.u.dma);
+	CCP5_CMD_SRC_MEM(&desc) = CCP_MEMTYPE_SYSTEM;
+	CCP5_CMD_LSB_ID(&desc) = op->sb_ctx;
+
+	CCP5_CMD_DST_LO(&desc) = ccp_addr_lo(&op->dst.u.dma);
+	CCP5_CMD_DST_HI(&desc) = ccp_addr_hi(&op->dst.u.dma);
+	CCP5_CMD_DST_MEM(&desc) = CCP_MEMTYPE_SYSTEM;
+
+	CCP5_CMD_KEY_LO(&desc) = lower_32_bits(key_addr);
+	CCP5_CMD_KEY_HI(&desc) = 0;
+	CCP5_CMD_KEY_MEM(&desc) = CCP_MEMTYPE_SB;
+
+	return ccp5_do_multi_cmds(&desc, op->cmd_q);
+}
+
 static int ccp_find_lsb_regions(struct ccp_cmd_queue *cmd_q, u64 status)
 {
 	int q_mask = 1 << cmd_q->id;
@@ -1159,6 +1209,7 @@ static int ccp5_init(struct ccp_device *ccp)
 	unsigned int qmr, i;
 	u64 status;
 	u32 status_lo, status_hi, command_per_q, queue_size_val;
+	int ecc_support = 0, is_trng2 = 0;
 	int ret;
 
 	/* Find available queues */
@@ -1176,10 +1227,15 @@ static int ccp5_init(struct ccp_device *ccp)
 	}
 
 #ifdef CONFIG_HYGON_GM
-	/*  check if ccp support both sm2 and ecc. */
+	/* check if ccp support both sm2 and ecc, or not support ecc
+	 * but use new function structure.
+	 */
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
-		ccp->support_sm2_ecc =
-			!!(ioread32(ccp->io_regs + CMD5_PSP_CCP_VERSION) & RI_ECC_PRESENT);
+		ecc_support = !!(ioread32(ccp->io_regs + CMD5_PSP_CCP_VERSION) & RI_ECC_PRESENT);
+		is_trng2 = !!(((ioread32(ccp->io_regs + CMD5_PSP_CCP_ENG_VERSION)
+				>> RI_TRNGVersionOffset) & RI_TRNGVersionMask)
+				== RI_TRNGVersion_002);
+		ccp->support_sm2_ecc = ecc_support || is_trng2;
 	}
 #endif
 
@@ -1514,6 +1570,7 @@ static const struct ccp_actions ccp5_actions = {
 	.sm3 = ccp5_perform_sm3,
 	.sm4 = ccp5_perform_sm4,
 	.sm4_ctr = ccp5_perform_sm4_ctr,
+	.sm4_gcm = ccp5_perform_sm4_gcm,
 	.run_cmd = ccp5_do_run_cmd,
 	.sballoc = ccp_lsb_alloc,
 	.sbfree = ccp_lsb_free,

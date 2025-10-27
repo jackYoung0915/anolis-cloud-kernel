@@ -70,6 +70,7 @@
 #define LSB_PRIVATE_MASK_LO_OFFSET	0x20
 #define LSB_PRIVATE_MASK_HI_OFFSET	0x24
 #define CMD5_PSP_CCP_VERSION		0x100
+#define CMD5_PSP_CCP_ENG_VERSION	0x104
 
 #define CMD5_Q_CONTROL_BASE		0x0000
 #define CMD5_Q_TAIL_LO_BASE		0x0004
@@ -125,8 +126,19 @@
 
 #define LSB_ENTRY_NUMBER(LSB_ADDR)	(LSB_ADDR / LSB_ITEM_SIZE)
 
-/* indicates whether there is ECC engine for Hygon CCP */
+/* Hygon ccp crypto engine mask */
 #define RI_ECC_PRESENT			0x0400
+#define RI_AES_PRESENT			0x0800
+#define RI_SHA2_PRESENT			0x01000
+#define RI_SM4GCM_PRESENT		0x04000
+
+/* Hygon ccp sm4 engine version mask */
+#define RI_SM4VersionNum		(0x7 << 6)
+
+/* Hygon ccp TRNG version mask */
+#define RI_TRNGVersionOffset		21
+#define RI_TRNGVersionMask		0x03
+#define RI_TRNGVersion_002		2
 
 /* ------------------------ CCP Version 3 Specifics ------------------------ */
 #define REQ0_WAIT_FOR_WRITE		0x00000004
@@ -166,6 +178,10 @@
 /* ECC Related Values */
 #define REQ1_ECC_AFFINE_CONVERT		0x00200000
 #define REQ1_ECC_FUNCTION_SHIFT		18
+
+/***** HYGON CCP SM4 GCM related defines *****/
+#define HYGON_CCP_SM4GCM_IV_LEN		12
+#define HYGON_CCP_SM4GCM_TAG_LEN	16
 
 /****** REQ4 Related Values ******/
 #define REQ4_KSB_SHIFT			18
@@ -344,6 +360,7 @@ struct ccp_cmd_queue {
 	unsigned long total_sm3_ops;
 	unsigned long total_sm4_ops;
 	unsigned long total_sm4_ctr_ops;
+	unsigned long total_sm4_gcm_ops;
 } ____cacheline_aligned;
 
 struct ccp_device {
@@ -563,6 +580,12 @@ struct ccp_sm4_ctr_op {
 	u32 step;
 };
 
+struct ccp_sm4_gcm_op {
+	enum ccp_sm4_action action;
+	enum ccp_sm4_aead_mode mode;
+	u32 size;
+};
+
 struct ccp_op {
 	struct ccp_cmd_queue *cmd_q;
 
@@ -590,6 +613,7 @@ struct ccp_op {
 		struct ccp_sm3_op sm3;
 		struct ccp_sm4_op sm4;
 		struct ccp_sm4_ctr_op sm4_ctr;
+		struct ccp_sm4_gcm_op sm4_gcm;
 	} u;
 };
 
@@ -702,6 +726,7 @@ struct ccp_actions {
 	int (*sm3)(struct ccp_op *op);
 	int (*sm4)(struct ccp_op *op);
 	int (*sm4_ctr)(struct ccp_op *op);
+	int (*sm4_gcm)(struct ccp_op *op);
 	int (*run_cmd)(struct ccp_op *op);
 	u32 (*sballoc)(struct ccp_cmd_queue *, unsigned int);
 	void (*sbfree)(struct ccp_cmd_queue *, unsigned int, unsigned int);
