@@ -3208,17 +3208,6 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		}
 
 		/*
-		 * AMD changed the architectural behavior of bits 5:2.  On CPUs
-		 * without BusLockTrap, bits 5:2 control "external pins", but
-		 * on CPUs that support BusLockDetect, bit 2 enables BusLockTrap
-		 * and bits 5:3 are reserved-to-zero.  Sadly, old KVM allowed
-		 * the guest to set bits 5:2 despite not actually virtualizing
-		 * Performance-Monitoring/Breakpoint external pins.  Drop bits
-		 * 5:2 for backwards compatibility.
-		 */
-		data &= ~GENMASK(5, 2);
-
-		/*
 		 * Suppress BTF as KVM doesn't virtualize BTF, but there's no
 		 * way to communicate lack of support to the guest.
 		 */
@@ -4295,6 +4284,16 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu)
 	clgi();
 	kvm_load_guest_xsave_state(vcpu);
 
+	/*
+	 * Hardware only context switches DEBUGCTL if LBR virtualization is
+	 * enabled.  Manually load DEBUGCTL if necessary (and restore it after
+	 * VM-Exit), as running with the host's DEBUGCTL can negatively affect
+	 * guest state and can even be fatal, e.g. due to Bus Lock Detect.
+	 */
+	if (!(svm->vmcb->control.virt_ext & LBR_CTL_ENABLE_MASK) &&
+	    vcpu->arch.host_debugctl != svm->vmcb->save.dbgctl)
+		update_debugctlmsr(svm->vmcb->save.dbgctl);
+
 	kvm_wait_lapic_expire(vcpu);
 
 	/*
@@ -4321,6 +4320,10 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu)
 
 	if (unlikely(svm->vmcb->control.exit_code == SVM_EXIT_NMI))
 		kvm_before_interrupt(vcpu, KVM_HANDLING_NMI);
+
+	if (!(svm->vmcb->control.virt_ext & LBR_CTL_ENABLE_MASK) &&
+	    vcpu->arch.host_debugctl != svm->vmcb->save.dbgctl)
+		update_debugctlmsr(vcpu->arch.host_debugctl);
 
 	kvm_load_host_xsave_state(vcpu);
 	stgi();
