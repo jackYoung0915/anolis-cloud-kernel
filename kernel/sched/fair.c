@@ -14869,8 +14869,21 @@ void unregister_fair_sched_group(struct task_group *tg)
 	int cpu;
 
 	for_each_possible_cpu(cpu) {
-		if (tg->se[cpu])
+		struct sched_entity *se = tg->se[cpu];
+		if (se) {
+			struct cfs_rq __maybe_unused *parent_cfs_rq = cfs_rq_of(se);
+
 			remove_entity_load_avg(tg->se[cpu]);
+
+#ifdef CONFIG_SMP
+			/*
+			 * Clear parent's h_load_next if it points to the
+			 * sched_entity being freed to avoid stale pointer.
+			 */
+			if (READ_ONCE(parent_cfs_rq->h_load_next) == se)
+				WRITE_ONCE(parent_cfs_rq->h_load_next, NULL);
+#endif
+		}
 
 		/*
 		 * Only empty task groups can be destroyed; so we can speculatively
