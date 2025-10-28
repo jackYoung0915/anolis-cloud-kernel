@@ -146,8 +146,6 @@ enum pageflags {
 #ifdef CONFIG_KFENCE
 	PG_kfence,		/* Page in kfence pool */
 #endif
-	/* Only valid for buddy pages. Used to trace page that are initialized */
-	PG_inited,
 	__NR_PAGEFLAGS,
 
 	/* Filesystems */
@@ -155,6 +153,9 @@ enum pageflags {
 
 	/* SwapBacked */
 	PG_swapcache = PG_owner_priv_1,	/* Swap page: swp_entry_t in private */
+
+	/* Only valid for buddy pages. Used to trace page that are initialized */
+	PG_inited = PG_owner_priv_1,
 
 	/* Two page bits are conscripted by FS-Cache to maintain local caching
 	 * state.  These bits are set on pages belonging to the netfs's inodes
