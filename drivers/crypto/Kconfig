@@ -82,6 +82,7 @@ config CRYPTO_DEV_ZHAOXIN_AES
 config CRYPTO_DEV_ZHAOXIN_SHA
 	tristate "Zhaoxin ACE driver for SHA1 and SHA256 algorithms"
 	depends on CRYPTO_DEV_ZHAOXIN
+	default CRYPTO_DEV_ZHAOXIN
 	select CRYPTO_HASH
 	select CRYPTO_SHA1
 	select CRYPTO_SHA256
