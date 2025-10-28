@@ -13244,10 +13244,6 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 
 		update_next_balance(sd, &next_balance);
 
-		/* We wanna pull non-idle tasks to idle task only cpu. */
-		if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(this_rq) && !this_rq->pulled)
-			continue;
-
 		if (get_avg_idle(this_rq) < curr_cost + sd->max_newidle_lb_cost)
 			break;
 
@@ -13264,6 +13260,10 @@ static int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 			curr_cost += domain_cost;
 			t0 = t1;
 		}
+
+		/* We wanna pull non-idle tasks to idle task only cpu. */
+		if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(this_rq) && !this_rq->pulled)
+			continue;
 
 		/*
 		 * Stop searching for tasks to pull if there are
