@@ -17,29 +17,29 @@
 #define VIRTIO_PCI_GUEST_VNDR_SPEC_FEATURES		0x10
 
 
-/* xdragon vsc */
+/* vsc */
 #define PCI_CAP_ID_VNDR                         0x09	/* Vendor specific */
-#define PCI_XDRAGON_VSC_CFGTYPE                 0xff
+#define PCI_VSC_CFGTYPE                 0xff
 
-/* xdragon vsec */
+/* vsec */
 #define PCI_EXT_CAP_ID_VNDR                     0x0B
-#define PCI_EXP_XDRAGON_VSEC_CFGTYPE            0xff
-#define XDRAGON_VSEC_VERSION                    2
+#define PCI_EXP_VSEC_CFGTYPE            0xff
+#define VSEC_VERSION                    2
 
-#define XDRAGON_XVCS_MAGIC                      0x53435658
-#define XDRAGON_XVCS_VSF_KEY                    "xvcs-vsf"
-#define XDRAGON_XVCS_VERSION                    1
-#define XDRAGON_XVCS_NUM_MAX                    32U
-#define XDRAGON_XVCS_KEY_MAX			16
+#define XVCS_MAGIC                      0x53435658
+#define XVCS_VSF_KEY                    "xvcs-vsf"
+#define XVCS_VERSION                    1
+#define XVCS_NUM_MAX                    32U
+#define XVCS_KEY_MAX			16
 
-#define XDRAGON_XVCS_O_MAGIC			0
-#define XDRAGON_XVCS_O_VER			4
-#define XDRAGON_XVCS_O_ADDR			12
-#define XDRAGON_XVCS_O_F_CNT			16
-#define XDRAGON_XVCS_O_CUR                      16
-#define XDRAGON_XVCS_O_NEXT                     20
-#define XDRAGON_XVCS_O_VSF                      32
-static void xdragon_read_xvcs(struct pci_dev *d, u32 pos,
+#define XVCS_O_MAGIC			0
+#define XVCS_O_VER			4
+#define XVCS_O_ADDR			12
+#define XVCS_O_F_CNT			16
+#define XVCS_O_CUR                      16
+#define XVCS_O_NEXT                     20
+#define XVCS_O_VSF                      32
+static void read_xvcs(struct pci_dev *d, u32 pos,
 				u32 cap_len, u32 addr, u32 num, void *data)
 {
 	u32 idx, where;
@@ -51,54 +51,54 @@ static void xdragon_read_xvcs(struct pci_dev *d, u32 pos,
 	}
 }
 
-static int xdragon_vcs_find_vsf_bar0_offset(struct pci_dev *dev, uint32_t cap_len,
+static int vcs_find_vsf_bar0_offset(struct pci_dev *dev, uint32_t cap_len,
 				uint32_t pos, u32 *bar0_offset)
 {
-	u8 buf[XDRAGON_XVCS_KEY_MAX+1];
+	u8 buf[XVCS_KEY_MAX+1];
 	u32 where;
 	u32 idx, num;
 	u32 reg;
 
 	/* check xvcs magic */
-	xdragon_read_xvcs(dev, pos, cap_len, XDRAGON_XVCS_O_MAGIC, sizeof(reg), &reg);
-	if (reg != XDRAGON_XVCS_MAGIC) {
+	read_xvcs(dev, pos, cap_len, XVCS_O_MAGIC, sizeof(reg), &reg);
+	if (reg != XVCS_MAGIC) {
 		pr_err("%s: xvcs magic 0x%x not match\n", __func__, reg);
 		return -1;
 	}
 	/* check xvcs version */
-	xdragon_read_xvcs(dev, pos, cap_len, XDRAGON_XVCS_O_VER, sizeof(reg), &reg);
-	if (reg != XDRAGON_XVCS_VERSION) {
+	read_xvcs(dev, pos, cap_len, XVCS_O_VER, sizeof(reg), &reg);
+	if (reg != XVCS_VERSION) {
 		pr_err("%s: xvcs version 0x%x not match\n", __func__, reg);
 		return -1;
 	}
 	/* xvcs feat block addr */
-	xdragon_read_xvcs(dev, pos, cap_len, XDRAGON_XVCS_O_ADDR, sizeof(reg), &reg);
+	read_xvcs(dev, pos, cap_len, XVCS_O_ADDR, sizeof(reg), &reg);
 	where = reg;
 	/* xvcs feat cnt */
-	xdragon_read_xvcs(dev, pos, cap_len, XDRAGON_XVCS_O_F_CNT, sizeof(reg), &reg);
+	read_xvcs(dev, pos, cap_len, XVCS_O_F_CNT, sizeof(reg), &reg);
 	num = reg;
-	for (idx = 0; (idx < min(XDRAGON_XVCS_NUM_MAX, num)) && (where > 0); idx++) {
+	for (idx = 0; (idx < min(XVCS_NUM_MAX, num)) && (where > 0); idx++) {
 		memset(buf, 0, sizeof(buf));
 
 		/* self addr check */
-		xdragon_read_xvcs(dev, pos, cap_len,
-				where + XDRAGON_XVCS_O_CUR, sizeof(reg), &reg);
+		read_xvcs(dev, pos, cap_len,
+				where + XVCS_O_CUR, sizeof(reg), &reg);
 		if (reg != where)
 			return -1;
 
 		/* check key */
-		xdragon_read_xvcs(dev, pos, cap_len, where, XDRAGON_XVCS_KEY_MAX, buf);
+		read_xvcs(dev, pos, cap_len, where, XVCS_KEY_MAX, buf);
 
 		/* found vsf */
-		if (strncmp(buf, XDRAGON_XVCS_VSF_KEY, sizeof(XDRAGON_XVCS_VSF_KEY)) == 0) {
-			xdragon_read_xvcs(dev, pos, cap_len, where + XDRAGON_XVCS_O_VSF,
+		if (strncmp(buf, XVCS_VSF_KEY, sizeof(XVCS_VSF_KEY)) == 0) {
+			read_xvcs(dev, pos, cap_len, where + XVCS_O_VSF,
 					sizeof(reg), &reg);
 			*bar0_offset = reg;
 			return 0;
 		}
 		/* next vcs feat */
-		xdragon_read_xvcs(dev, pos, cap_len,
-					where + XDRAGON_XVCS_O_NEXT, sizeof(reg), &reg);
+		read_xvcs(dev, pos, cap_len,
+					where + XVCS_O_NEXT, sizeof(reg), &reg);
 		where = reg;
 	}
 	pr_err("%s: vsf offset not found\n", __func__);
@@ -118,7 +118,7 @@ int virtblk_get_ext_feature_bar(struct virtio_device *vdev, u32 *bar_offset)
 		 vsec > 0;
 		 vsec = pci_find_next_capability(dev, vsec, PCI_CAP_ID_VNDR)) {
 		pci_read_config_byte(dev, vsec + offsetof(struct virtio_pci_cap, cfg_type), &type);
-		if (type == PCI_XDRAGON_VSC_CFGTYPE) {
+		if (type == PCI_VSC_CFGTYPE) {
 			pci_read_config_byte(dev,
 					vsec + offsetof(struct virtio_pci_cap, cap_len), &len);
 			cap_len = len;
@@ -134,10 +134,10 @@ int virtblk_get_ext_feature_bar(struct virtio_device *vdev, u32 *bar_offset)
 						PCI_EXT_CAP_ID_VNDR))) {
 			pci_read_config_word(dev, vsec + 0x4, &val);
 			/* vsec found */
-			if (val == PCI_EXP_XDRAGON_VSEC_CFGTYPE) {
+			if (val == PCI_EXP_VSEC_CFGTYPE) {
 				/* get vsec cap len */
 				pci_read_config_word(dev, vsec + 0x6, &val);
-				if ((val & 0xF) != XDRAGON_VSEC_VERSION)
+				if ((val & 0xF) != VSEC_VERSION)
 					continue;
 				cap_len = (val >> 4) & (0xFFF);
 				found = true;
@@ -146,7 +146,7 @@ int virtblk_get_ext_feature_bar(struct virtio_device *vdev, u32 *bar_offset)
 		}
 	}
 
-	return found ? xdragon_vcs_find_vsf_bar0_offset(dev, cap_len, vsec, bar_offset) : -1;
+	return found ? vcs_find_vsf_bar0_offset(dev, cap_len, vsec, bar_offset) : -1;
 }
 
 int virtblk_get_ext_feature(void __iomem *ioaddr, u32 *host_features)
