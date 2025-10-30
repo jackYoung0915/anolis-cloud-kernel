@@ -1544,6 +1544,7 @@ struct rq {
 	struct group_balancer_sched_domain *gb_sd;
 #endif
 	u64			last_push_expellee;
+	bool			queued_push_expellee;
 	bool			booked;
 	bool			pulled;
 	bool			on_expel;

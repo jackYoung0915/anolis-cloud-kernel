@@ -6228,6 +6228,9 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	if (sched_feat(ID_LOAD_BALANCE))
 		rq->pulled = false;
 
+	if (sched_feat(ID_PUSH_EXPELLEE))
+		rq->queued_push_expellee = false;
+
 	if (!sched_core_enabled(rq))
 		return __pick_next_task(rq, prev, rf);
 

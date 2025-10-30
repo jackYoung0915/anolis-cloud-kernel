@@ -999,7 +999,7 @@ static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 
 struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
 {
-	struct rb_node *left = rb_first_cached(&cfs_rq->tasks_timeline);
+	struct rb_node *left = id_rb_first_cached(cfs_rq);
 
 	if (!left)
 		return NULL;
@@ -9149,7 +9149,7 @@ migrate:
 
 static inline bool should_push_expellee(struct rq *rq)
 {
-	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+	if (!sched_feat(ID_PUSH_EXPELLEE))
 		return false;
 	if (!rq_on_expel(rq))
 		return false;
@@ -9162,9 +9162,11 @@ static inline bool should_push_expellee(struct rq *rq)
 
 static inline void push_expellee(struct rq *rq)
 {
-	if (should_push_expellee(rq))
+	if (should_push_expellee(rq) && !rq->queued_push_expellee) {
 		queue_balance_callback(rq, &per_cpu(push_expellee_head, rq->cpu),
 				       __push_expellee);
+		rq->queued_push_expellee = true;
+	}
 }
 
 void task_tick_gi(struct rq *rq)
@@ -9196,6 +9198,8 @@ static struct task_struct *pick_task_fair(struct rq *rq)
 	struct sched_entity *se;
 	struct cfs_rq *cfs_rq;
 
+	update_rq_on_expel(rq);
+	push_expellee(rq);
 again:
 	cfs_rq = &rq->cfs;
 	if (!cfs_rq->nr_queued)
@@ -9228,8 +9232,6 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 	struct task_struct *p;
 	int new_tasks;
 
-	update_rq_on_expel(rq);
-	push_expellee(rq);
 again:
 	if (sched_feat(ID_LOAD_BALANCE) && sched_idle_rq(rq) && !rq->pulled)
 		p = NULL;
