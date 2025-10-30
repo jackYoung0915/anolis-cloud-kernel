@@ -66,6 +66,7 @@ int csv_cmd_buffer_len(int cmd)
 	case CSV3_CMD_RECEIVE_ENCRYPT_DATA:
 					return sizeof(struct csv3_data_receive_encrypt_data);
 	case CSV3_CMD_RECEIVE_ENCRYPT_CONTEXT:
+	case CSV3_CMD_LAUNCH_FINISH_EX:		return sizeof(struct csv3_data_launch_finish_ex);
 					return sizeof(struct csv3_data_receive_encrypt_context);
 	default:				return 0;
 	}
@@ -679,6 +680,12 @@ int csv_get_extension_info(void *buf, size_t *size)
 		*(uint32_t *)buf |= CSV_EXT_CSV3_MULT_LUP_DATA;
 		*(uint32_t *)buf |= CSV_EXT_CSV3_INJ_SECRET;
 	}
+
+	/* Since firmware with build id 2393, support:
+	 *   c. issue CSV3_LAUNCH_FINISH_EX command
+	 */
+	if (csv_version_greater_or_equal(2393))
+		*(uint32_t *)buf |= CSV_EXT_CSV3_LFINISH_EX;
 
 	return 0;
 }
