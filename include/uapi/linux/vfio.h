@@ -67,6 +67,29 @@
 #define VFIO_DMA_MAP_MMIO_DONT_PIN	63
 
 /*
+ * Support IOMMU_IOAS_MAP for MMIO mapping. The iommufd_ioas_map function
+ * currently returns -EFAULT when attempting to map VM_PFNMAP VMAs because
+ * pin_user_pages_fast() cannot handle such mappings. It is not fully
+ * compatible with VFIO_IOMMU_MAP_DMA in VFIO type 1 driver.
+ *
+ * This extension enhances IOMMU_IOAS_MAP to work like VFIO_IOMMU_MAP_DMA
+ * by using follow_pfnmap_*() to extract MMIO PFNs from VMAs and program
+ * them into the IOMMU.
+ *
+ * Users should check for the IOMMUFD_VFIO_IOMMU_IOAS_MAP_MMIO extension
+ * before using IOMMU_IOAS_MAP to map BAR MMIO regions.
+ *
+ * NOTE: This is a temporary solution addressing immediate needs until the
+ * full dma-buf based implementation (iommufd_ioas_map_file) is completed
+ * and merged. The flag-based approach ensures that only applications
+ * explicitly requesting MMIO access can use this functionality, providing
+ * a controlled alternative to the current VFIO type 1 behavior which
+ * fishes MMIO PFNs out of VMAs and programs them back into the IOMMU
+ * without proper lifetime management.
+ */
+#define IOMMUFD_VFIO_IOMMU_IOAS_MAP_MMIO 62
+
+/*
  * The IOCTL interface is designed for extensibility by embedding the
  * structure length (argsz) and flags into structures passed between
  * kernel and userspace.  We therefore use the _IO() macro for these
