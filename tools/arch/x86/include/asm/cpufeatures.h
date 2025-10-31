@@ -446,6 +446,7 @@
 
 /* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000006, word 23 */
 #define X86_FEATURE_ZXPAUSE		(23*32 + 0) /* ZHAOXIN ZXPAUSE */
+#define X86_FEATURE_AMD_FAST_CPPC		(21*32 + 5) /* AMD Fast CPPC */
 
 /*
  * BUG word(s)
