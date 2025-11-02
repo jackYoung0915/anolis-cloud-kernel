@@ -9721,6 +9721,7 @@ M:	Naoya Horiguchi <naoya.horiguchi@nec.com>
 R:	Miaohe Lin <linmiaohe@huawei.com>
 L:	linux-mm@kvack.org
 S:	Maintained
+F:	include/linux/memory-failure.h
 F:	mm/hwpoison-inject.c
 F:	mm/memory-failure.c
 
