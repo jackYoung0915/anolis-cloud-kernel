@@ -383,6 +383,14 @@ int disk_scan_partitions(struct gendisk *disk, blk_mode_t mode)
 	return ret;
 }
 
+void bdev_inode_failed(struct block_device *bdev)
+{
+	struct inode *inode = bdev->bd_inode;
+
+	make_bad_inode(inode);
+	unlock_new_inode(inode);
+}
+
 /**
  * device_add_disk - add disk information to kernel list
  * @parent: parent device for the disk
@@ -452,8 +460,12 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
 	ddev->parent = parent;
 	ddev->groups = groups;
 	dev_set_name(ddev, "%s", disk->disk_name);
-	if (!(disk->flags & GENHD_FL_HIDDEN))
+	if (!(disk->flags & GENHD_FL_HIDDEN)) {
 		ddev->devt = MKDEV(disk->major, disk->first_minor);
+		disk->part0->bd_inode->i_state |= I_NEW;
+		bdev_add(disk->part0, ddev->devt);
+	}
+
 	ret = device_add(ddev);
 	if (ret)
 		goto out_free_ext_minor;
@@ -505,7 +517,7 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
 		if (get_capacity(disk) && disk_has_partscan(disk))
 			set_bit(GD_NEED_PART_SCAN, &disk->state);
 
-		bdev_add(disk->part0, ddev->devt);
+		unlock_new_inode(disk->part0->bd_inode);
 		if (get_capacity(disk))
 			disk_scan_partitions(disk, BLK_OPEN_READ);
 
@@ -546,6 +558,8 @@ out_del_block_link:
 out_device_del:
 	device_del(ddev);
 out_free_ext_minor:
+	if (!(disk->flags & GENHD_FL_HIDDEN))
+		bdev_inode_failed(disk->part0);
 	if (disk->major == BLOCK_EXT_MAJOR)
 		blk_free_ext_minor(disk->first_minor);
 out_exit_elevator:
