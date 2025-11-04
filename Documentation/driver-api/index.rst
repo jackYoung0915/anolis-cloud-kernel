@@ -88,6 +88,7 @@ available subsections can be seen below.
    io-mapping
    io_ordering
    generic-counter
+   generic_pt
    memory-devices/index
    men-chameleon-bus
    ntb
