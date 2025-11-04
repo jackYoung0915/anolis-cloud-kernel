@@ -104,6 +104,9 @@ EXPORT_SYMBOL_GPL(csv3_pri_mem);
 
 unsigned long csv3_meta;
 EXPORT_SYMBOL_GPL(csv3_meta);
+
+atomic_long_t *csv3_shared_mem;
+EXPORT_SYMBOL_GPL(csv3_shared_mem);
 #endif
 
 struct csv_cma {
@@ -400,48 +403,60 @@ static ssize_t mem_info_show(struct kobject *kobj,
 	int offset = 0;
 	unsigned long csv_used_size, total_used_size = 0;
 	unsigned long csv_size, total_csv_size = 0;
+	unsigned long shared_mem, total_shared_mem = 0;
 	unsigned long npt_size, pri_mem;
 	struct cma_array *array = NULL;
+	unsigned long bytes_per_mib = 1024 * 1024;
 
 	for_each_node_state(node, N_ONLINE) {
 		array = csv_contiguous_pernuma_area[node];
 		if (array == NULL) {
 			csv_size = 0;
 			csv_used_size = 0;
+			shared_mem = 0;
 
 			offset += snprintf(buf + offset, PAGE_SIZE - offset, "Node%d:\n", node);
 			offset += snprintf(buf + offset, PAGE_SIZE - offset,
+						" csv3 shared size:%10lu MiB\n", shared_mem);
+			offset += snprintf(buf + offset, PAGE_SIZE - offset,
 						" total cma size:%12lu MiB\n", csv_size);
 			offset += snprintf(buf + offset, PAGE_SIZE - offset,
-						" csv3 used:%17lu MiB\n", csv_used_size);
+						" csv3 cma used:%13lu MiB\n", csv_used_size);
 			continue;
 		}
 
-		csv_used_size = atomic64_read(&array->csv_used_size);
-		csv_size = array->count * CSV_CMA_SIZE;
+		csv_used_size = DIV_ROUND_UP(atomic64_read(&array->csv_used_size), bytes_per_mib);
+		shared_mem = DIV_ROUND_UP(atomic_long_read(&csv3_shared_mem[node]), bytes_per_mib);
+
+		csv_size = DIV_ROUND_UP(array->count * CSV_CMA_SIZE, bytes_per_mib);
 		offset += snprintf(buf + offset, PAGE_SIZE - offset, "Node%d:\n", node);
 		offset += snprintf(buf + offset, PAGE_SIZE - offset,
-					" total cma size:%12lu MiB\n", csv_size >> 20);
+					" csv3 shared size:%10lu MiB\n", shared_mem);
 		offset += snprintf(buf + offset, PAGE_SIZE - offset,
-					" csv3 used:%17lu MiB\n", csv_used_size >> 20);
+					" total cma size:%12lu MiB\n", csv_size);
+		offset += snprintf(buf + offset, PAGE_SIZE - offset,
+					" csv3 cma used:%13lu MiB\n",  csv_used_size);
 		total_used_size += csv_used_size;
 		total_csv_size += csv_size;
+		total_shared_mem += shared_mem;
 	}
 
-	npt_size = atomic_long_read(&csv3_npt_size) >> 20;
-	pri_mem = atomic_long_read(&csv3_pri_mem) >> 20;
+	npt_size = DIV_ROUND_UP(atomic_long_read(&csv3_npt_size), bytes_per_mib);
+	pri_mem = DIV_ROUND_UP(atomic_long_read(&csv3_pri_mem), bytes_per_mib);
 
 	offset += snprintf(buf + offset, PAGE_SIZE - offset, "All Nodes:\n");
 	offset += snprintf(buf + offset, PAGE_SIZE - offset,
-				" total cma size:%12lu MiB\n", total_csv_size >> 20);
+				" csv3 shared size:%10lu MiB\n", total_shared_mem);
 	offset += snprintf(buf + offset, PAGE_SIZE - offset,
-				" csv3 used:%17lu MiB\n", total_used_size >> 20);
+				" total cma size:%12lu MiB\n", total_csv_size);
 	offset += snprintf(buf + offset, PAGE_SIZE - offset,
-				"   npt table:%15lu MiB\n", npt_size);
+				" csv3 cma used:%13lu MiB\n", total_used_size);
 	offset += snprintf(buf + offset, PAGE_SIZE - offset,
-				"   csv3 private memory:%5lu MiB\n", pri_mem);
+				"  npt table:%16lu MiB\n", npt_size);
 	offset += snprintf(buf + offset, PAGE_SIZE - offset,
-				"   meta data:%15lu MiB\n", csv3_meta >> 20);
+				"  csv3 private memory:%6lu MiB\n", pri_mem);
+	offset += snprintf(buf + offset, PAGE_SIZE - offset,
+				"  meta data:%16lu MiB\n", DIV_ROUND_UP(csv3_meta, bytes_per_mib));
 
 	return offset;
 }
@@ -465,7 +480,9 @@ static struct kobject *csv_cma_kobj_root;
 
 static int __init csv_cma_sysfs_init(void)
 {
-	int err;
+	int node_count;
+	size_t mem_size;
+	int err, i;
 
 	if (!is_x86_vendor_hygon() || !boot_cpu_has(X86_FEATURE_CSV3))
 		return 0;
@@ -477,6 +494,22 @@ static int __init csv_cma_sysfs_init(void)
 	err = sysfs_create_group(csv_cma_kobj_root, &csv_cma_attr_group);
 	if (err)
 		goto out;
+
+	node_count = num_online_nodes();
+	if (node_count <= 0) {
+		pr_err("No online NUMA nodes detected\n");
+		goto out;
+	}
+
+	mem_size = node_count * sizeof(atomic_long_t);
+	csv3_shared_mem = kzalloc(mem_size, GFP_KERNEL);
+	if (!csv3_shared_mem) {
+		pr_err("Failed to allocate shared memory\n");
+		goto out;
+	}
+
+	for (i = 0; i < node_count; i++)
+		atomic_long_set(&csv3_shared_mem[i], 0);
 
 	return 0;
 
@@ -493,6 +526,9 @@ static void csv_cma_sysfs_exit(void)
 	 */
 	if (csv_cma_kobj_root != NULL)
 		kobject_put(csv_cma_kobj_root);
+
+	kfree(csv3_shared_mem);
+	csv3_shared_mem = NULL;
 }
 
 #else	/* !CONFIG_SYSFS */
