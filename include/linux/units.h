@@ -19,6 +19,8 @@ static inline long millicelsius_to_milli_kelvin(long t)
 #define MILLIDEGREE_PER_DEGREE 1000
 #define MILLIDEGREE_PER_DECIDEGREE 100
 
+#define HZ_PER_KHZ 1000UL
+
 static inline long kelvin_to_millicelsius(long t)
 {
 	return milli_kelvin_to_millicelsius(t * MILLIDEGREE_PER_DEGREE);
