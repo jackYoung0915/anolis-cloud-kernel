@@ -15,6 +15,7 @@
 #include <linux/vmalloc.h>
 #include <linux/rbtree.h>
 #include <linux/swap.h>
+#include <linux/mm.h>
 #include <asm/cacheflush.h>
 #include <asm/e820/api.h>
 #include <asm/csv.h>
@@ -1477,6 +1478,23 @@ exit:
 	return r;
 }
 
+#ifdef CONFIG_SYSFS
+static void update_csv_share_mem(struct page *page, bool add)
+{
+	int nid;
+	struct page *h_page;
+
+	h_page = compound_head(page);
+	nid = page_to_nid(page);
+	if (add)
+		atomic_long_add(page_size(h_page), &csv3_shared_mem[nid]);
+	else
+		atomic_long_sub(page_size(h_page), &csv3_shared_mem[nid]);
+}
+#else
+static void update_csv_share_mem(struct page *page, bool add) { };
+#endif	/* CONFIG_SYSFS */
+
 static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
 				 struct kvm_memory_slot *slot, gfn_t gfn,
 				 kvm_pfn_t *pfn)
@@ -1527,6 +1545,7 @@ static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
 		sp->page = page;
 		sp->gfn = gfn;
 		shared_page_insert(&csv->sp_mgr, sp);
+		update_csv_share_mem(page, true);
 	}
 
 	*pfn = page_to_pfn(sp->page);
@@ -1638,6 +1657,7 @@ static int csv_unpin_shared_memory(struct kvm *kvm, gpa_t gpa, u32 num_pages)
 	for (i = 0; i < num_pages; i++, gfn++) {
 		sp = shared_page_remove(&csv->sp_mgr, gfn);
 		if (sp) {
+			update_csv_share_mem(sp->page, false);
 			unpin_user_page(sp->page);
 			kmem_cache_free(csv->sp_slab, sp);
 			csv->sp_mgr.count--;
@@ -1664,6 +1684,7 @@ static void csv_vm_destroy(struct kvm *kvm)
 		mutex_lock(&csv->sp_lock);
 		while ((node = rb_first(&csv->sp_mgr.root))) {
 			sp = rb_entry(node, struct shared_page, node);
+			update_csv_share_mem(sp->page, false);
 			rb_erase(&sp->node, &csv->sp_mgr.root);
 			unpin_user_page(sp->page);
 			kmem_cache_free(csv->sp_slab, sp);
