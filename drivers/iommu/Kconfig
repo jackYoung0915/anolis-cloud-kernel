@@ -561,3 +561,5 @@ config IOMMU_DEBUG_PAGEALLOC
 
 	  If unsure, say N.
 endif # IOMMU_SUPPORT
+
+source "drivers/iommu/generic_pt/Kconfig"
