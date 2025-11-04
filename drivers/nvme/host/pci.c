@@ -67,6 +67,12 @@ MODULE_PARM_DESC(sgl_threshold,
 		"Use SGLs when average request segment size is larger or equal to "
 		"this size. Use 0 to disable SGLs.");
 
+static bool invalid_next_sqe;
+module_param(invalid_next_sqe, bool, 0444);
+MODULE_PARM_DESC(invalid_next_sqe,
+		"Invalid the next sqe, when target obtain sqe incorrectly, they "
+		"can discover and hold on for debugging.");
+
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp);
 static const struct kernel_param_ops io_queue_depth_ops = {
 	.set = io_queue_depth_set,
@@ -524,11 +530,23 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
 static void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd,
 			    bool write_sq)
 {
+	void *cur;
+	struct nvme_command *next;
+
 	spin_lock(&nvmeq->sq_lock);
-	memcpy(nvmeq->sq_cmds + (nvmeq->sq_tail << nvmeq->sqes),
-	       cmd, sizeof(*cmd));
+	cur = nvmeq->sq_cmds + (nvmeq->sq_tail << nvmeq->sqes);
 	if (++nvmeq->sq_tail == nvmeq->q_depth)
 		nvmeq->sq_tail = 0;
+
+	if (invalid_next_sqe && nvmeq->qid) {
+		next = (struct nvme_command *)(nvmeq->sq_cmds +
+			(nvmeq->sq_tail << nvmeq->sqes));
+		next->rw.opcode = 0x01;
+		next->rw.dptr.prp1 = cpu_to_le64(0x1000);
+		next->rw.slba = cpu_to_le64(U64_MAX);
+	}
+
+	memcpy(cur, cmd, sizeof(*cmd));
 	nvme_write_sq_db(nvmeq, write_sq);
 	spin_unlock(&nvmeq->sq_lock);
 }
