@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_ETHTOOL_H_
@@ -38,5 +38,7 @@ enum nbl_ethtool_lb_test_err_code {
 
 void nbl_serv_update_stats(struct nbl_service_mgt *serv_mgt, bool ethtool);
 void nbl_serv_setup_ethtool_ops(struct nbl_service_ops *serv_ops_tbl);
+int nbl_serv_update_firmware(struct nbl_service_mgt *serv_mgt, const struct firmware *fw,
+			     struct netlink_ext_ack *extack);
 
 #endif

@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEF_COMMON_H_
@@ -201,20 +201,27 @@ do {											\
 #define NBL_COMMON_TO_ETH_MODE(common)		((common)->eth_mode)
 #define NBL_COMMON_TO_DEBUG_LVL(common)		((common)->debug_lvl)
 #define NBL_COMMON_TO_VF_CAP(common)		((common)->is_vf)
+#define NBL_COMMON_TO_OCP_CAP(common)		((common)->is_ocp)
 #define NBL_COMMON_TO_PCI_USING_DAC(common)	((common)->pci_using_dac)
 #define NBL_COMMON_TO_MGT_PF(common)		((common)->mgt_pf)
 #define NBL_COMMON_TO_PCI_FUNC_ID(common)	((common)->function)
 #define NBL_COMMON_TO_BOARD_ID(common)		((common)->board_id)
 #define NBL_COMMON_TO_LOGIC_ETH_ID(common)	((common)->logic_eth_id)
+#define NBL_COMMON_TO_ETH_MAX_SPEED(common)	((common)->eth_max_speed)
 
 #define NBL_ONE_ETHERNET_PORT			(1)
 #define NBL_TWO_ETHERNET_PORT			(2)
 #define NBL_FOUR_ETHERNET_PORT			(4)
+#define NBL_DEFAULT_VSI_ID_GAP			(1024)
 #define NBL_TWO_ETHERNET_VSI_ID_GAP		(512)
 #define NBL_FOUR_ETHERNET_VSI_ID_GAP		(256)
-#define NBL_VSI_ID_GAP(mode)			((mode) == NBL_FOUR_ETHERNET_PORT ?	\
-						 NBL_FOUR_ETHERNET_VSI_ID_GAP :		\
-						 NBL_TWO_ETHERNET_VSI_ID_GAP)
+
+#define NBL_VSI_ID_GAP(m) \
+({ \
+	typeof(m) _m = (m); \
+	_m == NBL_FOUR_ETHERNET_PORT ? NBL_FOUR_ETHERNET_VSI_ID_GAP : \
+	(_m == NBL_TWO_ETHERNET_PORT ? NBL_TWO_ETHERNET_VSI_ID_GAP : NBL_DEFAULT_VSI_ID_GAP); \
+})
 
 #define NBL_BOOTIS_ECPU_ETH0_FUNCTION		(2)
 #define NBL_BOOTIS_ECPU_ETH1_FUNCTION		(3)
@@ -243,6 +250,7 @@ struct nbl_common_info {
 	struct pci_dev *pdev;
 	struct device *dev;
 	struct device *dma_dev;
+	struct devlink_port *devlink_port;
 	u32 debug_lvl;
 	u32 msg_enable;
 	u16 vsi_id;
@@ -254,23 +262,30 @@ struct nbl_common_info {
 	u8 function;
 	u8 devid;
 	u8 bus;
+	/* only valid for ctrldev */
+	u8 hw_bus;
 
 	u16 mgt_pf;
 	u8 board_id;
 
 	bool pci_using_dac;
 	u8 tc_inst_id; /* for tc flow and cmdq */
+	u8 is_ocp;
 
 	enum nbl_product_type product_type;
+
+	u32 eth_max_speed;
+	bool wol_ena;
+	char st_name[NBL_RESTOOL_NAME_LEN];
 };
 
-struct nbl_netdev_rep_attr {
+struct nbl_netdev_name_attr {
 	struct attribute attr;
 	ssize_t (*show)(struct device *dev,
-			struct nbl_netdev_rep_attr *attr, char *buf);
+			struct nbl_netdev_name_attr *attr, char *buf);
 	ssize_t (*store)(struct device *dev,
-			 struct nbl_netdev_rep_attr *attr, const char *buf, size_t len);
-	int rep_id;
+			 struct nbl_netdev_name_attr *attr, const char *buf, size_t len);
+	char net_dev_name[IFNAMSIZ];
 };
 
 struct nbl_index_tbl_key {
@@ -474,10 +489,9 @@ do {												\
 
 void nbl_convert_mac(u8 *mac, u8 *reverse_mac);
 
-void nbl_common_queue_work(struct work_struct *task, bool ctrl_task, bool singlethread);
+void nbl_common_queue_work(struct work_struct *task, bool ctrl_task);
 void nbl_common_queue_work_rdma(struct work_struct *task, bool singlethread);
-void nbl_common_queue_delayed_work(struct delayed_work *task,  u32 msec,
-				   bool ctrl_task, bool singlethread);
+void nbl_common_queue_delayed_work(struct delayed_work *task, u32 msec, bool ctrl_task);
 void nbl_common_queue_delayed_work_keepalive(struct delayed_work *task, u32 msec);
 void nbl_common_release_task(struct work_struct *task);
 void nbl_common_alloc_task(struct work_struct *task, void *func);
@@ -495,7 +509,6 @@ int nbl_dma_iommu_change_translate(struct nbl_common_info *common);
 void nbl_dma_iommu_exit_translate(struct nbl_common_info *common);
 bool nbl_dma_iommu_status(struct pci_dev *pdev);
 bool nbl_dma_remap_status(struct pci_dev *pdev, u64 *dma_limit);
-void nbl_net_addr_rep_attr(struct nbl_netdev_rep_attr *rep_attr, int rep_id);
 u32 nbl_common_pf_id_subtraction_mgtpf_id(struct nbl_common_info *common, u32 pf_id);
 void *nbl_common_init_index_table(struct nbl_index_tbl_key *key);
 void nbl_common_remove_index_table(void *priv, struct nbl_index_tbl_del_key *key);
@@ -513,11 +526,14 @@ enum nbl_event_type {
 	NBL_EVENT_RDMA_BOND_UPDATE = 0,
 	NBL_EVENT_OFFLOAD_STATUS_CHANGED,
 	NBL_EVENT_LINK_STATE_UPDATE,
-	NBL_EVENT_DEV_MODE_SWITCH,
 	NBL_EVENT_ACL_STATE_UPDATE,
 	NBL_EVENT_NETDEV_STATE_CHANGE,
 	NBL_EVENT_RESET_EVENT,
 	NBL_EVENT_QUEUE_ALLOC,
+	NBL_EVENT_CHANGE_MTU,
+	NBL_EVENT_MIRROR_OUTPUTPORT,
+	NBL_EVENT_MIRROR_OUTPUTPORT_DEVLAYER,  /* for dev layer */
+	NBL_EVENT_MIRROR_SELECTPORT,
 	NBL_EVENT_MAX,
 };
 
@@ -532,12 +548,14 @@ enum nbl_rdma_subevent_type {
 	NBL_SUBEVENT_CREATE_BOND_ADEV,
 	NBL_SUBEVENT_RELEASE_BOND_ADEV,
 	NBL_SUBEVENT_UPDATE_BOND_MEMBER,
+	NBL_SUBEVENT_UPDATE_MTU,
 	NBL_SUBEVENT_MAX,
 };
 
-struct nbl_event_rdma_bond_update {
+struct nbl_event_param {
 	enum nbl_rdma_subevent_type subevent;
 	struct nbl_lag_member_list_param param;
+	int mtu;
 };
 
 struct nbl_event_offload_status_data {
@@ -548,13 +566,6 @@ struct nbl_event_offload_status_data {
 enum nbl_dev_mode_switch_op {
 	NBL_DEV_KERNEL_TO_USER,
 	NBL_DEV_USER_TO_KERNEL,
-	NBL_DEV_SET_USER_PROMISC_MODE,
-};
-
-struct nbl_event_dev_mode_switch_data {
-	int op;
-	int ret;
-	bool promosic;
 };
 
 struct nbl_event_acl_state_update_data {

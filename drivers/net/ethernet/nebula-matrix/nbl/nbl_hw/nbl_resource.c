@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_resource.h"
@@ -11,11 +11,11 @@ static u16 pfvfid_to_vsi_id(void *p, int pfid, int vfid, u16 type)
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)p;
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
 	enum nbl_vsi_serv_type dst_type = NBL_VSI_SERV_PF_DATA_TYPE;
-	u16 vsi_id;
+	u16 vsi_id = U16_MAX;
 	int diff;
 
 	diff = nbl_common_pf_id_subtraction_mgtpf_id(NBL_RES_MGT_TO_COMMON(res_mgt), pfid);
-	if (vfid == U32_MAX) {
+	if (vfid == U32_MAX || vfid == U16_MAX) {
 		if (diff < vsi_info->num) {
 			nbl_res_pf_dev_vsi_type_to_hw_vsi_type(type, &dst_type);
 			vsi_id = vsi_info->serv_info[diff][dst_type].base_id;
@@ -26,6 +26,9 @@ static u16 pfvfid_to_vsi_id(void *p, int pfid, int vfid, u16 type)
 	} else {
 		vsi_id = vsi_info->serv_info[diff][NBL_VSI_SERV_VF_DATA_TYPE].base_id + vfid;
 	}
+
+	if (vsi_id == U16_MAX)
+		pr_err("convert pfid-vfid %d-%d to vsi_id(%d) failed!\n", pfid, vfid, type);
 
 	return vsi_id;
 }
@@ -440,4 +443,19 @@ void nbl_res_set_hw_status(void *priv, enum nbl_hw_status hw_status)
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
 
 	phy_ops->set_hw_status(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), hw_status);
+}
+
+int nbl_res_get_pf_vf_num(void *priv, u16 pf_id)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_sriov_info *sriov_info;
+
+	if (pf_id >= NBL_RES_MGT_TO_PF_NUM(res_mgt))
+		return -1;
+
+	sriov_info = NBL_RES_MGT_TO_SRIOV_INFO(res_mgt) + pf_id;
+	if (!sriov_info->num_vfs)
+		return -1;
+
+	return sriov_info->num_vfs;
 }

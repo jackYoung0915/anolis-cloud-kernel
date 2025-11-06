@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0*/
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
+ */
+
 #ifndef __NBL_TC_TUN_H__
 #define __NBL_TC_TUN_H__
 
@@ -48,6 +54,8 @@ struct nbl_tc_tunnel {
 				   const struct ip_tunnel_key *tun_key);
 	int (*get_tun_hlen)(void);
 };
+
+extern struct nbl_tc_tunnel nbl_vxlan_tunnel;
 
 int nbl_tc_tun_parse_encap_info(struct nbl_rule_action *rule_act,
 				struct nbl_tc_flow_param *param,

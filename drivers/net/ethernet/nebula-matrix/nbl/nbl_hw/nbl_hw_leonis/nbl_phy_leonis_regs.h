@@ -4,9 +4,9 @@
  * Author:
  */
 
-#ifndef _NBL_VSI_H_
-#define _NBL_VSI_H_
+#ifndef _NBL_PHY_LEONIS_REGS_H_
+#define _NBL_PHY_LEONIS_REGS_H_
 
-#include "nbl_resource.h"
+void nbl_write_all_regs(void *priv);
 
 #endif

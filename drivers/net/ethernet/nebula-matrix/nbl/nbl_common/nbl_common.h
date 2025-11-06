@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_COMMON_H_
@@ -30,7 +30,7 @@ struct nbl_index_entry_node {
 	struct hlist_node node;
 	u32 index;      /* the index for key has alloc from index table */
 	u32 index_num;
-	u8 data[0];
+	u8 data[];
 };
 
 struct nbl_hash_tbl_mgt {

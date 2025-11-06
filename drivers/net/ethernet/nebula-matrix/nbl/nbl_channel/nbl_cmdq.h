@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0*/
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
+ */
+
 /* Nebula-matrix DPDK user-network
  * Copyright(c) 2021-2030 nBL, Inc.
  */
@@ -50,7 +56,7 @@ struct nbl_cmdq_dma_mem {
  * @cmd_buf:
  */
 struct nbl_cmd_ring {
-	struct nbl_cmdq_dma_mem desc;		/* descriptor ring memroy */
+	struct nbl_cmdq_dma_mem desc;		/* descriptor ring memory */
 	struct nbl_cmdq_dma_mem in_mem;
 	struct nbl_cmdq_dma_mem out_mem;
 	struct nbl_cmdq_dma_mem *in_buffer_info;	/* buffer detail information */

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_dev_rdma.h"
@@ -10,6 +10,17 @@ static int nbl_dev_create_rdma_aux_dev(struct nbl_dev_mgt *dev_mgt, u8 type,
 				       struct nbl_core_dev_lag_info *lag_info);
 static void nbl_dev_destroy_rdma_aux_dev(struct nbl_dev_rdma *rdma_dev,
 					 struct auxiliary_device **adev);
+
+static void nbl_dev_rdma_pending_and_flush_event_task(struct nbl_dev_rdma *rdma_dev)
+{
+	atomic_inc(&rdma_dev->adev_busy);
+	nbl_common_flush_task(&rdma_dev->event_task);
+}
+
+static void nbl_dev_rdma_resume_event_task(struct nbl_dev_rdma *rdma_dev)
+{
+	atomic_dec(&rdma_dev->adev_busy);
+}
 
 static int nbl_dev_rdma_bond_active_num(struct nbl_core_dev_info *cdev_info)
 {
@@ -146,7 +157,7 @@ static int nbl_dev_grc_process_send(struct pci_dev *pdev, u8 *req_args, u8 req_l
 	}
 }
 
-static void nbl_dev_grc_handle_abnormal_event(struct work_struct *work)
+static void nbl_dev_rdma_handle_abnormal_event_task(struct work_struct *work)
 {
 	struct nbl_dev_rdma *rdma_dev = container_of(work, struct nbl_dev_rdma,
 						     abnormal_event_task);
@@ -168,13 +179,13 @@ static void nbl_dev_grc_handle_abnormal_event(struct work_struct *work)
 		dev_link->abnormal_event_process(&dev_link->adev);
 }
 
-void nbl_dev_grc_process_abnormal_event(struct nbl_dev_rdma *rdma_dev)
+void nbl_dev_rdma_process_abnormal_event(struct nbl_dev_rdma *rdma_dev)
 {
-	if (rdma_dev && !rdma_dev->is_halting && rdma_dev->pf_event_ready)
+	if (rdma_dev && !rdma_dev->is_halting && rdma_dev->has_abnormal_event_task)
 		nbl_common_queue_work_rdma(&rdma_dev->abnormal_event_task, false);
 }
 
-void nbl_dev_grc_process_flr_event(struct nbl_dev_rdma *rdma_dev, u16 vsi_id)
+void nbl_dev_rdma_process_flr_event(struct nbl_dev_rdma *rdma_dev, u16 vsi_id)
 {
 	struct nbl_aux_dev *dev_link = container_of(rdma_dev->grc_adev, struct nbl_aux_dev, adev);
 
@@ -268,6 +279,28 @@ static void nbl_dev_rdma_update_bond_member(struct nbl_dev_mgt *dev_mgt,
 		nbl_dev_rdma_cfg_bond(dev_mgt, dev_link->cdev_info, false);
 }
 
+static int nbl_dev_rdma_update_adev_mtu(struct nbl_dev_mgt *dev_mgt,
+					struct nbl_event_param *event_param)
+{
+	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
+	int new_mtu = event_param->mtu;
+	struct nbl_aux_dev *dev_link = NULL;
+
+	if (rdma_dev && rdma_dev->grc_adev)
+		dev_link = container_of(rdma_dev->grc_adev, struct nbl_aux_dev, adev);
+	else if (rdma_dev && rdma_dev->adev)
+		dev_link = container_of(rdma_dev->adev, struct nbl_aux_dev, adev);
+	else if (rdma_dev && rdma_dev->bond_adev)
+		dev_link = container_of(rdma_dev->bond_adev, struct nbl_aux_dev, adev);
+	else
+		return 0;
+
+	if (dev_link && dev_link->cdev_info && dev_link->cdev_info->change_mtu_notify)
+		dev_link->cdev_info->change_mtu_notify(&dev_link->adev, new_mtu);
+
+	return 0;
+}
+
 static int nbl_dev_rdma_handle_bond_event(u16 type, void *event_data, void *callback_data)
 {
 	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)callback_data;
@@ -304,7 +337,7 @@ static int nbl_dev_rdma_handle_bond_event(u16 type, void *event_data, void *call
 	 *
 	 * This make sure that we always use the lastest param, functionally correct.
 	 *
-	 * But this will require the task function(nbl_dev_rdma_process_bond_event) to lock all its
+	 * But this will require the task function(nbl_dev_rdma_process_event_task) to lock all its
 	 * body, for that we must make sure that once we get a param, we will use it until we
 	 * finished all the process, or else we will have trouble for using differnet param while
 	 * processing.
@@ -321,14 +354,76 @@ static int nbl_dev_rdma_handle_bond_event(u16 type, void *event_data, void *call
 	 * Then the lock only needs to lock the list itself(rather than the whole aux_dev process),
 	 * thus no trouble for deadlock.
 	 */
-	mutex_lock(&rdma_dev->lag_event_lock);
+	mutex_lock(&rdma_dev->event_lock);
 	/* Always add_tail and dequeue the first, to maintain the order of notify */
-	list_add_tail(&data->node, &rdma_dev->lag_event_param_list);
-	mutex_unlock(&rdma_dev->lag_event_lock);
+	list_add_tail(&data->node, &rdma_dev->event_param_list);
+	mutex_unlock(&rdma_dev->event_lock);
 
-	if (rdma_dev && rdma_dev->pf_event_ready)
-		nbl_common_queue_work_rdma(&rdma_dev->lag_event_task, true);
+	if (rdma_dev->event_ready)
+		nbl_common_queue_work_rdma(&rdma_dev->event_task, true);
 
+	return 0;
+}
+
+static int
+nbl_dev_rdma_handle_mirror_outputport_event(u16 type, void *event_data, void *callback_data)
+{
+	bool mirror_enable = *(bool *)event_data;
+	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)callback_data;
+	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
+	struct nbl_dev_rdma_event_data *data = NULL;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->type = type;
+	data->callback_data = callback_data;
+	if (mirror_enable)
+		data->event_data.subevent = NBL_SUBEVENT_RELEASE_ADEV;
+	else
+		data->event_data.subevent = NBL_SUBEVENT_CREATE_ADEV;
+
+	mutex_lock(&rdma_dev->event_lock);
+	/* Always add_tail and dequeue the first, to maintain the order of notify */
+	list_add_tail(&data->node, &rdma_dev->event_param_list);
+	mutex_unlock(&rdma_dev->event_lock);
+
+	if (rdma_dev->event_ready)
+		nbl_common_queue_work_rdma(&rdma_dev->event_task, true);
+
+	return 0;
+}
+
+static int
+nbl_dev_rdma_handle_mirror_selectport_event(u16 type, void *event_data, void *callback_data)
+{
+	bool mirror_enable = *(bool *)event_data;
+	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)callback_data;
+	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
+	struct nbl_aux_dev *dev_link;
+	struct auxiliary_device *adev;
+
+	nbl_dev_rdma_pending_and_flush_event_task(rdma_dev);
+
+	adev = rdma_dev->adev ? rdma_dev->adev : rdma_dev->bond_adev;
+	if (!adev)
+		goto resume_event_task;
+
+	if (rdma_dev->mirror_enable == mirror_enable)
+		goto resume_event_task;
+
+	rdma_dev->mirror_enable = mirror_enable;
+	dev_link = container_of(adev, struct nbl_aux_dev, adev);
+	if (!dev_link->cdev_info)
+		goto resume_event_task;
+
+	dev_link->cdev_info->mirror_enable = mirror_enable;
+	if (dev_link->mirror_enable_notify)
+		dev_link->mirror_enable_notify(adev, mirror_enable);
+
+resume_event_task:
+	nbl_dev_rdma_resume_event_task(rdma_dev);
 	return 0;
 }
 
@@ -340,16 +435,19 @@ static int nbl_dev_rdma_handle_offload_status(u16 type, void *event_data, void *
 		(struct nbl_event_offload_status_data *)event_data;
 	struct nbl_aux_dev *dev_link;
 
+	nbl_dev_rdma_pending_and_flush_event_task(rdma_dev);
 	if (!rdma_dev->bond_adev)
-		return 0;
+		goto resume_event_task;
 
 	if (data->pf_vsi_id != NBL_COMMON_TO_VSI_ID(NBL_DEV_MGT_TO_COMMON(dev_mgt)))
-		return 0;
+		goto resume_event_task;
 
 	dev_link = container_of(rdma_dev->bond_adev, struct nbl_aux_dev, adev);
-	if (dev_link->cdev_info->offload_status_notify)
+	if (dev_link->cdev_info && dev_link->cdev_info->offload_status_notify)
 		dev_link->cdev_info->offload_status_notify(rdma_dev->bond_adev, data->status);
 
+resume_event_task:
+	nbl_dev_rdma_resume_event_task(rdma_dev);
 	return 0;
 }
 
@@ -359,7 +457,7 @@ static int nbl_dev_rdma_process_adev_event(void *event_data, void *callback_data
 	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
 	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
 	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
-	struct nbl_event_rdma_bond_update *event = (struct nbl_event_rdma_bond_update *)event_data;
+	struct nbl_event_param *event = (struct nbl_event_param *)event_data;
 	struct nbl_lag_member_list_param *list_param = &event->param;
 	struct nbl_rdma_register_param register_param = {0};
 	struct nbl_core_dev_lag_info lag_info = {0};
@@ -407,48 +505,57 @@ static int nbl_dev_rdma_process_adev_event(void *event_data, void *callback_data
 	return 0;
 }
 
-static int nbl_dev_rdma_process_bond_event(struct work_struct *work)
+static int nbl_dev_rdma_process_event_task(struct work_struct *work)
 {
-	struct nbl_dev_rdma *rdma_dev = container_of(work, struct nbl_dev_rdma, lag_event_task);
+	struct nbl_dev_rdma *rdma_dev = container_of(work, struct nbl_dev_rdma, event_task);
 	struct nbl_dev_mgt *dev_mgt;
 	struct nbl_common_info *common;
 	struct nbl_lag_member_list_param *list_param;
 	struct nbl_dev_rdma_event_data *data = NULL;
-	struct nbl_event_rdma_bond_update *lag_event = NULL;
+	struct nbl_event_param *event_param = NULL;
 
-	mutex_lock(&rdma_dev->lag_event_lock);
+	if (!!atomic_read(&rdma_dev->adev_busy)) {
+		msleep(20);
+		goto queue_rework;
+	}
 
-	if (!nbl_list_empty(&rdma_dev->lag_event_param_list)) {
-		data = list_first_entry(&rdma_dev->lag_event_param_list,
+	mutex_lock(&rdma_dev->event_lock);
+
+	if (!nbl_list_empty(&rdma_dev->event_param_list)) {
+		data = list_first_entry(&rdma_dev->event_param_list,
 					struct nbl_dev_rdma_event_data, node);
 		list_del(&data->node);
 	}
 
-	mutex_unlock(&rdma_dev->lag_event_lock);
+	mutex_unlock(&rdma_dev->event_lock);
 
 	if (!data)
 		return 0;
 
 	dev_mgt = (struct nbl_dev_mgt *)data->callback_data;
 	common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
-	lag_event = &data->event_data;
-	list_param = &lag_event->param;
+	event_param = &data->event_data;
+	list_param = &event_param->param;
 
-	nbl_info(common, NBL_DEBUG_MAIN, "process rdma lag subevent %u.", lag_event->subevent);
+	nbl_info(common, NBL_DEBUG_MAIN, "process rdma lag subevent %u.", event_param->subevent);
 
-	switch (lag_event->subevent) {
+	switch (event_param->subevent) {
 	case NBL_SUBEVENT_UPDATE_BOND_MEMBER:
 		nbl_dev_rdma_update_bond_member(dev_mgt, list_param);
 		break;
+	case NBL_SUBEVENT_UPDATE_MTU:
+		nbl_dev_rdma_update_adev_mtu(dev_mgt, event_param);
+		break;
 	default:
-		nbl_dev_rdma_process_adev_event(lag_event, dev_mgt);
+		nbl_dev_rdma_process_adev_event(event_param, dev_mgt);
 		break;
 	}
 
 	kfree(data);
+
+queue_rework:
 	/* Always queue it again, because we don't know if there is another param need to process */
-	if (rdma_dev && rdma_dev->pf_event_ready)
-		nbl_common_queue_work_rdma(&rdma_dev->lag_event_task, true);
+	nbl_common_queue_work_rdma(&rdma_dev->event_task, true);
 
 	return 0;
 }
@@ -460,9 +567,11 @@ static int nbl_dev_rdma_handle_reset_event(u16 type, void *event_data, void *cal
 	struct nbl_aux_dev *dev_link;
 	struct auxiliary_device *adev;
 
+	nbl_dev_rdma_pending_and_flush_event_task(rdma_dev);
+
 	adev = rdma_dev->adev ? rdma_dev->adev : rdma_dev->bond_adev;
 	if (!adev)
-		return -1;
+		goto resume_event_task;
 
 	dev_link = container_of(adev, struct nbl_aux_dev, adev);
 	if (dev_link->reset_event_notify)
@@ -474,6 +583,40 @@ static int nbl_dev_rdma_handle_reset_event(u16 type, void *event_data, void *cal
 		if (dev_link->reset_event_notify)
 			dev_link->reset_event_notify(adev, event);
 	}
+
+resume_event_task:
+	nbl_dev_rdma_resume_event_task(rdma_dev);
+	return 0;
+}
+
+static int nbl_dev_rdma_handle_change_mtu_event(u16 type, void *event_data, void *callback_data)
+{
+	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)callback_data;
+	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
+	int new_mtu = *(int *)event_data;
+	struct nbl_dev_rdma_event_data *data = NULL;
+
+	/* Move mtu update event to adev task, to avoid adev driver probe hold the rtnl_lock.
+	 * if flush the adev task will dead loop(the os has hold the rtnl_lock before call driver's
+	 * set_mtu ops.
+	 */
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->type = type;
+	data->callback_data = callback_data;
+	data->event_data.mtu = new_mtu;
+	data->event_data.subevent = NBL_SUBEVENT_UPDATE_MTU;
+
+	mutex_lock(&rdma_dev->event_lock);
+	/* Always add_tail and dequeue the first, to maintain the order of notify */
+	list_add_tail(&data->node, &rdma_dev->event_param_list);
+	mutex_unlock(&rdma_dev->event_lock);
+
+	if (rdma_dev->event_ready)
+		nbl_common_queue_work_rdma(&rdma_dev->event_task, true);
 
 	return 0;
 }
@@ -667,6 +810,7 @@ static int nbl_dev_create_rdma_aux_dev(struct nbl_dev_mgt *dev_mgt, u8 type,
 		goto malloc_cdev_info_err;
 	}
 
+	dev_link->cdev_info->mirror_enable = rdma_dev->mirror_enable;
 	ret = auxiliary_device_init(adev);
 	if (ret) {
 		dev_err(dev, "auxiliary_device_init fail ret= %d", ret);
@@ -708,7 +852,7 @@ static void nbl_dev_destroy_rdma_aux_dev(struct nbl_dev_rdma *rdma_dev,
 	if (!adev || !*adev)
 		return;
 
-	if (rdma_dev->pf_event_ready)
+	if (rdma_dev->has_abnormal_event_task)
 		nbl_common_flush_task(&rdma_dev->abnormal_event_task);
 
 	auxiliary_device_delete(*adev);
@@ -755,15 +899,22 @@ int nbl_dev_setup_rdma_dev(struct nbl_adapter *adapter, struct nbl_init_param *p
 	rdma_dev->adev_index = register_param.id;
 	msix_info->serv_info[NBL_MSIX_RDMA_TYPE].num += register_param.intr_num;
 
+	nbl_common_alloc_task(&rdma_dev->event_task, (void *)nbl_dev_rdma_process_event_task);
+	INIT_LIST_HEAD(&rdma_dev->event_param_list);
+	mutex_init(&rdma_dev->event_lock);
 	if (!NBL_COMMON_TO_VF_CAP(common)) {
-		nbl_common_alloc_task(&rdma_dev->lag_event_task,
-				      (void *)nbl_dev_rdma_process_bond_event);
-		INIT_LIST_HEAD(&rdma_dev->lag_event_param_list);
-		mutex_init(&rdma_dev->lag_event_lock);
-
 		event_callback.callback_data = dev_mgt;
 		event_callback.callback = nbl_dev_rdma_handle_bond_event;
 		nbl_event_register(NBL_EVENT_RDMA_BOND_UPDATE, &event_callback,
+				   NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
+		event_callback.callback_data = dev_mgt;
+		event_callback.callback = nbl_dev_rdma_handle_mirror_selectport_event;
+		nbl_event_register(NBL_EVENT_MIRROR_SELECTPORT, &event_callback,
+				   NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
+	} else {
+		event_callback.callback_data = dev_mgt;
+		event_callback.callback = nbl_dev_rdma_handle_mirror_outputport_event;
+		nbl_event_register(NBL_EVENT_MIRROR_OUTPUTPORT_DEVLAYER, &event_callback,
 				   NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
 	}
 
@@ -790,16 +941,25 @@ void nbl_dev_remove_rdma_dev(struct nbl_adapter *adapter)
 		nbl_event_unregister(NBL_EVENT_RDMA_BOND_UPDATE, &event_callback,
 				     NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
 
-		mutex_lock(&rdma_dev->lag_event_lock);
-		list_for_each_entry_safe(data, data_safe,
-					 &rdma_dev->lag_event_param_list, node) {
-			list_del(&data->node);
-			kfree(data);
-		}
-		mutex_unlock(&rdma_dev->lag_event_lock);
-
-		nbl_common_release_task(&rdma_dev->lag_event_task);
+		event_callback.callback_data = dev_mgt;
+		event_callback.callback = nbl_dev_rdma_handle_mirror_selectport_event;
+		nbl_event_unregister(NBL_EVENT_MIRROR_SELECTPORT, &event_callback,
+				     NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
+	} else {
+		event_callback.callback_data = dev_mgt;
+		event_callback.callback = nbl_dev_rdma_handle_mirror_outputport_event;
+		nbl_event_unregister(NBL_EVENT_MIRROR_OUTPUTPORT_DEVLAYER, &event_callback,
+				     NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
 	}
+
+	mutex_lock(&rdma_dev->event_lock);
+	list_for_each_entry_safe(data, data_safe, &rdma_dev->event_param_list, node) {
+		list_del(&data->node);
+		kfree(data);
+	}
+
+	mutex_unlock(&rdma_dev->event_lock);
+	nbl_common_release_task(&rdma_dev->event_task);
 
 	if (rdma_dev->has_rdma)
 		serv_ops->unregister_rdma(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
@@ -824,9 +984,11 @@ int nbl_dev_start_rdma_dev(struct nbl_adapter *adapter)
 	if (!rdma_dev || (!rdma_dev->has_rdma && !rdma_dev->has_grc))
 		return 0;
 
-	if (!NBL_COMMON_TO_VF_CAP(common))
+	if (!!NBL_DEV_MGT_TO_CTRL_DEV(dev_mgt)) {
 		nbl_common_alloc_task(&rdma_dev->abnormal_event_task,
-				      nbl_dev_grc_handle_abnormal_event);
+				      nbl_dev_rdma_handle_abnormal_event_task);
+		rdma_dev->has_abnormal_event_task = true;
+	}
 
 	if (chan_ops->check_queue_exist(NBL_DEV_MGT_TO_CHAN_PRIV(dev_mgt),
 					NBL_CHAN_TYPE_MAILBOX))
@@ -850,8 +1012,6 @@ int nbl_dev_start_rdma_dev(struct nbl_adapter *adapter)
 		event_callback.callback = nbl_dev_rdma_handle_offload_status;
 		nbl_event_register(NBL_EVENT_OFFLOAD_STATUS_CHANGED, &event_callback,
 				   NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
-
-		rdma_dev->pf_event_ready = true;
 	}
 
 	event_callback.callback_data = rdma_dev;
@@ -859,8 +1019,13 @@ int nbl_dev_start_rdma_dev(struct nbl_adapter *adapter)
 	nbl_event_register(NBL_EVENT_RESET_EVENT, &event_callback,
 			   NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
 
-	if (rdma_dev && rdma_dev->pf_event_ready)
-		nbl_common_queue_work_rdma(&rdma_dev->lag_event_task, true);
+	event_callback.callback_data = dev_mgt;
+	event_callback.callback = nbl_dev_rdma_handle_change_mtu_event;
+	nbl_event_register(NBL_EVENT_CHANGE_MTU, &event_callback,
+			   NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
+
+	rdma_dev->event_ready = true;
+	nbl_common_queue_work_rdma(&rdma_dev->event_task, true);
 
 	return 0;
 
@@ -884,21 +1049,26 @@ void nbl_dev_stop_rdma_dev(struct nbl_adapter *adapter)
 		event_callback.callback = nbl_dev_rdma_handle_offload_status;
 		nbl_event_unregister(NBL_EVENT_OFFLOAD_STATUS_CHANGED, &event_callback,
 				     NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
-		rdma_dev->pf_event_ready = false;
-		nbl_common_flush_task(&rdma_dev->abnormal_event_task);
-		nbl_common_flush_task(&rdma_dev->lag_event_task);
 	}
+
+	rdma_dev->event_ready = false;
+	nbl_common_flush_task(&rdma_dev->event_task);
 
 	event_callback.callback_data = rdma_dev;
 	event_callback.callback = nbl_dev_rdma_handle_reset_event;
 	nbl_event_unregister(NBL_EVENT_RESET_EVENT, &event_callback,
 			     NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
 
+	event_callback.callback_data = dev_mgt;
+	event_callback.callback = nbl_dev_rdma_handle_change_mtu_event;
+	nbl_event_unregister(NBL_EVENT_CHANGE_MTU, &event_callback,
+			     NBL_COMMON_TO_VSI_ID(common), NBL_COMMON_TO_BOARD_ID(common));
+
 	nbl_dev_destroy_rdma_aux_dev(rdma_dev, &rdma_dev->bond_adev);
 	nbl_dev_destroy_rdma_aux_dev(rdma_dev, &rdma_dev->adev);
 	nbl_dev_destroy_rdma_aux_dev(rdma_dev, &rdma_dev->grc_adev);
 
-	if (!NBL_COMMON_TO_VF_CAP(common))
+	if (rdma_dev->has_abnormal_event_task)
 		nbl_common_release_task(&rdma_dev->abnormal_event_task);
 }
 
@@ -906,17 +1076,15 @@ int nbl_dev_resume_rdma_dev(struct nbl_adapter *adapter)
 {
 	struct nbl_dev_mgt *dev_mgt = NBL_ADAPTER_TO_DEV_MGT(adapter);
 	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
-	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
 
 	if (!rdma_dev || (!rdma_dev->has_rdma && !rdma_dev->has_grc))
 		return 0;
 
-	if (!NBL_COMMON_TO_VF_CAP(common))
+	if (rdma_dev->has_abnormal_event_task)
 		nbl_common_alloc_task(&rdma_dev->abnormal_event_task,
-				      nbl_dev_grc_handle_abnormal_event);
+				      nbl_dev_rdma_handle_abnormal_event_task);
 
-	if (!NBL_COMMON_TO_VF_CAP(common))
-		nbl_common_alloc_task(&rdma_dev->lag_event_task, nbl_dev_rdma_process_bond_event);
+	nbl_common_alloc_task(&rdma_dev->event_task, nbl_dev_rdma_process_event_task);
 
 	return 0;
 }
@@ -925,15 +1093,13 @@ int nbl_dev_suspend_rdma_dev(struct nbl_adapter *adapter)
 {
 	struct nbl_dev_mgt *dev_mgt = NBL_ADAPTER_TO_DEV_MGT(adapter);
 	struct nbl_dev_rdma *rdma_dev = NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt);
-	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
 
 	if (!rdma_dev)
 		return 0;
 
-	if (!NBL_COMMON_TO_VF_CAP(common))
-		nbl_common_release_task(&rdma_dev->lag_event_task);
+	nbl_common_release_task(&rdma_dev->event_task);
 
-	if (!NBL_COMMON_TO_VF_CAP(common))
+	if (rdma_dev->has_abnormal_event_task)
 		nbl_common_release_task(&rdma_dev->abnormal_event_task);
 
 	return 0;
