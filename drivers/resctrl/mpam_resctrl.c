@@ -22,6 +22,9 @@
 
 #include "mpam_internal.h"
 
+/* Values for the HISI workaround */
+#define HISI_VALID_CPBM_MASK	~(BIT(17) | BIT(18))
+
 DECLARE_WAIT_QUEUE_HEAD(resctrl_mon_ctx_waiters);
 
 /*
@@ -1218,6 +1221,10 @@ int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_ctrl_domain *d,
 	switch (r->rid) {
 	case RDT_RESOURCE_L2:
 	case RDT_RESOURCE_L3:
+		if (mpam_has_quirk(HISI_EXPAND_CPBM_WD, res->class) &&
+		    !(cfg_val & HISI_VALID_CPBM_MASK))
+			return -EINVAL;
+
 		cfg.cpbm = cfg_val;
 		mpam_set_feature(mpam_feat_cpor_part, &cfg);
 		break;
