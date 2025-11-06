@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEV_H_
@@ -15,13 +15,12 @@
 #define NBL_DEV_MGT_TO_COMMON(dev_mgt)		((dev_mgt)->common)
 #define NBL_DEV_MGT_TO_DEV(dev_mgt)		NBL_COMMON_TO_DEV(NBL_DEV_MGT_TO_COMMON(dev_mgt))
 #define NBL_DEV_MGT_TO_COMMON_DEV(dev_mgt)	((dev_mgt)->common_dev)
-#define NBL_DEV_MGT_TO_FACTORY_DEV(dev_mgt)	((dev_mgt)->factory_dev)
 #define NBL_DEV_MGT_TO_CTRL_DEV(dev_mgt)	((dev_mgt)->ctrl_dev)
 #define NBL_DEV_MGT_TO_NET_DEV(dev_mgt)		((dev_mgt)->net_dev)
-#define NBL_DEV_MGT_TO_VIRTIO_DEV(dev_mgt)	((dev_mgt)->virtio_dev)
 #define NBL_DEV_MGT_TO_RDMA_DEV(dev_mgt)	((dev_mgt)->rdma_dev)
 #define NBL_DEV_MGT_TO_USER_DEV(dev_mgt)	((dev_mgt)->user_dev)
 #define NBL_DEV_MGT_TO_REP_DEV(dev_mgt)		((dev_mgt)->rep_dev)
+#define NBL_DEV_MGT_TO_ST_DEV(dev_mgt)		((dev_mgt)->st_dev)
 #define NBL_DEV_COMMON_TO_MSIX_INFO(dev_common)	(&(dev_common)->msix_info)
 #define NBL_DEV_CTRL_TO_TASK_INFO(dev_ctrl)	(&(dev_ctrl)->task_info)
 #define NBL_DEV_FACTORY_TO_TASK_INFO(dev_factory)	(&(dev_factory)->task_info)
@@ -49,6 +48,11 @@
 #define NBL_DEV_BATCH_RESET_FUNC_NUM		(32)
 #define NBL_DEV_BATCH_RESET_USEC		(1000000)
 
+#define NBL_TIME_LEN				(32)
+#define NBL_SAVED_TRACES_NUM			(16)
+
+#define NBL_DEV_FW_RESET_WAIT_TIME		(3500)
+
 enum nbl_reset_status {
 	NBL_RESET_INIT,
 	NBL_RESET_SEND,
@@ -67,6 +71,8 @@ struct nbl_task_info {
 	struct work_struct adapt_desc_gother_task;
 	struct work_struct clean_abnormal_irq_task;
 	struct work_struct recovery_abnormal_task;
+	struct work_struct report_temp_task;
+	struct work_struct report_reboot_task;
 	struct work_struct reset_task;
 	enum nbl_reset_event reset_event;
 	enum nbl_reset_status reset_status[NBL_MAX_FUNC];
@@ -95,6 +101,7 @@ enum nbl_msix_serv_type {
 };
 
 struct nbl_msix_serv_info {
+	char irq_name[NBL_STRING_NAME_LEN];
 	u16 num;
 	u16 base_vector_id;
 	/* true: hw report msix, hw need to mask actively */
@@ -131,13 +138,56 @@ enum nbl_dev_temp_status {
 	NBL_TEMP_STATUS_MAX
 };
 
+enum nbl_emp_log_level {
+	NBL_EMP_ALERT_LOG_FATAL = 0,
+	NBL_EMP_ALERT_LOG_ERROR = 1,
+	NBL_EMP_ALERT_LOG_WARNING = 2,
+	NBL_EMP_ALERT_LOG_INFO = 3,
+};
+
+struct nbl_fw_reporter_ctx {
+	u64 timestamp;
+	u32 temp_num;
+	char reboot_report_time[NBL_TIME_LEN];
+};
+
+struct nbl_fw_temp_trace_data {
+	u64 timestamp;
+	u32 temp_num;
+};
+
+struct nbl_fw_reboot_trace_data {
+	char local_time[NBL_TIME_LEN];
+};
+
+struct nbl_health_reporters {
+	struct {
+		struct nbl_fw_temp_trace_data trace_data[NBL_SAVED_TRACES_NUM];
+		u8 saved_traces_index;
+		struct mutex lock; /* protect reading data of temp_trace_data*/
+	} temp_st_arr;
+
+	struct {
+		struct nbl_fw_reboot_trace_data trace_data[NBL_SAVED_TRACES_NUM];
+		u8 saved_traces_index;
+		struct mutex lock; /* protect reading data of reboot_trace_data*/
+	} reboot_st_arr;
+
+	struct nbl_fw_reporter_ctx reporter_ctx;
+	struct devlink_health_reporter *fw_temp_reporter;
+	struct devlink_health_reporter *fw_reboot_reporter;
+};
+
 struct nbl_dev_ctrl {
 	struct nbl_task_info task_info;
 	enum nbl_dev_temp_status temp_status;
+	struct nbl_health_reporters health_reporters;
+	struct workqueue_struct *ctrl_dev_wq1;
 };
 
 enum nbl_dev_emp_alert_event {
 	NBL_EMP_EVENT_TEMP_ALERT = 1,
+	NBL_EMP_EVENT_LOG_ALERT = 2,
 	NBL_EMP_EVENT_MAX
 };
 
@@ -161,14 +211,21 @@ struct nbl_dev_vsi_controller {
 };
 
 struct nbl_dev_net_ops {
-	void (*setup_netdev_ops)(void *priv, struct net_device *netdev,
+	int (*setup_netdev_ops)(void *priv, struct net_device *netdev,
+				struct nbl_init_param *param);
+	int (*setup_ethtool_ops)(void *priv, struct net_device *netdev,
 				 struct nbl_init_param *param);
-	void (*setup_ethtool_ops)(void *priv, struct net_device *netdev,
-				  struct nbl_init_param *param);
+	int (*setup_dcbnl_ops)(void *priv, struct net_device *netdev,
+			       struct nbl_init_param *param);
+};
+
+struct nbl_dev_attr_info {
+	struct nbl_netdev_name_attr dev_name_attr;
 };
 
 struct nbl_dev_net {
 	struct net_device *netdev;
+	struct nbl_dev_attr_info dev_attr;
 	struct nbl_lag_member *lag_mem;
 	struct nbl_dev_net_ops *ops;
 	u8 lag_inited;
@@ -179,6 +236,8 @@ struct nbl_dev_net {
 	u16 user_queue_num;
 	u16 total_vfs;
 	struct nbl_net_qos qos_config;
+	struct nbl_net_mirror mirror_config;
+	struct nbl_st_name st_name;
 };
 
 struct nbl_dev_virtio {
@@ -192,7 +251,7 @@ struct nbl_dev_rdma_event_data {
 	 *
 	 * callback_data will always be dev_mgt, which will not be released, so don't bother.
 	 */
-	struct nbl_event_rdma_bond_update event_data;
+	struct nbl_event_param event_data;
 	void *callback_data;
 	u16 type;
 };
@@ -204,9 +263,9 @@ struct nbl_dev_rdma {
 
 	struct work_struct abnormal_event_task;
 
-	struct work_struct lag_event_task;
-	struct list_head lag_event_param_list;
-	struct mutex lag_event_lock;		/* Protect lag_event_param_list */
+	struct work_struct event_task;
+	struct list_head event_param_list;
+	struct mutex event_lock;		/* Protect event_param_list */
 
 	int adev_index;
 	u32 mem_type;
@@ -218,9 +277,24 @@ struct nbl_dev_rdma {
 	bool bond_shaping_configed;
 
 	bool is_halting;
-	bool pf_event_ready;
+	bool event_ready;
+	bool mirror_enable;
+	bool has_abnormal_event_task;
+	atomic_t adev_busy;
 };
+#if !defined CONFIG_VFIO && !defined CONFIG_VFIO_MODULE
+#define NBL_NO_TRANSLATE
+#endif
 
+#if !defined CONFIG_VFIO_MDEV && !defined CONFIG_VFIO_MDEV_MODULE
+#define NBL_NO_MDEV_INTEFACE
+#endif
+
+#if defined NBL_NO_MDEV_INTEFACE
+#ifndef NBL_NO_TRANSLATE
+#define NBL_NO_TRANSLATE
+#endif
+#endif
 struct nbl_dev_emp_console {
 	struct nbl_dev_mgt *dev_mgt;
 	unsigned int id;
@@ -231,6 +305,7 @@ struct nbl_dev_emp_console {
 	struct ktermios termios;
 };
 
+#ifndef NBL_NO_TRANSLATE
 struct nbl_dev_user_iommu_group {
 	struct mutex dma_tree_lock; /* lock dma tree */
 	struct list_head group_next;
@@ -241,14 +316,19 @@ struct nbl_dev_user_iommu_group {
 	struct device *mdev;
 	struct vfio_device *vdev;
 };
+#endif
 
 struct nbl_dev_user {
+#ifndef NBL_NO_TRANSLATE
 	struct vfio_device vdev;
 	struct mdev_device mdev;
+#endif
 	struct notifier_block iommu_notifier;
 	struct device *dev;
 	struct nbl_adapter *adapter;
+#ifndef NBL_NO_TRANSLATE
 	struct nbl_dev_user_iommu_group *group;
+#endif
 	void *shm_msg_ring;
 	u64 dma_limit;
 	atomic_t open_cnt;
@@ -257,14 +337,27 @@ struct nbl_dev_user {
 	bool iommu_status;
 	bool remap_status;
 	bool user_promisc_mode;
+	bool user_mcast_mode;
+	u16 user_vsi;
 };
 
+#ifndef NBL_NO_TRANSLATE
 #define NBL_USERDEV_TO_VFIO_DEV(user)	(&((user)->vdev))
 #define NBL_VFIO_DEV_TO_USERDEV(dev)	(container_of((dev), struct nbl_dev_user, vdev))
-
+#endif
 struct nbl_dev_rep {
 	struct nbl_rep_data *rep;
 	int num_vfs;
+};
+
+/* Unify leonis/draco/rnic resource tool. All pf has st char dev. For leonis, only pf0 has adminq,
+ * so other pf's resoure tool use pf0's char dev actually.
+ */
+struct nbl_dev_st_dev {
+	bool resp_msg_registered;
+	u8 resv[3];
+	char st_name[NBL_RESTOOL_NAME_LEN];
+	char real_st_name[NBL_RESTOOL_NAME_LEN];
 };
 
 struct nbl_dev_mgt {
@@ -272,13 +365,12 @@ struct nbl_dev_mgt {
 	struct nbl_service_ops_tbl *serv_ops_tbl;
 	struct nbl_channel_ops_tbl *chan_ops_tbl;
 	struct nbl_dev_common *common_dev;
-	struct nbl_dev_factory *factory_dev;
 	struct nbl_dev_ctrl *ctrl_dev;
 	struct nbl_dev_net *net_dev;
-	struct nbl_dev_virtio *virtio_dev;
 	struct nbl_dev_rdma *rdma_dev;
 	struct nbl_dev_emp_console *emp_console;
 	struct nbl_dev_rep *rep_dev;
+	struct nbl_dev_st_dev *st_dev;
 	struct nbl_dev_user *user_dev;
 };
 
@@ -344,8 +436,8 @@ int nbl_dev_start_rdma_dev(struct nbl_adapter *adapter);
 void nbl_dev_stop_rdma_dev(struct nbl_adapter *adapter);
 int nbl_dev_resume_rdma_dev(struct nbl_adapter *adapter);
 int nbl_dev_suspend_rdma_dev(struct nbl_adapter *adapter);
-void nbl_dev_grc_process_abnormal_event(struct nbl_dev_rdma *rdma_dev);
-void nbl_dev_grc_process_flr_event(struct nbl_dev_rdma *rdma_dev, u16 vsi_id);
+void nbl_dev_rdma_process_abnormal_event(struct nbl_dev_rdma *rdma_dev);
+void nbl_dev_rdma_process_flr_event(struct nbl_dev_rdma *rdma_dev, u16 vsi_id);
 size_t nbl_dev_rdma_qos_cfg_store(struct nbl_dev_mgt *dev_mgt, int offset,
 				  const char *buf, size_t count);
 size_t nbl_dev_rdma_qos_cfg_show(struct nbl_dev_mgt *dev_mgt, int offset, char *buf);
@@ -357,5 +449,12 @@ void nbl_dev_remove_hwmon(struct nbl_adapter *adapter);
 struct nbl_dev_vsi *nbl_dev_vsi_select(struct nbl_dev_mgt *dev_mgt, u8 vsi_index);
 
 int nbl_netdev_add_sysfs(struct net_device *netdev, struct nbl_dev_net *net_dev);
+int nbl_netdev_add_mirror_sysfs(struct net_device *netdev, struct nbl_dev_net *net_dev);
 void nbl_netdev_remove_sysfs(struct nbl_dev_net *net_dev);
+void nbl_netdev_remove_mirror_sysfs(struct nbl_dev_net *net_dev);
+void nbl_net_add_name_attr(struct nbl_netdev_name_attr *dev_name_attr, char *rep_name);
+void nbl_net_remove_dev_attr(struct nbl_dev_net *net_dev);
+int nbl_netdev_add_st_sysfs(struct net_device *netdev, struct nbl_dev_net *net_dev);
+void nbl_netdev_remove_st_sysfs(struct nbl_dev_net *net_dev);
+
 #endif

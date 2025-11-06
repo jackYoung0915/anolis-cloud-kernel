@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
+ */
+
 #include "nbl_ipsec.h"
 #ifdef CONFIG_TLS_DEVICE
 static int nbl_validate_xfrm_state(struct net_device *netdev, struct xfrm_state *x)
@@ -20,7 +26,7 @@ static int nbl_validate_xfrm_state(struct net_device *netdev, struct xfrm_state 
 	}
 
 	if (x->props.family != AF_INET && x->props.family != AF_INET6) {
-		netdev_err(netdev, "Only IPV4/6 xfrm state may be offloaded\n");
+		netdev_err(netdev, "Only IPv4/6 xfrm state may be offloaded\n");
 		return -EINVAL;
 	}
 

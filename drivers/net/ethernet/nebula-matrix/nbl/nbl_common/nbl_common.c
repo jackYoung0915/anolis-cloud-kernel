@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_common.h"
 
 struct nbl_common_wq_mgt {
-	struct workqueue_struct *ctrl_dev_wq1;
 	struct workqueue_struct *ctrl_dev_wq2;
 	struct workqueue_struct *net_dev_wq;
 	struct workqueue_struct *keepalive_wq;
@@ -25,11 +24,9 @@ void nbl_convert_mac(u8 *mac, u8 *reverse_mac)
 
 static struct nbl_common_wq_mgt *wq_mgt;
 
-void nbl_common_queue_work(struct work_struct *task, bool ctrl_task, bool singlethread)
+void nbl_common_queue_work(struct work_struct *task, bool ctrl_task)
 {
-	if (ctrl_task && singlethread)
-		queue_work(wq_mgt->ctrl_dev_wq1, task);
-	else if (ctrl_task && !singlethread)
+	if (ctrl_task)
 		queue_work(wq_mgt->ctrl_dev_wq2, task);
 	else if (!ctrl_task)
 		queue_work(wq_mgt->net_dev_wq, task);
@@ -43,12 +40,9 @@ void nbl_common_queue_work_rdma(struct work_struct *task, bool singlethread)
 		queue_work(wq_mgt->rdma_event_wq, task);
 }
 
-void nbl_common_queue_delayed_work(struct delayed_work *task, u32 msec,
-				   bool ctrl_task, bool singlethread)
+void nbl_common_queue_delayed_work(struct delayed_work *task, u32 msec, bool ctrl_task)
 {
-	if (ctrl_task && singlethread)
-		queue_delayed_work(wq_mgt->ctrl_dev_wq1, task, msecs_to_jiffies(msec));
-	else if (ctrl_task && !singlethread)
+	if (ctrl_task)
 		queue_delayed_work(wq_mgt->ctrl_dev_wq2, task, msecs_to_jiffies(msec));
 	else if (!ctrl_task)
 		queue_delayed_work(wq_mgt->net_dev_wq, task, msecs_to_jiffies(msec));
@@ -91,7 +85,6 @@ void nbl_common_destroy_wq(void)
 	destroy_workqueue(wq_mgt->keepalive_wq);
 	destroy_workqueue(wq_mgt->net_dev_wq);
 	destroy_workqueue(wq_mgt->ctrl_dev_wq2);
-	destroy_workqueue(wq_mgt->ctrl_dev_wq1);
 	kfree(wq_mgt);
 }
 
@@ -100,12 +93,6 @@ int nbl_common_create_wq(void)
 	wq_mgt = kzalloc(sizeof(*wq_mgt), GFP_KERNEL);
 	if (!wq_mgt)
 		return -ENOMEM;
-
-	wq_mgt->ctrl_dev_wq1 = create_singlethread_workqueue("nbl_ctrldev_wq1");
-	if (!wq_mgt->ctrl_dev_wq1) {
-		pr_err("Failed to create workqueue nbl_ctrldev_wq1\n");
-		goto alloc_ctrl_dev_wq1_failed;
-	}
 
 	wq_mgt->ctrl_dev_wq2 = alloc_workqueue("%s", WQ_MEM_RECLAIM | WQ_UNBOUND,
 					       0, "nbl_ctrldev_wq2");
@@ -151,8 +138,6 @@ alloc_rdma_wq_failed:
 alloc_net_dev_wq_failed:
 	destroy_workqueue(wq_mgt->ctrl_dev_wq2);
 alloc_ctrl_dev_wq2_failed:
-	destroy_workqueue(wq_mgt->ctrl_dev_wq1);
-alloc_ctrl_dev_wq1_failed:
 	kfree(wq_mgt);
 	return -ENOMEM;
 }
@@ -170,6 +155,7 @@ u32 nbl_common_pf_id_subtraction_mgtpf_id(struct nbl_common_info *common, u32 pf
 /**
  * alloc a index resource poll, the index_size max is 64 * 1024
  * the poll support start_index not zero;
+ * the poll support multi thread
  */
 void *nbl_common_init_index_table(struct nbl_index_tbl_key *key)
 {
@@ -254,7 +240,6 @@ void nbl_common_remove_index_table(void *priv, struct nbl_index_tbl_del_key *key
 void nbl_common_scan_index_table(void *priv, struct nbl_index_tbl_scan_key *key)
 {
 	struct nbl_index_mgt *index_mgt = (struct nbl_index_mgt *)priv;
-	struct device *dev;
 	struct nbl_index_entry_node *idx_node;
 	struct hlist_node *list_node;
 	int i;
@@ -262,7 +247,6 @@ void nbl_common_scan_index_table(void *priv, struct nbl_index_tbl_scan_key *key)
 	if (!index_mgt)
 		return;
 
-	dev = index_mgt->tbl_key.dev;
 	for (i = 0; i < index_mgt->bucket_size; i++) {
 		hlist_for_each_entry_safe(idx_node, list_node, index_mgt->key_hash + i, node) {
 			if (key && key->action_func)
@@ -375,7 +359,7 @@ int nbl_common_alloc_index(void *priv, void *key, struct nbl_index_key_extra *ex
 		return index;
 
 	key_node_size = sizeof(struct nbl_index_entry_node) + key_size + data_size;
-	idx_node = devm_kzalloc(index_mgt->tbl_key.dev, key_node_size, GFP_KERNEL);
+	idx_node = devm_kzalloc(index_mgt->tbl_key.dev, key_node_size, GFP_ATOMIC);
 	if (!idx_node)
 		return index;
 
@@ -528,11 +512,9 @@ int nbl_common_alloc_hash_node(void *priv, void *key, void *data, void **out_dat
 	struct nbl_hash_tbl_mgt *tbl_mgt = (struct nbl_hash_tbl_mgt *)priv;
 	struct nbl_hash_entry_node *hash_node;
 	u32 hash_value;
-	u32 node_size;
 	u16 key_size;
 	u16 data_size;
 
-	node_size = sizeof(struct nbl_hash_entry_node);
 	hash_node = devm_kzalloc(tbl_mgt->tbl_key.dev, sizeof(struct nbl_hash_entry_node),
 				 GFP_KERNEL);
 	if (!hash_node)

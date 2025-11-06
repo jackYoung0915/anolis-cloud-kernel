@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 #include "nbl_dev.h"
 #include "nbl_service.h"
 
-extern int device_driver_attach(struct device_driver *drv, struct device *dev);
+#define VENDOR_PHYTIUM	0x70
+#define VENDOR_MASK	0xFF
+#define VENDOR_OFFSET	24
+
 static struct nbl_userdev {
 	struct cdev cdev;
 	struct class *cls;
@@ -18,6 +21,7 @@ static struct nbl_userdev {
 	bool success;
 } nbl_userdev;
 
+#ifndef NBL_NO_TRANSLATE
 struct nbl_vfio_batch {
 	unsigned long *pages_out;
 	unsigned long *pages_in;
@@ -31,8 +35,8 @@ struct nbl_userdev_dma {
 	unsigned long vaddr;
 	size_t size;
 	unsigned long pfn;
-	unsigned int ref_cnt;
 };
+#endif /* NBL_NO_TRANSLATE */
 
 bool nbl_dma_iommu_status(struct pci_dev *pdev)
 {
@@ -52,7 +56,6 @@ bool nbl_dma_remap_status(struct pci_dev *pdev, u64 *dma_limit)
 
 	/* get dma_limit references iommu_dma_alloc_iova */
 	*dma_limit = min_not_zero(dma_mask, dev->bus_dma_limit);
-
 	domain = iommu_get_domain_for_dev(dev);
 	if (!domain)
 		return 0;
@@ -75,61 +78,47 @@ static void nbl_user_change_kernel_network(struct nbl_dev_user *user)
 {
 	struct nbl_adapter *adapter = user->adapter;
 	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)NBL_ADAPTER_TO_DEV_MGT(adapter);
+	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	struct nbl_dev_net *net_dev = NBL_DEV_MGT_TO_NET_DEV(dev_mgt);
-	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
-	struct nbl_event_dev_mode_switch_data data = {0};
 	struct net_device *netdev = net_dev->netdev;
+	int ret;
 
 	if (user->network_type == NBL_KERNEL_NETWORK)
 		return;
 
-	rtnl_lock();
-	clear_bit(NBL_USER, adapter->state);
-
-	data.op = NBL_DEV_USER_TO_KERNEL;
-	data.promosic = user->user_promisc_mode;
-	nbl_event_notify(NBL_EVENT_DEV_MODE_SWITCH, &data, NBL_COMMON_TO_ETH_ID(common),
-			 NBL_COMMON_TO_BOARD_ID(common));
-	if (data.ret) {
-		netdev_err(netdev, "network changes to kernel space failed %d\n", data.ret);
-		goto unlock;
+	ret = serv_ops->switch_traffic_default_dest(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+						    NBL_DEV_USER_TO_KERNEL);
+	if (ret) {
+		netdev_err(netdev, "network changes to kernel space failed %d\n", ret);
+		return;
 	}
 
 	user->network_type = NBL_KERNEL_NETWORK;
 	netdev_info(netdev, "network changes to kernel space\n");
-
-unlock:
-	rtnl_unlock();
 }
 
 static int nbl_user_change_user_network(struct nbl_dev_user *user)
 {
 	struct nbl_adapter *adapter = user->adapter;
 	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)NBL_ADAPTER_TO_DEV_MGT(adapter);
+	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	struct nbl_dev_net *net_dev = NBL_DEV_MGT_TO_NET_DEV(dev_mgt);
-	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
 	struct net_device *netdev = net_dev->netdev;
-	struct nbl_event_dev_mode_switch_data data = {0};
 	int ret = 0;
 
-	rtnl_lock();
+	if (user->network_type == NBL_USER_NETWORK)
+		return 0;
 
-	data.op = NBL_DEV_KERNEL_TO_USER;
-	data.promosic = user->user_promisc_mode;
+	ret = serv_ops->switch_traffic_default_dest(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+						    NBL_DEV_KERNEL_TO_USER);
 
-	nbl_event_notify(NBL_EVENT_DEV_MODE_SWITCH, &data, NBL_COMMON_TO_ETH_ID(common),
-			 NBL_COMMON_TO_BOARD_ID(common));
-	if (data.ret) {
-		netdev_err(netdev, "network changes to user space failed %u\n", data.ret);
-		goto unlock;
+	if (ret) {
+		netdev_err(netdev, "network changes to user space failed %u\n", ret);
+		return ret;
 	}
 
-	set_bit(NBL_USER, adapter->state);
 	user->network_type = NBL_USER_NETWORK;
 	netdev_info(netdev, "network changes to user\n");
-
-unlock:
-	rtnl_unlock();
 
 	return ret;
 }
@@ -157,6 +146,16 @@ static int nbl_cdev_open(struct inode *inode, struct file *filep)
 	if (opened)
 		return -EBUSY;
 
+	rtnl_lock();
+	if (test_bit(NBL_XDP, p->state)) {
+		atomic_set(&user->open_cnt, 0);
+		rtnl_unlock();
+		return -EIO;
+	}
+
+	set_bit(NBL_USER, p->state);
+	rtnl_unlock();
+
 	filep->private_data = p;
 
 	return 0;
@@ -174,8 +173,10 @@ static int nbl_cdev_release(struct inode *inode, struct file *filp)
 	nbl_user_change_kernel_network(user);
 	serv_ops->config_fd_flow_state(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
 				       NBL_CHAN_FDIR_RULE_ISOLATE, NBL_FD_STATE_FLUSH);
+	serv_ops->clear_flow(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt), user->user_vsi);
 	atomic_set(&user->open_cnt, 0);
 	user->user_promisc_mode = 0;
+	clear_bit(NBL_USER, adapter->state);
 
 	return 0;
 }
@@ -231,8 +232,8 @@ static int nbl_userdev_common_mmap(struct nbl_adapter *adapter, struct vm_area_s
 		return -EINVAL;
 
 	if (index == NBL_DEV_SHM_MSG_RING_INDEX) {
-		struct page *page = virt_to_page((unsigned long)user->shm_msg_ring +
-					(pgoff << PAGE_SHIFT));
+		struct page *page = virt_to_page((void *)((unsigned long)user->shm_msg_ring +
+				(pgoff << PAGE_SHIFT)));
 		vma->vm_pgoff = pgoff;
 		ret = remap_pfn_range(vma, vma->vm_start, page_to_pfn(page),
 				      req_len, vma->vm_page_prot);
@@ -242,6 +243,7 @@ static int nbl_userdev_common_mmap(struct nbl_adapter *adapter, struct vm_area_s
 	vma->vm_private_data = adapter;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	vma->vm_pgoff = (pci_resource_start(pdev, 0) >> PAGE_SHIFT) + pgoff;
+
 	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_ops = &nbl_userdev_mmap_ops;
 
@@ -262,6 +264,7 @@ static int nbl_userdev_register_net(struct nbl_adapter *adapter, void *resp,
 	struct nbl_dev_net *net_dev = NBL_DEV_MGT_TO_NET_DEV(dev_mgt);
 	struct nbl_register_net_result *result = (struct nbl_register_net_result *)resp;
 	struct nbl_dev_vsi *vsi;
+	int ret = 0;
 
 	vsi = net_dev->vsi_ctrl.vsi_list[NBL_VSI_USER];
 
@@ -270,10 +273,14 @@ static int nbl_userdev_register_net(struct nbl_adapter *adapter, void *resp,
 	result->rx_queue_num = vsi->queue_num;
 	result->rdma_enable = 0;
 	result->queue_offset = vsi->queue_offset;
+	result->trusted = 1;
+
+	if (vsi->queue_num == 0)
+		ret = -ENOSPC;
 
 	chan_send->ack_len = sizeof(struct nbl_register_net_result);
 
-	return 0;
+	return ret;
 }
 
 static int nbl_userdev_alloc_txrx_queues(struct nbl_adapter *adapter, void *resp,
@@ -359,10 +366,6 @@ static long nbl_userdev_channel_ioctl(struct nbl_adapter *adapter, unsigned long
 	case NBL_CHAN_MSG_GET_VSI_ID:
 		ret = nbl_userdev_get_vsi_id(adapter, resp, &chan_send);
 		break;
-	case NBL_CHAN_MSG_ADD_MACVLAN:
-		WARN_ON(1);
-		break;
-	case NBL_CHAN_MSG_DEL_MACVLAN:
 	case NBL_CHAN_MSG_UNREGISTER_NET:
 	case NBL_CHAN_MSG_ADD_MULTI_RULE:
 	case NBL_CHAN_MSG_DEL_MULTI_RULE:
@@ -394,7 +397,10 @@ static long nbl_userdev_channel_ioctl(struct nbl_adapter *adapter, unsigned long
 static long nbl_userdev_switch_network(struct nbl_adapter *adapter, unsigned long arg)
 {
 	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)NBL_ADAPTER_TO_DEV_MGT(adapter);
+	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	struct nbl_dev_user *user = NBL_DEV_MGT_TO_USER_DEV(dev_mgt);
+	struct nbl_dev_net *net_dev = NBL_DEV_MGT_TO_NET_DEV(dev_mgt);
+	struct nbl_dev_vsi *vsi;
 	int timeout = 50;
 	int type;
 
@@ -418,10 +424,16 @@ static long nbl_userdev_switch_network(struct nbl_adapter *adapter, unsigned lon
 	}
 
 	/* todolist: concurreny about adapter->state */
-	if (type == NBL_USER_NETWORK)
+	vsi = net_dev->vsi_ctrl.vsi_list[NBL_VSI_USER];
+	if (type == NBL_USER_NETWORK) {
 		nbl_user_change_user_network(user);
-	else
+		serv_ops->set_promisc_mode(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+					   vsi->vsi_id, user->user_promisc_mode);
+		serv_ops->cfg_multi_mcast(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+					  vsi->vsi_id, user->user_mcast_mode);
+	} else {
 		nbl_user_change_kernel_network(user);
+	}
 
 	return 0;
 }
@@ -541,38 +553,44 @@ static long nbl_userdev_get_dma_limit(struct nbl_adapter *adapter, unsigned long
 	return copy_to_user((void __user *)arg, &user->dma_limit, sizeof(user->dma_limit));
 }
 
-static long nbl_userdev_set_promisc_mode(struct nbl_adapter *adapter, unsigned long arg)
+static long nbl_userdev_set_multi_mode(struct nbl_adapter *adapter, unsigned int cmd,
+				       unsigned long arg)
 {
 	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)NBL_ADAPTER_TO_DEV_MGT(adapter);
+	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	struct nbl_dev_user *user = NBL_DEV_MGT_TO_USER_DEV(dev_mgt);
-	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
-	struct nbl_event_dev_mode_switch_data data = {0};
-	int user_promisc_mode;
+	struct nbl_dev_net *net_dev = NBL_DEV_MGT_TO_NET_DEV(dev_mgt);
+	struct nbl_dev_vsi *vsi;
+	u16 user_multi_mode;
 	int ret = 0;
 
-	if (get_user(user_promisc_mode, (unsigned long __user *)arg)) {
+	if (get_user(user_multi_mode, (unsigned long __user *)arg)) {
 		dev_err(NBL_ADAPTER_TO_DEV(adapter),
 			"set promic mode get mode failed\n");
 		return -EFAULT;
 	}
 
-	if (user_promisc_mode == user->user_promisc_mode)
+	if (cmd == NBL_DEV_USER_SET_PROMISC_MODE && user_multi_mode == user->user_promisc_mode)
 		return 0;
 
+	if (cmd == NBL_DEV_USER_SET_MCAST_MODE && user_multi_mode == user->user_mcast_mode)
+		return 0;
+
+	vsi = net_dev->vsi_ctrl.vsi_list[NBL_VSI_USER];
 	if (user->network_type == NBL_USER_NETWORK) {
-		data.op = NBL_DEV_SET_USER_PROMISC_MODE;
-		data.promosic = user_promisc_mode;
-		nbl_event_notify(NBL_EVENT_DEV_MODE_SWITCH, &data, NBL_COMMON_TO_ETH_ID(common),
-				 NBL_COMMON_TO_BOARD_ID(common));
-		ret = data.ret;
-		if (ret) {
-			dev_err(NBL_ADAPTER_TO_DEV(adapter),
-				"user set promic mode %u failed %d\n", user_promisc_mode, ret);
-			return ret;
-		}
+		if (cmd == NBL_DEV_USER_SET_PROMISC_MODE)
+			ret = serv_ops->set_promisc_mode(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+							 vsi->vsi_id, user_multi_mode);
+		else
+			ret = serv_ops->cfg_multi_mcast(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+							vsi->vsi_id, user_multi_mode);
 	}
 
-	user->user_promisc_mode = user_promisc_mode;
+	if (cmd == NBL_DEV_USER_SET_PROMISC_MODE)
+		user->user_promisc_mode = user_multi_mode;
+	else
+		user->user_mcast_mode = user_multi_mode;
+
 	return ret;
 }
 
@@ -610,7 +628,8 @@ static long nbl_userdev_common_ioctl(struct nbl_adapter *adapter, unsigned int c
 		ret = nbl_userdev_get_dma_limit(adapter, arg);
 		break;
 	case NBL_DEV_USER_SET_PROMISC_MODE:
-		ret = nbl_userdev_set_promisc_mode(adapter, arg);
+	case NBL_DEV_USER_SET_MCAST_MODE:
+		ret = nbl_userdev_set_multi_mode(adapter, cmd, arg);
 		break;
 	default:
 		break;
@@ -627,6 +646,16 @@ static long nbl_cdev_unlock_ioctl(struct file *filep, unsigned int cmd,
 	return nbl_userdev_common_ioctl(adapter, cmd, arg);
 }
 
+static const struct file_operations nbl_cdev_fops = {
+	.owner = THIS_MODULE,
+	.open = nbl_cdev_open,
+	.unlocked_ioctl = nbl_cdev_unlock_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
+	.release = nbl_cdev_release,
+	.mmap = nbl_cdev_mmap,
+};
+
+#ifndef NBL_NO_TRANSLATE
 static ssize_t nbl_vfio_read(struct vfio_device *vdev, char __user *buf,
 			     size_t count, loff_t *ppos)
 {
@@ -687,6 +716,94 @@ static struct nbl_userdev_dma *nbl_userdev_find_dma(struct nbl_dev_user_iommu_gr
 	return NULL;
 }
 
+static struct rb_node *nbl_userdev_find_dma_first_node(struct nbl_dev_user_iommu_group *group,
+						       dma_addr_t start, size_t size)
+{
+	struct rb_node *res = NULL;
+	struct rb_node *node = group->dma_tree.rb_node;
+	struct nbl_userdev_dma *dma_res = NULL;
+
+	while (node) {
+		struct nbl_userdev_dma *dma = rb_entry(node, struct nbl_userdev_dma, node);
+
+		if (start < dma->vaddr + dma->size) {
+			res = node;
+			dma_res = dma;
+			if (start >= dma->vaddr)
+				break;
+			node = node->rb_left;
+		} else {
+			node = node->rb_right;
+		}
+	}
+	if (res && size && dma_res->vaddr >= start + size)
+		res = NULL;
+	return res;
+}
+
+/**
+ * check dma conflict when multi devices in one iommu group, That is, when ACS not support.
+ * return -1 means multi devices conflict.
+ * return 1 means mapping exist and not conflict.
+ * return 0 means mapping not existed.
+ */
+static int nbl_userdev_check_dma_conflict(struct nbl_dev_user *user,
+					  unsigned long vaddr, dma_addr_t iova, size_t size)
+{
+	struct nbl_dev_user_iommu_group *group = user->group;
+	struct nbl_userdev_dma *dma;
+	struct rb_node *n;
+	struct device *mdev;
+	size_t unmapped = 0;
+	unsigned long vfn, pfn, vaddr_new;
+	dma_addr_t iova_new;
+	int ret;
+
+	dma = nbl_userdev_find_dma(group, vaddr, 1);
+	if (dma && dma->vaddr != vaddr)
+		return -1;
+
+	dma = nbl_userdev_find_dma(group, vaddr + size - 1, 0);
+	if (dma && dma->vaddr + dma->size != vaddr + size)
+		return -1;
+
+	if (!nbl_userdev_find_dma(group, vaddr, size))
+		return 0;
+	mdev = &user->mdev.dev;
+	n = nbl_userdev_find_dma_first_node(group, vaddr, size);
+	vaddr_new = vaddr;
+	iova_new = iova;
+	while (n) {
+		dma = rb_entry(n, struct nbl_userdev_dma, node);
+		if (dma->iova >= iova + size)
+			break;
+
+		if (dma->vaddr >= vaddr + size)
+			break;
+
+		if (dma->vaddr != vaddr_new || dma->iova != iova_new)
+			break;
+
+		vfn = vaddr_new >> PAGE_SHIFT;
+		ret = vfio_pin_pages(mdev, &vfn, 1, IOMMU_READ | IOMMU_WRITE, &pfn);
+		if (ret <= 0)
+			break;
+		vfio_unpin_pages(mdev, &vfn, 1);
+		if (pfn != dma->pfn)
+			break;
+
+		n = rb_next(n);
+		unmapped += dma->size;
+		vaddr_new += dma->size;
+		iova_new += dma->size;
+	}
+
+	if (unmapped != size)
+		return -1;
+
+	return 1;
+}
+
 static void nbl_userdev_link_dma(struct nbl_dev_user_iommu_group *group,
 				 struct nbl_userdev_dma *new)
 {
@@ -707,10 +824,24 @@ static void nbl_userdev_link_dma(struct nbl_dev_user_iommu_group *group,
 	rb_insert_color(&new->node, &group->dma_tree);
 }
 
+#ifdef CONFIG_ARM64
+static int check_phytium_cpu(void)
+{
+	u32 midr = read_cpuid_id();
+	u32 vendor = (midr >> VENDOR_OFFSET) & VENDOR_MASK;
+
+	if (vendor == VENDOR_PHYTIUM)
+		return 1;
+
+	return 0;
+}
+#endif
+
 static void nbl_userdev_remove_dma(struct nbl_dev_user_iommu_group *group,
 				   struct nbl_userdev_dma *dma)
 {
 	struct nbl_vfio_batch batch;
+	size_t unmmaped;
 	long npage, batch_pages;
 	unsigned long vaddr;
 	int ret, caps;
@@ -719,7 +850,16 @@ static void nbl_userdev_remove_dma(struct nbl_dev_user_iommu_group *group,
 
 	dev_dbg(group->dev, "dma remove: vaddr 0x%lx, iova 0x%llx, size 0x%lx\n",
 		dma->vaddr, dma->iova, dma->size);
-	iommu_unmap(iommu_get_domain_for_dev(group->dev), dma->iova, dma->size);
+	unmmaped = iommu_unmap(iommu_get_domain_for_dev(group->dev), dma->iova, dma->size);
+	WARN_ON(unmmaped != dma->size);
+	/**
+	 * For kylin + FT Server, Exist dma invalid content when smmu translate mode.
+	 * We can flush iommu tlb force to avoid the problem.
+	 */
+#ifdef CONFIG_ARM64
+	if (check_phytium_cpu())
+		iommu_flush_iotlb_all(iommu_get_domain_for_dev(group->dev));
+#endif
 
 	ret = nbl_vfio_batch_init(&batch);
 	if (ret) {
@@ -742,7 +882,6 @@ static void nbl_userdev_remove_dma(struct nbl_dev_user_iommu_group *group,
 		ppfn[0] = vaddr >> PAGE_SHIFT;
 		for (i = 1; i < batch_pages; i++)
 			ppfn[i] =  ppfn[i - 1] + 1;
-
 		ret = vfio_unpin_pages(group->mdev, ppfn, batch_pages);
 		dev_dbg(group->dev, "unpin pages 0x%lx, npages %ld, ret %d\n",
 			ppfn[0], batch_pages, ret);
@@ -765,7 +904,7 @@ static long nbl_userdev_dma_map_ioctl(struct nbl_dev_user *user, unsigned long a
 	struct nbl_vfio_batch batch;
 	struct nbl_userdev_dma *dma;
 	unsigned long minsz, pfn_base = 0, pfn;
-	unsigned long vaddr, vfn;
+	unsigned long vaddr;
 	dma_addr_t iova;
 	u32 mask = NBL_DEV_USER_DMA_MAP_FLAG_READ | NBL_DEV_USER_DMA_MAP_FLAG_WRITE;
 	size_t size;
@@ -789,31 +928,15 @@ static long nbl_userdev_dma_map_ioctl(struct nbl_dev_user *user, unsigned long a
 		return ret;
 	mdev = &user->mdev.dev;
 	mutex_lock(&user->group->dma_tree_lock);
-	/* rb-tree find */
-	dma = nbl_userdev_find_dma(user->group, vaddr, map.size);
-	if (dma && dma->iova == iova && dma->size == map.size) {
-		vfn = vaddr >> PAGE_SHIFT;
-		ret = vfio_pin_pages(mdev, &vfn, 1, IOMMU_READ | IOMMU_WRITE, &pfn);
-		if (ret <= 0) {
-			dev_err(dev, "vfio_pin_pages failed %d\n", ret);
-			goto mutext_unlock;
-		}
-
-		ret = 0;
-		vfio_unpin_pages(mdev, &vfn, 1);
-		if (pfn != dma->pfn) {
-			dev_err(dev, "multiple dma pfn not equal, new pfn %lu, dma pfn %lu\n",
-				pfn, dma->pfn);
-			ret = -EINVAL;
-			goto mutext_unlock;
-		}
-
-		dev_info(dev, "existing dma info, ref_cnt++\n");
-		dma->ref_cnt++;
-		goto mutext_unlock;
-	} else if (dma) {
-		dev_info(dev, "multiple dma not equal\n");
+	ret = nbl_userdev_check_dma_conflict(user, vaddr, iova, map.size);
+	if (ret < 0) {
+		dev_err(dev, "multiple dma not equal\n");
 		ret = -EINVAL;
+		goto mutext_unlock;
+	}
+
+	if (ret) {
+		ret = 0;
 		goto mutext_unlock;
 	}
 
@@ -846,7 +969,6 @@ static long nbl_userdev_dma_map_ioctl(struct nbl_dev_user *user, unsigned long a
 				dev_err(dev, "pin page failed\n");
 				goto unwind;
 			}
-
 			batch.offset = 0;
 			batch.size = ret;
 			if (!pfn_base) {
@@ -874,8 +996,8 @@ static long nbl_userdev_dma_map_ioctl(struct nbl_dev_user *user, unsigned long a
 				dev_err(dev, "iommu_map failed\n");
 				goto unwind;
 			}
-			dev_dbg(dev, "iommu map succeed, iova 0x%llx, phys 0x%llx, "
-				"size 0x%llx\n", (u64)iova, (u64)phys, (u64)size);
+			dev_dbg(dev, "map succeed, iova 0x%llx, phys 0x%llx, size 0x%llx\n",
+				(u64)iova, (u64)phys, (u64)size);
 			pfn_base = pfn;
 			pinned = 0;
 			iova += size;
@@ -891,15 +1013,14 @@ static long nbl_userdev_dma_map_ioctl(struct nbl_dev_user *user, unsigned long a
 			dev_err(dev, "iommu_map failed\n");
 			goto unwind;
 		}
-		dev_dbg(dev, "iommu map succeed, iova 0x%llx, phys 0x%llx, "
-			"size 0x%llx\n", (u64)iova, (u64)phys, (u64)size);
+		dev_dbg(dev, "map succeed, iova 0x%llx, phys 0x%llx, size 0x%llx\n",
+			(u64)iova, (u64)phys, (u64)size);
 	}
 	nbl_vfio_batch_fini(&batch);
 
 	dma->iova = map.iova;
 	dma->size = map.size;
 	dma->vaddr = map.vaddr;
-	dma->ref_cnt = 1;
 	nbl_userdev_link_dma(user->group, dma);
 
 	dev_info(dev, "dma map info: vaddr=0x%llx, iova=0x%llx, size=0x%llx\n",
@@ -927,7 +1048,6 @@ unwind:
 		batch.pages_in[0] = vaddr >> PAGE_SHIFT;
 		for (i = 1; i < batch_pages; i++)
 			batch.pages_in[i] =  batch.pages_in[i - 1] + 1;
-
 		vfio_unpin_pages(mdev, batch.pages_in, batch_pages);
 		npage -= batch_pages;
 		vaddr += (batch_pages << PAGE_SHIFT);
@@ -948,6 +1068,8 @@ static long nbl_userdev_dma_unmap_ioctl(struct nbl_dev_user *user, unsigned long
 	struct nbl_dev_user_dma_unmap unmap;
 	struct nbl_userdev_dma *dma;
 	unsigned long minsz;
+	size_t unmapped = 0;
+	struct rb_node *n;
 
 	minsz = offsetofend(struct nbl_dev_user_dma_unmap, size);
 
@@ -961,21 +1083,28 @@ static long nbl_userdev_dma_unmap_ioctl(struct nbl_dev_user *user, unsigned long
 		 (u64)unmap.vaddr, (u64)unmap.iova, (u64)unmap.size);
 
 	mutex_lock(&user->group->dma_tree_lock);
-
 	user->group->mdev = &user->mdev.dev;
-	dma = nbl_userdev_find_dma(user->group, unmap.vaddr, unmap.size);
-	/* unmmap pages: rb-tree lock */
-	if (dma) {
-		if (dma->vaddr != unmap.vaddr || dma->iova != unmap.iova || dma->size != unmap.size)
-			dev_err(dev, "dma unmap not equal, unmap vaddr 0x%llx, iova 0x%llx, "
-				"size 0x%llx, dma rbtree vaddr 0x%lx, iova 0x%llx, size 0x%lx\n",
-				unmap.vaddr, unmap.iova, unmap.size,
-				dma->vaddr, dma->iova, dma->size);
-		dma->ref_cnt--;
-		if (!dma->ref_cnt)
-			nbl_userdev_remove_dma(user->group, dma);
+	dma = nbl_userdev_find_dma(user->group, unmap.vaddr, 1);
+	if (dma && dma->vaddr != unmap.vaddr)
+		return -1;
+
+	dma = nbl_userdev_find_dma(user->group, unmap.vaddr + unmap.size - 1, 0);
+	if (dma && dma->vaddr + dma->size != unmap.vaddr + unmap.size)
+		goto unlock;
+
+	n = nbl_userdev_find_dma_first_node(user->group, unmap.vaddr, unmap.size);
+	while (n) {
+		dma = rb_entry(n, struct nbl_userdev_dma, node);
+		if (dma->vaddr >= unmap.vaddr + unmap.size)
+			break;
+
+		n = rb_next(n);
+		nbl_userdev_remove_dma(user->group, dma);
+		unmapped += dma->size;
 	}
+unlock:
 	mutex_unlock(&user->group->dma_tree_lock);
+	unmap.size = unmapped;
 
 	return 0;
 }
@@ -986,7 +1115,6 @@ static long nbl_vfio_ioctl(struct vfio_device *vdev, unsigned int cmd, unsigned 
 	long ret;
 
 	user = NBL_VFIO_DEV_TO_USERDEV(vdev);
-
 	switch (cmd) {
 	case NBL_DEV_USER_MAP_DMA:
 		ret = nbl_userdev_dma_map_ioctl(user, arg);
@@ -1028,7 +1156,6 @@ static int nbl_vdev_iommu_notifier(struct notifier_block *nb, unsigned long acti
 			nbl_userdev_remove_dma(user->group, dma);
 		mutex_unlock(&user->group->dma_tree_lock);
 	}
-
 	return NOTIFY_OK;
 }
 
@@ -1045,10 +1172,12 @@ static void nbl_userdev_release_group(struct kref *kref)
 	group = container_of(kref, struct nbl_dev_user_iommu_group, kref);
 	list_del(&group->group_next);
 	mutex_unlock(&nbl_userdev.glock);
+	mutex_lock(&group->dma_tree_lock);
 	while ((node = rb_first(&group->dma_tree)))
 		nbl_userdev_remove_dma(group, rb_entry(node, struct nbl_userdev_dma, node));
 
 	iommu_group_put(group->iommu_group);
+	mutex_unlock(&group->dma_tree_lock);
 	kfree(group);
 }
 
@@ -1107,7 +1236,6 @@ struct nbl_dev_user_iommu_group *nbl_userdev_create_group(struct iommu_group *io
 
 	list_add(&group->group_next, &nbl_userdev.glist);
 	mutex_unlock(&nbl_userdev.glock);
-
 	return group;
 }
 
@@ -1134,6 +1262,16 @@ static int nbl_vfio_open(struct vfio_device *vdev)
 	if (opened)
 		return -EBUSY;
 
+	rtnl_lock();
+	if (test_bit(NBL_XDP, adapter->state)) {
+		atomic_set(&user->open_cnt, 0);
+		rtnl_unlock();
+		return -EIO;
+	}
+
+	set_bit(NBL_USER, adapter->state);
+	rtnl_unlock();
+
 	/* add iommu group list */
 	iommu_group = iommu_group_get(&pdev->dev);
 	if (!iommu_group) {
@@ -1153,7 +1291,6 @@ static int nbl_vfio_open(struct vfio_device *vdev)
 	} else {
 		iommu_group_put(iommu_group);
 	}
-
 	user->iommu_notifier.notifier_call = nbl_vdev_iommu_notifier;
 	events = VFIO_IOMMU_NOTIFY_DMA_UNMAP;
 	ret = vfio_register_notifier(mdev, VFIO_IOMMU_NOTIFY, &events,
@@ -1161,16 +1298,18 @@ static int nbl_vfio_open(struct vfio_device *vdev)
 	if (ret) {
 		dev_err(&pdev->dev, "vfio register notifier failed, ret= %d\n", ret);
 		nbl_userdev_group_put(user, group);
+		goto clear_open_cnt;
 	} else {
 		user->group = group;
 	}
-
 	dev_info(&pdev->dev, "nbl vfio open\n");
 
 	return ret;
 
 clear_open_cnt:
 	atomic_set(&user->open_cnt, 0);
+	clear_bit(NBL_USER, adapter->state);
+
 	return ret;
 }
 
@@ -1180,6 +1319,7 @@ static void nbl_vfio_close(struct vfio_device *vdev)
 	struct nbl_adapter *adapter;
 	struct pci_dev *pdev;
 	struct nbl_dev_mgt *dev_mgt;
+	struct nbl_dev_net *net_dev;
 	struct nbl_channel_ops *chan_ops;
 	struct nbl_service_ops *serv_ops;
 	struct device *mdev;
@@ -1189,6 +1329,7 @@ static void nbl_vfio_close(struct vfio_device *vdev)
 	adapter = user->adapter;
 	pdev = adapter->pdev;
 	dev_mgt = (struct nbl_dev_mgt *)NBL_ADAPTER_TO_DEV_MGT(adapter);
+	net_dev = NBL_DEV_MGT_TO_NET_DEV(dev_mgt);
 	chan_ops = NBL_DEV_MGT_TO_CHAN_OPS(dev_mgt);
 	serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	mdev = &user->mdev.dev;
@@ -1206,7 +1347,9 @@ static void nbl_vfio_close(struct vfio_device *vdev)
 	nbl_user_change_kernel_network(user);
 	serv_ops->config_fd_flow_state(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
 				       NBL_CHAN_FDIR_RULE_ISOLATE, NBL_FD_STATE_FLUSH);
+	serv_ops->clear_flow(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt), user->user_vsi);
 	atomic_set(&user->open_cnt, 0);
+	clear_bit(NBL_USER, adapter->state);
 	user->user_promisc_mode = 0;
 
 	dev_info(&pdev->dev, "nbl vfio close\n");
@@ -1222,30 +1365,24 @@ static struct vfio_device_ops nbl_vfio_dev_ops = {
 	.mmap = nbl_vfio_mmap,
 };
 
-static const struct file_operations nbl_cdev_fops = {
-	.owner = THIS_MODULE,
-	.open = nbl_cdev_open,
-	.unlocked_ioctl = nbl_cdev_unlock_ioctl,
-	.compat_ioctl = compat_ptr_ioctl,
-	.release = nbl_cdev_release,
-	.mmap = nbl_cdev_mmap,
-};
-
 static int nbl_mdev_probe(struct mdev_device *mdev)
 {
 	struct nbl_dev_user *user;
 	struct device *dev;
+	int ret;
 
 	user = container_of((struct mdev_device *)mdev, struct nbl_dev_user, mdev);
 	dev = &user->mdev.dev;
-
 	vfio_init_group_dev(NBL_USERDEV_TO_VFIO_DEV(user), dev, &nbl_vfio_dev_ops);
-
-	return vfio_register_group_dev(NBL_USERDEV_TO_VFIO_DEV(user));
+	ret = vfio_register_group_dev(NBL_USERDEV_TO_VFIO_DEV(user));
+	if (ret)
+		goto out_uninit;
+	return 0;
+out_uninit:
+	return ret;
 }
 
 static void nbl_mdev_remove(struct mdev_device *mdev)
-
 {
 	struct nbl_dev_user *user;
 
@@ -1267,16 +1404,20 @@ static void nbl_mdev_device_release(struct device *dev)
 {
 	dev_info(dev, "nbl mdev device release\n");
 }
+#endif /* NBL_NO_TRANSLATE */
 
 void nbl_dev_start_user_dev(struct nbl_adapter *adapter)
 {
 	struct nbl_dev_mgt *dev_mgt = (struct nbl_dev_mgt *)NBL_ADAPTER_TO_DEV_MGT(adapter);
 	struct nbl_common_info *common = NBL_ADAPTER_TO_COMMON(adapter);
 	struct device *dev = NBL_COMMON_TO_DEV(common);
-	struct device *cdev = NULL, *mdev;
+	struct device *cdev = NULL;
 	struct pci_dev *pdev = NBL_COMMON_TO_PDEV(common);
 	struct nbl_dev_user *user;
+#ifndef NBL_NO_TRANSLATE
+	struct device *mdev;
 	struct device_driver *drv;
+#endif
 	void *shm_msg_ring;
 	struct nbl_dev_vsi *user_vsi, *xdp_vsi;
 	u64 dma_limit;
@@ -1318,6 +1459,7 @@ void nbl_dev_start_user_dev(struct nbl_adapter *adapter)
 	}
 
 	if (remap_status) {
+#ifndef NBL_NO_TRANSLATE
 		/* mdev init */
 		mdev = &user->mdev.dev;
 		mdev->bus = &mdev_bus_type;
@@ -1328,7 +1470,7 @@ void nbl_dev_start_user_dev(struct nbl_adapter *adapter)
 
 		ret = dev_set_name(mdev, pci_name(pdev));
 		if (ret) {
-			dev_info(dev, "mdev set name failed\n");
+			dev_err(dev, "mdev set name failed\n");
 			goto free_dev;
 		}
 
@@ -1347,6 +1489,11 @@ void nbl_dev_start_user_dev(struct nbl_adapter *adapter)
 			put_device(mdev);
 			goto free_dev;
 		}
+#else /* NBL_NO_TRANSLATE */
+
+		dev_info(dev, "Cannot support translate mode for NO vfio/mdev/vfio emulator driver\n");
+		goto free_dev;
+#endif /* NBL_NO_TRANSLATE */
 	} else {
 		mutex_lock(&nbl_userdev.clock);
 		minor = idr_alloc(&nbl_userdev.cidr, adapter, 1, MINORMASK + 1, GFP_KERNEL);
@@ -1377,6 +1524,8 @@ void nbl_dev_start_user_dev(struct nbl_adapter *adapter)
 	atomic_set(&user->open_cnt, 0);
 	user->network_type = NBL_KERNEL_NETWORK;
 	user->user_promisc_mode = 0;
+	user->user_mcast_mode = 0;
+	user->user_vsi = user_vsi->vsi_id;
 
 	NBL_DEV_MGT_TO_USER_DEV(dev_mgt) = user;
 
@@ -1393,7 +1542,9 @@ void nbl_dev_stop_user_dev(struct nbl_adapter *adapter)
 	struct nbl_dev_user *user = NBL_DEV_MGT_TO_USER_DEV(dev_mgt);
 	struct nbl_common_info *common = NBL_ADAPTER_TO_COMMON(adapter);
 	struct device *dev = NBL_COMMON_TO_DEV(common);
+#ifndef NBL_NO_TRANSLATE
 	struct device *mdev;
+#endif
 
 	if (!user)
 		return;
@@ -1406,10 +1557,12 @@ void nbl_dev_stop_user_dev(struct nbl_adapter *adapter)
 	kfree(user->shm_msg_ring);
 
 	if (user->remap_status) {
+#ifndef NBL_NO_TRANSLATE
 		mdev = &user->mdev.dev;
 		device_del(mdev);
 		put_device(mdev);
 		devm_kfree(dev, user);
+#endif
 	} else if (user->dev) {
 		mutex_lock(&nbl_userdev.clock);
 		device_destroy(nbl_userdev.cls, MKDEV(MAJOR(nbl_userdev.cdevt), user->minor));
@@ -1430,13 +1583,14 @@ void nbl_dev_user_module_init(void)
 	mutex_init(&nbl_userdev.glock);
 	INIT_LIST_HEAD(&nbl_userdev.glist);
 
+#ifndef NBL_NO_TRANSLATE
 	/* mdev driver register */
 	ret = mdev_register_driver(&nbl_mdev_driver);
 	if (ret) {
 		pr_err("mdev driver register failed\n");
 		return;
 	}
-
+#endif /* NBL_NO_TRANSLATE */
 	nbl_userdev.cls = class_create(THIS_MODULE, "nbl_userdev");
 	if (IS_ERR(nbl_userdev.cls)) {
 		pr_err("nbl_userdev class alloc failed\n");
@@ -1460,16 +1614,15 @@ void nbl_dev_user_module_init(void)
 
 	nbl_userdev.success = 1;
 	pr_info("user_module init success\n");
-
-	return;
-
 err_cdev_add:
 	unregister_chrdev_region(nbl_userdev.cdevt, MINORMASK + 1);
 err_alloc_chrdev:
 	class_destroy(nbl_userdev.cls);
 	nbl_userdev.cls = NULL;
 err_create_cls:
+#ifndef NBL_NO_TRANSLATE
 	mdev_unregister_driver(&nbl_mdev_driver);
+#endif
 }
 
 void nbl_dev_user_module_destroy(void)
@@ -1480,7 +1633,9 @@ void nbl_dev_user_module_destroy(void)
 		unregister_chrdev_region(nbl_userdev.cdevt, MINORMASK + 1);
 		class_destroy(nbl_userdev.cls);
 		nbl_userdev.cls = NULL;
+#ifndef NBL_NO_TRANSLATE
 		mdev_unregister_driver(&nbl_mdev_driver);
+#endif
 		nbl_userdev.success = 0;
 	}
 }

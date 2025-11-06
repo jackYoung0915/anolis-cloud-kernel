@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -16,12 +16,11 @@
 #define NBL_MIN_DESC_NUM			128
 #define NBL_MAX_DESC_NUM			32768
 
-#define NBL_PACKED_DESC_F_NEXT			1
-#define NBL_PACKED_DESC_F_WRITE			2
-
 #define DEFAULT_MAX_PF_QUEUE_PAIRS_NUM		16
 #define DEFAULT_MAX_VF_QUEUE_PAIRS_NUM		2
 
+#define NBL_PACKED_DESC_F_NEXT			1
+#define NBL_PACKED_DESC_F_WRITE			2
 #define NBL_PACKED_DESC_F_AVAIL			7
 #define NBL_PACKED_DESC_F_USED			15
 
@@ -30,27 +29,20 @@
 #define NBL_TX_BUF(tx_ring, i)			(&(((tx_ring)->tx_bufs)[i]))
 #define NBL_RX_BUF(rx_ring, i)			(&(((rx_ring)->rx_bufs)[i]))
 
-#define DESC_NEEDED				(MAX_SKB_FRAGS + 4)
-
-#define NBL_TX_POLL_WEIGHT			256
-
 #define NBL_RX_BUF_256				256
 #define NBL_RX_HDR_SIZE				NBL_RX_BUF_256
-#define NBL_RX_BUF_WRITE			16
-#define NBL_RX_PAD				(NET_IP_ALIGN + NET_SKB_PAD - NBL_BUFFER_HDR_LEN)
-#define NBL_XDP_RX_HARD_BUFF			(NBL_RX_PAD + NBL_BUFFER_HDR_LEN)
+#define NBL_BUFFER_HDR_LEN			(sizeof(struct nbl_rx_extend_head))
+#define NBL_RX_PAD				(NET_IP_ALIGN + NET_SKB_PAD)
+#define NBL_RX_BUFSZ				(2048)
+#define NBL_RXBUF_MIN_ORDER			(10)
+#define NBL_RX_DMA_ATTR				(DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
 
+#define NBL_TX_TOTAL_HEADERLEN_SHIFT		24
+#define DESC_NEEDED				(MAX_SKB_FRAGS + 4)
+#define NBL_TX_POLL_WEIGHT			256
 #define NBL_TXD_DATALEN_BITS			16
 #define NBL_TXD_DATALEN_MAX			BIT(NBL_TXD_DATALEN_BITS)
-
 #define MAX_DESC_NUM_PER_PKT			(32)
-
-#define NBL_RX_BUFSZ				(2048)
-#define NBL_RX_BUFSZ_ORDER			(11)
-
-#define NBL_BUFFER_HDR_LEN			(sizeof(struct nbl_rx_extend_head))
-
-#define NBL_ETH_FRAME_MIN_SIZE			60
 
 #define NBL_TX_TSO_MSS_MIN			(256)
 #define NBL_TX_TSO_MSS_MAX			(16383)
@@ -59,11 +51,6 @@
 #define NBL_TX_CHECKSUM_OFFLOAD_L2L3L4_HDR_LEN_MAX (255)
 #define IP_VERSION_V4				(4)
 #define NBL_TX_FLAGS_TSO			BIT(0)
-
-#define NBL_TX_TOTAL_HEADERLEN_SHIFT		24
-
-#define NBL_RX_DMA_ATTR				(DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_WEAK_ORDERING)
-#define NBL_RX_PAGE_PER_FRAGS			(PAGE_SIZE >> NBL_RX_BUFSZ_ORDER)
 
 #define NBL_KTLS_INIT_PAD_LEN			28
 #define NBL_KTLS_SYNC_PKT_LEN			30
@@ -276,24 +263,17 @@ struct nbl_tx_resync_info {
 	skb_frag_t frags[MAX_SKB_FRAGS];
 };
 
-#define NBL_XDP_PASS		0
-#define NBL_XDP_CONSUMED	BIT(0)
-#define NBL_XDP_TX		BIT(1)
-#define NBL_XDP_REDIRECT	BIT(2)
-#define NBL_XDP_ABORTED		BIT(3)
-#define NBL_XDP_DROP		BIT(4)
+#define NBL_XDP_FLAG_TX			BIT(0)
+#define NBL_XDP_FLAG_REDIRECT		BIT(1)
+#define NBL_XDP_FLAG_DROP		BIT(2)
+#define NBL_XDP_FLAG_OVERSIZE		BIT(3)
+#define NBL_XDP_FLAG_MULTICAST		BIT(4)
 
 struct nbl_xdp_output {
-	u16 desc_done_num;
-	bool xdp_tx_act;
-	bool xdp_redirect_act;
-	bool xdp_drop;
-	bool multicast;
-	bool xdp_oversize;
-	u8 resv;
 	u64 bytes;
+	u16 desc_done_num;
+	u16 flags;
 };
-
 DECLARE_STATIC_KEY_FALSE(nbl_xdp_locking_key);
 
 static inline u16 nbl_unused_rx_desc_count(struct nbl_res_rx_ring *ring)

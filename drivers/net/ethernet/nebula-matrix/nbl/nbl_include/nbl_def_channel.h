@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEF_CHANNEL_H_
@@ -261,6 +261,43 @@ enum nbl_chan_msg_type {
 	NBL_CHAN_MSG_GET_PFC_BUFFER_SIZE,
 	NBL_CHAN_MSG_SET_PFC_BUFFER_SIZE,
 	NBL_CHAN_MSG_GET_VF_STATS,
+	NBL_CHAN_MSG_REGISTER_FUNC_TRUST,
+	NBL_CHAN_MSG_NOTIFY_TRUST,
+	NBL_CHAN_CHECK_VF_IS_ACTIVE,
+	NBL_CHAN_MSG_GET_ETH_ABNORMAL_STATS,
+	NBL_CHAN_MSG_GET_ETH_CTRL_STATS,
+	NBL_CHAN_MSG_GET_PAUSE_STATS,
+	NBL_CHAN_MSG_GET_ETH_MAC_STATS,
+	NBL_CHAN_MSG_GET_FEC_STATS,
+	NBL_CHAN_MSG_CFG_MULTI_MCAST_RULE,
+	NBL_CHAN_MSG_GET_LINK_DOWN_COUNT,
+	NBL_CHAN_MSG_GET_LINK_STATUS_OPCODE,
+	NBL_CHAN_MSG_GET_RMON_STATS,
+	NBL_CHAN_MSG_REGISTER_PF_NAME,
+	NBL_CHAN_MSG_GET_PF_NAME,
+	NBL_CHAN_MSG_CONFIGURE_RDMA_BW,
+	NBL_CHAN_MSG_SET_RATE_LIMIT,
+	NBL_CHAN_MSG_SET_TC_WGT,
+	NBL_CHAN_MSG_REMOVE_QUEUE,
+	NBL_CHAN_MSG_GET_MIRROR_TABLE_ID,
+	NBL_CHAN_MSG_CONFIGURE_MIRROR,
+	NBL_CHAN_MSG_CONFIGURE_MIRROR_TABLE,
+	NBL_CHAN_MSG_CLEAR_MIRROR_CFG,
+	NBL_CHAN_MSG_MIRROR_OUTPUTPORT_NOTIFY,
+	NBL_CHAN_MSG_CHECK_FLOWTABLE_SPEC,
+	NBL_CHAN_CHECK_VF_IS_VDPA,
+	NBL_CHAN_MSG_GET_VDPA_VF_STATS,
+	NBL_CHAN_MSG_SET_RX_RATE,
+	NBL_CHAN_GET_UVN_PKT_DROP_STATS,
+	NBL_CHAN_GET_USTORE_PKT_DROP_STATS,
+	NBL_CHAN_GET_USTORE_TOTAL_PKT_DROP_STATS,
+	NBL_CHAN_MSG_SET_WOL,
+	NBL_CHAN_MSG_INIT_VF_MSIX_MAP,
+	NBL_CHAN_MSG_GET_ST_NAME,
+
+	NBL_CHAN_MSG_MTU_SET = 501,
+	NBL_CHAN_MSG_SET_RXFH_INDIR = 506,
+	NBL_CHAN_MSG_SET_RXFH_RSS_ALG_SEL = 508,
 
 	/* mailbox msg end */
 	NBL_CHAN_MSG_MAILBOX_MAX,
@@ -280,6 +317,8 @@ enum nbl_chan_msg_type {
 	NBL_CHAN_MSG_ADMINQ_FLASH_ACTIVATE = 0x8204,
 	NBL_CHAN_MSG_ADMINQ_RESOURCE_WRITE = 0x8205,
 	NBL_CHAN_MSG_ADMINQ_RESOURCE_READ = 0x8206,
+	NBL_CHAN_MSG_ADMINQ_REGISTER_WRITE = 0x8207,
+	NBL_CHAN_MSG_ADMINQ_REGISTER_READ = 0x8208,
 	NBL_CHAN_MSG_ADMINQ_GET_NVM_BANK_INDEX = 0x820B,
 	NBL_CHAN_MSG_ADMINQ_VERIFY_NVM_BANK = 0x820C,
 	NBL_CHAN_MSG_ADMINQ_FLASH_LOCK = 0x820D,
@@ -288,8 +327,8 @@ enum nbl_chan_msg_type {
 	NBL_CHAN_MSG_ADMINQ_PORT_NOTIFY = 0x8301,
 	NBL_CHAN_MSG_ADMINQ_GET_MODULE_EEPROM = 0x8302,
 	NBL_CHAN_MSG_ADMINQ_GET_ETH_STATS = 0x8303,
+	NBL_CHAN_MSG_ADMINQ_GET_FEC_STATS = 0x8305,
 	/* TODO: new kernel and ethtool support show fec stats */
-	NBL_CHAN_MSG_ADMINQ_GET_FEC_STATS = 0x408,
 	NBL_CHAN_MSG_ADMINQ_EMP_CONSOLE_WRITE = 0x8F01,
 	NBL_CHAN_MSG_ADMINQ_EMP_CONSOLE_READ = 0x8F02,
 
@@ -302,6 +341,8 @@ struct nbl_chan_vsi_qid_info {
 	u16 vsi_id;
 	u16 local_qid;
 };
+
+#define NBL_CHANNEL_FREEZE_FAILED_CNT	3
 
 enum nbl_chan_state {
 	NBL_CHAN_INTERRUPT_READY,
@@ -322,6 +363,11 @@ struct nbl_chan_param_del_macvlan {
 	u16 vsi;
 };
 
+struct nbl_chan_param_cfg_multi_mcast {
+	u16 vsi;
+	u16 enable;
+};
+
 struct nbl_chan_param_register_net_info {
 	u16 pf_bdf;
 	u64 vf_bar_start;
@@ -330,6 +376,7 @@ struct nbl_chan_param_register_net_info {
 	u16 offset;
 	u16 stride;
 	u64 pf_bar_start;
+	u16 is_vdpa;
 };
 
 struct nbl_chan_param_alloc_txrx_queues {
@@ -357,11 +404,17 @@ struct nbl_chan_param_cfg_dsch {
 struct nbl_chan_param_setup_cqs {
 	u16 vsi_id;
 	u16 real_qps;
+	bool rss_indir_set;
 };
 
 struct nbl_chan_param_set_promisc_mode {
 	u16 vsi_id;
 	u16 mode;
+};
+
+struct nbl_chan_param_init_vf_msix_map {
+	u16 func_id;
+	bool enable;
 };
 
 struct nbl_chan_param_cfg_msix_map {
@@ -430,6 +483,11 @@ struct nbl_chan_param_get_rxfh_indir {
 	u32 rxfh_indir_size;
 };
 
+struct nbl_chan_param_set_rxfh_rss_alg_sel {
+	u16 vsi_id;
+	u8 rss_alg_sel;
+};
+
 struct nbl_chan_result_get_real_bdf {
 	u8 bus;
 	u8 dev;
@@ -473,13 +531,22 @@ struct nbl_chan_resource_write_param {
 	u32 resid;
 	u32 offset;
 	u32 len;
-	u8 data[0];
+	u8 data[];
 };
 
 struct nbl_chan_resource_read_param {
 	u32 resid;
 	u32 offset;
 	u32 len;
+};
+
+struct nbl_chan_adminq_reg_read_param {
+	u32 reg;
+};
+
+struct nbl_chan_adminq_reg_write_param {
+	u32 reg;
+	u32 value;
 };
 
 struct nbl_chan_param_flash_write {
@@ -498,7 +565,7 @@ struct nbl_chan_param_load_p4 {
 	u32 section_offset;
 	u32 load_start;
 	u32 load_end;
-	u8 data[0];
+	u8 data[];
 };
 
 struct nbl_chan_result_flash_activate {
@@ -522,7 +589,8 @@ struct nbl_chan_param_module_eeprom_info {
 	u8 page;
 	u8 bank;
 	u32 write:1;
-	u32 rsvd:31;
+	u32 version:2;
+	u32 rsvd:29;
 	u16 offset;
 	u16 length;
 #define NBL_MODULE_EEPRO_WRITE_MAX_LEN (4)
@@ -532,6 +600,13 @@ struct nbl_chan_param_module_eeprom_info {
 struct nbl_chan_param_eth_rep_notify_link_state {
 	u8 eth_id;
 	u8 link_state;
+};
+
+struct nbl_chan_param_set_rxfh_indir {
+	u16 vsi_id;
+	u32 indir_size;
+#define NBL_RXFH_INDIR_MAX_SIZE		(512)
+	u32 indir[NBL_RXFH_INDIR_MAX_SIZE];
 };
 
 struct nbl_chan_cfg_ktls_keymat {
@@ -651,14 +726,14 @@ struct nbl_chan_regs_info {
 	u16 data_len:6;		/* align to u32 */
 	u16 tbl_name:7;
 	u16 mode:3;
-	u32 data[0];
+	u32 data[];
 };
 
 struct nbl_chan_bulk_regs_info {
 	u32 item_cnt:9;
 	u32 rsv:7;
 	u32 data_len:16;	/* align to u32 */
-	u32 data[0];
+	u32 data[];
 };
 
 #pragma pack()
@@ -783,6 +858,11 @@ struct nbl_chan_param_register_func_mac {
 	u8 mac[ETH_ALEN];
 };
 
+struct nbl_chan_param_register_trust {
+	u16 func_id;
+	bool trusted;
+};
+
 struct nbl_chan_param_register_vlan {
 	u16 func_id;
 	u16 vlan_tci;
@@ -792,6 +872,12 @@ struct nbl_chan_param_register_vlan {
 struct nbl_chan_param_set_tx_rate {
 	u16 func_id;
 	int tx_rate;
+};
+
+struct nbl_chan_param_set_txrx_rate {
+	u16 func_id;
+	int txrx_rate;
+	int burst;
 };
 
 struct nbl_chan_param_register_func_link_forced {
@@ -805,6 +891,16 @@ struct nbl_chan_param_notify_link_state {
 	u32 link_speed;
 };
 
+struct nbl_chan_param_set_mtu {
+	u16 vsi_id;
+	u16 mtu;
+};
+
+struct nbl_chan_param_get_uvn_pkt_drop_stats {
+	u16 vsi_id;
+	u16 num_queues;
+};
+
 struct nbl_register_net_param {
 	u16 pf_bdf;
 	u64 vf_bar_start;
@@ -813,6 +909,7 @@ struct nbl_register_net_param {
 	u16 offset;
 	u16 stride;
 	u64 pf_bar_start;
+	u16 is_vdpa;
 };
 
 struct nbl_register_net_result {
@@ -831,6 +928,10 @@ struct nbl_register_net_result {
 	u16 vlan_proto;
 	u16 vlan_tci;
 	u32 rate;
+	bool trusted;
+
+	u64 vlan_features;
+	u64 hw_enc_features;
 };
 
 #define NBL_CHAN_FDIR_FLOW_RULE_SIZE 1024
@@ -950,6 +1051,39 @@ struct nbl_queue_err_stats {
 	u32 uvn_stat_pkt_drop;
 };
 
+struct nbl_eth_mac_stats {
+	u64 frames_txd_ok;
+	u64 frames_rxd_ok;
+	u64 octets_txd_ok;
+	u64 octets_rxd_ok;
+	u64 multicast_frames_txd_ok;
+	u64 broadcast_frames_txd_ok;
+	u64 multicast_frames_rxd_ok;
+	u64 broadcast_frames_rxd_ok;
+};
+
+enum rmon_range {
+	ETHER_STATS_PKTS_64_OCTETS,
+	ETHER_STATS_PKTS_65_TO_127_OCTETS,
+	ETHER_STATS_PKTS_128_TO_255_OCTETS,
+	ETHER_STATS_PKTS_256_TO_511_OCTETS,
+	ETHER_STATS_PKTS_512_TO_1023_OCTETS,
+	ETHER_STATS_PKTS_1024_TO_1518_OCTETS,
+	ETHER_STATS_PKTS_1519_TO_2047_OCTETS,
+	ETHER_STATS_PKTS_2048_TO_MAX_OCTETS,
+	ETHER_STATS_PKTS_MAX,
+};
+
+struct nbl_rmon_stats {
+	u64 undersize_frames_rxd_goodfcs;
+	u64 oversize_frames_rxd_goodfcs;
+	u64 undersize_frames_rxd_badfcs;
+	u64 oversize_frames_rxd_badfcs;
+
+	u64 rmon_rx_range[ETHER_STATS_PKTS_MAX];
+	u64 rmon_tx_range[ETHER_STATS_PKTS_MAX];
+};
+
 struct nbl_rdma_register_param {
 	bool has_rdma;
 	u32 mem_type;
@@ -989,11 +1123,27 @@ struct nbl_port_notify {
 	u64 lp_advertising; /* enum nbl_port_cap */
 };
 
-#define NBL_EMP_ALERT_DATA_MAX_SIZE 64
+#define NBL_EMP_LOG_MAX_SIZE (256)
+struct nbl_emp_alert_log_event {
+	u64 uptime;
+	u8 level;
+	u8 data[256];
+};
+
+#define NBL_EMP_ALERT_DATA_MAX_SIZE (4032)
 struct nbl_chan_param_emp_alert_event {
 	u16 type;
 	u16 len;
 	u8 data[NBL_EMP_ALERT_DATA_MAX_SIZE];
+};
+
+struct nbl_fec_stats {
+	u32 corrected_blocks;
+	u32 uncorrectable_blocks;
+	u32 corrected_bits;
+	u32 corrected_lane[4];
+	u32 uncorrectable_lane[4];
+	u32 corrected_bits_lane[4];
 };
 
 struct nbl_port_state {
@@ -1011,18 +1161,23 @@ struct nbl_port_state {
 	u8 module_repluged;
 };
 
+struct nbl_eth_ctrl_stats {
+	u64 macctrl_frames_txd_ok;
+	u64 macctrl_frames_rxd;
+	u64 unsupported_opcodes_rx;
+};
+
+struct nbl_pause_stats {
+	u64 rx_pause_frames;
+	u64 tx_pause_frames;
+};
+
 struct nbl_port_advertising {
 	u8 eth_id;
 	u64 speed_advert;
 	u8 active_fc;
 	u8 active_fec; /* enum nbl_port_fec */
 	u8 autoneg;
-};
-
-struct nbl_port_key {
-	u32 id; /* port id */
-	u32 subop; /* 1: read, 2: write */
-	u64 data[]; /* [47:0]: data, [55:48]: rsvd, [63:56]: key */
 };
 
 struct nbl_eth_link_info {
@@ -1091,7 +1246,12 @@ enum nbl_fw_reset_type {
 struct nbl_chan_param_notify_fw_reset_info {
 	u16 type; /* enum nbl_fw_reset_type */
 	u16 len;
-	u16 data[0];
+	u16 data[];
+};
+
+struct nbl_chan_param_configure_rdma_bw {
+	u8 eth_id;
+	int rdma_bw;
 };
 
 struct nbl_chan_param_configure_qos {
@@ -1116,6 +1276,52 @@ struct nbl_chan_param_get_pfc_buffer_size {
 struct nbl_chan_param_get_pfc_buffer_size_resp {
 	int xoff;
 	int xon;
+};
+
+struct nbl_chan_param_set_rate_limit {
+	enum nbl_traffic_type type;
+	u32 rate;
+};
+
+struct nbl_chan_param_pf_name {
+	u16 vsi_id;
+	char dev_name[IFNAMSIZ];
+};
+
+struct nbl_chan_param_set_tc_wgt {
+	u16 vsi_id;
+	u8 num_tc;
+	u8 weight[NBL_MAX_TC_NUM];
+};
+
+struct nbl_chan_param_get_mirror_table_id {
+	u16 vsi_id;
+	int dir;
+	bool mirror_en;
+	u8 mt_id;
+};
+
+struct nbl_chan_param_mirror {
+	int dir;
+	bool mirror_en;
+	u8 mt_id;
+};
+
+struct nbl_chan_param_mirror_table {
+	bool mirror_en;
+	u8 mt_id;
+	u16 func_id;
+};
+
+struct nbl_chan_param_check_flow_spec {
+	u16 vlan_list_cnt;
+	u16 unicast_mac_cnt;
+	u16 multi_mac_cnt;
+};
+
+struct nbl_chan_param_set_wol {
+	u8 eth_id;
+	bool enable;
 };
 
 struct nbl_chan_send_info {
@@ -1155,6 +1361,7 @@ struct nbl_channel_ops {
 	int (*send_msg)(void *priv, struct nbl_chan_send_info *chan_send);
 	int (*send_ack)(void *priv, struct nbl_chan_ack_info *chan_ack);
 	int (*register_msg)(void *priv, u16 msg_type, nbl_chan_resp func, void *callback_priv);
+	void (*unregister_msg)(void *priv, u16 msg_type);
 	int (*cfg_chan_qinfo_map_table)(void *priv, u8 chan_type);
 	bool (*check_queue_exist)(void *priv, u8 chan_type);
 	int (*setup_queue)(void *priv, u8 chan_type);
@@ -1164,6 +1371,7 @@ struct nbl_channel_ops {
 	int (*teardown_queue)(void *priv, u8 chan_type);
 	void (*clean_queue_subtask)(void *priv, u8 chan_type);
 	int (*dump_txq)(void *priv, struct seq_file *m, u8 type);
+	int (*set_txq)(void *priv, u8 type, u32 value);
 	int (*dump_rxq)(void *priv, struct seq_file *m, u8 type);
 	u32 (*get_adminq_tx_buf_size)(void *priv);
 	int (*init_cmdq)(struct device *dev, void *priv);
@@ -1182,10 +1390,6 @@ struct nbl_channel_ops_tbl {
 
 int nbl_chan_init_common(void *p, struct nbl_init_param *param);
 void nbl_chan_remove_common(void *p);
-int nbl_chan_init_bootis(void *p, struct nbl_init_param *param);
-void nbl_chan_remove_bootis(void *p);
-int nbl_chan_init_virtio(void *p, struct nbl_init_param *param);
-void nbl_chan_remove_virtio(void *p);
 
 enum nbl_cmd_opcode_list {
 	NBL_CMD_OP_WRITE,

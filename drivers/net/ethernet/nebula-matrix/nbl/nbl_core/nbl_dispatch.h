@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DISPATCH_H_
@@ -29,9 +29,9 @@
 	u64 ret = 0;										\
 												\
 	if (_disp_mgt->ops_lock_required)							\
-		mutex_lock(&_disp_mgt->ops_muxtex_lock);					\
+		mutex_lock(&_disp_mgt->ops_mutex_lock);					\
+												\
 	__builtin_choose_expr(									\
-		/* Check if the func has void return value */					\
 		__builtin_types_compatible_p(typeof(_func(__VA_ARGS__)), void),			\
 		(!_func) ? 0 : _func(__VA_ARGS__),						\
 		ret = __builtin_choose_expr(							\
@@ -42,7 +42,7 @@
 	);											\
 												\
 	if (_disp_mgt->ops_lock_required)							\
-		mutex_unlock(&_disp_mgt->ops_muxtex_lock);					\
+		mutex_unlock(&_disp_mgt->ops_mutex_lock);					\
 												\
 	(typeof(_func(__VA_ARGS__))) ret;							\
 })
@@ -79,8 +79,7 @@ struct nbl_dispatch_mgt {
 	struct nbl_channel_ops_tbl *chan_ops_tbl;
 	struct nbl_dispatch_ops_tbl *disp_ops_tbl;
 	DECLARE_BITMAP(ctrl_lvl, NBL_DISP_CTRL_LVL_MAX);
-	/* use for the caller not in interrupt */
-	struct mutex ops_muxtex_lock;
+	struct mutex ops_mutex_lock; /* use for the caller not in interrupt */
 	/* use for the caller is in interrupt or other can't sleep thread */
 	spinlock_t ops_spin_lock;
 	bool ops_lock_required;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include <linux/aer.h>
@@ -71,6 +71,7 @@ struct nbl_adapter *nbl_core_init(struct pci_dev *pdev, struct nbl_init_param *p
 	NBL_COMMON_TO_DMA_DEV(common) = &pdev->dev;
 	NBL_COMMON_TO_DEBUG_LVL(common) |= NBL_DEBUG_ALL;
 	NBL_COMMON_TO_VF_CAP(common) = param->caps.is_vf;
+	NBL_COMMON_TO_OCP_CAP(common) = param->caps.is_ocp;
 	NBL_COMMON_TO_PCI_USING_DAC(common) = param->pci_using_dac;
 	NBL_COMMON_TO_PCI_FUNC_ID(common) = PCI_FUNC(pdev->devfn);
 	common->devid    = PCI_SLOT(pdev->devfn);
@@ -129,6 +130,7 @@ phy_init_fail:
 void nbl_core_remove(struct nbl_adapter *adapter)
 {
 	struct device *dev;
+
 	struct nbl_product_base_ops *product_base_ops;
 
 	if (!adapter)
@@ -266,14 +268,11 @@ static void nbl_get_func_param(struct pci_dev *pdev, kernel_ulong_t driver_data,
 	param->caps.has_grc = NBL_CAP_IS_GRC(driver_data);
 	param->caps.is_blk = NBL_CAP_IS_BLK(driver_data);
 	param->caps.is_nic = NBL_CAP_IS_NIC(driver_data);
+	param->caps.is_ocp = NBL_CAP_IS_OCP(driver_data);
 	param->caps.has_factory_ctrl = NBL_CAP_IS_FACTORY_CTRL(driver_data);
 
 	if (NBL_CAP_IS_LEONIS(driver_data))
 		param->product_type = NBL_LEONIS_TYPE;
-	if (NBL_CAP_IS_BOOTIS(driver_data))
-		param->product_type = NBL_BOOTIS_TYPE;
-	if (NBL_CAP_IS_VIRTIO(driver_data))
-		param->product_type = NBL_VIRTIO_TYPE;
 
 	/**
 	 * Leonis only PF0 has ctrl capability, but PF0's pcie device_id is same with other PF.
@@ -320,16 +319,8 @@ static int nbl_probe(struct pci_dev *pdev, const struct pci_device_id __always_u
 	}
 
 	pci_set_master(pdev);
-
 	pci_enable_pcie_error_reporting(pdev);
-
 	pci_save_state(pdev);
-
-	if (param.caps.is_blk) {
-		dev_info(dev, "nbl_virtio_blk probe OK\n");
-		return NBL_OK;
-	}
-
 	adapter = nbl_core_init(pdev, &param);
 	if (!adapter) {
 		dev_err(dev, "Nbl adapter init fail\n");
@@ -366,7 +357,6 @@ static void nbl_remove(struct pci_dev *pdev)
 
 	nbl_core_stop(adapter);
 	nbl_core_remove(adapter);
-
 	pci_disable_pcie_error_reporting(pdev);
 	pci_clear_master(pdev);
 	pci_disable_device(pdev);
@@ -377,9 +367,16 @@ static void nbl_remove(struct pci_dev *pdev)
 static void nbl_shutdown(struct pci_dev *pdev)
 {
 	struct nbl_adapter *adapter = pci_get_drvdata(pdev);
+	struct nbl_common_info *common = NBL_ADAPTER_TO_COMMON(adapter);
+	bool wol_ena = common->wol_ena;
 
 	if (!NBL_COMMON_TO_VF_CAP(NBL_ADAPTER_TO_COMMON(adapter)))
 		nbl_remove(pdev);
+
+	if (system_state == SYSTEM_POWER_OFF) {
+		pci_wake_from_d3(pdev, wol_ena);
+		pci_set_power_state(pdev, PCI_D3hot);
+	}
 
 	dev_info(&pdev->dev, "nbl shutdown OK\n");
 }
@@ -394,18 +391,28 @@ static __maybe_unused int nbl_sriov_configure(struct pci_dev *pdev, int num_vfs)
 		if (!adapter)
 			return 0;
 
-		nbl_dev_remove_vf_config(adapter);
-
 		err = nbl_dev_destroy_rep(adapter);
 		if (err) {
 			dev_err(&pdev->dev, "nbl destroy repr dev failed %d!\n", err);
 			return err;
 		}
+
+		nbl_dev_remove_vf_config(adapter);
 		return 0;
+	}
+
+	/* register pf_name to AF first, cuz vf_name depends on pf_anme */
+	nbl_dev_register_dev_name(adapter);
+
+	err = nbl_dev_setup_vf_config(adapter, num_vfs);
+	if (err) {
+		dev_err(&pdev->dev, "nbl setup vf config failed %d!\n", err);
+		return err;
 	}
 
 	err = pci_enable_sriov(pdev, num_vfs);
 	if (err) {
+		nbl_dev_remove_vf_config(adapter);
 		dev_err(&pdev->dev, "nbl enable sriov failed %d!\n", err);
 		return err;
 	}
@@ -414,14 +421,7 @@ static __maybe_unused int nbl_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	if (err) {
 		dev_err(&pdev->dev, "nbl create repr dev failed %d!\n", err);
 		pci_disable_sriov(pdev);
-		return err;
-	}
-
-	err = nbl_dev_setup_vf_config(adapter, num_vfs);
-	if (err) {
-		dev_err(&pdev->dev, "nbl setup vf config failed %d!\n", err);
-		pci_disable_sriov(pdev);
-		nbl_dev_destroy_rep(adapter);
+		nbl_dev_remove_vf_config(adapter);
 		return err;
 	}
 
@@ -432,12 +432,8 @@ static __maybe_unused int nbl_sriov_configure(struct pci_dev *pdev, int num_vfs)
 
 /**
  *  Leonis DeviceID
- * 0x3400-0x3402 reserve for internal test
  * 0x3403-0x340d for snic v3r1 product
  **/
-#define NBL_DEVICE_ID_LEONIS_FACTORY		(0x3400)
-#define NBL_DEVICE_ID_LEONIS_PF			(0x3401)
-#define NBL_DEVICE_ID_LEONIS_VF			(0x3402)
 #define NBL_DEVICE_ID_M18110			(0x3403)
 #define NBL_DEVICE_ID_M18110_LX			(0x3404)
 #define NBL_DEVICE_ID_M18110_BASE_T		(0x3405)
@@ -457,16 +453,6 @@ static __maybe_unused int nbl_sriov_configure(struct pci_dev *pdev, int num_vfs)
 #define NBL_DEVICE_ID_M18100_VF			(0x3413)
 
 static const struct pci_device_id nbl_id_table[] = {
-	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_LEONIS_FACTORY), .driver_data =
-	  NBL_CAP_SET_BIT(NBL_CAP_HAS_FACTORY_CTRL_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) },
-	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_LEONIS_PF), .driver_data =
-	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
-	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_LEONIS_VF), .driver_data =
-	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_VF_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) },
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18110), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
@@ -486,19 +472,19 @@ static const struct pci_device_id nbl_id_table[] = {
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18110_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT) },
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18110_LX_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18110_BASE_T_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18110_LX_BASE_T_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18120), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
@@ -518,19 +504,19 @@ static const struct pci_device_id nbl_id_table[] = {
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18120_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18120_LX_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18120_BASE_T_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	   NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	   NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18120_LX_BASE_T_OCP), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) | NBL_CAP_SET_BIT(NBL_CAP_HAS_USER_BIT) |
-	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) },
+	  NBL_CAP_SET_BIT(NBL_CAP_SUPPORT_LAG_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_OCP_BIT)},
 	{ PCI_DEVICE(NBL_VENDOR_ID, NBL_DEVICE_ID_M18100_VF), .driver_data =
 	  NBL_CAP_SET_BIT(NBL_CAP_HAS_NET_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_VF_BIT) |
 	  NBL_CAP_SET_BIT(NBL_CAP_IS_NIC_BIT) | NBL_CAP_SET_BIT(NBL_CAP_IS_LEONIS_BIT) },
@@ -609,6 +595,7 @@ static void __exit nbl_module_exit(void)
 	nbl_st_remove(nbl_get_st_table());
 
 	nbl_common_destroy_wq();
+
 	nbl_dev_user_module_destroy();
 
 	nbl_debugfs_remove();
@@ -621,17 +608,10 @@ static void __exit nbl_module_exit(void)
 module_init(nbl_module_init);
 module_exit(nbl_module_exit);
 MODULE_LICENSE("GPL v2");
+MODULE_VERSION(NBL_DRIVER_VERSION);
 
 #define NBL_FW_PATH			"nbl/"
 #define NBL_FW_SNIC_PATH		NBL_FW_PATH "snic_v3r1/"
 #define NBL_FW_TUNNEL_TOE_P4		NBL_FW_SNIC_PATH
 
 MODULE_FIRMWARE(NBL_FW_SNIC_PATH "nbl_single_tunnel_toe_enhance.elf");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "nbl_dual_tunnel_toe_enhance.elf");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "nbl_quad_tunnel_toe_enhance.elf");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "m181xx_single_port_p4_hg");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "m181xx_dual_port_p4_hg");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "m181xx_quad_port_p4_hg");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "m181xx_single_port_p4_lg");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "m181xx_dual_port_p4_lg");
-MODULE_FIRMWARE(NBL_FW_SNIC_PATH "m181xx_quad_port_p4_lg");
