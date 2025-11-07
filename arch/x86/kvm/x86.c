@@ -3981,6 +3981,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_X86_MSR_FILTER:
 	case KVM_CAP_ENFORCE_PV_FEATURE_CPUID:
 	case KVM_CAP_SYS_ATTRIBUTES:
+	case KVM_CAP_VAPIC:
 #ifdef CONFIG_X86_SGX_KVM
 	case KVM_CAP_SGX_ATTRIBUTE:
 #endif
@@ -4008,9 +4009,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		 * of the module parameters.
 		 */
 		r = static_call(kvm_x86_has_emulated_msr)(kvm, MSR_IA32_SMBASE);
-		break;
-	case KVM_CAP_VAPIC:
-		r = !static_call(kvm_x86_cpu_has_accelerated_tpr)();
 		break;
 	case KVM_CAP_NR_VCPUS:
 		r = KVM_SOFT_MAX_VCPUS;
