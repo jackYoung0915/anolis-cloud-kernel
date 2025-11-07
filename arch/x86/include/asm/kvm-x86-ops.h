@@ -121,6 +121,12 @@ KVM_X86_OP_OPTIONAL(enable_direct_tlbflush)
 KVM_X86_OP_OPTIONAL(migrate_timers)
 KVM_X86_OP(msr_filter_changed)
 KVM_X86_OP(complete_emulated_msr)
+KVM_X86_OP_OPTIONAL(guest_memory_reclaimed)
+KVM_X86_OP_OPTIONAL(vm_attestation)
+KVM_X86_OP_OPTIONAL(get_hygon_coco_extension)
+KVM_X86_OP_OPTIONAL(enable_hygon_coco_extension)
+KVM_X86_OP_OPTIONAL(control_pre_system_reset)
+KVM_X86_OP_OPTIONAL(control_post_system_reset)
 
 #undef KVM_X86_OP
 #undef KVM_X86_OP_OPTIONAL
