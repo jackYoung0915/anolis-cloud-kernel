@@ -4079,9 +4079,8 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		 * but only CSV2 guest support export to emulate
 		 * MSR_AMD64_SEV_ES_GHCB.
 		 */
-		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
-			r = kvm_x86_ops.has_emulated_msr(kvm,
-						MSR_AMD64_SEV_ES_GHCB);
+		if (is_x86_vendor_hygon())
+			r = static_call(kvm_x86_has_emulated_msr)(kvm, MSR_AMD64_SEV_ES_GHCB);
 		break;
 	case KVM_CAP_HYGON_COCO_EXT:
 		r = 0;
@@ -4093,7 +4092,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		 * suggested that the userspace to utilise extensions.
 		 */
 		if (is_x86_vendor_hygon() && kvm_x86_ops.get_hygon_coco_extension)
-			r = kvm_x86_ops.get_hygon_coco_extension(kvm);
+			r = static_call(kvm_x86_get_hygon_coco_extension)(kvm);
 		break;
 	default:
 		break;
@@ -5678,8 +5677,7 @@ split_irqchip_unlock:
 		 * Hygon CSV technology.
 		 */
 		if (is_x86_vendor_hygon() && kvm_x86_ops.enable_hygon_coco_extension)
-			r = kvm_x86_ops.enable_hygon_coco_extension(kvm,
-								(u32)cap->args[0]);
+			r = static_call(kvm_x86_enable_hygon_coco_extension)(kvm, (u32)cap->args[0]);
 		break;
 	default:
 		r = -EINVAL;
@@ -6117,16 +6115,14 @@ set_pit2_out:
 		r = kvm_vm_ioctl_set_msr_filter(kvm, argp);
 		break;
 	case KVM_CONTROL_PRE_SYSTEM_RESET:
-		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
-		    kvm_x86_ops.control_pre_system_reset)
-			r = kvm_x86_ops.control_pre_system_reset(kvm);
+		if (is_x86_vendor_hygon() && kvm_x86_ops.control_pre_system_reset)
+			r = static_call(kvm_x86_control_pre_system_reset)(kvm);
 		else
 			r = -ENOTTY;
 		break;
 	case KVM_CONTROL_POST_SYSTEM_RESET:
-		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
-		    kvm_x86_ops.control_post_system_reset)
-			r = kvm_x86_ops.control_post_system_reset(kvm);
+		if (is_x86_vendor_hygon() && kvm_x86_ops.control_post_system_reset)
+			r = static_call(kvm_x86_control_post_system_reset)(kvm);
 		else
 			r = -ENOTTY;
 		break;
@@ -8721,7 +8717,7 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 	case KVM_HC_VM_ATTESTATION:
 		ret = -KVM_ENOSYS;
 		if (kvm_x86_ops.vm_attestation)
-			ret = kvm_x86_ops.vm_attestation(vcpu->kvm, a0, a1);
+			ret = static_call(kvm_x86_vm_attestation)(vcpu->kvm, a0, a1);
 		break;
 	case KVM_HC_PSP_OP_OBSOLETE:
 	case KVM_HC_PSP_COPY_FORWARD_OP:
@@ -9335,8 +9331,7 @@ void kvm_arch_mmu_notifier_invalidate_range(struct kvm *kvm,
 
 void kvm_arch_guest_memory_reclaimed(struct kvm *kvm)
 {
-	if (kvm_x86_ops.guest_memory_reclaimed)
-		kvm_x86_ops.guest_memory_reclaimed(kvm);
+	static_call_cond(kvm_x86_guest_memory_reclaimed);
 }
 
 void kvm_vcpu_reload_apic_access_page(struct kvm_vcpu *vcpu)
