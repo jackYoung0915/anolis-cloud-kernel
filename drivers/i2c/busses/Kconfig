@@ -375,6 +375,7 @@ config I2C_SCMI
 config I2C_ZHAOXIN_SMBUS
 	tristate "Zhaoxin SMBus Interface"
 	depends on PCI || COMPILE_TEST
+	default m
 	help
 	  If you say yes to this option, support will be included for the
 	  ZHAOXIN SMBus interface
