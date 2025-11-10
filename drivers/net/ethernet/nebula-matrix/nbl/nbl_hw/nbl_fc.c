@@ -62,8 +62,7 @@ static int nbl_fc_get_stats(void *priv, struct nbl_stats_param *param)
 	nbl_fc_update_stats(&param->f->stats, bytes, pkts, 0, counter->lastuse);
 
 	spin_unlock(&mgt->counter_lock);
-	nbl_debug(common, NBL_DEBUG_FLOW, "nbl flow fc %u-%lu get pkts:(%llu), bytes:(%llu)",
-		  counter->counter_id, cookie, pkts, bytes);
+
 	return 0;
 }
 
@@ -405,3 +404,4 @@ void nbl_fc_remove_ops(struct nbl_resource_ops *res_ops)
 	NBL_COUNTER_OPS_TBL;
 #undef  NBL_COUNTER_SET_OPS
 }
+

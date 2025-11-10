@@ -444,4 +444,7 @@ void resctrl_file_fflags_init(const char *config, unsigned long fflags);
 int resctrl_init(void);
 void resctrl_exit(void);
 
+int resctrl_init(void);
+void resctrl_exit(void);
+
 #endif /* _RESCTRL_H */

@@ -469,6 +469,20 @@ mapping_min_folio_order(const struct address_space *mapping)
 	return (mapping->flags & AS_FOLIO_ORDER_MIN_MASK) >> AS_FOLIO_ORDER_MIN;
 }
 
+/**
+ * mapping_clear_large_folios() - The file disable supports large folios.
+ * @mapping: The file.
+ *
+ * The filesystem have to make sure the file is in atomic context and all
+ * cached folios have been cleared under mapping->invalidate_lock before
+ * calling this function.
+ */
+static inline void mapping_clear_large_folios(struct address_space *mapping)
+{
+	WARN_ON_ONCE(!rwsem_is_locked(&mapping->invalidate_lock));
+	__clear_bit(AS_LARGE_FOLIO_SUPPORT, &mapping->flags);
+}
+
 /*
  * Large folio support currently depends on THP.  These dependencies are
  * being worked on but are not yet fixed.

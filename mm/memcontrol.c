@@ -104,6 +104,11 @@ bool cgroup_memory_nokmem __ro_after_init;
 static DEFINE_STATIC_KEY_FALSE(cgroup_memory_nosli);
 #endif /* CONFIG_MEMSLI */
 
+#ifdef CONFIG_MEMSLI
+/* Cgroup memory SLI disabled? */
+static DEFINE_STATIC_KEY_FALSE(cgroup_memory_nosli);
+#endif /* CONFIG_MEMSLI */
+
 /* BPF memory accounting disabled? */
 static bool cgroup_memory_nobpf __ro_after_init;
 

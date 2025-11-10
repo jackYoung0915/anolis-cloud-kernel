@@ -2780,6 +2780,24 @@ int dmar_rmrr_add_acpi_dev(u8 device_number, struct acpi_device *adev)
 	return 0;
 }
 
+int dmar_rmrr_add_acpi_dev(u8 device_number, struct acpi_device *adev)
+{
+	int ret;
+	struct dmar_rmrr_unit *rmrru;
+	struct acpi_dmar_reserved_memory *rmrr;
+
+	list_for_each_entry(rmrru, &dmar_rmrr_units, list) {
+		rmrr = container_of(rmrru->hdr, struct acpi_dmar_reserved_memory, header);
+		ret = dmar_rmrr_acpi_insert_dev_scope(device_number, adev, (void *)(rmrr + 1),
+					((void *)rmrr) + rmrr->header.length,
+					rmrru->devices, rmrru->devices_cnt);
+		if (ret)
+			break;
+	}
+
+	return 0;
+}
+
 int dmar_iommu_notify_scope_dev(struct dmar_pci_notify_info *info)
 {
 	int ret;
@@ -3439,6 +3457,48 @@ intel_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags,
 
 	if (dirty_tracking) {
 		if (dmar_domain->use_first_level) {
+			iommu_domain_free(domain);
+			return ERR_PTR(-EOPNOTSUPP);
+		}
+		domain->dirty_ops = &intel_dirty_ops;
+	}
+
+	return domain;
+}
+
+static struct iommu_domain *
+intel_iommu_domain_alloc_user(struct device *dev, u32 flags)
+{
+	struct iommu_domain *domain;
+	struct intel_iommu *iommu;
+	bool dirty_tracking;
+
+	if (flags &
+	    (~(IOMMU_HWPT_ALLOC_NEST_PARENT | IOMMU_HWPT_ALLOC_DIRTY_TRACKING)))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	iommu = device_to_iommu(dev, NULL, NULL);
+	if (!iommu)
+		return ERR_PTR(-ENODEV);
+
+	if ((flags & IOMMU_HWPT_ALLOC_NEST_PARENT) && !nested_supported(iommu))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	dirty_tracking = (flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING);
+	if (dirty_tracking && !ssads_supported(iommu))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/*
+	 * domain_alloc_user op needs to fully initialize a domain
+	 * before return, so uses iommu_domain_alloc() here for
+	 * simple.
+	 */
+	domain = iommu_domain_alloc(dev->bus);
+	if (!domain)
+		domain = ERR_PTR(-ENOMEM);
+
+	if (!IS_ERR(domain) && dirty_tracking) {
+		if (to_dmar_domain(domain)->use_first_level) {
 			iommu_domain_free(domain);
 			return ERR_PTR(-EOPNOTSUPP);
 		}

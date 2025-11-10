@@ -234,6 +234,17 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 
 	newbrk = PAGE_ALIGN(brk);
 	oldbrk = PAGE_ALIGN(mm->brk);
+
+	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && enable_brk_thp_aligned) {
+		newbrk_aligned = ALIGN(brk, HPAGE_SIZE);
+
+		next = find_vma(mm, oldbrk);
+		if (next && next->vm_start <= oldbrk)
+			oldbrk_aligned = next->vm_end;
+		else
+			oldbrk_aligned = oldbrk;
+	}
+
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
 		goto success;

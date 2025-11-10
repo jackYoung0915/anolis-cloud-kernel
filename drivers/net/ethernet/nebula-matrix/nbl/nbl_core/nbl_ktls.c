@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
+ */
+
 #include "nbl_ktls.h"
 #ifdef CONFIG_TLS_DEVICE
 
@@ -277,7 +283,6 @@ static int nbl_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 	ctx = __tls_driver_ctx(tls_ctx, TLS_OFFLOAD_CTX_DIR_RX);
 	*ctx = priv_rx;
 	tls_offload_rx_resync_set_type(sk, TLS_OFFLOAD_SYNC_TYPE_DRIVER_REQ);
-
 	return 0;
 }
 
@@ -346,8 +351,8 @@ static void nbl_ktls_del(struct net_device *netdev, struct tls_context *tls_ctx,
 		nbl_ktls_del_rx(netdev, tls_ctx);
 }
 
-static int nbl_ktls_rx_resync(struct net_device *netdev, struct sock *sk,
-			      u32 tcp_seq, u8 *rec_num)
+static void nbl_ktls_rx_resync(struct net_device *netdev, struct sock *sk,
+			       u32 tcp_seq, u8 *rec_num)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
 	struct nbl_ktls_offload_context_rx **ctx =
@@ -356,8 +361,6 @@ static int nbl_ktls_rx_resync(struct net_device *netdev, struct sock *sk,
 
 	nbl_ktls_cfg_rx_record(netdev, priv->index, priv->tcp_seq,
 			       be64_to_cpu(*(__be64 *)rec_num), false);
-
-	return 0;
 }
 
 static int nbl_ktls_resync(struct net_device *netdev, struct sock *sk,
@@ -367,7 +370,8 @@ static int nbl_ktls_resync(struct net_device *netdev, struct sock *sk,
 	if (direction != TLS_OFFLOAD_CTX_DIR_RX)
 		return -1;
 
-	return nbl_ktls_rx_resync(netdev, sk, tcp_seq, rec_num);
+	nbl_ktls_rx_resync(netdev, sk, tcp_seq, rec_num);
+	return 0;
 }
 
 #define NBL_SERV_KTLS_OPS_TBL								\

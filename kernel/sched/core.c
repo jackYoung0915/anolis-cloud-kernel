@@ -6218,7 +6218,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	struct task_struct *next, *p, *max = NULL;
 	const struct cpumask *smt_mask;
-	bool fi_before = false;
+	bool fi_before = false, core_allow_unset;
 	bool core_clock_updated = (rq == rq->core);
 	unsigned long cookie;
 	int i, cpu, occ = 0;
@@ -6268,8 +6268,9 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 	prev_balance(rq, prev, rf);
 
+	core_allow_unset = sched_cookie_match_unset(rq->core->core_cookie);
 	smt_mask = cpu_smt_mask(cpu);
-	need_sync = !!rq->core->core_cookie;
+	need_sync = !!rq->core->core_cookie || core_allow_unset;
 
 	/* reset state */
 	rq->core->core_cookie = 0UL;
@@ -6309,7 +6310,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 */
 	if (!need_sync) {
 		next = pick_task(rq);
-		if (!next->core_cookie) {
+		if (!next->core_cookie || next->core_cookie == rq->core->core_cookie) {
 			rq->core_pick = NULL;
 			/*
 			 * For robustness, update the min_vruntime_fi for

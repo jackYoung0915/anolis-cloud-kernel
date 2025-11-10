@@ -639,6 +639,27 @@ static void sched_set_itmt(void)
 }
 
 #ifdef CONFIG_ACPI_CPPC_LIB
+static bool cppc_highest_perf_diff;
+static struct cpumask core_prior_mask;
+
+static void cppc_get_highest_nominal_perf(int cpu, u64 *highest_perf, u64 *nominal_perf)
+{
+	struct cppc_perf_caps perf_caps;
+	int ret;
+
+	ret = cppc_get_perf_caps(cpu, &perf_caps);
+	if (ret) {
+		pr_debug("CPU%d: Unable to get performance capabilities (%d)\n", cpu, ret);
+		return;
+	}
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+		*highest_perf = amd_get_highest_perf();
+	else
+		*highest_perf = perf_caps.highest_perf;
+
+	*nominal_perf = perf_caps.nominal_perf;
+}
+
 /*
  * get_max_boost_ratio: Computes the max_boost_ratio as the ratio
  * between the highest_perf and the nominal_perf.
@@ -648,9 +669,7 @@ static void sched_set_itmt(void)
  */
 static u64 get_max_boost_ratio(unsigned int cpu, u64 *nominal_freq)
 {
-	struct cppc_perf_caps perf_caps;
 	u64 highest_perf, nominal_perf;
-	int ret;
 
 	if (acpi_pstate_strict)
 		return 0;

@@ -2594,6 +2594,15 @@ static struct iommu_domain *do_iommu_domain_alloc(struct device *dev, u32 flags,
 	if (dirty_tracking)
 		domain->domain.dirty_ops = &amd_dirty_ops;
 
+	if (iommu) {
+		domain->domain.type = type;
+		domain->domain.pgsize_bitmap = iommu->iommu.ops->pgsize_bitmap;
+		domain->domain.ops = iommu->iommu.ops->default_domain_ops;
+
+		if (dirty_tracking)
+			domain->domain.dirty_ops = &amd_dirty_ops;
+	}
+
 	return &domain->domain;
 }
 

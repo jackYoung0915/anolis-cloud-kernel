@@ -1747,6 +1747,9 @@ void folio_end_writeback(struct folio *folio)
 
 	filemap_end_dropbehind_write(folio);
 	acct_reclaim_writeback(folio);
+
+	if (folio_dropbehind)
+		folio_end_dropbehind_write(folio);
 	folio_put(folio);
 }
 EXPORT_SYMBOL(folio_end_writeback);

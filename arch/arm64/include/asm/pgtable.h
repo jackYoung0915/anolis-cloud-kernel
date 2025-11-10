@@ -375,6 +375,11 @@ static inline pte_t __ptep_get(pte_t *ptep)
 	return READ_ONCE(*ptep);
 }
 
+static inline pte_t __ptep_get(pte_t *ptep)
+{
+	return READ_ONCE(*ptep);
+}
+
 extern void __sync_icache_dcache(pte_t pteval);
 bool pgattr_change_is_safe(u64 old, u64 new);
 

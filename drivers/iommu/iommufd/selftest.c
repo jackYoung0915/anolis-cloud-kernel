@@ -493,6 +493,28 @@ mock_domain_alloc_paging_flags(struct device *dev, u32 flags,
 	return &mock->domain;
 }
 
+static struct iommu_domain *
+mock_domain_alloc_user(struct device *dev, u32 flags)
+{
+	struct mock_dev *mdev = container_of(dev, struct mock_dev, dev);
+	struct iommu_domain *domain;
+
+	if (flags &
+	    (~(IOMMU_HWPT_ALLOC_NEST_PARENT | IOMMU_HWPT_ALLOC_DIRTY_TRACKING)))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	if ((flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING) &&
+	    (mdev->flags & MOCK_FLAGS_DEVICE_NO_DIRTY))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	domain = mock_domain_alloc(IOMMU_DOMAIN_UNMANAGED);
+	if (domain && !(mdev->flags & MOCK_FLAGS_DEVICE_NO_DIRTY))
+		domain->dirty_ops = &dirty_ops;
+	if (!domain)
+		domain = ERR_PTR(-ENOMEM);
+	return domain;
+}
+
 static void mock_domain_free(struct iommu_domain *domain)
 {
 	struct mock_iommu_domain *mock = to_mock_domain(domain);
@@ -1094,6 +1116,9 @@ static struct mock_dev *mock_dev_create(unsigned long dev_flags)
 	int rc, i;
 
 	if (dev_flags & ~valid_flags)
+		return ERR_PTR(-EINVAL);
+
+	if (dev_flags & ~(MOCK_FLAGS_DEVICE_NO_DIRTY))
 		return ERR_PTR(-EINVAL);
 
 	mdev = kzalloc(sizeof(*mdev), GFP_KERNEL);

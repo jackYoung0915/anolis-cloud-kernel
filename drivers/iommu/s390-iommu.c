@@ -777,6 +777,7 @@ static int __init s390_iommu_init(void)
 subsys_initcall(s390_iommu_init);
 
 static const struct iommu_ops s390_iommu_ops = {
+	.default_domain = &s390_iommu_platform_domain,
 	.capable = s390_iommu_capable,
 	.domain_alloc_paging = s390_domain_alloc_paging,
 	.probe_device = s390_iommu_probe_device,

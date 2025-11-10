@@ -17,6 +17,7 @@ intel_qat-y := adf_accel_engine.o \
 	adf_gen4_dc.o \
 	adf_gen4_hw_csr_data.o \
 	adf_gen4_hw_data.o \
+	adf_gen4_vf_mig.o \
 	adf_gen4_pm.o \
 	adf_gen4_ras.o \
 	adf_gen4_timer.o \

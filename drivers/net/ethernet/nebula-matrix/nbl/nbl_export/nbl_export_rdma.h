@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -69,6 +69,8 @@ struct nbl_core_dev_info {
 	/* Info */
 	u32 mem_type;
 	u16 rdma_cap_num;
+	int (*change_mtu_notify)(struct auxiliary_device *adev, int new_mtu);
+	bool mirror_enable;
 };
 
 struct nbl_aux_dev {
@@ -82,6 +84,7 @@ struct nbl_aux_dev {
 	ssize_t (*qos_cfg_store)(struct auxiliary_device *adev, int offset,
 				 const char *buf, size_t count);
 	ssize_t (*qos_cfg_show)(struct auxiliary_device *adev, int offset, char *buf);
+	int (*mirror_enable_notify)(struct auxiliary_device *adev, bool enable);
 };
 
 #endif

@@ -211,6 +211,7 @@ static int coalesce_fill_reply(struct sk_buff *skb,
 {
 	const struct coalesce_reply_data *data = COALESCE_REPDATA(reply_base);
 	const struct kernel_ethtool_coalesce *kcoal = &data->kernel_coalesce;
+	struct dim_irq_moder *moder = req_base->dev->irq_moder;
 	const struct ethtool_coalesce *coal = &data->coalesce;
 	u32 supported = data->supported_params;
 	struct dim_irq_moder *moder;
