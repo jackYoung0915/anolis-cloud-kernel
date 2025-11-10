@@ -68,6 +68,14 @@ static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
 unsigned int sysctl_sched_idle_min_granularity			= 750000ULL;
 
 /*
+ * Decouple SCHED_IDLE tasks from the minimum shares clamp. When set to 1,
+ * SCHED_IDLE tasks are not forced to the lowest shares; their weight can be
+ * further differentiated via shares.
+ * (default: 0 (disabled))
+ */
+unsigned int sysctl_sched_idle_decouple_shares;
+
+/*
  * This value is kept at sysctl_sched_latency/sysctl_sched_min_granularity
  */
 static unsigned int sched_nr_latency = 8;
@@ -507,6 +515,12 @@ static int se_is_idle(struct sched_entity *se)
 	return cfs_rq_is_idle(group_cfs_rq(se));
 }
 
+static int task_is_idle(struct task_struct *p)
+{
+	return (p->sched_class == &fair_sched_class) &&
+			(task_has_idle_policy(p) || cfs_rq_is_idle(cfs_rq_of(&p->se)));
+}
+
 static u64 cfs_prio_relative_gran(u64 delta, struct sched_entity *curr, struct sched_entity *se)
 {
 	s64 prio_delta = curr->priority - se->priority;
@@ -575,6 +589,11 @@ static int cfs_rq_is_idle(struct cfs_rq *cfs_rq)
 static int se_is_idle(struct sched_entity *se)
 {
 	return task_has_idle_policy(task_of(se));
+}
+
+static int task_is_idle(struct task_struct *p)
+{
+	return 0;
 }
 
 static u64 cfs_prio_relative_gran(u64 delta, struct sched_entity *curr, struct sched_entity *se)
@@ -8846,7 +8865,7 @@ find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this
 		if (!sched_core_cookie_match(rq, p))
 			continue;
 
-		if (sched_idle_cpu(i))
+		if (sched_idle_cpu(i) && !task_is_idle(p))
 			return i;
 
 		if (available_idle_cpu(i)) {
@@ -8937,9 +8956,8 @@ static inline int find_idlest_cpu(struct sched_domain *sd, struct task_struct *p
 
 static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_backup)
 {
-	bool idle, is_seeker, is_expellee;
+	bool idle, is_expellee;
 
-	is_seeker = is_idle_seeker_task(p);
 	is_expellee = is_expellee_task(p);
 	/*
 	 * Here is the best opportunity to locate a real
@@ -8947,10 +8965,11 @@ static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_back
 	 * a backup option, which will be pick only when
 	 * failed to locate a real idle one.
 	 */
-	if ((id_idle_cpu(p, cpu, is_expellee, &idle) || sched_idle_cpu(cpu)) &&
+	if ((id_idle_cpu(p, cpu, is_expellee, &idle) ||
+	    (sched_idle_cpu(cpu) && !task_is_idle(p))) &&
 	    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
 		if (!group_identity_disabled()) {
-			if (idle || !is_seeker)
+			if (idle)
 				return cpu;
 			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu))
 				*id_backup = cpu;
@@ -9057,6 +9076,7 @@ static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int t
 {
 	int cpu;
 	bool is_expellee;
+	int backup_cpu = -1;
 
 	is_expellee = is_expellee_task(p);
 
@@ -9064,11 +9084,13 @@ static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int t
 		if (!cpumask_test_cpu(cpu, task_allowed_cpu(p)) ||
 		    !cpumask_test_cpu(cpu, sched_domain_span(sd)))
 			continue;
-		if (id_idle_cpu(p, cpu, is_expellee, NULL) || sched_idle_cpu(cpu))
+		if (id_idle_cpu(p, cpu, is_expellee, NULL))
 			return cpu;
+		if (backup_cpu == -1 && sched_idle_cpu(cpu) && !task_is_idle(p))
+			backup_cpu = cpu;
 	}
 
-	return -1;
+	return backup_cpu;
 }
 
 #else /* CONFIG_SCHED_SMT */
@@ -9262,7 +9284,8 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	 */
 	lockdep_assert_irqs_disabled();
 
-	if ((id_idle_cpu(p, target, is_expellee, NULL) || sched_idle_cpu(target)) &&
+	if ((id_idle_cpu(p, target, is_expellee, NULL) ||
+	    (sched_idle_cpu(target) && !task_is_idle(p))) &&
 	    asym_fits_cpu(task_util, util_min, util_max, target))
 		return target;
 
@@ -9270,7 +9293,8 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	 * If the previous CPU is cache affine and idle, don't be stupid:
 	 */
 	if (prev != target && cpus_share_cache(prev, target) &&
-	    (id_idle_cpu(p, prev, is_expellee, NULL) || sched_idle_cpu(prev)) &&
+	    (id_idle_cpu(p, prev, is_expellee, NULL) ||
+	    (sched_idle_cpu(prev) && !task_is_idle(p))) &&
 	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
 
 		if (!static_branch_unlikely(&sched_cluster_active) ||
@@ -9302,7 +9326,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	    recent_used_cpu != target &&
 	    cpus_share_cache(recent_used_cpu, target) &&
 	    (id_idle_cpu(p, recent_used_cpu, is_expellee, NULL) ||
-	    sched_idle_cpu(recent_used_cpu)) &&
+	    (sched_idle_cpu(recent_used_cpu) && !task_is_idle(p))) &&
 	    cpumask_test_cpu(p->recent_used_cpu, task_allowed_cpu(p)) &&
 	    asym_fits_cpu(task_util, util_min, util_max, recent_used_cpu)) {
 		/*
@@ -9983,6 +10007,7 @@ wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
 	s64 vdiff = curr->vruntime - se->vruntime;
 	u64 gran;
 	int ret;
+	int cse_is_idle, pse_is_idle;
 
 	/*
 	 * Others always preempt underclass on wakeup, no
@@ -9992,6 +10017,24 @@ wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
 		ret = id_preempt_underclass(curr, se);
 		if (ret)
 			return ret;
+	}
+
+	cse_is_idle = se_is_idle(curr);
+	pse_is_idle = se_is_idle(se);
+
+	/*
+	 * Non-idle tasks always preempt idle tasks on wakeup. Lower class
+	 * non-SCHED_IDLE task shouldn't preempt higher class SCHED_IDLE ones.
+	 */
+	if (id_preempt_all(curr, se) != -1) {
+		/*
+		 * Preempt an idle entity in favor of a non-idle entity (and don't preempt
+		 * in the inverse case).
+		 */
+		if (cse_is_idle && !pse_is_idle)
+			return 1;
+		if (cse_is_idle != pse_is_idle)
+			return -1;
 	}
 
 	if (vdiff <= 0)
@@ -10048,7 +10091,6 @@ static noinline void check_preempt_wakeup(struct rq *rq, struct task_struct *p, 
 	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
 	int scale = cfs_rq->nr_running >= sched_nr_latency;
 	int next_buddy_marked = 0;
-	int cse_is_idle, pse_is_idle;
 
 	if (unlikely(se == pse))
 		return;
@@ -10085,18 +10127,6 @@ static noinline void check_preempt_wakeup(struct rq *rq, struct task_struct *p, 
 
 	find_matching_se(&se, &pse);
 	BUG_ON(!pse);
-
-	cse_is_idle = se_is_idle(se);
-	pse_is_idle = se_is_idle(pse);
-
-	/*
-	 * Preempt an idle entity in favor of a non-idle entity (and don't preempt
-	 * in the inverse case).
-	 */
-	if (cse_is_idle && !pse_is_idle)
-		goto preempt;
-	if (cse_is_idle != pse_is_idle)
-		return;
 
 	/*
 	 * BATCH and IDLE tasks do not preempt others.
@@ -14791,7 +14821,7 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 	int ret;
 
 	mutex_lock(&shares_mutex);
-	if (tg_is_idle(tg))
+	if (tg_is_idle(tg) && !sysctl_sched_idle_decouple_shares)
 		ret = -EINVAL;
 	else
 		ret = __sched_group_set_shares(tg, shares);
@@ -14864,7 +14894,7 @@ next_cpu:
 	}
 
 	/* Idle groups have minimum weight. */
-	if (tg_is_idle(tg))
+	if (tg_is_idle(tg) && !sysctl_sched_idle_decouple_shares)
 		__sched_group_set_shares(tg, scale_load(WEIGHT_IDLEPRIO));
 	else
 		__sched_group_set_shares(tg, NICE_0_LOAD);
