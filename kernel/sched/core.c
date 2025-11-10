@@ -10109,38 +10109,6 @@ static u64 cpu_group_balancer_read_u64(struct cgroup_subsys_state *css,
 	return tg->group_balancer;
 }
 
-static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
-{
-	if (tg->group_balancer)
-		return -EINVAL;
-	return 0;
-}
-
-/*
- * There is only one task group allowed to enable group balancer in the path from
- * root_task_group to a certion leaf task group.
- */
-static int validate_group_balancer(struct task_group *tg)
-{
-	int retval = 0;
-
-	rcu_read_lock();
-	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
-				   tg_nop, NULL);
-	if (retval)
-		goto out;
-
-	for (; tg != &root_task_group; tg = tg->parent) {
-		if (tg->group_balancer) {
-			retval = -EINVAL;
-			break;
-		}
-	}
-out:
-	rcu_read_unlock();
-	return retval;
-}
-
 void lock_cfs_constraints_mutex(void)
 {
 	mutex_lock(&cfs_constraints_mutex);
@@ -10174,16 +10142,9 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 	if (old == new)
 		goto out;
 
-	if (new) {
-		retval = validate_group_balancer(tg);
-		if (retval)
-			goto out;
-		retval = attach_tg_to_group_balancer_sched_domain(tg, NULL, true);
-		if (retval)
-			goto out;
-	} else {
-		detach_tg_from_group_balancer_sched_domain(tg, true);
-	}
+	retval = update_group_balancer(tg, new);
+	if (retval)
+		goto out;
 	tg->group_balancer = new;
 out:
 	raw_spin_unlock(&tg->gb_lock);
