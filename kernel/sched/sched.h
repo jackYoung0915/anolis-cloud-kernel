@@ -1549,6 +1549,8 @@ struct rq {
 
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
+	unsigned int		nr_gb_running;
+	long			nr_gb_make_up;
 	bool			group_balancer_enabled;
 #endif
 
@@ -2966,6 +2968,20 @@ static inline void sub_nr_running(struct rq *rq, unsigned count)
 	/* Check if we still need preemption */
 	sched_update_tick_dependency(rq);
 }
+
+#ifdef CONFIG_GROUP_BALANCER
+static inline void gb_update_nr_running(struct task_group *tg, struct rq *rq, int delta)
+{
+	if (!group_balancer_enabled())
+		return;
+	if (!tg || !tg_group_balancer_enabled(tg))
+		return;
+	rq->nr_gb_running += delta;
+}
+extern int update_group_balancer(struct task_group *tg, u64 new);
+#else
+static inline void gb_update_nr_running(struct task_group *tg, struct rq *rq, int delta) { }
+#endif
 
 extern void activate_task(struct rq *rq, struct task_struct *p, int flags);
 extern void deactivate_task(struct rq *rq, struct task_struct *p, int flags);

@@ -8571,6 +8571,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	/* At this point se is NULL and we are at root level*/
 	add_nr_running(rq, 1);
 	id_update_nr_running(task_group(p), p, rq, 1);
+	gb_update_nr_running(task_group(p), rq, 1);
 
 	/*
 	 * Since new tasks are assigned an initial util_avg equal to
@@ -8697,6 +8698,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	/* At this point se is NULL and we are at root level*/
 	sub_nr_running(rq, 1);
 	id_update_nr_running(task_group(p), p, rq, -1);
+	gb_update_nr_running(task_group(p), rq, -1);
 
 	/* balance early to pull high priority tasks */
 	if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
@@ -15302,3 +15304,81 @@ int sched_trace_rq_nr_running(struct rq *rq)
         return rq ? rq->nr_running : -1;
 }
 EXPORT_SYMBOL_GPL(sched_trace_rq_nr_running);
+
+#ifdef CONFIG_GROUP_BALANCER
+static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
+{
+	if (tg->group_balancer)
+		return -EINVAL;
+	return 0;
+}
+
+/*
+ * There is only one task group allowed to enable group balancer in the path from
+ * root_task_group to a certion leaf task group.
+ */
+static int validate_group_balancer(struct task_group *tg)
+{
+	int retval = 0;
+
+	rcu_read_lock();
+	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
+				   tg_nop, NULL);
+	if (retval)
+		goto out;
+
+	for (; tg != &root_task_group; tg = tg->parent) {
+		if (tg->group_balancer) {
+			retval = -EINVAL;
+			break;
+		}
+	}
+out:
+	rcu_read_unlock();
+	return retval;
+}
+
+int update_group_balancer(struct task_group *tg, u64 new)
+{
+	int cpu, retval;
+	struct rq_flags rf;
+	unsigned int delta;
+
+	if (new) {
+		retval = validate_group_balancer(tg);
+		if (retval)
+			return retval;
+		retval = attach_tg_to_group_balancer_sched_domain(tg, NULL, true);
+		if (retval)
+			return retval;
+	} else {
+		detach_tg_from_group_balancer_sched_domain(tg, true);
+	}
+
+	cpus_read_lock();
+	for_each_online_cpu(cpu) {
+		bool on_rq, throttled;
+		struct rq *rq = cpu_rq(cpu);
+		struct cfs_rq *cfs_rq;
+		struct sched_entity *se;
+
+		rq_lock_irq(rq, &rf);
+		se = tg->se[cpu];
+		cfs_rq = cfs_rq_of(se);
+		throttled = throttled_hierarchy(cfs_rq);
+		delta = se->my_q->h_nr_running;
+		on_rq = se->on_rq;
+
+		if (on_rq && !throttled) {
+			if (new)
+				rq->nr_gb_running += delta;
+			else
+				rq->nr_gb_running -= delta;
+		}
+		rq_unlock_irq(rq, &rf);
+	}
+	cpus_read_unlock();
+
+	return 0;
+}
+#endif
