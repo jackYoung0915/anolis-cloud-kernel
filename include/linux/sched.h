@@ -66,6 +66,7 @@ struct signal_struct;
 struct task_delay_info;
 struct task_group;
 struct io_uring_task;
+struct cgroup;
 
 /*
  * Task state bitmask. NOTE! These bits are also
@@ -2424,4 +2425,23 @@ static inline bool jbd2_proxy_exec_disabled(void)
 {
 	return !static_branch_unlikely(&__jbd2_proxy_exec_enabled);
 }
+#ifdef CONFIG_GROUP_BALANCER
+extern bool group_balancer_enabled(void);
+extern void tg_specs_change(struct task_group *tg);
+extern bool tg_group_balancer_enabled(struct task_group *tg);
+extern struct task_group *cgroup_tg(struct cgroup *cgrp);
+extern struct cgroup *tg_cgroup(struct task_group *tg);
+extern void lock_cfs_constraints_mutex(void);
+extern void unlock_cfs_constraints_mutex(void);
+#ifdef CONFIG_CPUSETS
+extern struct cpumask *task_group_cpus_allowed(struct task_group *tg);
+#else
+static inline struct cpumask *task_group_cpus_allowed(struct task_group *tg)
+{
+	return NULL;
+}
+#endif
+#else
+static inline void tg_specs_change(struct task_group *tg) { }
+#endif
 #endif
