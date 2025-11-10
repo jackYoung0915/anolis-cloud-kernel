@@ -205,6 +205,46 @@ static inline struct cpuset *css_cs(struct cgroup_subsys_state *css)
 	return css ? container_of(css, struct cpuset, css) : NULL;
 }
 
+#ifdef CONFIG_GROUP_BALANCER
+static inline struct cpuset *cgroup_cs(struct cgroup *cgrp)
+{
+	return container_of(global_cgroup_css(cgrp, cpuset_cgrp_id),
+			    struct cpuset, css);
+}
+
+struct cpumask *task_group_cpus_allowed(struct task_group *tg)
+{
+	struct cgroup *cg = tg_cgroup(tg);
+	struct cpuset *cs = cgroup_cs(cg);
+
+	if (cs)
+		return (struct cpumask *)cs->cpus_allowed;
+
+	return NULL;
+}
+
+static void update_cpumask_for_group_balancer(struct cpuset *cs)
+{
+	struct cgroup *cg = cs->css.cgroup;
+	struct task_group *tg;
+
+	if (!group_balancer_enabled())
+		return;
+
+	tg = cgroup_tg(cg);
+	if (!tg)
+		return;
+	if (!tg_group_balancer_enabled(tg))
+		return;
+
+	lock_cfs_constraints_mutex();
+	tg_specs_change(tg);
+	unlock_cfs_constraints_mutex();
+}
+#else
+static inline void update_cpumask_for_group_balancer(struct cpuset *cs) { }
+#endif
+
 /* Retrieve the cpuset for a task */
 static inline struct cpuset *task_cs(struct task_struct *task)
 {
@@ -1498,6 +1538,7 @@ static void update_cpumasks_hier(struct cpuset *cs, struct tmpmasks *tmp)
 		/* deleted = old - new = old & (~new) */
 		cpumask_andnot(&deleted, &old_cpus, tmp->new_cpus);
 		cpuacct_cpuset_changed(cs->css.cgroup, &deleted, NULL);
+		update_cpumask_for_group_balancer(cs);
 
 		/*
 		 * On legacy hierarchy, if the effective cpumask of any non-

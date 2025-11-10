@@ -10138,6 +10138,16 @@ out:
 	return retval;
 }
 
+void lock_cfs_constraints_mutex(void)
+{
+	mutex_lock(&cfs_constraints_mutex);
+}
+
+void unlock_cfs_constraints_mutex(void)
+{
+	mutex_unlock(&cfs_constraints_mutex);
+}
+
 static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 					struct cftype *cftype, u64 new)
 {

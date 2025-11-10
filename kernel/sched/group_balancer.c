@@ -8,6 +8,7 @@
 #include "sched.h"
 #include <linux/log2.h>
 #include <linux/fs_context.h>
+#include <linux/cpuset.h>
 
 struct gb_lb_env {
 	int					src_cpu;
@@ -301,6 +302,40 @@ static void add_to_size_level(struct group_balancer_sched_domain *gb_sd)
 
 	__add_to_size_level(gb_sd, size_level);
 }
+
+bool tg_group_balancer_enabled(struct task_group *tg)
+{
+	return tg->group_balancer;
+}
+
+struct cgroup *tg_cgroup(struct task_group *tg)
+{
+	return tg->css.cgroup;
+}
+
+#ifdef CONFIG_CPUSETS
+static inline bool
+gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	struct cpumask *cpus_allowed = task_group_cpus_allowed(tg);
+	struct cpumask soft_cpus_allowed;
+	unsigned int soft_cpus_weight;
+
+	if (!cpus_allowed) {
+		soft_cpus_weight = gb_sd->span_weight;
+	} else {
+		cpumask_and(&soft_cpus_allowed, cpus_allowed, gb_sd_span(gb_sd));
+		soft_cpus_weight = cpumask_weight(&soft_cpus_allowed);
+	}
+	return tg->specs_ratio <= 100 * soft_cpus_weight;
+}
+#else
+static inline bool
+gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	return true;
+}
+#endif
 
 static int group_balancer_seqfile_show(struct seq_file *m, void *arg)
 {
@@ -1402,8 +1437,9 @@ static unsigned long gb_sd_capacity(struct group_balancer_sched_domain *gb_sd)
 	return cap;
 }
 
-static struct group_balancer_sched_domain *select_idle_gb_sd(int specs)
+static struct group_balancer_sched_domain *select_idle_gb_sd(struct task_group *tg)
 {
+	int specs = tg->specs_ratio;
 	struct group_balancer_sched_domain *gb_sd, *child;
 
 	if (specs == -1 || specs > group_balancer_root_domain->span_weight * 100)
@@ -1418,7 +1454,7 @@ static struct group_balancer_sched_domain *select_idle_gb_sd(int specs)
 		int max_unsatisfied_free_specs = INT_MIN;
 
 		for_each_gb_sd_child(child, gb_sd) {
-			if (child->span_weight * 100 >= specs &&
+			if (gb_sd_satisfies_task_group(tg, child) &&
 			    child->free_tg_specs > max_free_specs) {
 				max_free_child = child;
 				max_free_specs = child->free_tg_specs;
@@ -1460,7 +1496,7 @@ check_task_group_leap_level(struct task_group *tg, struct group_balancer_sched_d
 	int specs = tg->specs_ratio;
 
 	for_each_gb_sd_child(child, gb_sd) {
-		if (specs <= 100 * child->span_weight) {
+		if (gb_sd_satisfies_task_group(tg, child)) {
 			tg->leap_level = true;
 			tg->leap_level_timestamp = jiffies;
 			return;
@@ -1553,7 +1589,7 @@ int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
 
 	read_lock(&group_balancer_sched_domain_lock);
 	if (enable)
-		gb_sd = select_idle_gb_sd(tg->specs_ratio);
+		gb_sd = select_idle_gb_sd(tg);
 	else
 		gb_sd = target;
 	if (!gb_sd) {
@@ -1617,6 +1653,9 @@ static bool tg_lower_level(struct task_group *tg)
 		total_cap += child_cap;
 
 		tg_child_load = tg_gb_sd_load(tg, child);
+		tg_load += tg_child_load;
+		if (!gb_sd_satisfies_task_group(tg, child))
+			continue;
 		if (!dst || tg_child_load > tg_dst_load) {
 			dst = child;
 			tg_dst_load = tg_child_load;
@@ -1630,12 +1669,11 @@ static bool tg_lower_level(struct task_group *tg)
 				dst_cap = child_cap;
 			}
 		}
-		tg_load += tg_child_load;
 	}
 
 	if (tg_load == 0)
 		goto fail;
-	if (tg->specs_ratio > 100 * dst->span_weight)
+	if (!dst)
 		goto fail;
 #ifdef CONFIG_NUMA
 	/* We won't allow a task group span more than two numa nodes too long. */
@@ -1737,7 +1775,7 @@ void tg_specs_change(struct task_group *tg)
 		return;
 
 	/* This gb_sd still satisfy, don't do anything. */
-	if (specs <= gb_sd->span_weight * 100 || gb_sd == group_balancer_root_domain)
+	if (gb_sd_satisfies_task_group(tg, gb_sd) || gb_sd == group_balancer_root_domain)
 		return;
 
 	/* The specs doesn't satisfy anymore, upper to find a satisfied gb_sd. */
@@ -1748,7 +1786,7 @@ void tg_specs_change(struct task_group *tg)
 	}
 
 	for (; gb_sd; gb_sd = gb_sd->parent) {
-		if (specs <= gb_sd->span_weight * 100)
+		if (gb_sd_satisfies_task_group(tg, gb_sd))
 			break;
 	}
 

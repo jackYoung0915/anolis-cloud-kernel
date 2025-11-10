@@ -3713,7 +3713,6 @@ extern void sched_dynamic_update(int mode);
 #endif
 
 #ifdef CONFIG_GROUP_BALANCER
-extern bool group_balancer_enabled(void);
 extern bool group_balancer_rq_enabled(struct rq *rq);
 static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 {
@@ -3738,11 +3737,6 @@ static inline void tg_inc_soft_cpus_version(struct task_group *tg)
 		tg->soft_cpus_version = 0;
 }
 
-static inline bool tg_group_balancer_enabled(struct task_group *tg)
-{
-	return tg->group_balancer;
-}
-
 extern void sched_init_group_balancer_sched_domains(void);
 extern void sched_clear_group_balancer_sched_domains(void);
 extern void tg_set_specs_ratio(struct task_group *tg);
@@ -3751,7 +3745,6 @@ extern int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
 						    bool enable);
 extern void detach_tg_from_group_balancer_sched_domain(struct task_group *tg, bool disable);
 extern void update_group_balancer_root_cpumask(void);
-extern void tg_specs_change(struct task_group *tg);
 extern unsigned long cfs_h_load(struct cfs_rq *cfs_rq);
 extern bool gb_cpu_overutilized(int cpu);
 extern void gb_load_balance(struct lb_env *env);
@@ -3766,7 +3759,6 @@ static inline const struct cpumask *task_allowed_cpu(struct task_struct *p)
 }
 static inline void tg_set_specs_ratio(struct task_group *tg) { }
 static inline void update_group_balancer_root_cpumask(void) { }
-static inline void tg_specs_change(struct task_group *tg) { }
 #ifdef CONFIG_SMP
 static inline void gb_load_balance(struct lb_env *env) { }
 #endif
