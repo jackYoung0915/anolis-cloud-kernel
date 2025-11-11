@@ -9013,6 +9013,8 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 	tg->gb_sd = NULL;
+	tg->preferred_gb_sd = NULL;
+	tg->expiration_start = 0;
 	raw_spin_lock_init(&tg->gb_lock);
 #endif
 	return tg;

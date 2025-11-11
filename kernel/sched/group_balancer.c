@@ -276,6 +276,13 @@ struct group_balancer_sched_domain *group_balancer_root_domain;
 #define GB_OVERLOAD		0x1
 #define GB_OVERUTILIZED		0x2
 
+/*
+ * The time threshold that the preferred gb_sd expires.
+ * Unit: ms
+ * Default: 6000000
+ */
+unsigned long sysctl_sched_gb_expiration_ms = 60000;
+
 static inline struct cpumask *gb_sd_span(struct group_balancer_sched_domain *gb_sd)
 {
 	return to_cpumask(gb_sd->span);
@@ -416,6 +423,17 @@ static inline rb_root *gb_rb_root(struct task_group *tg, struct group_balancer_s
 
 static inline void update_h_nr_burst_tg(struct task_group *tg, bool add) { }
 #endif
+
+static inline bool
+is_preferred_gb_sd(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	struct group_balancer_sched_domain *p_gb_sd = tg->preferred_gb_sd;
+
+	if (!p_gb_sd)
+		return true;
+
+	return cpumask_subset(gb_sd_span(p_gb_sd), gb_sd_span(gb_sd));
+}
 
 static int group_balancer_seqfile_show(struct seq_file *m, void *arg)
 {
@@ -1596,6 +1614,7 @@ check_task_group_leap_level(struct task_group *tg, struct group_balancer_sched_d
 		}
 	}
 
+	tg->preferred_gb_sd = gb_sd;
 	tg->leap_level = false;
 }
 
@@ -1774,6 +1793,16 @@ static bool tg_lower_level(struct task_group *tg)
 		goto fail;
 	if (!dst)
 		goto fail;
+	if (!is_preferred_gb_sd(tg, gb_sd)) {
+		/*
+		 * If the task group stays in the upper level for too long,
+		 * make the preferred gb sd to expire.
+		 */
+		if (!time_after(jiffies,
+		    tg->expiration_start + msecs_to_jiffies(sysctl_sched_gb_expiration_ms)))
+			goto fail;
+		tg->preferred_gb_sd = NULL;
+	}
 #ifdef CONFIG_NUMA
 	/* We won't allow a task group span more than two numa nodes too long. */
 	if (dst->gb_flags & GROUP_BALANCER_NUMA_FLAG)
@@ -1870,8 +1899,10 @@ void tg_specs_change(struct task_group *tg)
 
 	/* If the task group leaps level after specs change, we will lower it later. */
 	check_task_group_leap_level(tg, gb_sd);
-	if (tg->leap_level)
+	if (tg->leap_level) {
+		tg->preferred_gb_sd = NULL;
 		return;
+	}
 
 	/* This gb_sd still satisfy, don't do anything. */
 	if (gb_sd_satisfies_task_group(tg, gb_sd) || gb_sd == group_balancer_root_domain)
@@ -2008,6 +2039,7 @@ gb_detach_task_groups_from_gb_sd(struct gb_lb_env *gb_env,
 				break;
 			}
 			remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
+			tg->expiration_start = jiffies;
 			rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
 			detached++;
 			if (gb_env->imbalance <= 0) {
