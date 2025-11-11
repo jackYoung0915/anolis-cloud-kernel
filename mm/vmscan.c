@@ -5887,15 +5887,17 @@ static inline bool should_continue_reclaim(struct pglist_data *pgdat,
 	/* If compaction would go ahead or the allocation would succeed, stop */
 	for (z = 0; z <= sc->reclaim_idx; z++) {
 		struct zone *zone = &pgdat->node_zones[z];
+		unsigned long watermark = min_wmark_pages(zone);
 		if (!managed_zone(zone))
 			continue;
 
 		/* Allocation can already succeed, nothing to do */
-		if (zone_watermark_ok(zone, sc->order, min_wmark_pages(zone),
+		if (zone_watermark_ok(zone, sc->order, watermark,
 				      sc->reclaim_idx, 0))
 			return false;
 
-		if (compaction_suitable(zone, sc->order, sc->reclaim_idx))
+		if (compaction_suitable(zone, sc->order, watermark,
+					sc->reclaim_idx))
 			return false;
 	}
 
@@ -6107,22 +6109,21 @@ static inline bool compaction_ready(struct zone *zone, struct scan_control *sc)
 			      sc->reclaim_idx, 0))
 		return true;
 
-	/* Compaction cannot yet proceed. Do reclaim. */
-	if (!compaction_suitable(zone, sc->order, sc->reclaim_idx))
-		return false;
-
 	/*
-	 * Compaction is already possible, but it takes time to run and there
-	 * are potentially other callers using the pages just freed. So proceed
-	 * with reclaim to make a buffer of free pages available to give
-	 * compaction a reasonable chance of completing and allocating the page.
+	 * Direct reclaim usually targets the min watermark, but compaction
+	 * takes time to run and there are potentially other callers using the
+	 * pages just freed. So target a higher buffer to give compaction a
+	 * reasonable chance of completing and allocating the pages.
+	 *
 	 * Note that we won't actually reclaim the whole buffer in one attempt
 	 * as the target watermark in should_continue_reclaim() is lower. But if
 	 * we are already above the high+gap watermark, don't reclaim at all.
 	 */
-	watermark = high_wmark_pages(zone) + compact_gap(sc->order);
+	watermark = high_wmark_pages(zone);
+	if (compaction_suitable(zone, sc->order, watermark, sc->reclaim_idx))
+		return true;
 
-	return zone_watermark_ok_safe(zone, 0, watermark, sc->reclaim_idx);
+	return false;
 }
 
 static void consider_reclaim_throttle(pg_data_t *pgdat, struct scan_control *sc)
@@ -6732,6 +6733,9 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int highest_zoneidx)
 	 * meet watermarks.
 	 */
 	for (i = 0; i <= highest_zoneidx; i++) {
+		enum zone_stat_item item;
+		unsigned long free_pages;
+
 		zone = pgdat->node_zones + i;
 
 		if (!managed_zone(zone))
@@ -6741,7 +6745,39 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int highest_zoneidx)
 			mark = wmark_pages(zone, WMARK_PROMO);
 		else
 			mark = high_wmark_pages(zone);
-		if (zone_watermark_ok_safe(zone, order, mark, highest_zoneidx))
+		/*
+		 * In defrag_mode, watermarks must be met in whole
+		 * blocks to avoid polluting allocator fallbacks.
+		 *
+		 * However, kswapd usually cannot accomplish this on
+		 * its own and needs kcompactd support. Once it's
+		 * reclaimed a compaction gap, and kswapd_shrink_node
+		 * has dropped order, simply ensure there are enough
+		 * base pages for compaction, wake kcompactd & sleep.
+		 */
+		if (defrag_mode && order)
+			item = NR_FREE_PAGES_BLOCKS;
+		else
+			item = NR_FREE_PAGES;
+
+		/*
+		 * When there is a high number of CPUs in the system,
+		 * the cumulative error from the vmstat per-cpu cache
+		 * can blur the line between the watermarks. In that
+		 * case, be safe and get an accurate snapshot.
+		 *
+		 * TODO: NR_FREE_PAGES_BLOCKS moves in steps of
+		 * pageblock_nr_pages, while the vmstat pcp threshold
+		 * is limited to 125. On many configurations that
+		 * counter won't actually be per-cpu cached. But keep
+		 * things simple for now; revisit when somebody cares.
+		 */
+		free_pages = zone_page_state(zone, item);
+		if (zone->percpu_drift_mark && free_pages < zone->percpu_drift_mark)
+			free_pages = zone_page_state_snapshot(zone, item);
+
+		if (__zone_watermark_ok(zone, order, mark, highest_zoneidx,
+					0, free_pages))
 			return true;
 	}
 

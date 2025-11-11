@@ -275,6 +275,7 @@ int min_free_kbytes = 1024;
 int user_min_free_kbytes = -1;
 static int watermark_boost_factor __read_mostly = 15000;
 static int watermark_scale_factor = 10;
+int defrag_mode;
 static int pcp_batch_scale_max __read_mostly = CONFIG_PCP_BATCH_SCALE_MAX;
 static const int sysctl_pcp_batch_scale_min;
 static const int sysctl_pcp_batch_scale_max = 6;
@@ -637,6 +638,10 @@ compaction_capture(struct capture_control *capc, struct page *page,
 	    capc->cc->migratetype != MIGRATE_MOVABLE)
 		return false;
 
+	if (migratetype != capc->cc->migratetype)
+		trace_mm_page_alloc_extfrag(page, capc->cc->order, order,
+					    capc->cc->migratetype, migratetype);
+
 	capc->page = page;
 	return true;
 }
@@ -678,16 +683,20 @@ static inline void __add_to_free_list(struct page *page, struct zone *zone,
 				      bool tail)
 {
 	struct free_area *area = &zone->free_area[order];
+	int nr_pages = 1 << order;
 
 	VM_WARN_ONCE(get_pageblock_migratetype(page) != migratetype,
 		     "page type is %lu, passed migratetype is %d (nr=%d)\n",
-		     get_pageblock_migratetype(page), migratetype, 1 << order);
+		     get_pageblock_migratetype(page), migratetype, nr_pages);
 
 	if (tail)
 		list_add_tail(&page->buddy_list, &area->free_list[migratetype]);
 	else
 		list_add(&page->buddy_list, &area->free_list[migratetype]);
 	area->nr_free++;
+
+	if (order >= pageblock_order && !is_migrate_isolate(migratetype))
+		__mod_zone_page_state(zone, NR_FREE_PAGES_BLOCKS, nr_pages);
 }
 
 /*
@@ -699,24 +708,34 @@ static inline void move_to_free_list(struct page *page, struct zone *zone,
 				     unsigned int order, int old_mt, int new_mt)
 {
 	struct free_area *area = &zone->free_area[order];
+	int nr_pages = 1 << order;
 
 	/* Free page moving can fail, so it happens before the type update */
 	VM_WARN_ONCE(get_pageblock_migratetype(page) != old_mt,
 		     "page type is %lu, passed migratetype is %d (nr=%d)\n",
-		     get_pageblock_migratetype(page), old_mt, 1 << order);
+		     get_pageblock_migratetype(page), old_mt, nr_pages);
 
 	list_move_tail(&page->buddy_list, &area->free_list[new_mt]);
 
-	account_freepages(zone, -(1 << order), old_mt);
-	account_freepages(zone, 1 << order, new_mt);
+	account_freepages(zone, -nr_pages, old_mt);
+	account_freepages(zone, nr_pages, new_mt);
+
+	if (order >= pageblock_order &&
+	    is_migrate_isolate(old_mt) != is_migrate_isolate(new_mt)) {
+		if (!is_migrate_isolate(old_mt))
+			nr_pages = -nr_pages;
+		__mod_zone_page_state(zone, NR_FREE_PAGES_BLOCKS, nr_pages);
+	}
 }
 
 static inline void __del_page_from_free_list(struct page *page, struct zone *zone,
 					     unsigned int order, int migratetype)
 {
+	int nr_pages = 1 << order;
+
         VM_WARN_ONCE(get_pageblock_migratetype(page) != migratetype,
 		     "page type is %lu, passed migratetype is %d (nr=%d)\n",
-		     get_pageblock_migratetype(page), migratetype, 1 << order);
+		     get_pageblock_migratetype(page), migratetype, nr_pages);
 
 	/* clear reported state and update reported page count */
 	if (page_reported(page))
@@ -726,6 +745,9 @@ static inline void __del_page_from_free_list(struct page *page, struct zone *zon
 	__ClearPageBuddy(page);
 	set_page_private(page, 0);
 	zone->free_area[order].nr_free--;
+
+	if (order >= pageblock_order && !is_migrate_isolate(migratetype))
+		__mod_zone_page_state(zone, NR_FREE_PAGES_BLOCKS, -nr_pages);
 }
 
 static inline void del_page_from_free_list(struct page *page, struct zone *zone,
@@ -3361,18 +3383,6 @@ static inline bool zone_watermark_fast(struct zone *z, unsigned int order,
 	return false;
 }
 
-bool zone_watermark_ok_safe(struct zone *z, unsigned int order,
-			unsigned long mark, int highest_zoneidx)
-{
-	long free_pages = zone_page_state(z, NR_FREE_PAGES);
-
-	if (z->percpu_drift_mark && free_pages < z->percpu_drift_mark)
-		free_pages = zone_page_state_snapshot(z, NR_FREE_PAGES);
-
-	return __zone_watermark_ok(z, order, mark, highest_zoneidx, 0,
-								free_pages);
-}
-
 #ifdef CONFIG_NUMA
 int __read_mostly node_reclaim_distance = RECLAIM_DISTANCE;
 
@@ -3406,6 +3416,11 @@ alloc_flags_nofragment(struct zone *zone, gfp_t gfp_mask)
 	 * to save a branch.
 	 */
 	alloc_flags = (__force int) (gfp_mask & __GFP_KSWAPD_RECLAIM);
+
+	if (defrag_mode) {
+		alloc_flags |= ALLOC_NOFRAGMENT;
+		return alloc_flags;
+	}
 
 #ifdef CONFIG_ZONE_DMA32
 	if (!zone)
@@ -3498,7 +3513,7 @@ retry:
 				continue;
 		}
 
-		if (no_fallback && nr_online_nodes > 1 &&
+		if (no_fallback && !defrag_mode && nr_online_nodes > 1 &&
 		    zone != ac->preferred_zoneref->zone) {
 			int local_nid;
 
@@ -3631,7 +3646,7 @@ try_this_zone:
 	 * It's possible on a UMA machine to get through all zones that are
 	 * fragmented. If avoiding fragmentation, reset and try again.
 	 */
-	if (no_fallback) {
+	if (no_fallback && !defrag_mode) {
 		alloc_flags &= ~ALLOC_NOFRAGMENT;
 		goto retry;
 	}
@@ -4122,15 +4137,21 @@ static void wake_all_kswapds(unsigned int order, gfp_t gfp_mask,
 	struct zone *zone;
 	pg_data_t *last_pgdat = NULL;
 	enum zone_type highest_zoneidx = ac->highest_zoneidx;
+	unsigned int reclaim_order;
+
+	if (defrag_mode)
+		reclaim_order = max(order, pageblock_order);
+	else
+		reclaim_order = order;
 
 	for_each_zone_zonelist_nodemask(zone, z, ac->zonelist, highest_zoneidx,
 					ac->nodemask) {
 		if (!managed_zone(zone))
 			continue;
-		if (last_pgdat != zone->zone_pgdat) {
-			wakeup_kswapd(zone, gfp_mask, order, highest_zoneidx);
-			last_pgdat = zone->zone_pgdat;
-		}
+		if (last_pgdat == zone->zone_pgdat)
+			continue;
+		wakeup_kswapd(zone, gfp_mask, reclaim_order, highest_zoneidx);
+		last_pgdat = zone->zone_pgdat;
 	}
 }
 
@@ -4179,6 +4200,9 @@ gfp_to_alloc_flags(gfp_t gfp_mask, unsigned int order)
 		alloc_flags |= ALLOC_MIN_RESERVE;
 
 	alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, alloc_flags);
+
+	if (defrag_mode)
+		alloc_flags |= ALLOC_NOFRAGMENT;
 
 	return alloc_flags;
 }
@@ -4569,6 +4593,11 @@ retry:
 				&compaction_retries))
 		goto retry;
 
+	/* Reclaim/compaction failed to prevent the fallback */
+	if (defrag_mode && (alloc_flags & ALLOC_NOFRAGMENT)) {
+		alloc_flags &= ~ALLOC_NOFRAGMENT;
+		goto retry;
+	}
 
 	/*
 	 * Deal with possible cpuset update races or zonelist updates to avoid
@@ -6600,6 +6629,15 @@ static struct ctl_table page_alloc_sysctl_table[] = {
 		.proc_handler	= watermark_scale_factor_sysctl_handler,
 		.extra1		= SYSCTL_ONE,
 		.extra2		= SYSCTL_THREE_THOUSAND,
+	},
+	{
+		.procname	= "defrag_mode",
+		.data		= &defrag_mode,
+		.maxlen		= sizeof(defrag_mode),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
 	},
 	{
 		.procname	= "percpu_pagelist_high_fraction",
