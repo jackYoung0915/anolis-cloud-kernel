@@ -1803,11 +1803,11 @@ static bool tg_lower_level(struct task_group *tg)
 			goto fail;
 		tg->preferred_gb_sd = NULL;
 	}
-#ifdef CONFIG_NUMA
+
 	/* We won't allow a task group span more than two numa nodes too long. */
-	if (dst->gb_flags & GROUP_BALANCER_NUMA_FLAG)
+	if (dst->gb_flags & GROUP_BALANCER_LLC_FLAG)
 		goto lower;
-#endif
+
 	/* If we lower the level, we have to make sure that we will not cause imbalance.
 	 *
 	 * src_load        dst_load
