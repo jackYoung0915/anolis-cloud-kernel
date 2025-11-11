@@ -618,11 +618,13 @@ struct task_group {
 	int			specs_ratio;
 	struct rb_node		gb_node;
 	struct group_balancer_sched_domain *gb_sd;
+	struct group_balancer_sched_domain *preferred_gb_sd;
 	struct task_group	*gb_tg;
 	bool			group_balancer;
 	bool			leap_level;
 	unsigned long		leap_level_timestamp;
 	unsigned long		adjust_level_timestamp;
+	unsigned long		expiration_start;
 	raw_spinlock_t		gb_lock;
 #endif
 	long			priority;

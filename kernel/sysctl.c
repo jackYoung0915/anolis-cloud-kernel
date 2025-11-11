@@ -2116,6 +2116,15 @@ static struct ctl_table kern_table[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_ONE,
 	},
+	{
+		.procname	= "sched_gb_expiration_ms",
+		.data		= &sysctl_sched_gb_expiration_ms,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0644,
+		.proc_handler	= proc_doulongvec_minmax,
+		.extra1		= &zero_ul,
+		.extra2		= &long_max,
+	},
 #endif
 #ifdef CONFIG_PROVE_LOCKING
 	{
