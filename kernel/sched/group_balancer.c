@@ -19,6 +19,9 @@ struct gb_lb_env {
 	unsigned long				nr_balance_failed;
 	enum migration_type			migration_type;
 	struct rb_root				task_groups;
+#ifdef CONFIG_CFS_BANDWIDTH
+	bool					burst;
+#endif
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -43,6 +46,10 @@ struct group_balancer_sched_domain {
 	unsigned int					depth;
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
+#ifdef CONFIG_CFS_BANDWIDTH
+	struct rb_root					burstable_task_groups;
+	atomic_t					h_nr_burst_tg;
+#endif
 	struct kernfs_node				*kn;
 	unsigned long					last_balance_timestamp;
 	unsigned long					lower_interval;
@@ -335,6 +342,79 @@ gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_do
 {
 	return true;
 }
+#endif
+
+#ifdef CONFIG_CFS_BANDWIDTH
+static inline bool is_burstable_task_group(struct task_group *tg)
+{
+	return !!tg->cfs_bandwidth.burst;
+}
+
+static inline struct rb_root
+*gb_rb_root(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	if (unlikely(is_burstable_task_group(tg)))
+		return &gb_sd->burstable_task_groups;
+	return &gb_sd->task_groups;
+}
+static inline void update_h_nr_burst_tg(struct task_group *tg, bool add)
+{
+	struct group_balancer_sched_domain *gb_sd = tg->gb_sd;
+
+	if (!is_burstable_task_group(tg))
+		return;
+
+	for (; gb_sd; gb_sd = gb_sd->parent) {
+		if (add)
+			atomic_inc(&gb_sd->h_nr_burst_tg);
+		else
+			atomic_dec(&gb_sd->h_nr_burst_tg);
+	}
+}
+
+static inline bool tg_specs_less(struct rb_node *a, const struct rb_node *b);
+void tg_burst_change(struct task_group *tg, u64 burst)
+{
+	bool burst_before, burst_now;
+	struct group_balancer_sched_domain *gb_sd;
+
+	if (!group_balancer_enabled())
+		return;
+	if (!tg_group_balancer_enabled(tg))
+		return;
+
+	gb_sd = tg->gb_sd;
+	burst_before = !!tg->cfs_bandwidth.burst;
+	burst_now = !!burst;
+	if (burst_before == burst_now)
+		return;
+
+	read_lock(&group_balancer_sched_domain_lock);
+	raw_spin_lock(&gb_sd->lock);
+	if (!burst_before) {
+		rb_erase(&tg->gb_node, &gb_sd->task_groups);
+		rb_add(&tg->gb_node, &gb_sd->burstable_task_groups, tg_specs_less);
+		update_h_nr_burst_tg(tg, true);
+	} else {
+		rb_erase(&tg->gb_node, &gb_sd->burstable_task_groups);
+		rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
+		update_h_nr_burst_tg(tg, false);
+	}
+	raw_spin_unlock(&gb_sd->lock);
+	read_unlock(&group_balancer_sched_domain_lock);
+}
+#else
+static inline bool is_burstable_task_group(struct task_group *tg)
+{
+	return false;
+}
+
+static inline rb_root *gb_rb_root(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	return &gb_sd->task_groups;
+}
+
+static inline void update_h_nr_burst_tg(struct task_group *tg, bool add) { }
 #endif
 
 static int group_balancer_seqfile_show(struct seq_file *m, void *arg)
@@ -632,6 +712,7 @@ static inline struct group_balancer_sched_domain
 
 	raw_spin_lock_init(&new->lock);
 	new->task_groups = RB_ROOT;
+	new->burstable_task_groups = RB_ROOT;
 	new->imbalance_pct = 117;
 
 	return new;
@@ -679,12 +760,10 @@ static void add_to_tree(struct group_balancer_sched_domain *gb_sd,
 	}
 }
 
-#define __node_2_task_group(n) rb_entry((n), struct task_group, gb_node)
-
 static inline bool tg_specs_less(struct rb_node *a, const struct rb_node *b)
 {
-	struct task_group *tg_a = __node_2_task_group(a);
-	struct task_group *tg_b = __node_2_task_group(b);
+	struct task_group *tg_a = __gb_node_2_tg(a);
+	struct task_group *tg_b = __gb_node_2_tg(b);
 	int specs_a = tg_a->specs_ratio;
 	int specs_b = tg_b->specs_ratio;
 
@@ -718,17 +797,31 @@ static void free_group_balancer_sched_domain(struct group_balancer_sched_domain 
 	struct task_group *tg;
 	struct group_balancer_sched_domain *parent = gb_sd->parent;
 	struct rb_node *node;
-	struct rb_root *root = &gb_sd->task_groups;
+	struct rb_root *roots[2] = {
+#ifdef CONFIG_CFS_BANDWIDTH
+		&gb_sd->burstable_task_groups,
+#else
+		NULL,
+#endif
+		&gb_sd->task_groups,
+	};
+	struct rb_root *root;
+	int i;
 
 	if (parent) {
 		parent->nr_children--;
 		/* Move the task_groups to parent. */
-		while (!RB_EMPTY_ROOT(root)) {
-			node = root->rb_node;
-			tg = __node_2_task_group(node);
-			rb_erase(node, root);
-			rb_add(node, &parent->task_groups, tg_specs_less);
-			walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
+		for (i = 0; i < 2; i++) {
+			root = roots[i];
+			if (!root)
+				continue;
+			while (!RB_EMPTY_ROOT(root)) {
+				node = root->rb_node;
+				tg = __gb_node_2_tg(node);
+				rb_erase(node, root);
+				rb_add(node, &parent->task_groups, tg_specs_less);
+				walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
+			}
 		}
 	}
 
@@ -1533,9 +1626,12 @@ void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
 						  struct group_balancer_sched_domain *gb_sd,
 						  bool enable)
 {
-	tg->gb_sd = gb_sd;
-	rb_add(&tg->gb_node, &gb_sd->task_groups, tg_specs_less);
+	struct rb_root *root;
 
+	tg->gb_sd = gb_sd;
+	root = gb_rb_root(tg, gb_sd);
+	rb_add(&tg->gb_node, root, tg_specs_less);
+	update_h_nr_burst_tg(tg, true);
 	tg->soft_cpus_allowed_ptr = gb_sd_span(gb_sd);
 	tg_inc_soft_cpus_version(tg);
 	if (enable)
@@ -1560,9 +1656,12 @@ remove_tg_from_group_balancer_sched_domain_locked(struct task_group *tg,
 						  struct group_balancer_sched_domain *gb_sd,
 						  bool disable)
 {
-	tg->gb_sd = NULL;
-	rb_erase(&tg->gb_node, &gb_sd->task_groups);
+	struct rb_root *root = gb_rb_root(tg, gb_sd);
+
+	rb_erase(&tg->gb_node, root);
 	RB_CLEAR_NODE(&tg->gb_node);
+	tg->gb_sd = NULL;
+	update_h_nr_burst_tg(tg, false);
 	if (disable)
 		walk_tg_tree_from(tg, tg_unset_gb_tg_down, tg_nop, NULL);
 }
@@ -1846,49 +1945,75 @@ gb_detach_task_groups_from_gb_sd(struct gb_lb_env *gb_env,
 	struct task_group *tg, *n;
 	unsigned long load, util;
 	int detached = 0;
+	struct rb_root *roots[2] = {
+#ifdef CONFIG_CFS_BANDWIDTH
+		&gb_sd->burstable_task_groups,
+#else
+		NULL,
+#endif
+		&gb_sd->task_groups,
+	};
+	int i, max_idx = 1;
+	struct rb_root *root;
 
 	raw_spin_lock(&gb_sd->lock);
-	/* Try the task cgroups with little specs first. */
-	gb_for_each_tg_safe(tg, n, &gb_sd->task_groups) {
-		if (!time_after(jiffies, tg->adjust_level_timestamp + 2 * gb_sd->lower_interval))
-			continue;
-		switch (gb_env->migration_type) {
-#ifdef CONFIG_GROUP_IDENTITY
-		case migrate_identity:
-			fallthrough;
+#ifdef CONFIG_CFS_BANDWIDTH
+	/*
+	 * When burst if true, the interval of load balance is too short,
+	 * we migrate burst task groups only.
+	 */
+	if (gb_env->burst)
+		max_idx = 0;
 #endif
-		case migrate_load:
-			load = tg_gb_sd_load(tg, gb_sd);
-			if (load == 0)
+	for (i = 0; i <= max_idx; i++) {
+		root = roots[i];
+		if (!root)
+			continue;
+		if (gb_env->burst && i == 1)
+			continue;
+		/* Try the task cgroups with little specs first. */
+		gb_for_each_tg_safe(tg, n, root) {
+			if (i > 0 && !time_after(jiffies,
+			    tg->adjust_level_timestamp + 2 * gb_sd->lower_interval))
 				continue;
-			if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
-				continue;
-			gb_env->imbalance -= load;
-			break;
-		case migrate_util:
-			util = tg_gb_sd_util(tg, gb_sd);
-			if (util == 0)
-				continue;
-			if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
-				continue;
-			gb_env->imbalance -= util;
-			break;
-		case migrate_task:
-			gb_env->imbalance = 0;
-			break;
-		/*TODO: Perfect strategy of migrate_misfit*/
-		case migrate_misfit:
-			gb_env->imbalance = 0;
-			break;
-		default:
-			break;
-		}
-		remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
-		rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
-		detached++;
-		if (gb_env->imbalance <= 0) {
-			raw_spin_unlock(&gb_sd->lock);
-			return detached;
+			switch (gb_env->migration_type) {
+	#ifdef CONFIG_GROUP_IDENTITY
+			case migrate_identity:
+				fallthrough;
+	#endif
+			case migrate_load:
+				load = tg_gb_sd_load(tg, gb_sd);
+				if (load == 0)
+					continue;
+				if (shr_bound(load, gb_env->nr_balance_failed) > gb_env->imbalance)
+					continue;
+				gb_env->imbalance -= load;
+				break;
+			case migrate_util:
+				util = tg_gb_sd_util(tg, gb_sd);
+				if (util == 0)
+					continue;
+				if (shr_bound(util, gb_env->nr_balance_failed) > gb_env->imbalance)
+					continue;
+				gb_env->imbalance -= util;
+				break;
+			case migrate_task:
+				gb_env->imbalance = 0;
+				break;
+			/*TODO: Perfect strategy of migrate_misfit*/
+			case migrate_misfit:
+				gb_env->imbalance = 0;
+				break;
+			default:
+				break;
+			}
+			remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
+			rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
+			detached++;
+			if (gb_env->imbalance <= 0) {
+				raw_spin_unlock(&gb_sd->lock);
+				return detached;
+			}
 		}
 	}
 	raw_spin_unlock(&gb_sd->lock);
@@ -1976,6 +2101,9 @@ void gb_load_balance(struct lb_env *env)
 	int gb_sd_status = 0;
 	struct cpumask *gb_mask = this_cpu_cpumask_var_ptr(group_balancer_mask);
 	unsigned long src_load, src_cap, dst_load, dst_cap;
+#ifdef CONFIG_CFS_BANDWIDTH
+	bool burst = false;
+#endif
 
 	if (!group_balancer_enabled())
 		return;
@@ -1999,8 +2127,14 @@ void gb_load_balance(struct lb_env *env)
 	if (!gb_sd)
 		goto unlock;
 
-	if (!time_after(jiffies, gb_sd->last_balance_timestamp + 2 * gb_sd->lower_interval))
-		goto unlock;
+	if (!time_after(jiffies, gb_sd->last_balance_timestamp + 2 * gb_sd->lower_interval)) {
+#ifdef CONFIG_CFS_BANDWIDTH
+		if (atomic_read(&dst->h_nr_burst_tg))
+			burst = true;
+		else
+#endif
+			goto unlock;
+	}
 
 	src_load = gb_sd_load(src);
 	src_cap = gb_sd_capacity(src);
@@ -2019,6 +2153,9 @@ void gb_load_balance(struct lb_env *env)
 		.imbalance		= env->imbalance,
 		.nr_balance_failed	= env->sd->nr_balance_failed,
 		.task_groups		= RB_ROOT,
+#ifdef CONFIG_CFS_BANDWIDTH
+		.burst			= burst,
+#endif
 	};
 
 	/*
@@ -2026,10 +2163,26 @@ void gb_load_balance(struct lb_env *env)
 	 * and we don't migrate tg in this case.
 	 */
 	for (parent = gb_sd; parent; parent = parent->parent) {
-		for (node = rb_first(&parent->task_groups); node; node = rb_next(node)) {
-			tg = __node_2_task_group(node);
-			if (tg->cfs_rq[env->src_cpu]->h_nr_running)
-				goto unlock;
+		struct rb_root *roots[2] = {
+#ifdef CONFIG_CFS_BANDWIDTH
+			&gb_sd->burstable_task_groups,
+#else
+			NULL,
+#endif
+			&gb_sd->task_groups,
+		};
+		struct rb_root *root;
+		int i;
+
+		for (i = 0; i < 2; i++) {
+			root = roots[i];
+			if (!root)
+				continue;
+			for (node = rb_first(root); node; node = rb_next(node)) {
+				tg = __gb_node_2_tg(node);
+				if (tg->cfs_rq[env->src_cpu]->h_nr_running)
+					goto unlock;
+			}
 		}
 	}
 
