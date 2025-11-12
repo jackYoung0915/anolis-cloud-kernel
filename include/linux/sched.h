@@ -2427,7 +2427,8 @@ static inline bool jbd2_proxy_exec_disabled(void)
 }
 #ifdef CONFIG_GROUP_BALANCER
 extern bool group_balancer_enabled(void);
-extern void tg_specs_change(struct task_group *tg);
+extern int get_tg_specs(struct task_group *tg);
+extern void tg_specs_change(struct task_group *tg, u64 specs_before);
 extern bool tg_group_balancer_enabled(struct task_group *tg);
 extern struct task_group *cgroup_tg(struct cgroup *cgrp);
 extern struct cgroup *tg_cgroup(struct task_group *tg);

@@ -42,7 +42,7 @@ struct group_balancer_sched_domain {
 	unsigned int					span_weight;
 	unsigned int					nr_children;
 	/* If free_tg_specs is less than zero, the gb_sd is overloaded. */
-	int						free_tg_specs;
+	atomic_t					free_tg_specs;
 	unsigned int					depth;
 	raw_spinlock_t					lock;
 	struct rb_root					task_groups;
@@ -153,6 +153,7 @@ struct group_balancer_size_level {
 LIST_HEAD(group_balancer_sched_domains);
 
 DEFINE_RWLOCK(group_balancer_sched_domain_lock);
+DEFINE_MUTEX(group_balancer_select_lock);
 
 struct cpumask root_cpumask;
 
@@ -767,7 +768,7 @@ static void add_to_tree(struct group_balancer_sched_domain *gb_sd,
 	}
 	gb_sd->span_weight = cpumask_weight(gb_sd_span(gb_sd));
 	gb_sd->lower_interval = ilog2(gb_sd->span_weight) * gb_sd->span_weight;
-	gb_sd->free_tg_specs = 100 * gb_sd->span_weight;
+	atomic_set(&gb_sd->free_tg_specs, 100 * gb_sd->span_weight);
 	add_to_size_level(gb_sd);
 
 	if (!gb_sd->nr_children) {
@@ -1176,8 +1177,8 @@ static int build_group_balancer_sched_domains(void)
 		group_balancer_root_domain->lower_interval =
 			ilog2(group_balancer_root_domain->span_weight) *
 			group_balancer_root_domain->span_weight;
-		group_balancer_root_domain->free_tg_specs =
-			100 * group_balancer_root_domain->span_weight;
+		atomic_set(&group_balancer_root_domain->free_tg_specs,
+			100 * group_balancer_root_domain->span_weight);
 	}
 
 	if (!zalloc_cpumask_var(&trial_cpumask, GFP_KERNEL)) {
@@ -1565,14 +1566,16 @@ static struct group_balancer_sched_domain *select_idle_gb_sd(struct task_group *
 		int max_unsatisfied_free_specs = INT_MIN;
 
 		for_each_gb_sd_child(child, gb_sd) {
+			int free_tg_specs = atomic_read(&child->free_tg_specs);
+
 			if (gb_sd_satisfies_task_group(tg, child) &&
-			    child->free_tg_specs > max_free_specs) {
+			    free_tg_specs > max_free_specs) {
 				max_free_child = child;
-				max_free_specs = child->free_tg_specs;
+				max_free_specs = free_tg_specs;
 			} else if (child->span_weight * 100 < specs &&
-				   child->free_tg_specs > max_unsatisfied_free_specs) {
+				   free_tg_specs > max_unsatisfied_free_specs) {
 				max_unsatisfied_free_child = child;
-				max_unsatisfied_free_specs = child->free_tg_specs;
+				max_unsatisfied_free_specs = free_tg_specs;
 			}
 		}
 		if (!max_free_child)
@@ -1622,13 +1625,8 @@ void update_free_tg_specs(struct group_balancer_sched_domain *gb_sd, int specs)
 {
 	struct group_balancer_sched_domain *parent;
 
-	if (specs != -1) {
-		for (parent = gb_sd; parent; parent = parent->parent) {
-			raw_spin_lock(&parent->lock);
-			parent->free_tg_specs += specs;
-			raw_spin_unlock(&parent->lock);
-		}
-	}
+	for (parent = gb_sd; parent; parent = parent->parent)
+		atomic_add(specs, &parent->free_tg_specs);
 }
 
 /*
@@ -1658,6 +1656,8 @@ void add_tg_to_group_balancer_sched_domain_locked(struct task_group *tg,
 
 	check_task_group_leap_level(tg, gb_sd);
 	tg->adjust_level_timestamp = jiffies;
+	if (tg->specs_ratio != -1)
+		update_free_tg_specs(gb_sd, -tg->specs_ratio);
 }
 
 void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
@@ -1667,7 +1667,6 @@ void add_tg_to_group_balancer_sched_domain(struct task_group *tg,
 	raw_spin_lock(&gb_sd->lock);
 	add_tg_to_group_balancer_sched_domain_locked(tg, gb_sd, enable);
 	raw_spin_unlock(&gb_sd->lock);
-	update_free_tg_specs(gb_sd, -tg->specs_ratio);
 }
 
 static void
@@ -1683,6 +1682,8 @@ remove_tg_from_group_balancer_sched_domain_locked(struct task_group *tg,
 	update_h_nr_burst_tg(tg, false);
 	if (disable)
 		walk_tg_tree_from(tg, tg_unset_gb_tg_down, tg_nop, NULL);
+	if (tg->specs_ratio != -1)
+		update_free_tg_specs(gb_sd, tg->specs_ratio);
 }
 
 static void
@@ -1694,7 +1695,6 @@ remove_tg_from_group_balancer_sched_domain(struct task_group *tg,
 	raw_spin_lock(&gb_sd->lock);
 	remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, disable);
 	raw_spin_unlock(&gb_sd->lock);
-	update_free_tg_specs(gb_sd, tg->specs_ratio);
 	read_unlock(&group_balancer_sched_domain_lock);
 }
 
@@ -1706,16 +1706,20 @@ int attach_tg_to_group_balancer_sched_domain(struct task_group *tg,
 	int ret = 0;
 
 	read_lock(&group_balancer_sched_domain_lock);
-	if (enable)
+	if (enable) {
+		mutex_lock(&group_balancer_select_lock);
 		gb_sd = select_idle_gb_sd(tg);
-	else
+	} else {
 		gb_sd = target;
+	}
 	if (!gb_sd) {
 		ret = -ESRCH;
 		goto out;
 	}
 	add_tg_to_group_balancer_sched_domain(tg, gb_sd, enable);
 out:
+	if (enable)
+		mutex_unlock(&group_balancer_select_lock);
 	read_unlock(&group_balancer_sched_domain_lock);
 	return ret;
 }
@@ -1887,7 +1891,7 @@ void task_tick_gb(struct task_struct *p)
 	raw_spin_unlock(&tg->gb_lock);
 }
 
-void tg_specs_change(struct task_group *tg)
+void tg_specs_change(struct task_group *tg, u64 specs_before)
 {
 	struct group_balancer_sched_domain *gb_sd;
 	int specs = tg->specs_ratio;
@@ -1896,6 +1900,13 @@ void tg_specs_change(struct task_group *tg)
 	if (!gb_sd)
 		/* tg->group_balancer is always true here, so find a gb_sd to attach. */
 		goto upper;
+
+	if (specs_before != specs) {
+		if (specs_before != -1)
+			update_free_tg_specs(gb_sd, specs_before);
+		if (specs != -1)
+			update_free_tg_specs(gb_sd, -specs);
+	}
 
 	/* If the task group leaps level after specs change, we will lower it later. */
 	check_task_group_leap_level(tg, gb_sd);

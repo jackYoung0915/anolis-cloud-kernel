@@ -238,7 +238,7 @@ static void update_cpumask_for_group_balancer(struct cpuset *cs)
 		return;
 
 	lock_cfs_constraints_mutex();
-	tg_specs_change(tg);
+	tg_specs_change(tg, get_tg_specs(tg));
 	unlock_cfs_constraints_mutex();
 }
 #else
