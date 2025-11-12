@@ -14734,19 +14734,18 @@ void free_fair_sched_group(struct task_group *tg)
 void tg_set_specs_ratio(struct task_group *tg)
 {
 	u64 quota = tg_cfs_bandwidth(tg)->hierarchical_quota;
-	u64 specs_ratio;
+	u64 specs_ratio, specs_before;
 
+	specs_before = tg->specs_ratio;
 	if (quota == RUNTIME_INF) {
 		tg->specs_ratio = -1;
-		return;
+	} else {
+		specs_ratio = quota / ((1 << BW_SHIFT) / 100);
+		/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
+		tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
 	}
-
-	specs_ratio = quota / ((1 << BW_SHIFT) / 100);
-
-	/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
-	tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
 	if (tg->group_balancer)
-		tg_specs_change(tg);
+		tg_specs_change(tg, specs_before);
 }
 #endif
 
@@ -15380,5 +15379,10 @@ int update_group_balancer(struct task_group *tg, u64 new)
 	cpus_read_unlock();
 
 	return 0;
+}
+
+int get_tg_specs(struct task_group *tg)
+{
+	return tg->specs_ratio;
 }
 #endif
