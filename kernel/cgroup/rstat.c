@@ -368,13 +368,14 @@ static void cgroup_base_stat_flush(struct cgroup *cgrp, int cpu)
 	/* propagate global delta to parent */
 	if (parent) {
 		delta = cgrp->bstat;
+		rstatc = cgroup_rstat_cpu(parent, cpu);
 		cgroup_base_stat_sub(&delta, &cgrp->last_bstat);
-		cgroup_base_stat_add(&parent->bstat, &delta);
+		cgroup_base_stat_add(&rstatc->bstat, &delta);
 		cgroup_base_stat_add(&cgrp->last_bstat, &delta);
 
 		delta_task = cgrp->bstat_task;
 		cgroup_base_stat_task_sub(&delta_task, &cgrp->last_bstat_task);
-		cgroup_base_stat_task_add(&parent->bstat_task, &delta_task);
+		cgroup_base_stat_task_add(&rstatc->bstat_task, &delta_task);
 		cgroup_base_stat_task_add(&cgrp->last_bstat_task, &delta_task);
 	}
 }
