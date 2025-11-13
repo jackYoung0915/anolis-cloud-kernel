@@ -10132,7 +10132,7 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 	if (tg == &root_task_group || task_group_is_autogroup(tg))
 		return -EACCES;
 
-	if (new > 1)
+	if (new > 2)
 		return -EINVAL;
 
 	write_lock(&group_balancer_lock);
@@ -10141,6 +10141,14 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 
 	if (old == new)
 		goto out;
+
+	if (!!old == !!new) {
+		mutex_lock(&cfs_constraints_mutex);
+		tg_specs_change(tg, tg->specs_ratio);
+		mutex_unlock(&cfs_constraints_mutex);
+		tg->group_balancer = new;
+		goto out;
+	}
 
 	retval = update_group_balancer(tg, new);
 	if (retval)
