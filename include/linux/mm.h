@@ -4707,6 +4707,7 @@ int arch_lock_shadow_stack_status(struct task_struct *t, unsigned long status);
 enum reclaim_reason {
 	RR_KSWAPD,
 	RR_DIRECT_RECLAIM,
+	RR_HUGEPAGE_RECLAIM,
 	RR_TYPES
 };
 
