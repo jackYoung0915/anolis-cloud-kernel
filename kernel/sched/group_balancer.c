@@ -1549,6 +1549,32 @@ static unsigned long gb_sd_capacity(struct group_balancer_sched_domain *gb_sd)
 	return cap;
 }
 
+static unsigned int gb_sd_nr_running(struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	int nr_running = 0;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd))
+		nr_running += cpu_rq(cpu)->nr_gb_running;
+
+	return nr_running;
+}
+
+static unsigned int
+tg_gb_sd_nr_running(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
+{
+	int cpu;
+	int nr_running = 0;
+	struct cfs_rq *cfs_rq;
+
+	for_each_cpu(cpu, gb_sd_span(gb_sd)) {
+		cfs_rq = tg->cfs_rq[cpu];
+		nr_running += cfs_rq->h_nr_running;
+	}
+
+	return nr_running;
+}
+
 static struct group_balancer_sched_domain *select_idle_gb_sd(struct task_group *tg)
 {
 	int specs = tg->specs_ratio;
@@ -1748,6 +1774,8 @@ static bool tg_lower_level(struct task_group *tg)
 	unsigned long tg_child_load, tg_load = 0, tg_dst_load = 0;
 	unsigned long child_load, src_load, dst_load, total_load = 0, migrate_load;
 	unsigned long child_cap, total_cap = 0, src_cap, dst_cap = 0;
+	unsigned int child_nr_running, dst_nr_running = 0, tg_child_nr_running;
+	unsigned int tg_nr_running = 0, tg_dst_nr_running = 0, migrate_nr_running;
 	unsigned long src_imb, dst_imb;
 
 	if (!gb_sd)
@@ -1770,12 +1798,15 @@ static bool tg_lower_level(struct task_group *tg)
 	for_each_gb_sd_child(child, gb_sd) {
 		child_load = gb_sd_load(child);
 		total_load += child_load;
+		child_nr_running = gb_sd_nr_running(child);
 
 		child_cap = gb_sd_capacity(child);
 		total_cap += child_cap;
 
 		tg_child_load = tg_gb_sd_load(tg, child);
 		tg_load += tg_child_load;
+		tg_child_nr_running = tg_gb_sd_nr_running(tg, child);
+		tg_nr_running += tg_child_nr_running;
 		if (!gb_sd_satisfies_task_group(tg, child))
 			continue;
 		if (!dst || tg_child_load > tg_dst_load) {
@@ -1783,12 +1814,16 @@ static bool tg_lower_level(struct task_group *tg)
 			tg_dst_load = tg_child_load;
 			dst_load = child_load;
 			dst_cap = child_cap;
+			tg_dst_nr_running = tg_child_nr_running;
+			dst_nr_running = child_nr_running;
 		} else if (tg_child_load == tg_dst_load) {
 			if (dst_load * child_cap > child_load * dst_cap) {
 				dst = child;
 				tg_dst_load = tg_child_load;
 				dst_load = child_load;
 				dst_cap = child_cap;
+				tg_dst_nr_running = tg_child_nr_running;
+				dst_nr_running = child_nr_running;
 			}
 		}
 	}
@@ -1810,6 +1845,11 @@ static bool tg_lower_level(struct task_group *tg)
 
 	/* We won't allow a task group span more than two numa nodes too long. */
 	if (dst->gb_flags & GROUP_BALANCER_LLC_FLAG)
+		goto lower;
+
+	/* If migration won't cause overload, do migrate.*/
+	migrate_nr_running = tg_nr_running - tg_dst_nr_running;
+	if (dst_nr_running + migrate_nr_running <= dst->span_weight)
 		goto lower;
 
 	/* If we lower the level, we have to make sure that we will not cause imbalance.
@@ -2112,18 +2152,18 @@ static void gb_attach_task_groups(struct gb_lb_env *gb_env)
 
 static void __update_gb_sd_status(struct group_balancer_sched_domain *gb_sd, int *gb_sd_status)
 {
-	int i, nr_running;
+	int i, nr_gb_running = 0;
 
 	for_each_cpu(i, gb_sd_span(gb_sd)) {
 		struct rq *rq = cpu_rq(i);
 
-		nr_running = rq->nr_running;
-		if (nr_running > 1)
-			*gb_sd_status |= GB_OVERLOAD;
-
-		if (gb_cpu_overutilized(i))
-			*gb_sd_status |= GB_OVERUTILIZED;
+		nr_gb_running += rq->nr_gb_running;
+		/* TODO: Improve the utilization of GB_OVERUTILIZED.*/
+//		if (gb_cpu_overutilized(i))
+//			*gb_sd_status |= GB_OVERUTILIZED;
 	}
+	if (nr_gb_running > gb_sd->span_weight)
+		*gb_sd_status |= GB_OVERLOAD;
 }
 
 static void update_gb_sd_status(struct gb_lb_env *gb_env, int *gb_sd_status)
@@ -2147,6 +2187,7 @@ void gb_load_balance(struct lb_env *env)
 #ifdef CONFIG_CFS_BANDWIDTH
 	bool burst = false;
 #endif
+	int src_status = 0;
 
 	if (!group_balancer_enabled())
 		return;
@@ -2178,13 +2219,20 @@ void gb_load_balance(struct lb_env *env)
 #endif
 			goto unlock;
 	}
+	gb_sd->last_balance_timestamp = jiffies;
 
 	src_load = gb_sd_load(src);
 	src_cap = gb_sd_capacity(src);
 	dst_load = gb_sd_load(dst);
 	dst_cap = gb_sd_capacity(dst);
+	__update_gb_sd_status(src, &src_status);
 
-	if (dst_load * src_cap * gb_sd->imbalance_pct >= src_load * dst_cap * 100)
+	/*
+	 * If the imbalance isn't larger than imbalance_pct, and it isn't the case that
+	 * dst is idle and src is overload, don't do balance.
+	 */
+	if (dst_load * src_cap * gb_sd->imbalance_pct >= src_load * dst_cap * 100 &&
+	    !(available_idle_cpu(env->dst_cpu) && src_status))
 		goto unlock;
 
 	gb_env = (struct gb_lb_env){
