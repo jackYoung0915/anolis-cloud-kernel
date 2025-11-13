@@ -2406,6 +2406,8 @@ static inline void kvm_handle_signal_exit(struct kvm_vcpu *vcpu)
 }
 #endif /* CONFIG_KVM_XFER_TO_GUEST_WORK */
 
+int kvm_mmu_mark_touched_log(struct kvm *kvm);
+
 /*
  * If more than one page is being (un)accounted, @virt must be the address of
  * the first page of a block of pages what were allocated together (i.e
