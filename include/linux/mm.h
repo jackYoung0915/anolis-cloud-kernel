@@ -4693,6 +4693,7 @@ static inline void pgalloc_tag_swap(struct folio *new, struct folio *old)
 enum reclaim_reason {
 	RR_KSWAPD,
 	RR_DIRECT_RECLAIM,
+	RR_HUGEPAGE_RECLAIM,
 	RR_TYPES
 };
 
