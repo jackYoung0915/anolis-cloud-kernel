@@ -5932,6 +5932,7 @@ bool hugetlbfs_pagecache_present(struct hstate *h,
 	folio_put(folio);
 	return true;
 }
+EXPORT_SYMBOL_GPL(hugetlbfs_pagecache_present);
 
 int hugetlb_add_to_page_cache(struct folio *folio, struct address_space *mapping,
 			   pgoff_t idx)

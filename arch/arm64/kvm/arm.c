@@ -1956,6 +1956,9 @@ int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 			return -EFAULT;
 		return kvm_vm_ioctl_get_reg_writable_masks(kvm, &range);
 	}
+	case KVM_POD_TOUCHED_LOG: {
+		return kvm_mmu_mark_touched_log(kvm);
+	}
 #ifdef CONFIG_VIRT_PLAT_DEV
 	case KVM_CREATE_SHADOW_DEV: {
 		struct kvm_master_dev_info *mdi;
