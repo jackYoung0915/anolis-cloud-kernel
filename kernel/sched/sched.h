@@ -620,7 +620,7 @@ struct task_group {
 	struct group_balancer_sched_domain *gb_sd;
 	struct group_balancer_sched_domain *preferred_gb_sd;
 	struct task_group	*gb_tg;
-	bool			group_balancer;
+	unsigned int		group_balancer;
 	bool			leap_level;
 	unsigned long		leap_level_timestamp;
 	unsigned long		adjust_level_timestamp;

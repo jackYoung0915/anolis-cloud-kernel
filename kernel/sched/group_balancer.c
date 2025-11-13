@@ -320,7 +320,7 @@ static void add_to_size_level(struct group_balancer_sched_domain *gb_sd)
 
 bool tg_group_balancer_enabled(struct task_group *tg)
 {
-	return tg->group_balancer;
+	return !!tg->group_balancer;
 }
 
 struct cgroup *tg_cgroup(struct task_group *tg)
@@ -342,7 +342,8 @@ gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_do
 		cpumask_and(&soft_cpus_allowed, cpus_allowed, gb_sd_span(gb_sd));
 		soft_cpus_weight = cpumask_weight(&soft_cpus_allowed);
 	}
-	return tg->specs_ratio <= 100 * soft_cpus_weight;
+	/* tg->group_balancer = 2 means that tg aquires double logical cpus. */
+	return tg->group_balancer * tg->specs_ratio <= 100 * soft_cpus_weight;
 }
 #else
 static inline bool
@@ -1961,7 +1962,8 @@ void tg_specs_change(struct task_group *tg, u64 specs_before)
 
 	/* The specs doesn't satisfy anymore, upper to find a satisfied gb_sd. */
 	/* Fast path, if the specs is -1 or too large, move it to root domain. */
-	if (specs == -1 || specs > group_balancer_root_domain->span_weight * 100) {
+	if (specs == -1 ||
+	    tg->group_balancer * specs > group_balancer_root_domain->span_weight * 100) {
 		gb_sd = group_balancer_root_domain;
 		goto upper;
 	}
