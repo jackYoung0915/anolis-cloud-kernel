@@ -8571,6 +8571,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	/* At this point se is NULL and we are at root level*/
 	add_nr_running(rq, 1);
 	id_update_nr_running(task_group(p), p, rq, 1);
+	gb_update_nr_running(task_group(p), rq, 1);
 
 	/*
 	 * Since new tasks are assigned an initial util_avg equal to
@@ -8697,6 +8698,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	/* At this point se is NULL and we are at root level*/
 	sub_nr_running(rq, 1);
 	id_update_nr_running(task_group(p), p, rq, -1);
+	gb_update_nr_running(task_group(p), rq, -1);
 
 	/* balance early to pull high priority tasks */
 	if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
@@ -9240,12 +9242,27 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 	struct sched_domain *this_sd;
 	u64 time;
 	bool is_seeker;
+#ifdef CONFIG_GROUP_BALANCER
+	struct task_group *tg = task_group(p);
+	bool gb_tried = false;
+	struct group_balancer_sched_domain *preferred = tg->preferred_gb_sd;
+#endif
 
 	this_sd = rcu_dereference(*this_cpu_ptr(&sd_llc));
 	if (!this_sd)
 		return -1;
 
+#ifdef CONFIG_GROUP_BALANCER
+retry:
+	if (group_balancer_enabled() && !gb_tried && tg_group_balancer_enabled(tg) && preferred) {
+		cpumask_and(cpus, get_gb_sd_span(preferred), task_allowed_cpu(p));
+	} else {
+		gb_tried = true;
+		cpumask_and(cpus, sched_domain_span(sd), task_allowed_cpu(p));
+	}
+#else
 	cpumask_and(cpus, sched_domain_span(sd), task_allowed_cpu(p));
+#endif
 
 	if (sched_feat(SIS_PROP) && !has_idle_core) {
 		u64 avg_cost, avg_idle, span_avg;
@@ -9282,7 +9299,7 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 						return i;
 				} else {
 					if (--nr <= 0)
-						return -1;
+						goto out;
 					idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
 					if ((unsigned int)idle_cpu < nr_cpumask_bits)
 						return idle_cpu;
@@ -9299,12 +9316,19 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 				return i;
 		} else {
 			if (--nr <= 0)
-				return -1;
+				goto out;
 			idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
 			if ((unsigned int)idle_cpu < nr_cpumask_bits)
 				break;
 		}
 	}
+
+#ifdef CONFIG_GROUP_BALANCER
+	if (!gb_tried) {
+		gb_tried = true;
+		goto retry;
+	}
+#endif
 
 	if (has_idle_core)
 		set_idle_cores(target, false);
@@ -9317,6 +9341,14 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 	if (!group_identity_disabled())
 		return (unsigned int)idle_cpu < nr_cpumask_bits ? idle_cpu : id_backup;
 	return idle_cpu;
+out:
+#ifdef CONFIG_GROUP_BALANCER
+	if (!gb_tried) {
+		gb_tried = true;
+		goto retry;
+	}
+#endif
+	return -1;
 }
 
 /*
@@ -14732,19 +14764,18 @@ void free_fair_sched_group(struct task_group *tg)
 void tg_set_specs_ratio(struct task_group *tg)
 {
 	u64 quota = tg_cfs_bandwidth(tg)->hierarchical_quota;
-	u64 specs_ratio;
+	u64 specs_ratio, specs_before;
 
+	specs_before = tg->specs_ratio;
 	if (quota == RUNTIME_INF) {
 		tg->specs_ratio = -1;
-		return;
+	} else {
+		specs_ratio = quota / ((1 << BW_SHIFT) / 100);
+		/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
+		tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
 	}
-
-	specs_ratio = quota / ((1 << BW_SHIFT) / 100);
-
-	/* If specs_ratio is bigger than INT_MAX, set specs_ratio -1. */
-	tg->specs_ratio = specs_ratio > INT_MAX ? -1 : specs_ratio;
 	if (tg->group_balancer)
-		tg_specs_change(tg);
+		tg_specs_change(tg, specs_before);
 }
 #endif
 
@@ -15302,3 +15333,86 @@ int sched_trace_rq_nr_running(struct rq *rq)
         return rq ? rq->nr_running : -1;
 }
 EXPORT_SYMBOL_GPL(sched_trace_rq_nr_running);
+
+#ifdef CONFIG_GROUP_BALANCER
+static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
+{
+	if (tg->group_balancer)
+		return -EINVAL;
+	return 0;
+}
+
+/*
+ * There is only one task group allowed to enable group balancer in the path from
+ * root_task_group to a certion leaf task group.
+ */
+static int validate_group_balancer(struct task_group *tg)
+{
+	int retval = 0;
+
+	rcu_read_lock();
+	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
+				   tg_nop, NULL);
+	if (retval)
+		goto out;
+
+	for (; tg != &root_task_group; tg = tg->parent) {
+		if (tg->group_balancer) {
+			retval = -EINVAL;
+			break;
+		}
+	}
+out:
+	rcu_read_unlock();
+	return retval;
+}
+
+int update_group_balancer(struct task_group *tg, u64 new)
+{
+	int cpu, retval;
+	struct rq_flags rf;
+	unsigned int delta;
+
+	if (new) {
+		retval = validate_group_balancer(tg);
+		if (retval)
+			return retval;
+		retval = attach_tg_to_group_balancer_sched_domain(tg, NULL, true);
+		if (retval)
+			return retval;
+	} else {
+		detach_tg_from_group_balancer_sched_domain(tg, true);
+	}
+
+	cpus_read_lock();
+	for_each_online_cpu(cpu) {
+		bool on_rq, throttled;
+		struct rq *rq = cpu_rq(cpu);
+		struct cfs_rq *cfs_rq;
+		struct sched_entity *se;
+
+		rq_lock_irq(rq, &rf);
+		se = tg->se[cpu];
+		cfs_rq = cfs_rq_of(se);
+		throttled = throttled_hierarchy(cfs_rq);
+		delta = se->my_q->h_nr_running;
+		on_rq = se->on_rq;
+
+		if (on_rq && !throttled) {
+			if (new)
+				rq->nr_gb_running += delta;
+			else
+				rq->nr_gb_running -= delta;
+		}
+		rq_unlock_irq(rq, &rf);
+	}
+	cpus_read_unlock();
+
+	return 0;
+}
+
+int get_tg_specs(struct task_group *tg)
+{
+	return tg->specs_ratio;
+}
+#endif

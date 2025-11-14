@@ -9013,6 +9013,8 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg->group_balancer = 0;
 	tg->soft_cpus_version = 0;
 	tg->gb_sd = NULL;
+	tg->preferred_gb_sd = NULL;
+	tg->expiration_start = 0;
 	raw_spin_lock_init(&tg->gb_lock);
 #endif
 	return tg;
@@ -9592,6 +9594,7 @@ static int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 	if (runtime_enabled && !runtime_was_enabled)
 		cfs_bandwidth_usage_inc();
 	raw_spin_lock_irq(&cfs_b->lock);
+	tg_burst_change(tg, burst);
 	cfs_b->period = ns_to_ktime(period);
 	cfs_b->quota = quota;
 	cfs_b->burst = burst;
@@ -10106,36 +10109,14 @@ static u64 cpu_group_balancer_read_u64(struct cgroup_subsys_state *css,
 	return tg->group_balancer;
 }
 
-static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
+void lock_cfs_constraints_mutex(void)
 {
-	if (tg->group_balancer)
-		return -EINVAL;
-	return 0;
+	mutex_lock(&cfs_constraints_mutex);
 }
 
-/*
- * There is only one task group allowed to enable group balancer in the path from
- * root_task_group to a certion leaf task group.
- */
-static int validate_group_balancer(struct task_group *tg)
+void unlock_cfs_constraints_mutex(void)
 {
-	int retval = 0;
-
-	rcu_read_lock();
-	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
-				   tg_nop, NULL);
-	if (retval)
-		goto out;
-
-	for (; tg != &root_task_group; tg = tg->parent) {
-		if (tg->group_balancer) {
-			retval = -EINVAL;
-			break;
-		}
-	}
-out:
-	rcu_read_unlock();
-	return retval;
+	mutex_unlock(&cfs_constraints_mutex);
 }
 
 static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
@@ -10151,7 +10132,7 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 	if (tg == &root_task_group || task_group_is_autogroup(tg))
 		return -EACCES;
 
-	if (new > 1)
+	if (new > 2)
 		return -EINVAL;
 
 	write_lock(&group_balancer_lock);
@@ -10161,16 +10142,17 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 	if (old == new)
 		goto out;
 
-	if (new) {
-		retval = validate_group_balancer(tg);
-		if (retval)
-			goto out;
-		retval = attach_tg_to_group_balancer_sched_domain(tg, NULL, true);
-		if (retval)
-			goto out;
-	} else {
-		detach_tg_from_group_balancer_sched_domain(tg, true);
+	if (!!old == !!new) {
+		mutex_lock(&cfs_constraints_mutex);
+		tg_specs_change(tg, tg->specs_ratio);
+		mutex_unlock(&cfs_constraints_mutex);
+		tg->group_balancer = new;
+		goto out;
 	}
+
+	retval = update_group_balancer(tg, new);
+	if (retval)
+		goto out;
 	tg->group_balancer = new;
 out:
 	raw_spin_unlock(&tg->gb_lock);
