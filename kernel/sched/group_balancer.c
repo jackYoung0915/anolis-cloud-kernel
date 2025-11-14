@@ -1778,6 +1778,9 @@ static bool tg_lower_level(struct task_group *tg)
 	unsigned int child_nr_running, dst_nr_running = 0, tg_child_nr_running;
 	unsigned int tg_nr_running = 0, tg_dst_nr_running = 0, migrate_nr_running;
 	unsigned long src_imb, dst_imb;
+	int total_free_specs = 0, child_free_specs = 0, dst_free_specs = 0, src_free_specs = 0;
+	int tg_specs;
+	unsigned int src_span_weight, dst_span_weight;
 
 	if (!gb_sd)
 		goto fail;
@@ -1808,6 +1811,9 @@ static bool tg_lower_level(struct task_group *tg)
 		tg_load += tg_child_load;
 		tg_child_nr_running = tg_gb_sd_nr_running(tg, child);
 		tg_nr_running += tg_child_nr_running;
+
+		child_free_specs = atomic_read(&child->free_tg_specs);
+		total_free_specs += child_free_specs;
 		if (!gb_sd_satisfies_task_group(tg, child))
 			continue;
 		if (!dst || tg_child_load > tg_dst_load) {
@@ -1817,6 +1823,7 @@ static bool tg_lower_level(struct task_group *tg)
 			dst_cap = child_cap;
 			tg_dst_nr_running = tg_child_nr_running;
 			dst_nr_running = child_nr_running;
+			dst_free_specs = child_free_specs;
 		} else if (tg_child_load == tg_dst_load) {
 			if (dst_load * child_cap > child_load * dst_cap) {
 				dst = child;
@@ -1825,6 +1832,7 @@ static bool tg_lower_level(struct task_group *tg)
 				dst_cap = child_cap;
 				tg_dst_nr_running = tg_child_nr_running;
 				dst_nr_running = child_nr_running;
+				dst_free_specs = child_free_specs;
 			}
 		}
 	}
@@ -1873,6 +1881,31 @@ static bool tg_lower_level(struct task_group *tg)
 
 	if (dst_imb > src_imb)
 		goto fail;
+
+	if (!sched_feat(GB_SPECS_BALANCE))
+		goto lower;
+	/*
+	 * If we lower the level, we'd better guarantee that free specs won't be more imbalance.
+	 *
+	 * src_free_specs	dst_free_specs
+	 * ---------------  vs  --------------
+	 * src_span_weight	dst_span_weight
+	 *
+	 */
+	tg_specs = tg->specs_ratio;
+	src_free_specs = total_free_specs - dst_free_specs;
+	dst_span_weight = dst->span_weight;
+	src_span_weight = gb_sd->span_weight - dst_span_weight;
+	src_imb = abs(src_free_specs * dst_span_weight - dst_free_specs * src_span_weight);
+	dst_imb = abs(src_free_specs * dst_span_weight -
+		      (dst_free_specs - tg_specs) * src_span_weight);
+
+	if (dst_free_specs * src_span_weight > src_free_specs * dst_span_weight)
+		goto fail;
+
+	if (dst_imb > src_imb)
+		goto fail;
+
 #ifdef CONFIG_NUMA
 lower:
 #endif
