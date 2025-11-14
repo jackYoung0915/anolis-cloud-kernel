@@ -289,6 +289,11 @@ static inline struct cpumask *gb_sd_span(struct group_balancer_sched_domain *gb_
 	return to_cpumask(gb_sd->span);
 }
 
+struct cpumask *get_gb_sd_span(struct group_balancer_sched_domain *gb_sd)
+{
+	return gb_sd_span(gb_sd);
+}
+
 static unsigned int get_size_level(struct group_balancer_sched_domain *gb_sd)
 {
 	int size_level = ilog2(gb_sd->span_weight);

@@ -3769,6 +3769,7 @@ extern void gb_load_balance(struct lb_env *env);
 extern void task_tick_gb(struct task_struct *p);
 extern void util_est_reenqueue_all(void);
 extern void util_est_clear_all(void);
+extern struct cpumask *get_gb_sd_span(struct group_balancer_sched_domain *gb_sd);
 #ifdef CONFIG_CFS_BANDWIDTH
 extern void tg_burst_change(struct task_group *tg, u64 burst);
 #endif
