@@ -9242,12 +9242,27 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 	struct sched_domain *this_sd;
 	u64 time;
 	bool is_seeker;
+#ifdef CONFIG_GROUP_BALANCER
+	struct task_group *tg = task_group(p);
+	bool gb_tried = false;
+	struct group_balancer_sched_domain *preferred = tg->preferred_gb_sd;
+#endif
 
 	this_sd = rcu_dereference(*this_cpu_ptr(&sd_llc));
 	if (!this_sd)
 		return -1;
 
+#ifdef CONFIG_GROUP_BALANCER
+retry:
+	if (group_balancer_enabled() && !gb_tried && tg_group_balancer_enabled(tg) && preferred) {
+		cpumask_and(cpus, get_gb_sd_span(preferred), task_allowed_cpu(p));
+	} else {
+		gb_tried = true;
+		cpumask_and(cpus, sched_domain_span(sd), task_allowed_cpu(p));
+	}
+#else
 	cpumask_and(cpus, sched_domain_span(sd), task_allowed_cpu(p));
+#endif
 
 	if (sched_feat(SIS_PROP) && !has_idle_core) {
 		u64 avg_cost, avg_idle, span_avg;
@@ -9284,7 +9299,7 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 						return i;
 				} else {
 					if (--nr <= 0)
-						return -1;
+						goto out;
 					idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
 					if ((unsigned int)idle_cpu < nr_cpumask_bits)
 						return idle_cpu;
@@ -9301,12 +9316,19 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 				return i;
 		} else {
 			if (--nr <= 0)
-				return -1;
+				goto out;
 			idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
 			if ((unsigned int)idle_cpu < nr_cpumask_bits)
 				break;
 		}
 	}
+
+#ifdef CONFIG_GROUP_BALANCER
+	if (!gb_tried) {
+		gb_tried = true;
+		goto retry;
+	}
+#endif
 
 	if (has_idle_core)
 		set_idle_cores(target, false);
@@ -9319,6 +9341,14 @@ select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_co
 	if (!group_identity_disabled())
 		return (unsigned int)idle_cpu < nr_cpumask_bits ? idle_cpu : id_backup;
 	return idle_cpu;
+out:
+#ifdef CONFIG_GROUP_BALANCER
+	if (!gb_tried) {
+		gb_tried = true;
+		goto retry;
+	}
+#endif
+	return -1;
 }
 
 /*
