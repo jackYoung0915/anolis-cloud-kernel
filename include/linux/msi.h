@@ -22,7 +22,7 @@
 #include <linux/cpumask.h>
 #include <linux/msi_api.h>
 #include <linux/irq.h>
-
+#include <linux/ck_kabi.h>
 #include <asm/msi.h>
 
 /* Dummy shadow structures if an architecture does not define them */
