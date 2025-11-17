@@ -562,7 +562,6 @@ xfs_log_mount(
 	xfs_daddr_t	blk_offset,
 	int		num_bblks)
 {
-	struct xlog	*log;
 	int		error = 0;
 	int		min_logfsbs;
 
