@@ -1199,47 +1199,6 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle, bool *sha
 	return avg_idle >= sysctl_sched_idle_saver_wmark;
 }
 
-#ifdef CONFIG_CFS_BANDWIDTH
-static __always_inline void
-id_update_make_up(struct task_group *tg, struct rq *rq, struct cfs_rq *cfs_rq,
-		  int coefficient)
-{
-	struct sched_entity *se;
-
-	if (group_identity_disabled())
-		return;
-
-	se = tg->se[cpu_of(rq)];
-
-	if (__is_highclass(se))
-		rq->nr_high_make_up += coefficient * cfs_rq->nr_tasks;
-
-	if (__is_underclass(se))
-		rq->nr_under_make_up += coefficient * cfs_rq->nr_tasks;
-
-	if (is_absolute_expeller(se))
-		rq->nr_absolute_expeller_make_up +=
-			coefficient * cfs_rq->nr_tasks;
-}
-
-static __always_inline void
-id_commit_make_up(struct rq *rq, bool commit)
-{
-	if (group_identity_disabled())
-		return;
-
-	if (commit) {
-		rq->nr_high_running += rq->nr_high_make_up;
-		rq->nr_under_running += rq->nr_under_make_up;
-		rq->nr_absolute_expeller += rq->nr_absolute_expeller_make_up;
-	}
-
-	rq->nr_high_make_up = 0;
-	rq->nr_under_make_up = 0;
-	rq->nr_absolute_expeller_make_up = 0;
-}
-#endif
-
 static __always_inline void
 id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq, long delta)
 {
@@ -2544,19 +2503,6 @@ id_preempt_all(struct sched_entity *curr, struct sched_entity *se)
 {
 	return 0;
 }
-
-#ifdef CONFIG_CFS_BANDWIDTH
-static inline void
-id_update_make_up(struct task_group *tg, struct rq *rq, struct cfs_rq *cfs_rq,
-		  int coefficient)
-{
-}
-
-static inline void
-id_commit_make_up(struct rq *rq, bool commit)
-{
-}
-#endif
 
 static __always_inline void
 id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq, long delta)
