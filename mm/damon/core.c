@@ -27,6 +27,7 @@
 static DEFINE_MUTEX(damon_lock);
 static int nr_running_ctxs;
 
+DEFINE_STATIC_KEY_FALSE(numa_stat_enabled_key);
 /*
  * Construct a damon_region struct
  *
@@ -869,73 +870,6 @@ static int kdamond_fn(void *data)
 		static_branch_disable(&numa_stat_enabled_key);
 
 	return 0;
-}
-
-static struct damon_target *get_damon_target(struct task_struct *task)
-{
-	int i;
-	struct damon_target *t;
-
-	rcu_read_lock();
-	for (i = 0; i < READ_ONCE(dbgfs_nr_ctxs); i++) {
-		struct damon_ctx *ctx = rcu_dereference(dbgfs_ctxs[i]);
-
-		if (!ctx || !ctx->kdamond)
-			continue;
-		damon_for_each_target(t, dbgfs_ctxs[i]) {
-			struct task_struct *ts = damon_get_task_struct(t);
-
-			if (!ts)
-				continue;
-
-			if (ts->mm == task->mm) {
-				put_task_struct(ts);
-				rcu_read_unlock();
-				return t;
-			}
-			put_task_struct(ts);
-		}
-	}
-	rcu_read_unlock();
-
-	return NULL;
-}
-
-static struct damon_region *get_damon_region(struct damon_target *t, unsigned long addr)
-{
-	struct damon_region *r, *next;
-
-	if (!t || !addr)
-		return NULL;
-
-	damon_for_each_region_safe(r, next, t) {
-		if (r->ar.start <= addr && r->ar.end >= addr)
-			return r;
-	}
-
-	return NULL;
-}
-
-void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf)
-{
-	struct damon_target *t;
-	struct damon_region *r;
-
-	if (static_branch_unlikely(&numa_stat_enabled_key)
-			&& nr_online_nodes > 1) {
-		t = get_damon_target(current);
-		if (t) {
-			spin_lock(&t->target_lock);
-			r = get_damon_region(t, vmf->address);
-			if (r) {
-				if (page_nid == node_id)
-					r->local++;
-				else
-					r->remote++;
-			}
-			spin_unlock(&t->target_lock);
-		}
-	}
 }
 
 #include "core-test.h"
