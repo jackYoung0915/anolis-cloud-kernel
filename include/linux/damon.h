@@ -704,11 +704,12 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  */
 #define damon_get_task_struct(t) \
 (get_pid_task((struct pid *)t->pid, PIDTYPE_PID))
+#endif	/* CONFIG_DAMON_VADDR */
 
+#ifdef CONFIG_DAMON_DBGFS
 void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf);
 #else
 static inline void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf) { }
-
-#endif	/* CONFIG_DAMON_VADDR */
+#endif /* CONFIG_DAMON_DBGFS */
 
 #endif	/* _DAMON_H */
