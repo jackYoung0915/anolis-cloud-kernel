@@ -9324,7 +9324,7 @@ retry:
 	}
 
 #ifdef CONFIG_GROUP_BALANCER
-	if (!gb_tried) {
+	if (group_balancer_enabled() && !gb_tried) {
 		gb_tried = true;
 		goto retry;
 	}
@@ -9343,7 +9343,7 @@ retry:
 	return idle_cpu;
 out:
 #ifdef CONFIG_GROUP_BALANCER
-	if (!gb_tried) {
+	if (group_balancer_enabled() && !gb_tried) {
 		gb_tried = true;
 		goto retry;
 	}
