@@ -369,11 +369,13 @@ void damon_va_cleanup(struct damon_ctx *ctx);
 int damon_va_apply_scheme(struct damon_ctx *context, struct damon_target *t,
 		struct damon_region *r, struct damos *scheme);
 void damon_va_set_primitives(struct damon_ctx *ctx);
+#endif	/* CONFIG_DAMON_VADDR */
+
+#ifdef CONFIG_DAMON_DBGFS
 void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf);
 #else
 static inline void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf) { }
-
-#endif	/* CONFIG_DAMON_VADDR */
+#endif
 
 #ifdef CONFIG_DAMON_PADDR
 
