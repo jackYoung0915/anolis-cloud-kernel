@@ -746,8 +746,6 @@ out:
 	return len;
 }
 
-DEFINE_STATIC_KEY_FALSE(numa_stat_enabled_key);
-
 static ssize_t dbgfs_numa_stat_read(struct file *file,
 		char __user *buf, size_t count, loff_t *ppos)
 {
@@ -1154,6 +1152,73 @@ static const struct file_operations monitor_on_fops = {
 	.read = dbgfs_monitor_on_read,
 	.write = dbgfs_monitor_on_write,
 };
+
+static struct damon_target *get_damon_target(struct task_struct *task)
+{
+	int i;
+	struct damon_target *t;
+
+	rcu_read_lock();
+	for (i = 0; i < READ_ONCE(dbgfs_nr_ctxs); i++) {
+		struct damon_ctx *ctx = rcu_dereference(dbgfs_ctxs[i]);
+
+		if (!ctx || !ctx->kdamond)
+			continue;
+		damon_for_each_target(t, dbgfs_ctxs[i]) {
+			struct task_struct *ts = damon_get_task_struct(t);
+
+			if (!ts)
+				continue;
+
+			if (ts->mm == task->mm) {
+				put_task_struct(ts);
+				rcu_read_unlock();
+				return t;
+			}
+			put_task_struct(ts);
+		}
+	}
+	rcu_read_unlock();
+
+	return NULL;
+}
+
+static struct damon_region *get_damon_region(struct damon_target *t, unsigned long addr)
+{
+	struct damon_region *r, *next;
+
+	if (!t || !addr)
+		return NULL;
+
+	damon_for_each_region_safe(r, next, t) {
+		if (r->ar.start <= addr && r->ar.end >= addr)
+			return r;
+	}
+
+	return NULL;
+}
+
+void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf)
+{
+	struct damon_target *t;
+	struct damon_region *r;
+
+	if (static_branch_unlikely(&numa_stat_enabled_key)
+	    && nr_online_nodes > 1) {
+		t = get_damon_target(current);
+		if (t) {
+			spin_lock(&t->target_lock);
+			r = get_damon_region(t, vmf->address);
+			if (r) {
+				if (page_nid == node_id)
+					r->local++;
+				else
+					r->remote++;
+			}
+			spin_unlock(&t->target_lock);
+		}
+	}
+}
 
 static int __init __damon_dbgfs_init(void)
 {
