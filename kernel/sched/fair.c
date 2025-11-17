@@ -14475,10 +14475,6 @@ static void propagate_entity_cfs_rq(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-	// taoyi: "sched/fair: Propagate load during synchronous attach/detach" changed
-	// code base in this function.
-	// not sure for this change
-
 	/*
 	 * If a task gets attached to this cfs_rq and before being queued,
 	 * it gets migrated to another CPU due to reasons like affinity
