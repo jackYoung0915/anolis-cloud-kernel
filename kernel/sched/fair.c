@@ -1199,47 +1199,6 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle, bool *sha
 	return avg_idle >= sysctl_sched_idle_saver_wmark;
 }
 
-#ifdef CONFIG_CFS_BANDWIDTH
-static __always_inline void
-id_update_make_up(struct task_group *tg, struct rq *rq, struct cfs_rq *cfs_rq,
-		  int coefficient)
-{
-	struct sched_entity *se;
-
-	if (group_identity_disabled())
-		return;
-
-	se = tg->se[cpu_of(rq)];
-
-	if (__is_highclass(se))
-		rq->nr_high_make_up += coefficient * cfs_rq->nr_tasks;
-
-	if (__is_underclass(se))
-		rq->nr_under_make_up += coefficient * cfs_rq->nr_tasks;
-
-	if (is_absolute_expeller(se))
-		rq->nr_absolute_expeller_make_up +=
-			coefficient * cfs_rq->nr_tasks;
-}
-
-static __always_inline void
-id_commit_make_up(struct rq *rq, bool commit)
-{
-	if (group_identity_disabled())
-		return;
-
-	if (commit) {
-		rq->nr_high_running += rq->nr_high_make_up;
-		rq->nr_under_running += rq->nr_under_make_up;
-		rq->nr_absolute_expeller += rq->nr_absolute_expeller_make_up;
-	}
-
-	rq->nr_high_make_up = 0;
-	rq->nr_under_make_up = 0;
-	rq->nr_absolute_expeller_make_up = 0;
-}
-#endif
-
 static __always_inline void
 id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq, long delta)
 {
@@ -2544,19 +2503,6 @@ id_preempt_all(struct sched_entity *curr, struct sched_entity *se)
 {
 	return 0;
 }
-
-#ifdef CONFIG_CFS_BANDWIDTH
-static inline void
-id_update_make_up(struct task_group *tg, struct rq *rq, struct cfs_rq *cfs_rq,
-		  int coefficient)
-{
-}
-
-static inline void
-id_commit_make_up(struct rq *rq, bool commit)
-{
-}
-#endif
 
 static __always_inline void
 id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq, long delta)
@@ -7678,14 +7624,13 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 	se = tg->se[cpu_of(rq)];
 
 	/*
-	 * It's possible we are called with !runtime_remaining due to things
-	 * like user changed quota setting(see tg_set_cfs_bandwidth()) or async
-	 * unthrottled us with a positive runtime_remaining but other still
-	 * running entities consumed those runtime before we reached here.
+	 * It's possible we are called with runtime_remaining < 0 due to things
+	 * like async unthrottled us with a positive runtime_remaining but other
+	 * still running entities consumed those runtime before we reached here.
 	 *
-	 * Anyway, we can't unthrottle this cfs_rq without any runtime remaining
-	 * because any enqueue in tg_unthrottle_up() will immediately trigger a
-	 * throttle, which is not supposed to happen on unthrottle path.
+	 * We can't unthrottle this cfs_rq without any runtime remaining because
+	 * any enqueue in tg_unthrottle_up() will immediately trigger a throttle,
+	 * which is not supposed to happen on unthrottle path.
 	 */
 	if (cfs_rq->runtime_enabled && cfs_rq->runtime_remaining <= 0)
 		return;
@@ -8079,6 +8024,16 @@ static void sync_throttle(struct task_group *tg, int cpu)
 
 	cfs_rq->throttle_count = pcfs_rq->throttle_count;
 	cfs_rq->throttled_clock_pelt = rq_clock_pelt(cpu_rq(cpu));
+
+	/*
+	 * It is not enough to sync the "pelt_clock_throttled" indicator
+	 * with the parent cfs_rq when the hierarchy is not queued.
+	 * Always join a throttled hierarchy with PELT clock throttled
+	 * and leaf it to the first enqueue, or distribution to
+	 * unthrottle the PELT clock.
+	 */
+	if (cfs_rq->throttle_count)
+		cfs_rq->pelt_clock_throttled = 1;
 }
 
 /* conditionally throttle active cfs_rq's from put_prev_entity() */
@@ -14475,10 +14430,6 @@ static void propagate_entity_cfs_rq(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-	// taoyi: "sched/fair: Propagate load during synchronous attach/detach" changed
-	// code base in this function.
-	// not sure for this change
-
 	/*
 	 * If a task gets attached to this cfs_rq and before being queued,
 	 * it gets migrated to another CPU due to reasons like affinity
@@ -14499,6 +14450,8 @@ static void propagate_entity_cfs_rq(struct sched_entity *se)
 		if (!cfs_rq_pelt_clock_throttled(cfs_rq))
 			list_add_leaf_cfs_rq(cfs_rq);
 	}
+
+	assert_list_leaf_cfs_rq(rq_of(cfs_rq));
 }
 #else
 static void propagate_entity_cfs_rq(struct sched_entity *se) { }
