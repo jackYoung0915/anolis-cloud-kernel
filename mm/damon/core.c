@@ -27,6 +27,8 @@
 static DEFINE_MUTEX(damon_lock);
 static int nr_running_ctxs;
 
+DEFINE_STATIC_KEY_FALSE(numa_stat_enabled_key);
+
 /*
  * Construct a damon_region struct
  *
@@ -871,6 +873,7 @@ static int kdamond_fn(void *data)
 	return 0;
 }
 
+#if defined(CONFIG_DAMON_DBGFS) && defined(CONFIG_DAMON_VADDR)
 static struct damon_target *get_damon_target(struct task_struct *task)
 {
 	int i;
@@ -937,5 +940,6 @@ void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf)
 		}
 	}
 }
+#endif
 
 #include "core-test.h"

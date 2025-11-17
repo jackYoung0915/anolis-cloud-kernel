@@ -609,8 +609,6 @@ out:
 	return len;
 }
 
-DEFINE_STATIC_KEY_FALSE(numa_stat_enabled_key);
-
 static ssize_t dbgfs_numa_stat_read(struct file *file,
 		char __user *buf, size_t count, loff_t *ppos)
 {

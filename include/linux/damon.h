@@ -17,8 +17,10 @@
 #define DAMON_MIN_REGION	PAGE_SIZE
 DECLARE_STATIC_KEY_FALSE(numa_stat_enabled_key);
 
+#ifdef CONFIG_DAMON_DBGFS
 extern struct damon_ctx **dbgfs_ctxs;
 extern int dbgfs_nr_ctxs;
+#endif
 
 /**
  * struct damon_addr_range - Represents an address region of [@start, @end).
@@ -369,11 +371,13 @@ void damon_va_cleanup(struct damon_ctx *ctx);
 int damon_va_apply_scheme(struct damon_ctx *context, struct damon_target *t,
 		struct damon_region *r, struct damos *scheme);
 void damon_va_set_primitives(struct damon_ctx *ctx);
+#endif	/* CONFIG_DAMON_VADDR */
+
+#if defined(CONFIG_DAMON_DBGFS) && defined(CONFIG_DAMON_VADDR)
 void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf);
 #else
 static inline void damon_numa_fault(int page_nid, int node_id, struct vm_fault *vmf) { }
-
-#endif	/* CONFIG_DAMON_VADDR */
+#endif
 
 #ifdef CONFIG_DAMON_PADDR
 
