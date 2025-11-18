@@ -558,13 +558,13 @@ static void ks_pcie_quirk(struct pci_dev *dev)
 
 	static const struct pci_device_id rc_pci_devids[] = {
 		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2HK),
-		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
+		 .class = PCI_CLASS_BRIDGE_PCI_NORMAL, .class_mask = ~0, },
 		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2E),
-		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
+		 .class = PCI_CLASS_BRIDGE_PCI_NORMAL, .class_mask = ~0, },
 		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2L),
-		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
+		 .class = PCI_CLASS_BRIDGE_PCI_NORMAL, .class_mask = ~0, },
 		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2G),
-		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
+		 .class = PCI_CLASS_BRIDGE_PCI_NORMAL, .class_mask = ~0, },
 		{ 0, },
 	};
 	static const struct pci_device_id am6_pci_devids[] = {
