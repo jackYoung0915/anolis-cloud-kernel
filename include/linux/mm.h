@@ -2738,7 +2738,12 @@ static inline unsigned long get_mm_counter(struct mm_struct *mm, int member)
 
 static inline unsigned long get_mm_counter_sum(struct mm_struct *mm, int member)
 {
-	return percpu_counter_sum_positive(&mm->rss_stat[member]);
+	struct percpu_counter *fbc = &mm->rss_stat[member];
+
+	if (percpu_counter_initialized(fbc))
+		return percpu_counter_sum_positive(fbc);
+
+	return percpu_counter_atomic_read(fbc);
 }
 
 void mm_trace_rss_stat(struct mm_struct *mm, int member);
