@@ -1,0 +1,34 @@
+hwmon: Fix the missing of 'average' word in hwmon_power_attr_templates
+
+ANBZ: #26346
+
+commit 232427772fc123942d110c18269cfbdf40edae18 upstream
+
+The string "power%d_interval_max" and "power%d_interval_min" in the
+hwmon_power_attr_templates[] are corresponding to the sysfs interface name
+of hwmon_power_average_interval_max and hwmon_power_average_interval_min.
+But the 'average' word is missing in two strings. Fortunately, there is
+no driver to use it yet.
+
+Signed-off-by: Huisong Li <lihuisong@huawei.com>
+Link: https://lore.kernel.org/r/20250304074640.2770353-1-lihuisong@huawei.com
+Signed-off-by: Guenter Roeck <linux@roeck-us.net>
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# Author:    Huisong Li <lihuisong@huawei.com>
+# Date:      Tue Mar 4 15:46:40 2025 +0800
+#
+# interactive rebase in progress; onto f8bce50aa552
+# Last commands done (6 commands done):
+#    reword 81ff9f4824e9 hwmon: (acpi_power_meter) Fix fail to load module on platform without _PMD method
+#    reword 2bd77b23ae17 hwmon: Fix the missing of 'average' word in hwmon_power_attr_templates
+# Next commands to do (8 remaining commands):
+#    reword b2fde4dbeef9 hwmon: (acpi_power_meter) Ensure IPMI space handler is ready on Dell systems
+#    reword b2320c49d82a ACPI: PCC: Add PCC shared memory region command and status bitfields
+# You are currently editing a commit while rebasing branch 'devel-5.10-power-meter2' on 'f8bce50aa552'.
+#
+# Changes to be committed:
+#	modified:   drivers/hwmon/hwmon.c
+#
