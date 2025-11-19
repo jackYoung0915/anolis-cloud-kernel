@@ -1261,6 +1261,7 @@ static int logic_ummu_def_domain_type(struct device *dev)
 	return ops->def_domain_type(dev);
 }
 
+#ifdef CONFIG_UB_UMMU_SVA
 static void logic_ummu_remove_dev_pasid(struct device *dev, ioasid_t pasid,
 					struct iommu_domain *domain)
 {
@@ -1296,6 +1297,7 @@ static void logic_ummu_remove_dev_pasid(struct device *dev, ioasid_t pasid,
 	/* release the tid */
 	ummu_core_free_tid(&logic_ummu.core_dev, tid);
 }
+#endif
 
 static int logic_ummu_attach_dev_identity(struct iommu_domain *domain,
 					  struct device *dev, struct iommu_domain *old)
