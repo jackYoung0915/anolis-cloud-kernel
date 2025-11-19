@@ -461,12 +461,13 @@ static struct iommu_group *ummu_device_group(struct device *dev)
 
 static int ummu_def_domain_type(struct device *dev)
 {
+#ifdef CONFIG_UB_UMMU_BYPASSDEV
 	int ret;
 
 	ret = ummu_bypass_dev_domain_type(dev);
 	if (ret)
 		return ret;
-
+#endif
 	if (iommu_default_passthrough())
 		return IOMMU_DOMAIN_IDENTITY;
 	return 0;
