@@ -1419,6 +1419,7 @@ static int csv_mmio_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code)
 
 	update_npt = kzalloc(sizeof(*update_npt), GFP_KERNEL);
 	if (!update_npt) {
+		WARN_ONCE(1, "Failure allocate npt command\n");
 		r = -ENOMEM;
 		goto exit;
 	}
@@ -1431,8 +1432,10 @@ static int csv_mmio_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code)
 
 	r = csv_issue_cmd(vcpu->kvm, CSV_CMD_UPDATE_NPT, update_npt, &psp_ret);
 
-	if (psp_ret != SEV_RET_SUCCESS)
+	if (psp_ret != SEV_RET_SUCCESS) {
+		WARN_ONCE(1, "Failure update NPT\n");
 		r = -EFAULT;
+	}
 
 	kfree(update_npt);
 exit:
@@ -1510,8 +1513,10 @@ static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
 	bool is_dma_pinned;
 
 	tmp_pfn = __gfn_to_pfn_memslot(slot, gfn, false, NULL, write, NULL);
-	if (unlikely(is_error_pfn(tmp_pfn)))
-		return -ENOMEM;
+	if (unlikely(is_error_pfn(tmp_pfn))) {
+		WARN_ONCE(1, "Invalid pfn\n");
+		return -EINVAL;
+	}
 
 	if (csv_is_mmio_pfn(tmp_pfn)) {
 		*pfn = tmp_pfn;
@@ -1538,6 +1543,7 @@ static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
 		if (npinned != 1) {
 			mmap_write_unlock(current->mm);
 			kmem_cache_free(csv->sp_slab, sp);
+			pr_err_ratelimited("Failure pin gfn:0x%llx\n", gfn);
 			return -ENOMEM;
 		}
 
@@ -1624,8 +1630,12 @@ static int csv_page_fault(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 		mutex_lock(&csv->sp_lock);
 		ret = csv_pin_shared_memory(vcpu, slot, gfn, &pfn);
 		mutex_unlock(&csv->sp_lock);
-		if (ret)
+		if (ret) {
+			/* Resume guest to retry #NPF. */
+			if (ret == -ENOMEM)
+				ret = 0;
 			goto exit;
+		}
 
 		level = csv_mapping_level(vcpu, gfn, pfn, slot);
 	}
@@ -1633,8 +1643,10 @@ static int csv_page_fault(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	ret = __csv_page_fault(vcpu, gfn << PAGE_SHIFT, error_code, slot,
 			       &psp_ret, pfn, level);
 
-	if (psp_ret != SEV_RET_SUCCESS)
+	if (psp_ret != SEV_RET_SUCCESS) {
+		WARN_ONCE(1, "Failure update NPT\n");
 		ret = -EFAULT;
+	}
 exit:
 	return ret;
 }
