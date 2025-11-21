@@ -29,6 +29,7 @@ struct vfio_pci_core_device_ser;
 struct vfio_pci_region;
 struct p2pdma_provider;
 struct dma_buf_phys_vec;
+struct dma_buf_attachment;
 
 struct vfio_pci_regops {
 	ssize_t (*rw)(struct vfio_pci_core_device *vdev, char __user *buf,
@@ -180,4 +181,8 @@ bool vfio_pci_core_range_intersect_range(loff_t buf_start, size_t buf_cnt,
 					 loff_t *buf_offset,
 					 size_t *intersect_count,
 					 size_t *register_offset);
+
+int vfio_pci_dma_buf_iommufd_map(struct dma_buf_attachment *attachment,
+				 struct dma_buf_phys_vec *phys);
+
 #endif /* VFIO_PCI_CORE_H */
