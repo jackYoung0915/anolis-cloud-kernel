@@ -5775,13 +5775,13 @@ static void __sched notrace __schedule(bool preempt)
 
 void __noreturn do_task_dead(void)
 {
+	clear_task_identity(current);
+
 	/* Causes final put_task_struct in finish_task_switch(): */
 	set_special_state(TASK_DEAD);
 
 	/* Tell freezer to ignore us: */
 	current->flags |= PF_NOFREEZE;
-
-	clear_task_identity(current);
 
 	__schedule(false);
 	BUG();

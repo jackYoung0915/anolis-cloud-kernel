@@ -1207,8 +1207,10 @@ id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq
 	if (group_identity_disabled())
 		return;
 
-	if (!tg || tg == &root_task_group)
+	if (!tg)
 		return;
+	if (tg == &root_task_group)
+		goto task_absolute_expeller;
 
 	se = tg->se[rq->cpu];
 
@@ -1226,6 +1228,7 @@ id_update_nr_running(struct task_group *tg, struct task_struct *p, struct rq *rq
 	 * so that no errors will occur when both the task and the task group are set to
 	 * absolute_expeller at the same time.
 	 */
+task_absolute_expeller:
 	if (task_is_absolute_expeller(p))
 		rq->nr_absolute_expeller += delta > 0 ? 1 : -1;
 }
