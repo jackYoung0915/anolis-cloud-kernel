@@ -2975,7 +2975,7 @@ static inline void gb_update_nr_running(struct task_group *tg, struct rq *rq, in
 		return;
 	rq->nr_gb_running += delta;
 }
-extern int update_group_balancer(struct task_group *tg, u64 new);
+extern int update_group_balancer(struct task_group *tg);
 #else
 static inline void gb_update_nr_running(struct task_group *tg, struct rq *rq, int delta) { }
 #endif
