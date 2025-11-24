@@ -1932,6 +1932,9 @@ static void gb_task_group_tick(struct task_group *tg)
 	if (!gb_sd)
 		return;
 
+	if (unlikely(!gb_sd_satisfies_task_group(tg, gb_sd)))
+		tg_specs_change(tg, tg->specs_ratio);
+
 	if (!tg->leap_level)
 		return;
 

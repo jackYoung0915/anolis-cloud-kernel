@@ -10150,10 +10150,10 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 		goto out;
 	}
 
-	retval = update_group_balancer(tg, new);
-	if (retval)
-		goto out;
 	tg->group_balancer = new;
+	retval = update_group_balancer(tg);
+	if (retval)
+		tg->group_balancer = old;
 out:
 	raw_spin_unlock(&tg->gb_lock);
 	write_unlock(&group_balancer_lock);

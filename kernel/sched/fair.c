@@ -15293,7 +15293,7 @@ EXPORT_SYMBOL_GPL(sched_trace_rq_nr_running);
 #ifdef CONFIG_GROUP_BALANCER
 static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
 {
-	if (tg->group_balancer)
+	if (tg != data && tg->group_balancer)
 		return -EINVAL;
 	return 0;
 }
@@ -15305,15 +15305,16 @@ static int tg_validate_group_balancer_down(struct task_group *tg, void *data)
 static int validate_group_balancer(struct task_group *tg)
 {
 	int retval = 0;
+	struct task_group *parent = tg->parent;
 
 	rcu_read_lock();
 	retval = walk_tg_tree_from(tg, tg_validate_group_balancer_down,
-				   tg_nop, NULL);
+				   tg_nop, tg);
 	if (retval)
 		goto out;
 
-	for (; tg != &root_task_group; tg = tg->parent) {
-		if (tg->group_balancer) {
+	for (; parent && parent != &root_task_group; parent = parent->parent) {
+		if (parent->group_balancer) {
 			retval = -EINVAL;
 			break;
 		}
@@ -15323,13 +15324,13 @@ out:
 	return retval;
 }
 
-int update_group_balancer(struct task_group *tg, u64 new)
+int update_group_balancer(struct task_group *tg)
 {
 	int cpu, retval;
 	struct rq_flags rf;
 	unsigned int delta;
 
-	if (new) {
+	if (tg->group_balancer) {
 		retval = validate_group_balancer(tg);
 		if (retval)
 			return retval;
@@ -15355,7 +15356,7 @@ int update_group_balancer(struct task_group *tg, u64 new)
 		on_rq = se->on_rq;
 
 		if (on_rq && !throttled) {
-			if (new)
+			if (tg->group_balancer)
 				rq->nr_gb_running += delta;
 			else
 				rq->nr_gb_running -= delta;
