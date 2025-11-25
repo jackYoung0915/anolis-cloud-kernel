@@ -6884,12 +6884,16 @@ static void __push_expellee(struct rq *rq)
 
 		/* If there is no cpu we can migrate now, stop the loop to avoid overhead. */
 		if (dst_cpu == -1) {
-			if (backup_cpu == -1)
+			if (backup_cpu == -1) {
+				put_task_struct(p);
 				break;
+			}
 			dst_cpu = backup_cpu;
 			dst_rq = cpu_rq(dst_cpu);
-			if (!raw_spin_rq_trylock(dst_rq))
+			if (!raw_spin_rq_trylock(dst_rq)) {
+				put_task_struct(p);
 				break;
+			}
 		}
 migrate:
 		deactivate_task(rq, p, 0);
