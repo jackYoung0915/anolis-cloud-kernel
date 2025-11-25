@@ -24,6 +24,7 @@ place where this information is gathered.
    accelerators/ocxl
    ebpf/index
    ELF
+   liveupdate
    ioctl/index
    iommu
    iommufd
