@@ -12,6 +12,8 @@
 
 #define pr_fmt(fmt) "riscv-iommu: " fmt
 
+#include <linux/acpi.h>
+#include <linux/acpi_rimt.h>
 #include <linux/compiler.h>
 #include <linux/crash_dump.h>
 #include <linux/init.h>
@@ -238,6 +240,12 @@ static int riscv_iommu_queue_enable(struct riscv_iommu_device *iommu,
 		queue->iommu = NULL;
 		return rc;
 	}
+
+	/* Empty queue before enabling it */
+	if (queue->qid == RISCV_IOMMU_INTR_CQ)
+		riscv_iommu_writel(queue->iommu, Q_TAIL(queue), 0);
+	else
+		riscv_iommu_writel(queue->iommu, Q_HEAD(queue), 0);
 
 	/*
 	 * Enable queue with interrupts, clear any memory fault if any.
@@ -644,9 +652,11 @@ static struct riscv_iommu_dc *riscv_iommu_get_dc(struct riscv_iommu_device *iomm
  * This is best effort IOMMU translation shutdown flow.
  * Disable IOMMU without waiting for hardware response.
  */
-static void riscv_iommu_disable(struct riscv_iommu_device *iommu)
+void riscv_iommu_disable(struct riscv_iommu_device *iommu)
 {
-	riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_DDTP, 0);
+	riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_DDTP,
+			   FIELD_PREP(RISCV_IOMMU_DDTP_IOMMU_MODE,
+				      RISCV_IOMMU_DDTP_IOMMU_MODE_BARE));
 	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_CQCSR, 0);
 	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_FQCSR, 0);
 	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_PQCSR, 0);
@@ -1271,11 +1281,11 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct iommu_domain *iommu_domain,
 					    dma_addr_t iova)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
-	unsigned long pte_size;
+	size_t pte_size;
 	unsigned long *ptr;
 
 	ptr = riscv_iommu_pte_fetch(domain, iova, &pte_size);
-	if (_io_pte_none(*ptr) || !_io_pte_present(*ptr))
+	if (!ptr)
 		return 0;
 
 	return pfn_to_phys(__page_val_to_pfn(*ptr)) | (iova & (pte_size - 1));
@@ -1640,6 +1650,14 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	if (rc) {
 		dev_err_probe(iommu->dev, rc, "cannot register sysfs interface\n");
 		goto err_iodir_off;
+	}
+
+	if (!acpi_disabled) {
+		rc = rimt_iommu_register(iommu->dev);
+		if (rc) {
+			dev_err_probe(iommu->dev, rc, "cannot register iommu with RIMT\n");
+			goto err_remove_sysfs;
+		}
 	}
 
 	rc = iommu_device_register(&iommu->iommu, &riscv_iommu_ops, iommu->dev);
