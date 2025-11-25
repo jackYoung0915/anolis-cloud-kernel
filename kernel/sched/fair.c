@@ -1108,12 +1108,12 @@ bool is_sys_aware_enabled(void)
 EXPORT_SYMBOL_GPL(is_sys_aware_enabled);
 
 #if defined(CONFIG_PREEMPT) || !defined(CONFIG_CONTEXT_TRACKING)
-static inline bool is_cpu_in_sys_mode(int cpu)
+static inline bool is_cpu_in_sys_mode(int cpu, struct task_struct *p)
 {
 	return false;
 }
 #else
-static inline bool is_cpu_in_sys_mode(int cpu)
+static inline bool is_cpu_in_sys_mode(int cpu, struct task_struct *p)
 {
 	if (!is_sys_aware_enabled())
 		return false;
@@ -1122,6 +1122,12 @@ static inline bool is_cpu_in_sys_mode(int cpu)
 		return false;
 
 	if (cpu_rq(cpu)->curr == cpu_rq(cpu)->idle)
+		return false;
+
+	if (!sched_feat(ID_IRQ_AWARE) && in_irq())
+		return false;
+
+	if (!is_highclass_task(p))
 		return false;
 
 	return per_cpu(sys_tracking.state, cpu) == ST_KERNEL;
@@ -2430,7 +2436,7 @@ bool is_sys_aware_enabled(void)
 {
 	return false;
 }
-static inline bool is_cpu_in_sys_mode(int cpu)
+static inline bool is_cpu_in_sys_mode(int cpu, struct task_struct *p)
 {
 	return false;
 }
@@ -9038,13 +9044,14 @@ static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_back
 	 * a backup option, which will be pick only when
 	 * failed to locate a real idle one.
 	 */
+
 	if ((id_idle_cpu(p, cpu, is_expellee, &idle, &share_core) ||
 	    (sched_idle_cpu(cpu) && !task_is_idle(p))) &&
 	    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
 		if (!group_identity_disabled()) {
 			if (idle && share_core)
 				return cpu;
-			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu))
+			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu, p))
 				*id_backup = cpu;
 		} else
 			return cpu;
@@ -9124,9 +9131,18 @@ static int select_idle_core(struct task_struct *p, int core, struct cpumask *cpu
 			idle = false;
 			if (*idle_cpu == -1) {
 				if (sched_idle_cpu(cpu) && cpumask_test_cpu(cpu, cpus)) {
-					*idle_cpu = cpu;
-					break;
+					if (!group_identity_disabled() &&
+						is_cpu_in_sys_mode(cpu, p) &&
+						*id_backup == -1)
+						*id_backup = cpu;
+					else {
+						*idle_cpu = cpu;
+						break;
+					}
 				}
+				if (!group_identity_disabled() &&
+				    (*id_backup == -1 || !is_cpu_in_sys_mode(cpu, p)))
+					*id_backup = cpu;
 				continue;
 			}
 			break;
@@ -9150,6 +9166,7 @@ static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int t
 	int cpu;
 	bool is_expellee;
 	int backup_cpu = -1;
+	int backup_in_sys_mode = -1;
 
 	is_expellee = is_expellee_task(p);
 
@@ -9159,9 +9176,15 @@ static int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int t
 			continue;
 		if (id_idle_cpu(p, cpu, is_expellee, NULL, NULL))
 			return cpu;
-		if (backup_cpu == -1 && sched_idle_cpu(cpu) && !task_is_idle(p))
-			backup_cpu = cpu;
+		if (backup_cpu == -1 && sched_idle_cpu(cpu) && !task_is_idle(p)) {
+			if (!group_identity_disabled() && is_cpu_in_sys_mode(cpu, p))
+				backup_in_sys_mode = cpu;
+			else
+				backup_cpu = cpu;
+		}
 	}
+	if (!group_identity_disabled() && backup_in_sys_mode != -1 && backup_cpu == -1)
+		backup_cpu = backup_in_sys_mode;
 
 	return backup_cpu;
 }
@@ -9390,7 +9413,8 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 
 	if (((id_idle_cpu(p, target, is_expellee, NULL, &share_core) && share_core) ||
 	    (sched_idle_cpu(target) && !task_is_idle(p))) &&
-	    asym_fits_cpu(task_util, util_min, util_max, target))
+	    asym_fits_cpu(task_util, util_min, util_max, target) &&
+		!is_cpu_in_sys_mode(target, p))
 		return target;
 
 	share_core = true;
@@ -9400,7 +9424,8 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	if (prev != target && cpus_share_cache(prev, target) &&
 	    ((id_idle_cpu(p, prev, is_expellee, NULL, &share_core) && share_core) ||
 	    (sched_idle_cpu(prev) && !task_is_idle(p))) &&
-	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
+	    asym_fits_cpu(task_util, util_min, util_max, prev) &&
+		!is_cpu_in_sys_mode(prev, p)) {
 
 		if (!static_branch_unlikely(&sched_cluster_active) ||
 		    cpus_share_resources(prev, target))
@@ -9434,7 +9459,8 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	    ((id_idle_cpu(p, recent_used_cpu, is_expellee, NULL, &share_core) && share_core) ||
 	    (sched_idle_cpu(recent_used_cpu) && !task_is_idle(p))) &&
 	    cpumask_test_cpu(p->recent_used_cpu, task_allowed_cpu(p)) &&
-	    asym_fits_cpu(task_util, util_min, util_max, recent_used_cpu)) {
+	    asym_fits_cpu(task_util, util_min, util_max, recent_used_cpu) &&
+		!is_cpu_in_sys_mode(recent_used_cpu, p)) {
 		/*
 		 * Replace recent_used_cpu with prev as it is a potential
 		 * candidate for the next wake:
