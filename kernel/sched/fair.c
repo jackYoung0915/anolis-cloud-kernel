@@ -9384,16 +9384,17 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	 */
 	lockdep_assert_irqs_disabled();
 
-	if ((id_idle_cpu(p, target, is_expellee, NULL, &share_core) ||
+	if (((id_idle_cpu(p, target, is_expellee, NULL, &share_core) && share_core) ||
 	    (sched_idle_cpu(target) && !task_is_idle(p))) &&
 	    asym_fits_cpu(task_util, util_min, util_max, target))
 		return target;
 
+	share_core = true;
 	/*
 	 * If the previous CPU is cache affine and idle, don't be stupid:
 	 */
 	if (prev != target && cpus_share_cache(prev, target) &&
-	    (id_idle_cpu(p, prev, is_expellee, NULL, &share_core) ||
+	    ((id_idle_cpu(p, prev, is_expellee, NULL, &share_core) && share_core) ||
 	    (sched_idle_cpu(prev) && !task_is_idle(p))) &&
 	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
 
@@ -9420,12 +9421,13 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 		return prev;
 	}
 
+	share_core = true;
 	/* Check a recently used CPU as a potential idle candidate: */
 	recent_used_cpu = p->recent_used_cpu;
 	if (recent_used_cpu != prev &&
 	    recent_used_cpu != target &&
 	    cpus_share_cache(recent_used_cpu, target) &&
-	    (id_idle_cpu(p, recent_used_cpu, is_expellee, NULL, &share_core) ||
+	    ((id_idle_cpu(p, recent_used_cpu, is_expellee, NULL, &share_core) && share_core) ||
 	    (sched_idle_cpu(recent_used_cpu) && !task_is_idle(p))) &&
 	    cpumask_test_cpu(p->recent_used_cpu, task_allowed_cpu(p)) &&
 	    asym_fits_cpu(task_util, util_min, util_max, recent_used_cpu)) {
