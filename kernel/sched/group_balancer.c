@@ -1846,15 +1846,28 @@ static bool tg_lower_level(struct task_group *tg)
 		goto fail;
 	if (!dst)
 		goto fail;
-	if (!is_preferred_gb_sd(tg, gb_sd)) {
+	if (!is_preferred_gb_sd(tg, child)) {
 		/*
 		 * If the task group stays in the upper level for too long,
 		 * make the preferred gb sd to expire.
 		 */
 		if (!time_after(jiffies,
-		    tg->expiration_start + msecs_to_jiffies(sysctl_sched_gb_expiration_ms)))
-			goto fail;
-		tg->preferred_gb_sd = NULL;
+		    tg->expiration_start + msecs_to_jiffies(sysctl_sched_gb_expiration_ms))) {
+			for_each_gb_sd_child(child, gb_sd) {
+				if (!is_preferred_gb_sd(tg, child))
+					continue;
+				dst = child;
+				tg_dst_load = tg_gb_sd_load(tg, child);
+				dst_load = gb_sd_load(child);;
+				dst_cap = gb_sd_capacity(child);
+				tg_dst_nr_running = tg_gb_sd_nr_running(tg, child);
+				dst_nr_running = gb_sd_nr_running(child);
+				dst_free_specs = atomic_read(&child->free_tg_specs);
+				break;
+			}
+		} else {
+			tg->preferred_gb_sd = NULL;
+		}
 	}
 
 	/* We won't allow a task group span more than two numa nodes too long. */
@@ -2133,7 +2146,8 @@ gb_detach_task_groups_from_gb_sd(struct gb_lb_env *gb_env,
 				break;
 			}
 			remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
-			tg->expiration_start = jiffies;
+			if (gb_sd == tg->preferred_gb_sd)
+				tg->expiration_start = jiffies;
 			rb_add(&tg->gb_node, &gb_env->task_groups, tg_specs_less);
 			detached++;
 			if (gb_env->imbalance <= 0) {
