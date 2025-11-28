@@ -263,4 +263,9 @@ struct prctl_mm_map {
 #define PR_GET_IDENTITY			1000
 #define PR_SET_IDENTITY			1001
 
+#define PR_RESERVED0			1100
+#define PR_RESERVED1			1101
+#define PR_ENABLE_CR_IO_URING		1102
+#define PR_DISABLE_CR_IO_URING		1103
+
 #endif /* _LINUX_PRCTL_H */

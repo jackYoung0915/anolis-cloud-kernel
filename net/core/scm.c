@@ -106,8 +106,19 @@ static int scm_fp_copy(struct cmsghdr *cmsg, struct scm_fp_list **fplp)
 			return -EBADF;
 		/* don't allow io_uring files */
 		if (io_is_uring_fops(file)) {
+#ifdef CONFIG_CR_IO_URING
+			if (current->cr_io_uring_enabled) {
+				printk_ratelimited(KERN_WARNING
+						   "Allow %s(%d) to send io_uring FD via SCM\n",
+						   current->comm, task_pid_nr(current));
+			} else {
+				fput(file);
+				return -EINVAL;
+			}
+#else
 			fput(file);
 			return -EINVAL;
+#endif
 		}
 		*fpp++ = file;
 		fpl->count++;

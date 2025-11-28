@@ -222,6 +222,19 @@ config TMPFS_INODE64
 
 	  If unsure, say N.
 
+config CR_IO_URING
+	bool "allow io_uring support checkpoint/restore"
+	default n
+	help
+	  This option enables checkpoint/restore support for io_uring.
+	  Note that only basic io_uring functionality is supported. When
+	  enabled, additional information will be exposed in fdinfo, and
+	  io_uring file descriptors may be transferred via SCM rights—both
+	  behaviors can be controlled via prctl. Users must carefully
+	  assess the associated risks before enabling this feature.
+
+	  If unsure say N.
+
 config HUGETLBFS
 	bool "HugeTLB file system support"
 	depends on X86 || IA64 || SPARC64 || (S390 && 64BIT) || \

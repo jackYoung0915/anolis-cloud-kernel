@@ -2563,6 +2563,14 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		error = sched_identity_set_pid(arg2, arg3);
 		break;
 #endif
+#ifdef CONFIG_CR_IO_URING
+	case PR_ENABLE_CR_IO_URING:
+		current->cr_io_uring_enabled = true;
+		break;
+	case PR_DISABLE_CR_IO_URING:
+		current->cr_io_uring_enabled = false;
+		break;
+#endif
 	default:
 		error = -EINVAL;
 		break;

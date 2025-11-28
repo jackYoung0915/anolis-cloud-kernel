@@ -86,6 +86,9 @@
 #include <uapi/linux/io_uring.h>
 
 #include "../fs/internal.h"
+#ifdef CONFIG_CR_IO_URING
+#include "../fs/proc/internal.h"
+#endif
 #include "io-wq.h"
 
 #define IORING_MAX_ENTRIES	32768
@@ -10311,6 +10314,33 @@ out_fput:
 }
 
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_CR_IO_URING
+#define IO_URING_FDINFO_MAPS_SIZE 128
+static void format_io_uring_mapping(char *buf, struct vm_area_struct *vma, int *offset, int size)
+{
+	int len;
+
+	if (vma->vm_start == 0)
+		len = 1;
+	else
+		len = (sizeof(vma->vm_start) * 8 - __builtin_clzll(vma->vm_start) + 3) / 4;
+
+	if (vma->vm_end == 0)
+		len += 1;
+	else
+		len += (sizeof(vma->vm_end) * 8 - __builtin_clzll(vma->vm_end) + 3) / 4;
+
+	/* The delimiter is two characters long */
+	len += 2;
+
+	if (len + (*offset) > size)
+		return;
+
+	sprintf(buf + (*offset), "%08lx-%08lx,", vma->vm_start, vma->vm_end);
+	*offset += len;
+}
+#endif
+
 static int io_uring_show_cred(struct seq_file *m, unsigned int id,
 		const struct cred *cred)
 {
@@ -10345,6 +10375,17 @@ static int io_uring_show_cred(struct seq_file *m, unsigned int id,
 
 static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 {
+#ifdef CONFIG_CR_IO_URING
+	struct io_overflow_cqe *ocqe;
+	struct task_struct *task;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm;
+	char sq_mapping[IO_URING_FDINFO_MAPS_SIZE];
+	char cq_mapping[IO_URING_FDINFO_MAPS_SIZE];
+	char sqes_mapping[IO_URING_FDINFO_MAPS_SIZE];
+	int sq_mapping_offset = 0, cq_mapping_offset = 0, sqes_mapping_offset = 0;
+
+#endif
 	struct io_rings *r = ctx->rings;
 	unsigned int sq_mask = ctx->sq_entries - 1, cq_mask = ctx->cq_entries - 1;
 	unsigned int sq_head = READ_ONCE(r->sq.head);
@@ -10481,6 +10522,80 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 					req->task->task_works != NULL);
 	}
 	spin_unlock(&ctx->completion_lock);
+
+#ifdef CONFIG_CR_IO_URING
+	if (!current->cr_io_uring_enabled)
+		goto out;
+
+	seq_puts(m, "CqOverflowList:\n");
+	spin_lock(&ctx->completion_lock);
+	list_for_each_entry(ocqe, &ctx->cq_overflow_list, list) {
+		struct io_uring_cqe *cqe = &ocqe->cqe;
+
+		seq_printf(m, "  user_data=%llu, res=%d, flags=%x\n",
+			   cqe->user_data, cqe->res, cqe->flags);
+	}
+	spin_unlock(&ctx->completion_lock);
+
+	seq_printf(m, "Locked: %d\n", has_lock ? 1 : 0);
+	seq_printf(m, "SqThreadIdle: %u\n", ctx->sq_thread_idle);
+	seq_printf(m, "SetupFlags: 0x%x\n", ctx->flags);
+	seq_printf(m, "SqEntries: %u\n", ctx->sq_entries);
+	seq_printf(m, "CqEntries: %u\n", ctx->cq_entries);
+	seq_printf(m, "SqOffArray: %u\n", (u32)((char *)ctx->sq_array - (char *)ctx->rings));
+
+	task = get_proc_task(m->private);
+	if (!task)
+		goto out;
+	mm = task->mm;
+	if (!mm)
+		goto err;
+	mmap_read_lock(mm);
+
+	memset(sq_mapping, 0, sizeof(sq_mapping));
+	memset(cq_mapping, 0, sizeof(cq_mapping));
+	memset(sqes_mapping, 0, sizeof(sqes_mapping));
+	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+		if (vma->vm_file && vma->vm_file->private_data == ctx) {
+			unsigned long long pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+
+			switch (pgoff) {
+			case IORING_OFF_SQ_RING:
+				format_io_uring_mapping(sq_mapping, vma, &sq_mapping_offset,
+							IO_URING_FDINFO_MAPS_SIZE);
+				break;
+			case IORING_OFF_CQ_RING:
+				format_io_uring_mapping(cq_mapping, vma, &cq_mapping_offset,
+							IO_URING_FDINFO_MAPS_SIZE);
+				break;
+			case IORING_OFF_SQES:
+				format_io_uring_mapping(sqes_mapping, vma, &sqes_mapping_offset,
+							IO_URING_FDINFO_MAPS_SIZE);
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
+	if (sq_mapping[0] || cq_mapping[0] || sqes_mapping[0]) {
+		if (sq_mapping_offset)
+			sq_mapping[sq_mapping_offset - 1] = '\0';
+		if (cq_mapping_offset)
+			cq_mapping[cq_mapping_offset - 1] = '\0';
+		if (sqes_mapping_offset)
+			sqes_mapping[sqes_mapping_offset - 1] = '\0';
+		seq_puts(m, "Mappings:\n");
+		seq_printf(m, "    SqRingMapping: %s\n", sq_mapping);
+		seq_printf(m, "    CqRingMapping: %s\n", cq_mapping);
+		seq_printf(m, "    SQEsMapping: %s\n", sqes_mapping);
+	}
+
+	mmap_read_unlock(mm);
+err:
+	put_task_struct(task);
+out:
+#endif
 	if (has_lock)
 		mutex_unlock(&ctx->uring_lock);
 }

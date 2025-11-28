@@ -1009,6 +1009,10 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	tsk->reported_split_lock = 0;
 #endif
 
+#ifdef CONFIG_CR_IO_URING
+	tsk->cr_io_uring_enabled = false;
+#endif
+
 	return tsk;
 
 free_stack:

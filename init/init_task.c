@@ -216,6 +216,9 @@ struct task_struct init_task
 #ifdef CONFIG_SECCOMP_FILTER
 	.seccomp	= { .filter_count = ATOMIC_INIT(0) },
 #endif
+#ifdef CONFIG_CR_IO_URING
+	.cr_io_uring_enabled = false,
+#endif
 };
 EXPORT_SYMBOL(init_task);
 
