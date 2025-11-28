@@ -212,13 +212,18 @@ static inline struct cpuset *cgroup_cs(struct cgroup *cgrp)
 			    struct cpuset, css);
 }
 
+static inline struct cpuset *parent_cs(struct cpuset *cs);
 struct cpumask *task_group_cpus_allowed(struct task_group *tg)
 {
 	struct cgroup *cg = tg_cgroup(tg);
 	struct cpuset *cs = cgroup_cs(cg);
 
-	if (cs)
-		return (struct cpumask *)cs->cpus_allowed;
+	while (cs) {
+		if (!cpumask_empty(cs->cpus_allowed))
+			return (struct cpumask *)cs->cpus_allowed;
+
+		cs = parent_cs(cs);
+	}
 
 	return NULL;
 }

@@ -341,7 +341,7 @@ gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_do
 	struct cpumask soft_cpus_allowed;
 	unsigned int soft_cpus_weight;
 
-	if (!cpus_allowed) {
+	if (!cpus_allowed || cpumask_empty(cpus_allowed)) {
 		soft_cpus_weight = gb_sd->span_weight;
 	} else {
 		cpumask_and(&soft_cpus_allowed, cpus_allowed, gb_sd_span(gb_sd));
@@ -354,7 +354,10 @@ gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_do
 static inline bool
 gb_sd_satisfies_task_group(struct task_group *tg, struct group_balancer_sched_domain *gb_sd)
 {
-	return true;
+	unsigned int soft_cpus_weight = gb_sd->span_weight;
+
+	/* tg->group_balancer = 2 means that tg aquires double logical cpus. */
+	return tg->group_balancer * tg->specs_ratio <= 100 * soft_cpus_weight;
 }
 #endif
 
