@@ -111,8 +111,6 @@ void pcie_port_service_unregister(struct pcie_port_service_driver *new);
 #define get_descriptor_id(type, service) (((type - 4) << 8) | service)
 
 extern struct bus_type pcie_port_bus_type;
-int __must_check pcie_port_bus_register(void);
-void pcie_port_bus_unregister(void);
 
 struct pci_dev;
 
