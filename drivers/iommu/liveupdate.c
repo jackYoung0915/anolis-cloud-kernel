@@ -512,6 +512,7 @@ int iommu_preserve_device(struct iommu_domain *domain,
 	*preserved_state = virt_to_phys(device_ser);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(iommu_preserve_device);
 
 void iommu_unpreserve_device(struct iommu_domain *domain, struct device *dev)
 {
@@ -547,6 +548,7 @@ void iommu_unpreserve_device(struct iommu_domain *domain, struct device *dev)
 
 	iommu_unpreserve_locked(iommu->iommu_dev, flb_obj);
 }
+EXPORT_SYMBOL_GPL(iommu_unpreserve_device);
 
 struct iommu_domain *iommu_restore_domain(struct device *dev,
 					  struct iommu_device_ser *ser,
