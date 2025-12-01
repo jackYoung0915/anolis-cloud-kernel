@@ -2638,6 +2638,8 @@ DEFINE_STATIC_KEY_ARRAY_FALSE(lru_gen_caps, NR_LRU_GEN_CAPS);
 
 EXPORT_SYMBOL(lru_gen_caps);
 
+static atomic_t lru_gen_setting;
+
 static bool should_walk_mmu(void)
 {
 	return arch_has_hw_pte_young() && get_cap(LRU_GEN_MM_WALK);
@@ -5181,6 +5183,12 @@ unlock:
 	cgroup_unlock();
 }
 
+bool lru_gen_is_setting(void)
+{
+	return !!atomic_read(&lru_gen_setting);
+}
+EXPORT_SYMBOL(lru_gen_is_setting);
+
 /******************************************************************************
  *                          sysfs interface
  ******************************************************************************/
@@ -5236,9 +5244,17 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 	else if (kstrtouint(buf, 0, &caps))
 		return -EINVAL;
 
+	atomic_inc(&lru_gen_setting);
+	if (is_kidled_setting()) {
+		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs is being set\n",
+			__func__);
+		atomic_dec(&lru_gen_setting);
+		return -EBUSY;
+	}
 	if (caps && (is_kidled_enabled())) {
 		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs enabled\n",
 			__func__);
+		atomic_dec(&lru_gen_setting);
 		return -EINVAL;
 	}
 
@@ -5252,6 +5268,7 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 		else
 			static_branch_disable(&lru_gen_caps[i]);
 	}
+	atomic_dec(&lru_gen_setting);
 
 	return len;
 }

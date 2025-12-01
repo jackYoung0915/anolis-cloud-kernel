@@ -85,6 +85,7 @@ const int kidled_default_buckets[NUM_KIDLED_BUCKETS] = {
 static DECLARE_WAIT_QUEUE_HEAD(kidled_wait);
 static DEFINE_STATIC_KEY_FALSE(kidled_slab_key);
 unsigned long kidled_scan_rounds __read_mostly;
+static atomic_t kidled_setting;
 
 static inline int kidled_get_bucket(int *idle_buckets, int age)
 {
@@ -774,6 +775,7 @@ static inline bool kidled_should_run(struct kidled_scan_control *p,
 				     bool *new, int *count_slab_scan)
 {
 	if (unlikely(!kidled_is_scan_period_equal(p))) {
+		/* Any scan period write will enter here, due to val changes */
 		struct kidled_scan_control scan_control;
 
 		scan_control  = kidled_get_current_scan_control();
@@ -1076,6 +1078,11 @@ static ssize_t kidled_scan_period_show(struct kobject *kobj,
 	return sprintf(buf, "%u\n", kidled_get_current_scan_duration());
 }
 
+bool is_kidled_setting(void)
+{
+	return !!atomic_read(&kidled_setting);
+}
+
 /*
  * We will update the real scan period and do reset asynchronously,
  * avoid stall when kidled is busy waiting for other resources.
@@ -1091,10 +1098,20 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 	if (ret || secs > KIDLED_MAX_SCAN_DURATION)
 		return -EINVAL;
 
+	ret = count;
+	/* Mark kidled as setting first */
+	atomic_inc(&kidled_setting);
+	if (lru_gen_is_setting()) {
+		pr_warn("%s: Failed to enable kidled due to mglru is being set\n", __func__);
+		ret = -EBUSY;
+		goto out;
+	}
+
 	/* Disable kidled when mglru enabled */
 	if (secs && lru_gen_enabled()) {
 		pr_warn("%s: Failed to enable kidled due to mglru enabled\n", __func__);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	/*
@@ -1107,7 +1124,10 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 	kidled_set_scan_duration(secs);
 	wake_up_interruptible(&kidled_wait);
 	kidled_slab_scan_enabled();
-	return count;
+out:
+	atomic_dec(&kidled_setting);
+
+	return ret;
 }
 
 static ssize_t kidled_scan_target_show(struct kobject *kobj,
