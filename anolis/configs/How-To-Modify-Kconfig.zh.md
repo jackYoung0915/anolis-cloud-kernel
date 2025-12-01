@@ -62,14 +62,14 @@ b. 对特定 kconfig 的修改并未生效。
 
 # 二、 示例
 我们以使能 `CONFIG_CAN` 为例。
-# 1. 修改 kconfig
+## 1. 修改 kconfig
 ```
 cd anolis/;
 make dist-configs-modify C=CONFIG_CAN all=y L=L1
 ```
 这里，我们将 `CONFIG_CAN` 在所有架构中都打开，且将其层级置为 L1。
 
-# 2. 检查结果
+## 2. 检查结果
 
 在调整后，自动使能了一大堆kconfig，我们需要对这些新的 kconfig 调整层级。
 ```
@@ -120,8 +120,26 @@ make[1]: Leaving directory '/cloud-kernel/anolis/configs'
 make dist-configs-move C=CONFIG_CAN* L=L2
 ```
 
-# 结束
+## 3. 结束
 到这里为止，所以的步骤已完成，可以使用 `git add` 和 `git commit` 命令记录这些变更，并发起 PR 了。
+
+# 三、注意事项
+
+1. 针对衍生版本 Kconfig 的修改的一些注意事项：
+
+在 OVERRIDE 目录下修改 config 时，如果希望修改的 Kconfig 类型为 choice 时，需要将该 choice 的所有 Kconfig 都放入 OVERRIDE 文件中，并且显示置位。
+
+举例而言：
+    在 ANCK 6.6 中，Preemption Model 相关的 Kconfig 为 choice 类型(参考: kernel/Kconfig.preempt 文件)，包含 CONFIG_PREEMPT_NONE、CONFIG_PREEMPT_VOLUNTARY、CONFIG_PREEMPT、CONFIG_PREEMPT_RT 四个配置选项。
+    在 configs/L0-MANDATORY/default/CONFIG_PREEMPT_NONE 中 CONFIG_PREEMPT_NONE 被配置成 y。
+    此时如果需要在衍生版中将 Preemption Model 配置成 CONFIG_PREEMPT=Y，需要在 OVERRIDE 文件中新增如下配置选项才能生效：
+"""
+# CONFIG_PREEMPT_NONE is not set
+# CONFIG_PREEMPT_VOLUNTARY is not set
+CONFIG_PREEMPT=y
+# CONFIG_PREEMPT_RT is not set
+"""
+    如果只配置了一部分 Kconfig，可能会出现非预期的现象，如: Kconfig 修改失败。
 
 # 附：`make dist-configs-move`参数说明
 `make dist-configs-move` 用于在不同的层级之间移动 kconfig。
