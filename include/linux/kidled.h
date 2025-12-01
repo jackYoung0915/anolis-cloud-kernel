@@ -304,6 +304,8 @@ static inline bool is_kidled_enabled(void)
 	return static_branch_unlikely(&kidled_enabled_key);
 }
 
+bool is_kidled_setting(void);
+
 /*
  * Caller must specify the original scan period, avoid the race between
  * the double operation and user's updates through sysfs interface.
@@ -417,6 +419,11 @@ static inline unsigned int kidled_get_current_scan_duration(void)
 }
 
 static inline bool is_kidled_enabled(void)
+{
+	return false;
+}
+
+static inline bool is_kidled_setting(void)
 {
 	return false;
 }
