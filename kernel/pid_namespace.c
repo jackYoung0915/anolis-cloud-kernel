@@ -58,6 +58,7 @@ __setup("rich_container", rich_container_enable);
 #define RC_FEATURE_UPTIME_NAME		"uptime"
 #define RC_FEATURE_LOADAVG_NAME		"loadavg"
 #define RC_FEATURE_DISKQUOTA_NAME	"diskquota"
+#define RC_FEATURE_MOUNTINFO_NAME	"mountinfo"
 
 static const char rc_feature_avail[] =
 				RC_FEATURE_CPUINFO_NAME		" "
@@ -65,7 +66,8 @@ static const char rc_feature_avail[] =
 				RC_FEATURE_CPUUSAGE_NAME	" "
 				RC_FEATURE_UPTIME_NAME		" "
 				RC_FEATURE_LOADAVG_NAME		" "
-				RC_FEATURE_DISKQUOTA_NAME;
+				RC_FEATURE_DISKQUOTA_NAME	" "
+				RC_FEATURE_MOUNTINFO_NAME;
 
 struct rich_container_feature rc_features[] = {
 	{
@@ -92,9 +94,14 @@ struct rich_container_feature rc_features[] = {
 		.name = RC_FEATURE_DISKQUOTA_NAME,
 		.id = RC_DISKQUOTA,
 	},
+	{
+		.name = RC_FEATURE_MOUNTINFO_NAME,
+		.id = RC_MOUNTINFO,
+	},
 };
 
-u16 rc_feature_disable_mask;
+/* disable mountinfo by default */
+u16 rc_feature_disable_mask = (1 << RC_MOUNTINFO);
 
 static int write_feature_control(struct ctl_table *ro_table,
 				 void __user *buffer,
