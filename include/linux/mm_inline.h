@@ -118,6 +118,8 @@ static inline bool lru_gen_enabled(void)
 }
 #endif
 
+bool lru_gen_is_setting(void);
+
 static inline bool lru_gen_in_fault(void)
 {
 	return current->in_lru_fault;
@@ -294,6 +296,11 @@ static inline bool lru_gen_del_folio(struct lruvec *lruvec, struct folio *folio,
 #else /* !CONFIG_LRU_GEN */
 
 static inline bool lru_gen_enabled(void)
+{
+	return false;
+}
+
+static inline bool lru_gen_is_setting(void)
 {
 	return false;
 }
