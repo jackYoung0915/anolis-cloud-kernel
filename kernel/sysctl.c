@@ -66,6 +66,7 @@
 #include <linux/sched/coredump.h>
 #include <linux/kexec.h>
 #include <linux/bpf.h>
+#include <linux/mnt_namespace.h>
 #include <linux/mount.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/coredump.h>
@@ -2995,6 +2996,11 @@ static struct ctl_table kern_table[] = {
 		.mode           = 0600,
 		.proc_handler   = proc_douintvec_minmax,
 		.extra1         = &two,
+	},
+	{
+		.procname       = "rich_container_mountinfo_mask",
+		.mode           = 0600,
+		.proc_handler   = rich_container_mountinfo_mask_handler,
 	},
 #endif
 #endif

@@ -22,7 +22,7 @@ else
 obj-y +=	no-block.o
 endif
 
-obj-$(CONFIG_PROC_FS) += proc_namespace.o
+obj-$(CONFIG_PROC_FS) += proc_namespace.o proc_mnt_mask.o
 
 obj-y				+= notify/
 obj-$(CONFIG_EPOLL)		+= eventpoll.o
