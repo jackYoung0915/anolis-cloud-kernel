@@ -12,6 +12,8 @@
 #include <linux/security.h>
 #include <linux/fs_struct.h>
 #include <linux/sched/task.h>
+#include <linux/proc_mnt_mask.h>
+#include <linux/pid_namespace.h>
 
 #include "proc/internal.h" /* only for get_proc_task() in ->open() */
 
@@ -95,20 +97,72 @@ static void show_type(struct seq_file *m, struct super_block *sb)
 	}
 }
 
+#ifdef CONFIG_RICH_CONTAINER
+#define FIRST_TARGET_APPLICATION_UID (10000)
+static inline bool target_task(void)
+{
+	return __kuid_val(current_uid()) >= FIRST_TARGET_APPLICATION_UID;
+}
+
+static struct mnt_msk *mnt_should_mask(struct vfsmount *mnt)
+{
+	struct mount *r = real_mount(mnt);
+	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
+	struct mnt_msk *msk = NULL;
+	char *p, *buf;
+	bool rich_container;
+
+	rcu_read_lock();
+	rich_container = in_rich_container(current, RC_MOUNTINFO);
+	rcu_read_unlock();
+	if (!rich_container || !target_task())
+		return NULL;
+
+	buf = (char *)kmalloc(MNT_MASK_PATH_MAX, GFP_KERNEL);
+	if (!buf)
+		goto out;
+
+	p = d_path(&mnt_path, buf, MNT_MASK_PATH_MAX);
+	if (IS_ERR(p))
+		goto out;
+
+	msk = mnt_mask(r->mnt_devname ? r->mnt_devname : "none", p);
+out:
+	kfree(buf);
+
+	return msk;
+}
+#else
+static inline struct mnt_msk *mnt_should_mask(struct vfsmount *mnt)
+{
+	return NULL;
+}
+#endif
+
 static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 {
 	struct proc_mounts *p = m->private;
 	struct mount *r = real_mount(mnt);
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	struct super_block *sb = mnt_path.dentry->d_sb;
+	struct mnt_msk *msk;
 	int err;
+
+	msk = mnt_should_mask(mnt);
+	if (msk && !strcmp(msk->replace, "\"\"")) {
+		err = 0;
+		goto out;
+	}
 
 	if (sb->s_op->show_devname) {
 		err = sb->s_op->show_devname(m, mnt_path.dentry);
 		if (err)
 			goto out;
 	} else {
-		mangle(m, r->mnt_devname ? r->mnt_devname : "none");
+		if (msk && strcmp(msk->target, "mountoption"))
+			mangle(m, msk->replace);
+		else
+			mangle(m, r->mnt_devname ? r->mnt_devname : "none");
 	}
 	seq_putc(m, ' ');
 	/* mountpoints outside of chroot jail will give SEQ_SKIP on this */
@@ -117,7 +171,13 @@ static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 		goto out;
 	seq_putc(m, ' ');
 	show_type(m, sb);
-	seq_puts(m, __mnt_is_readonly(mnt) ? " ro" : " rw");
+
+	if (msk && !strcmp(msk->target, "mountoption") &&
+		!strcmp(msk->replace, "ro"))
+		seq_puts(m, " ro");
+	else
+		seq_puts(m, __mnt_is_readonly(mnt) ? " ro" : " rw");
+
 	err = show_sb_opts(m, sb);
 	if (err)
 		goto out;
@@ -135,7 +195,14 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 	struct mount *r = real_mount(mnt);
 	struct super_block *sb = mnt->mnt_sb;
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
+	struct mnt_msk *msk;
 	int err;
+
+	msk = mnt_should_mask(mnt);
+	if (msk && !strcmp(msk->replace, "\"\"")) {
+		err = 0;
+		goto out;
+	}
 
 	seq_printf(m, "%i %i %u:%u ", r->mnt_id, r->mnt_parent->mnt_id,
 		   MAJOR(sb->s_dev), MINOR(sb->s_dev));
@@ -153,7 +220,11 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 	if (err)
 		goto out;
 
-	seq_puts(m, mnt->mnt_flags & MNT_READONLY ? " ro" : " rw");
+	if (msk && !strcmp(msk->target, "mountoption") &&
+		!strcmp(msk->replace, "ro"))
+		seq_puts(m, " ro");
+	else
+		seq_puts(m, mnt->mnt_flags & MNT_READONLY ? " ro" : " rw");
 	show_mnt_opts(m, mnt);
 
 	/* Tagged fields ("foo:X" or "bar") */
@@ -178,9 +249,16 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 		if (err)
 			goto out;
 	} else {
-		mangle(m, r->mnt_devname ? r->mnt_devname : "none");
+		if (msk && strcmp(msk->target, "mountoption"))
+			mangle(m, msk->replace);
+		else
+			mangle(m, r->mnt_devname ? r->mnt_devname : "none");
 	}
-	seq_puts(m, sb_rdonly(sb) ? " ro" : " rw");
+	if (msk && !strcmp(msk->target, "mountoption") &&
+		!strcmp(msk->replace, "ro"))
+		seq_puts(m, " ro");
+	else
+		seq_puts(m, sb_rdonly(sb) ? " ro" : " rw");
 	err = show_sb_opts(m, sb);
 	if (err)
 		goto out;
@@ -198,6 +276,9 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
+
+	if (mnt_should_mask(mnt))
+		goto out;
 
 	/* device */
 	if (sb->s_op->show_devname) {

@@ -103,6 +103,7 @@ enum rc_feature_id {
 	RC_UPTIME,
 	RC_LOADAVG,
 	RC_DISKQUOTA,
+	RC_MOUNTINFO,
 	RC_FEATURE_COUNT,
 };
 
@@ -119,6 +120,8 @@ extern bool __sched_schedstats;
 extern int sysctl_rich_container_source;
 extern int sysctl_rich_container_cpuinfo_source;
 extern unsigned int sysctl_rich_container_cpuinfo_sharesbase;
+extern int rich_container_mountinfo_mask_handler(struct ctl_table *table, int write,
+					void *buffer, size_t *lenp, loff_t *ppos);
 
 static inline struct task_struct *rich_container_get_scenario(void)
 {
