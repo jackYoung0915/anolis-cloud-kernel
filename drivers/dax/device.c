@@ -73,7 +73,7 @@ __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 	return -1;
 }
 
-static void dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
+static int dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
 			      unsigned long fault_size)
 {
 	unsigned long i, nr_pages = fault_size / PAGE_SIZE;
@@ -89,6 +89,14 @@ static void dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
 			ALIGN_DOWN(vmf->address, fault_size));
 
 	for (i = 0; i < nr_pages; i++) {
+		struct page *p = pfn_to_page(pfn_t_to_pfn(pfn) + i);
+
+		if (dax_test_page_mc(p) || (p != compound_head(p) &&
+					    dax_test_page_mc(compound_head(p))))
+			return -EFAULT;
+	}
+
+	for (i = 0; i < nr_pages; i++) {
 		struct page *page = pfn_to_page(pfn_t_to_pfn(pfn) + i);
 
 		page = compound_head(page);
@@ -98,6 +106,8 @@ static void dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
 		page->mapping = filp->f_mapping;
 		page->index = pgoff + i;
 	}
+
+	return 0;
 }
 
 static vm_fault_t __dev_dax_pte_fault(struct dev_dax *dev_dax,
@@ -128,7 +138,8 @@ static vm_fault_t __dev_dax_pte_fault(struct dev_dax *dev_dax,
 
 	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
 
-	dax_set_mapping(vmf, pfn, fault_size);
+	if (dax_set_mapping(vmf, pfn, fault_size))
+		return VM_FAULT_SIGBUS;
 
 	return vmf_insert_mixed(vmf->vma, vmf->address, pfn);
 }
@@ -171,7 +182,8 @@ static vm_fault_t __dev_dax_pmd_fault(struct dev_dax *dev_dax,
 
 	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
 
-	dax_set_mapping(vmf, pfn, fault_size);
+	if (dax_set_mapping(vmf, pfn, fault_size))
+		return VM_FAULT_SIGBUS;
 
 	return vmf_insert_pfn_pmd(vmf, pfn, vmf->flags & FAULT_FLAG_WRITE);
 }
@@ -216,7 +228,8 @@ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
 
 	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
 
-	dax_set_mapping(vmf, pfn, fault_size);
+	if (dax_set_mapping(vmf, pfn, fault_size))
+		return VM_FAULT_SIGBUS;
 
 	return vmf_insert_pfn_pud(vmf, pfn, vmf->flags & FAULT_FLAG_WRITE);
 }
