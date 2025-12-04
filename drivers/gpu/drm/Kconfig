@@ -396,7 +396,7 @@ source "drivers/gpu/drm/xlnx/Kconfig"
 
 source "drivers/gpu/drm/verisilicon/Kconfig"
 
-source "drivers/gpu/drm/inspur/Kconfig"
+source "drivers/gpu/drm/yhgch/Kconfig"
 
 source "drivers/gpu/drm/phytium/Kconfig"
 
