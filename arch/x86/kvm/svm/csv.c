@@ -24,6 +24,8 @@
 #include "csv.h"
 #include "x86.h"
 
+#include "trace.h"
+
 #undef  pr_fmt
 #define pr_fmt(fmt) "CSV: " fmt
 
@@ -73,18 +75,35 @@ enum csv_pg_level {
 
 /*
  * Manage shared page in rbtree, the node within the rbtree
- * is indexed by gfn. @page points to the page mapped by @gfn
+ * is indexed by track_hva. @track_page points to the page mapped by @track_hva
  * in NPT.
  */
 struct shared_page {
 	struct rb_node node;
-	gfn_t gfn;
-	struct page *page;
+	/* The hva corresponds to @track_page. */
+	u64 track_hva;
+	/* Page order of @track_page. */
+	unsigned int order;
+	/*
+	 * This field is NULL when @order equals 0, but must point to a
+	 * valid bitmap when @order > 0 (i.e., for huge pages and THP).
+	 */
+	unsigned long *bitmap;
+	/*
+	 * Pointer to the head page of the page block.
+	 * Always points to the head page, whether @order is 0 (a single 4K
+	 * page) or greater (a huge page or THP).
+	 */
+	struct page *track_page;
 };
 
 struct shared_page_mgr {
+	/* The root of the manager tree */
 	struct rb_root root;
+	/* The count of shared_page entries in the manager tree */
 	u64 count;
+	/* The total pages tracked by the manager */
+	unsigned int nr_pages;
 };
 
 struct kvm_csv_info {
@@ -125,7 +144,40 @@ struct secure_memory_region {
 
 static struct kvm_x86_ops csv_x86_ops;
 
-static bool shared_page_insert(struct shared_page_mgr *mgr, struct shared_page *sp)
+#ifdef CONFIG_SYSFS
+static void update_csv_share_mem(struct page *page, bool add)
+{
+	int nid;
+
+	nid = page_to_nid(page);
+	if (add)
+		atomic_long_add(page_size(page), &csv3_shared_mem[nid]);
+	else
+		atomic_long_sub(page_size(page), &csv3_shared_mem[nid]);
+}
+#else
+static void update_csv_share_mem(struct page *page, bool add) { };
+#endif	/* CONFIG_SYSFS */
+
+/**
+ * insert_shared_page_entry_locked - Insert a shared_page into the manager tree
+ * @mgr:    Pointer to the shared page manager (must be valid).
+ * @new_sp: The shared_page to insert.
+ * @old_sp: Pointer to store conflicting entry if insertion fails (can be NULL).
+ *
+ * Attempts to insert @new_sp into the rbtree of @mgr. If an entry with the
+ * same key (e.g., track_hva) already exists, the insertion is aborted and
+ * the existing entry is returned via @old_sp.
+ *
+ * The caller must hold the appropriate lock protecting @mgr.
+ *
+ * Return:
+ * %true if @new_sp was successfully inserted;
+ * %false if a duplicate exists (in which case @old_sp is set if non-NULL).
+ */
+static bool insert_shared_page_entry_locked(struct shared_page_mgr *mgr,
+					    struct shared_page *new_sp,
+					    struct shared_page **old_sp)
 {
 	struct shared_page *sp_iter;
 	struct rb_root *root;
@@ -140,55 +192,283 @@ static bool shared_page_insert(struct shared_page_mgr *mgr, struct shared_page *
 		sp_iter = rb_entry(*new, struct shared_page, node);
 		parent = *new;
 
-		if (sp->gfn < sp_iter->gfn)
+		if (new_sp->track_hva < sp_iter->track_hva) {
 			new = &((*new)->rb_left);
-		else if (sp->gfn > sp_iter->gfn)
+		} else if (new_sp->track_hva > sp_iter->track_hva) {
 			new = &((*new)->rb_right);
-		else
+		} else {
+			trace_kvm_csv3_sp_insert_dup(page_to_pfn(new_sp->track_page),
+						     new_sp->track_hva,
+						     new_sp->order,
+						     page_to_pfn(sp_iter->track_page),
+						     sp_iter->track_hva,
+						     sp_iter->order);
+
+			/*
+			 * If found the same @track_page during insertion, the
+			 * @track_page must be pinned more than once.
+			 */
+			if (new_sp->track_page == sp_iter->track_page &&
+			    ((hpage_pincount_available(sp_iter->track_page) &&
+			      compound_pincount(sp_iter->track_page) < 2) ||
+			     (!hpage_pincount_available(sp_iter->track_page) &&
+			      ((unsigned int)page_ref_count(sp_iter->track_page)
+				< GUP_PIN_COUNTING_BIAS * 2))))
+				pr_err_ratelimited("%s: SP_MGR_ERR: pfn:0x%lx"
+						   " order:%d pincount < 2\n",
+						   __func__,
+						   page_to_pfn(sp_iter->track_page),
+						   sp_iter->order);
+
+			if (old_sp)
+				*old_sp = sp_iter;
 			return false;
+		}
 	}
 
+	trace_kvm_csv3_sp_insert(page_to_pfn(new_sp->track_page),
+				 new_sp->track_hva,
+				 new_sp->order);
+
 	/* Add new node and rebalance tree. */
-	rb_link_node(&sp->node, parent, new);
-	rb_insert_color(&sp->node, root);
+	rb_link_node(&new_sp->node, parent, new);
+	rb_insert_color(&new_sp->node, root);
+
+	/* Update shared page statistics */
 	mgr->count++;
+	mgr->nr_pages += 1u << new_sp->order;
+	update_csv_share_mem(new_sp->track_page, true);
 
 	return true;
 }
 
-static struct shared_page *shared_page_search(struct shared_page_mgr *mgr, gfn_t gfn)
+/**
+ * search_shared_page_entry_locked - Search for a shared page covering @hva
+ * @mgr: Pointer to the shared page manager.
+ * @hva: Host virtual address to search for.
+ *
+ * Searches the rbtree of @mgr for a shared page that maps @hva. The search
+ * iterates through supported page orders (e.g., 4K, 2M, 1G) in ascending order
+ * (starting from order 0).
+ *
+ * The caller must hold the lock protecting @mgr.
+ *
+ * Return: Pointer to matching shared_page, or NULL if not found.
+ */
+static
+struct shared_page *search_shared_page_entry_locked(struct shared_page_mgr *mgr,
+						    u64 hva)
 {
 	struct shared_page *sp;
 	struct rb_root *root;
 	struct rb_node *node;
+	u64 track_hva;
+	unsigned int order = 0;
+
+again:
+	track_hva = (hva & ~((1ull << (order + PAGE_SHIFT)) - 1));
 
 	root = &mgr->root;
 	node = root->rb_node;
 	while (node) {
 		sp = rb_entry(node, struct shared_page, node);
-		if (gfn < sp->gfn)
+		if (track_hva < sp->track_hva)
 			node = node->rb_left;
-		else if (gfn > sp->gfn)
+		else if (track_hva > sp->track_hva)
 			node = node->rb_right;
 		else
-			return sp;
+			return sp->order == order ? sp : NULL;
+	}
+
+	if (order == 0) {
+		order = PMD_SHIFT - PAGE_SHIFT;
+		goto again;
+	} else if (order == (PMD_SHIFT - PAGE_SHIFT)) {
+		order = PUD_SHIFT - PAGE_SHIFT;
+		goto again;
 	}
 
 	return NULL;
-
 }
 
-static struct shared_page *shared_page_remove(struct shared_page_mgr *mgr, gfn_t gfn)
+/**
+ * shared_page_entry_set_bit_locked - Set bitmap in a shared page entry if found
+ * @mgr: Pointer to the shared page manager (caller must hold its lock).
+ * @hva: Host virtual address identifying the 4K subpage of a compound page.
+ * @sp:  Optional hint pointer to the shared_page entry; if NULL, the entry is
+ *       looked up in @mgr's rbtree using @hva.
+ *
+ * If @sp is NULL, the function searches for the entry in the manager's tree.
+ *
+ * For compound pages (@order > 0), a bitmap tracks which 4K subpages are
+ * shared memory for CSV3 VM. The bit corresponding to the offset of @hva within
+ * the compound page is set atomically.
+ *
+ * On every successful found (including repeated hits), a trace event
+ * kvm_csv3_sp_hit is emitted with the PFN, order.
+ *
+ * Return:
+ * Pointer to the shared_page entry if found, or NULL if no entry covers @hva.
+ */
+static
+struct shared_page *shared_page_entry_set_bit_locked(struct shared_page_mgr *mgr,
+						     u64 hva,
+						     struct shared_page *sp)
 {
-	struct shared_page *sp;
+	/* If @sp is NULL, we need search entry from the manager tree. */
+	if (!sp)
+		sp = search_shared_page_entry_locked(mgr, hva);
 
-	sp = shared_page_search(mgr, gfn);
 	if (sp) {
-		rb_erase(&sp->node, &mgr->root);
-		mgr->count--;
+		if (sp->order) {
+			unsigned int pg_off = (hva & ~sp->track_hva) >> PAGE_SHIFT;
+			set_bit(pg_off, sp->bitmap);
+		}
+
+		trace_kvm_csv3_sp_hit(page_to_pfn(sp->track_page),
+				      sp->track_hva, hva, sp->order);
 	}
 
 	return sp;
+}
+
+/**
+ * remove_shared_page_entry_locked - Remove a shared_page entry if any subpages
+ *                                   are not shared memory of CSV3 VM.
+ * @mgr: Pointer to the shared page manager (lock must be held by caller).
+ * @hva: Host virtual address identifying the subpage.
+ *
+ * This function attempts to remove a shared_page entry from the manager when it
+ * does not contain CSV3 VM's shared memory. The entry is only removed if:
+ *   - All 4K subpages within the compound page are not VM's shared memory
+ *   - The underlying physical page is not pinned by any other user
+ *
+ * If the page is found to be pinned more than once, it's considered an error
+ * and removal is aborted.
+ *
+ * Context: Caller must hold the lock protecting @mgr.
+ *
+ * Return:
+ *   Pointer to the removed shared_page entry on success, or NULL if not found,
+ *   some bits set in @bitmap, or page is pinned more than once.
+ */
+static
+struct shared_page *remove_shared_page_entry_locked(struct shared_page_mgr *mgr,
+						    u64 hva)
+{
+	struct shared_page *sp;
+
+	sp = search_shared_page_entry_locked(mgr, hva);
+	if (sp) {
+		/*
+		 * The bitmap records the 4K subpages within the compound page
+		 * that are shared memory of VM. Clear the bit for this @hva.
+		 */
+		if (sp->order) {
+			unsigned int pg_off = (hva & ~sp->track_hva) >> PAGE_SHIFT;
+			clear_bit(pg_off, sp->bitmap);
+			if (!bitmap_empty(sp->bitmap, 1u << sp->order))
+				return NULL;
+		}
+
+		/*
+		 * The @sp->track_page should only be pinned once if we reach
+		 * here.
+		 */
+		if ((hpage_pincount_available(sp->track_page) &&
+		     compound_pincount(sp->track_page) > 1) ||
+		    (!hpage_pincount_available(sp->track_page) &&
+		     ((unsigned int)page_ref_count(sp->track_page) >= GUP_PIN_COUNTING_BIAS * 2))) {
+			pr_err_ratelimited("%s: SP_MGR_ERR: hva:0x%llx order:%d"
+					   " pincount > 1\n",
+					   __func__, hva, sp->order);
+			return NULL;
+		}
+
+		trace_kvm_csv3_sp_remove(page_to_pfn(sp->track_page),
+					 sp->track_hva, sp->order);
+
+		/* Remove shared page entry from tree. */
+		rb_erase(&sp->node, &mgr->root);
+
+		/* Update shared page statistics */
+		mgr->count--;
+		mgr->nr_pages -= 1u << sp->order;
+		update_csv_share_mem(sp->track_page, false);
+	}
+
+	return sp;
+}
+
+/**
+ * alloc_shared_page_entry - Allocate and initialize a shared_page entry for a
+ *                           given page
+ * @csv:  Pointer to the KVM CSV info structure containing the slab cache.
+ * @hva:  Host virtual address associated with the page (used for alignment and
+ *        tracking).
+ * @page: The physical page being tracked (may be a base or compound/huge page).
+ *
+ * Allocates a new struct shared_page from the slab cache in @csv, initializes
+ * it to represent the memory region covered by @page at virtual address @hva.
+ * If @page is a compound page (order > 0), a bitmap is allocated to track
+ * touched 4K subpages, and the bit corresponding to the 4K offset of @hva
+ * within the compound page is set. For order-0 pages, no bitmap is allocated.
+ * The @track_hva field is aligned to the start of the page block (i.e.,
+ * compound page boundary if applicable).
+ *
+ * Return:
+ * Pointer to the newly allocated and initialized shared_page on success,
+ * or NULL on allocation failure (either slab or bitmap).
+ */
+struct shared_page *alloc_shared_page_entry(struct kvm_csv_info *csv,
+					    u64 hva,
+					    struct page *page)
+{
+	struct shared_page *sp;
+	unsigned int order;
+	unsigned int pg_off;
+
+	sp = kmem_cache_zalloc(csv->sp_slab, GFP_KERNEL);
+	if (!sp)
+		return NULL;
+
+	order = compound_order(compound_head(page));
+	if (order) {
+		unsigned long *bitmap = kvzalloc(BITS_TO_LONGS(1ull << order)
+							* sizeof(unsigned long),
+						 GFP_KERNEL);
+		if (!bitmap) {
+			kmem_cache_free(csv->sp_slab, sp);
+			return NULL;
+		}
+		sp->bitmap = bitmap;
+		pg_off = (hva >> PAGE_SHIFT) & ((1u << order) - 1);
+		set_bit(pg_off, sp->bitmap);
+	}
+
+	sp->track_hva = hva & ~((1ull << (order + PAGE_SHIFT)) - 1);
+	sp->order = order;
+	sp->track_page = compound_head(page);
+
+	return sp;
+}
+
+/**
+ * free_shared_page_entry - Free a shared_page entry and its associated
+ *                          resources
+ * @csv: Pointer to the KVM CSV info structure containing the slab cache.
+ * @sp:  The shared_page entry to free.
+ *
+ * The caller must ensure that @sp is no longer in use (e.g., already removed
+ * from any rbtree) before calling this function.
+ */
+void free_shared_page_entry(struct kvm_csv_info *csv, struct shared_page *sp)
+{
+	if (!sp)
+		return;
+
+	kvfree(sp->bitmap);
+	kmem_cache_free(csv->sp_slab, sp);
 }
 
 static inline struct kvm_svm_csv *to_kvm_svm_csv(struct kvm *kvm)
@@ -1481,34 +1761,17 @@ exit:
 	return r;
 }
 
-#ifdef CONFIG_SYSFS
-static void update_csv_share_mem(struct page *page, bool add)
+static int csv_pin_shared_memory_locked(struct kvm_vcpu *vcpu,
+					struct kvm_memory_slot *slot,
+					gfn_t gfn,
+					kvm_pfn_t *pfn)
 {
-	int nid;
-	struct page *h_page;
-
-	h_page = compound_head(page);
-	nid = page_to_nid(page);
-	if (add)
-		atomic_long_add(page_size(h_page), &csv3_shared_mem[nid]);
-	else
-		atomic_long_sub(page_size(h_page), &csv3_shared_mem[nid]);
-}
-#else
-static void update_csv_share_mem(struct page *page, bool add) { };
-#endif	/* CONFIG_SYSFS */
-
-static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
-				 struct kvm_memory_slot *slot, gfn_t gfn,
-				 kvm_pfn_t *pfn)
-{
-	struct page *page;
 	u64 hva;
-	int npinned;
 	kvm_pfn_t tmp_pfn;
 	struct kvm *kvm = vcpu->kvm;
 	struct kvm_csv_info *csv = &to_kvm_svm_csv(kvm)->csv_info;
 	struct shared_page *sp;
+	unsigned int pg_off;
 	bool write = !(slot->flags & KVM_MEM_READONLY);
 	bool is_dma_pinned;
 
@@ -1523,38 +1786,72 @@ static int csv_pin_shared_memory(struct kvm_vcpu *vcpu,
 		return 0;
 	}
 
+	hva = __gfn_to_hva_memslot(slot, gfn);
+
 	is_dma_pinned = page_maybe_dma_pinned(pfn_to_page(tmp_pfn));
 	kvm_release_pfn_clean(tmp_pfn);
 	if (is_dma_pinned) {
+		/*
+		 * If we have already pinned the page when traversing the
+		 * memslot, and the pinned page is part of a compound page that
+		 * tracked by shared page entry, we must set the corresponding
+		 * bit in the @bitmap to reflect that this subpage is shared
+		 * memory for CSV3 VM.
+		 *
+		 * This ensures that all 4K subpages within a compound page can
+		 * be accurately tracked, preventing premature removal of pages
+		 * that are still be shared memory.
+		 */
+		shared_page_entry_set_bit_locked(&csv->sp_mgr, hva, NULL);
 		*pfn = tmp_pfn;
 		return 0;
 	}
 
-	sp = shared_page_search(&csv->sp_mgr, gfn);
-	if (!sp) {
-		sp = kmem_cache_zalloc(csv->sp_slab, GFP_KERNEL);
-		if (!sp)
-			return -ENOMEM;
-
-		hva = __gfn_to_hva_memslot(slot, gfn);
+	/*
+	 * If the shared page manager does not already track @hva:
+	 *   - Pin the page using pin_user_pages();
+	 *   - Allocate a new shared_page entry, if the pinned page is part of
+	 *     a compound page, allocate a @bitmap and set the bit corresponding
+	 *     to this 4K subpage.
+	 *
+	 * If the @hva is already tracked by the manager, set the corresponding
+	 * bit in the @bitmap.
+	 */
+	sp = shared_page_entry_set_bit_locked(&csv->sp_mgr, hva, NULL);
+	if (unlikely(sp)) {
+		pg_off = (hva & ~sp->track_hva) >> PAGE_SHIFT;
+		*pfn = page_to_pfn(sp->track_page) + pg_off;
+	} else {
+		struct shared_page *old_sp;
+		struct page *page;
+		int npinned;
 
 		mmap_write_lock(current->mm);
 		npinned = pin_user_pages(hva, 1, FOLL_WRITE | FOLL_LONGTERM, &page, NULL);
+		mmap_write_unlock(current->mm);
 		if (npinned != 1) {
-			mmap_write_unlock(current->mm);
-			kmem_cache_free(csv->sp_slab, sp);
 			pr_err("Failure pin gfn:0x%llx\n", gfn);
 			return -ENOMEM;
 		}
 
-		mmap_write_unlock(current->mm);
-		sp->page = page;
-		sp->gfn = gfn;
-		shared_page_insert(&csv->sp_mgr, sp);
-		update_csv_share_mem(page, true);
-	}
+		sp = alloc_shared_page_entry(csv, hva, page);
+		if (!sp) {
+			unpin_user_page(page);
+			return -ENOMEM;
+		}
 
-	*pfn = page_to_pfn(sp->page);
+		if (insert_shared_page_entry_locked(&csv->sp_mgr, sp, &old_sp)) {
+			*pfn = page_to_pfn(page);
+		} else {
+			unpin_user_page(page);
+			free_shared_page_entry(csv, sp);
+
+			shared_page_entry_set_bit_locked(&csv->sp_mgr, hva, old_sp);
+
+			pg_off = (hva & ~old_sp->track_hva) >> PAGE_SHIFT;
+			*pfn = page_to_pfn(old_sp->track_page) + pg_off;
+		}
+	}
 
 	return 0;
 }
@@ -1624,12 +1921,15 @@ static int csv_page_fault(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	kvm_pfn_t pfn = KVM_PFN_NOSLOT;
 	struct kvm_csv_info *csv = &to_kvm_svm_csv(vcpu->kvm)->csv_info;
 
+	/* The sp manager lock should held during the NPT updating. */
+	mutex_lock(&csv->sp_lock);
+
 	if (error_code & PFERR_PRESENT_MASK)
 		level = CSV_PG_LEVEL_4K;
 	else {
-		mutex_lock(&csv->sp_lock);
-		ret = csv_pin_shared_memory(vcpu, slot, gfn, &pfn);
-		mutex_unlock(&csv->sp_lock);
+		//mutex_lock(&csv->sp_lock);
+		ret = csv_pin_shared_memory_locked(vcpu, slot, gfn, &pfn);
+		//mutex_unlock(&csv->sp_lock);
 		if (ret) {
 			/* Resume guest to retry #NPF. */
 			if (ret == -ENOMEM)
@@ -1648,37 +1948,219 @@ static int csv_page_fault(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 		ret = -EFAULT;
 	}
 exit:
+	mutex_unlock(&csv->sp_lock);
 	return ret;
 }
 
 /**
- *  Return negative error code on fail,
- *  or return the number of pages unpinned successfully
+ * csv_release_shared_memory - Release shared pages and notify userspace to
+ *			       madvise.
+ * @params: Pointer to ioctl input/output structure, containing GPA range
+ *	    and output fields.
+ *
+ * This function processes the KVM_CSV3_RELEASE_SHARED_MEMORY command by:
+ *   - Iterating over each page in the specified GPA range;
+ *   - For each page, attempting to remove it from the shared page manager;
+ *   - If successful, updating the total number of unpinned pages;
+ *   - Setting the start_hva to the first HVA that needs madvise (for
+ *     contiguous range).
+ *
+ * The kernel ensures that:
+ *   - Only one thread can modify the shared page manager at a time (via
+ *     sp_lock);
+ *   - The start_hva is set to the lowest HVA among all removed pages;
+ *   - Userspace VMM should call madvise() on [start_hva, start_hva +
+ *     unpinned * PAGE_SIZE).
+ *
+ * Return: 0 on success, negative error code on failure (though none are
+ * currently returned).
  */
-static int csv_unpin_shared_memory(struct kvm *kvm, gpa_t gpa, u32 num_pages)
+static int csv_release_shared_memory(struct kvm *kvm,
+				     struct kvm_csv_handle_memory *params)
 {
-	struct kvm_csv_info *csv;
+	struct kvm_csv_info *csv = &to_kvm_svm_csv(kvm)->csv_info;
 	struct shared_page *sp;
-	gfn_t gfn;
-	unsigned long i;
-	int unpin_cnt = 0;
+	u64 hva;
+	gfn_t gfn = gpa_to_gfn(params->gpa);
+	u32 num_pages = params->num_pages;
+	int i;
 
-	csv = &to_kvm_svm_csv(kvm)->csv_info;
-	gfn = gpa_to_gfn(gpa);
+	/* Initialize output fields */
+	params->start_hva = 0;
+	params->unpinned = 0;
+
+	/* Protect shared page manager from concurrent access */
 	mutex_lock(&csv->sp_lock);
 	for (i = 0; i < num_pages; i++, gfn++) {
-		sp = shared_page_remove(&csv->sp_mgr, gfn);
+		hva = gfn_to_hva(kvm, gfn);
+
+		/*
+		 * The madvise requested from user space need provide hva and
+		 * length. This handler should fill back a range of contiguous
+		 * hva. We maintain start_hva as the smallest hva among all
+		 * released pages.
+		 */
+		if (params->start_hva &&
+		    (params->start_hva >> PAGE_SHIFT)
+			+ params->unpinned != (hva >> PAGE_SHIFT))
+			break;
+
+		if (unlikely(!params->start_hva))
+			params->start_hva = hva;
+
+		/*
+		 * Try to remove the shared_page entry corresponding to this
+		 * hva. If found and is no longer shared memory for the VM, it
+		 * will be freed.
+		 */
+		sp = remove_shared_page_entry_locked(&csv->sp_mgr, hva);
 		if (sp) {
-			update_csv_share_mem(sp->page, false);
-			unpin_user_page(sp->page);
-			kmem_cache_free(csv->sp_slab, sp);
-			csv->sp_mgr.count--;
-			unpin_cnt++;
+			params->unpinned += 1u << sp->order;
+
+			/*
+			 * If this page is a tail page of a compound page, its
+			 * HVA may be smaller than the head page's HVA. Since
+			 * madvise must cover the entire compound page, we
+			 * update start_hva to the smallest HVA in the range.
+			 */
+			if (sp->track_hva < params->start_hva)
+				params->start_hva = sp->track_hva;
+
+			unpin_user_page(sp->track_page);
+			free_shared_page_entry(csv, sp);
+		} else {
+			/*
+			 * The page may not be pinned, or the compound page was
+			 * touched by multiple users. In either case, we cannot
+			 * safely release it - skip.
+			 */
+			break;
 		}
+
+		cond_resched();
 	}
 	mutex_unlock(&csv->sp_lock);
 
-	return unpin_cnt;
+	return 0;
+}
+
+static inline unsigned long get_vma_flags(unsigned long addr)
+{
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	unsigned long vm_flags = 0;
+
+	down_read(&mm->mmap_lock);
+	vma = find_vma(mm, addr);
+	if (vma && vma->vm_start <= addr)
+		vm_flags = vma->vm_flags;
+	up_read(&mm->mmap_lock);
+
+	return vm_flags;
+}
+
+/**
+ * csv_get_shared_memory - Pin a number of pages specified in the input.
+ * @params: Pointer to ioctl input/output structure, containing GPA range and
+ *	    output field.
+ *
+ * This function processes the KVM_CSV3_GET_SHARED_MEMORY command by:
+ *   - Iterating over each page in the specified GPA range;
+ *   - For each page, checking if it is already tracked in the shared page
+ *     manager;
+ *   - If not, attempting to pin it and create a new entry;
+ *   - Incrementing @npinned for every page that is successfully pinned or
+ *     already tracked.
+ *
+ * Return: 0 on success, negative error code on failure.
+ */
+static int csv_get_shared_memory(struct kvm *kvm,
+				 struct kvm_csv_handle_memory *params)
+{
+	struct kvm_csv_info *csv = &to_kvm_svm_csv(kvm)->csv_info;
+	struct shared_page *sp, *old_sp;
+	struct page *page;
+	unsigned long vm_flags = 0;
+	u64 hva;
+	gfn_t gfn = gpa_to_gfn(params->gpa);
+	u32 num_pages = params->num_pages;
+	int i;
+	int npinned;
+	int ret = 0;
+
+	/* Initialize output field */
+	params->npinned = 0;
+
+	/* Protect shared page manager from concurrent access */
+	mutex_lock(&csv->sp_lock);
+	for (i = 0; i < num_pages; i++, gfn++) {
+		hva = gfn_to_hva(kvm, gfn);
+		if (kvm_is_error_hva(hva)) {
+			/*
+			 * If the HVA is invalid (e.g., not mapped), skip this
+			 * page. This prevents unnecessary pinning attempts and
+			 * continues processing remaining pages.
+			 */
+			params->npinned++;
+			continue;
+		}
+
+		if (unlikely(!vm_flags))
+			vm_flags = get_vma_flags((unsigned long)hva);
+
+		/*
+		 * Reject hugetlbfs-backed pages to prevent severe page
+		 * migration pressure when 2M hugetlb is used with CMA.
+		 *
+		 * Hugetlb pages provide sufficient performance without pinning,
+		 * and pinning them may cause memory management overhead in some
+		 * cases.
+		 */
+		if (!vm_flags || (vm_flags & VM_HUGETLB)) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		/*
+		 * Try to update @bitmap in the shared_page entry for this HVA.
+		 */
+		sp = shared_page_entry_set_bit_locked(&csv->sp_mgr, hva, NULL);
+		if (sp) {
+			params->npinned++;
+			continue;
+		}
+
+		/*
+		 * The page is not yet tracked. We need to pin it and create a
+		 * new entry. Acquire mm_write_lock to safely pin the page.
+		 */
+		mmap_write_lock(current->mm);
+		npinned = pin_user_pages(hva, 1, FOLL_WRITE | FOLL_LONGTERM, &page, NULL);
+		mmap_write_unlock(current->mm);
+		if (npinned != 1)
+			break;
+
+		sp = alloc_shared_page_entry(csv, hva, page);
+		if (!sp) {
+			unpin_user_page(page);
+			break;
+		}
+
+		if (!insert_shared_page_entry_locked(&csv->sp_mgr, sp, &old_sp)) {
+			unpin_user_page(page);
+			free_shared_page_entry(csv, sp);
+
+			shared_page_entry_set_bit_locked(&csv->sp_mgr, hva, old_sp);
+		}
+		params->npinned++;
+
+		cond_resched();
+	}
+
+out:
+	mutex_unlock(&csv->sp_lock);
+
+	return ret;
 }
 
 static void csv_vm_destroy(struct kvm *kvm)
@@ -1695,14 +2177,32 @@ static void csv_vm_destroy(struct kvm *kvm)
 	if (csv3_guest(kvm)) {
 		mutex_lock(&csv->sp_lock);
 		while ((node = rb_first(&csv->sp_mgr.root))) {
+			int unpin_loop = 0;
+
 			sp = rb_entry(node, struct shared_page, node);
-			update_csv_share_mem(sp->page, false);
+			/* Remove shared page entry from the manager tree */
 			rb_erase(&sp->node, &csv->sp_mgr.root);
-			unpin_user_page(sp->page);
-			kmem_cache_free(csv->sp_slab, sp);
+			/* Update shared page statistics */
 			csv->sp_mgr.count--;
+			csv->sp_mgr.nr_pages -= 1u << sp->order;
+			update_csv_share_mem(sp->track_page, false);
+			/* Putback the tracked page to system */
+			while (page_maybe_dma_pinned(sp->track_page)) {
+				unpin_user_page(sp->track_page);
+				unpin_loop++;
+			}
+			if (unpin_loop != 1)
+				pr_err_ratelimited("%s: SP_MGR_ERR: pin state error\n",
+						    __func__);
+			/* Free shared page entry */
+			free_shared_page_entry(csv, sp);
+
+			cond_resched();
 		}
 		mutex_unlock(&csv->sp_lock);
+
+		if (csv->sp_mgr.count || csv->sp_mgr.nr_pages)
+			pr_err("%s: SP_MGR_ERR: track fault\n", __func__);
 
 		kmem_cache_destroy(csv->sp_slab);
 		csv->sp_slab = NULL;
@@ -1800,12 +2300,20 @@ static int csv_handle_memory(struct kvm *kvm, struct kvm_sev_cmd *argp)
 
 	switch (params.opcode) {
 	case KVM_CSV3_RELEASE_SHARED_MEMORY:
-		r = csv_unpin_shared_memory(kvm, params.gpa, params.num_pages);
+		r = csv_release_shared_memory(kvm, &params);
+		break;
+	case KVM_CSV3_GET_SHARED_MEMORY:
+		r = csv_get_shared_memory(kvm, &params);
 		break;
 	default:
-		break;
+		goto out;
 	}
 
+	if (copy_to_user((void __user *)(uintptr_t)argp->data, &params,
+			 sizeof(params)))
+		return -EFAULT;
+
+out:
 	return r;
 };
 
