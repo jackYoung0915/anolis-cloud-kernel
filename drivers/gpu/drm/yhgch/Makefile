@@ -1,9 +1,9 @@
 ifneq ($(KERNELRELEASE),)
 
-inspur-drm-y := inspur_drm_drv.o inspur_drm_de.o inspur_drm_vdac.o inspur_drm_fbdev.o inspur_ttm.o
+yhgch-drm-y := yhgch_drm_drv.o yhgch_drm_de.o yhgch_drm_vdac.o yhgch_drm_fbdev.o yhgch_ttm.o
 
-#obj-$(CONFIG_DRM_INSPUR) += inspur-drm.o
-obj-m += inspur-drm.o
+#obj-$(CONFIG_DRM_YHGCH) += yhgch-drm.o
+obj-m += yhgch-drm.o
 ccflags-y += -Iinclude/drm
 
 
