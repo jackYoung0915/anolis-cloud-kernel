@@ -69,6 +69,7 @@
 #endif
 
 DEFINE_STATIC_KEY_FALSE(kidled_enabled_key);
+static atomic_t kidled_disabling;
 
 unsigned int kidled_scan_target __read_mostly = KIDLED_SCAN_PAGE;
 struct kidled_scan_control kidled_scan_control;
@@ -779,15 +780,22 @@ static inline bool kidled_should_run(struct kidled_scan_control *p,
 		struct kidled_scan_control scan_control;
 
 		scan_control  = kidled_get_current_scan_control();
-		if (p->duration) {
+		/*
+		 * Both disabling or updating requires kidled is enabled.
+		 * If kidled has been disabled already, don't do reset.
+		 */
+		if (is_kidled_enabled() && p->duration) {
 #ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
 			kidled_reset(!scan_control.duration);
 #else
 			kidled_reset();
 #endif
 		}
-		if (!scan_control.duration)
+		if (!scan_control.duration) {
 			static_branch_disable(&kidled_enabled_key);
+			if (atomic_cmpxchg(&kidled_disabling, 1, 0) != 1)
+				pr_warn_ratelimited("%s: kidled_disabling may be not set correctly when disabling kidled\n", __func__);
+		}
 
 		*p = scan_control;
 		*new = true;
@@ -1118,8 +1126,19 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 	 * To avoid situation like lru_gen >= 0 && kidled disabled, disable
 	 * enabled_key after reset.
 	 */
-	if (secs)
+	if (secs) {
+		if (atomic_read(&kidled_disabling)) {
+			pr_warn("%s: Failed to enable kidled due to kidled is disabling\n", __func__);
+			ret = -EINVAL;
+			goto out;
+		}
 		static_branch_enable(&kidled_enabled_key);
+	} else {
+		if (atomic_cmpxchg(&kidled_disabling, 0, 1) != 0) {
+			pr_debug("%s: kidled is still being disabled, ignore this time\n", __func__);
+			goto out;
+		}
+	}
 
 	kidled_set_scan_duration(secs);
 	wake_up_interruptible(&kidled_wait);
