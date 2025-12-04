@@ -335,7 +335,7 @@ source "drivers/gpu/drm/tve200/Kconfig"
 
 source "drivers/gpu/drm/xen/Kconfig"
 
-source "drivers/gpu/drm/inspur/Kconfig"
+source "drivers/gpu/drm/yhgch/Kconfig"
 
 # Keep legacy drivers last
 

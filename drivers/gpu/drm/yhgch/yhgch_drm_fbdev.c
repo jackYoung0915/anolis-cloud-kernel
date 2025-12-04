@@ -4,9 +4,9 @@
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_fb_helper.h>
 
-#include "inspur_drm_drv.h"
+#include "yhgch_drm_drv.h"
 
-static int inspurfb_create_object(struct inspur_drm_private *priv,
+static int yhgchfb_create_object(struct yhgch_drm_private *priv,
 				  const struct drm_mode_fb_cmd2 *mode_cmd,
 				  struct drm_gem_object **gobj_p)
 {
@@ -16,7 +16,7 @@ static int inspurfb_create_object(struct inspur_drm_private *priv,
 	int ret = 0;
 
 	size = mode_cmd->pitches[0] * mode_cmd->height;
-	ret = inspur_gem_create(dev, size, true, &gobj);
+	ret = yhgch_gem_create(dev, size, true, &gobj);
 	if (ret)
 		return ret;
 
@@ -24,7 +24,7 @@ static int inspurfb_create_object(struct inspur_drm_private *priv,
 	return ret;
 }
 
-static struct fb_ops inspur_drm_fb_ops = {
+static struct fb_ops yhgch_drm_fb_ops = {
 	.owner = THIS_MODULE,
 	.fb_check_var = drm_fb_helper_check_var,
 	.fb_set_par = drm_fb_helper_set_par,
@@ -36,12 +36,12 @@ static struct fb_ops inspur_drm_fb_ops = {
 	.fb_setcmap = drm_fb_helper_setcmap,
 };
 
-static int inspur_drm_fb_create(struct drm_fb_helper *helper,
+static int yhgch_drm_fb_create(struct drm_fb_helper *helper,
 				struct drm_fb_helper_surface_size *sizes)
 {
-	struct inspur_fbdev *hi_fbdev =
-	    container_of(helper, struct inspur_fbdev, helper);
-	struct inspur_drm_private *priv = helper->dev->dev_private;
+	struct yhgch_fbdev *hi_fbdev =
+	    container_of(helper, struct yhgch_fbdev, helper);
+	struct yhgch_drm_private *priv = helper->dev->dev_private;
 	struct fb_info *info;
 	struct drm_mode_fb_cmd2 mode_cmd;
 	struct drm_gem_object *gobj = NULL;
@@ -49,7 +49,7 @@ static int inspur_drm_fb_create(struct drm_fb_helper *helper,
 	int ret1;
 	size_t size;
 	unsigned int bytes_per_pixel;
-	struct inspur_bo *bo = NULL;
+	struct yhgch_bo *bo = NULL;
 
 	DRM_DEBUG_DRIVER("surface width(%d), height(%d) and bpp(%d)\n",
 			 sizes->surface_width, sizes->surface_height,
@@ -65,13 +65,13 @@ static int inspur_drm_fb_create(struct drm_fb_helper *helper,
 
 	size = PAGE_ALIGN(mode_cmd.pitches[0] * mode_cmd.height);
 
-	ret = inspurfb_create_object(priv, &mode_cmd, &gobj);
+	ret = yhgchfb_create_object(priv, &mode_cmd, &gobj);
 	if (ret) {
 		DRM_ERROR("failed to create fbcon backing object: %d\n", ret);
 		return -ENOMEM;
 	}
 
-	bo = gem_to_inspur_bo(gobj);
+	bo = gem_to_yhgch_bo(gobj);
 
 	ret = ttm_bo_reserve(&bo->bo, true, false, NULL);
 	if (ret) {
@@ -79,7 +79,7 @@ static int inspur_drm_fb_create(struct drm_fb_helper *helper,
 		goto out_unref_gem;
 	}
 
-	ret = inspur_bo_pin(bo, TTM_PL_FLAG_VRAM, NULL);
+	ret = yhgch_bo_pin(bo, TTM_PL_FLAG_VRAM, NULL);
 	if (ret) {
 		DRM_ERROR("failed to pin fbcon: %d\n", ret);
 		goto out_unreserve_ttm_bo;
@@ -101,7 +101,7 @@ static int inspur_drm_fb_create(struct drm_fb_helper *helper,
 
 	info->par = hi_fbdev;
 
-	hi_fbdev->fb = inspur_framebuffer_init(priv->dev, &mode_cmd, gobj);
+	hi_fbdev->fb = yhgch_framebuffer_init(priv->dev, &mode_cmd, gobj);
 	if (IS_ERR(hi_fbdev->fb)) {
 		ret = PTR_ERR(hi_fbdev->fb);
 		hi_fbdev->fb = NULL;
@@ -112,9 +112,9 @@ static int inspur_drm_fb_create(struct drm_fb_helper *helper,
 	priv->fbdev->size = size;
 	hi_fbdev->helper.fb = &hi_fbdev->fb->fb;
 
-	strcpy(info->fix.id, "inspurdrmfb");
+	strcpy(info->fix.id, "yhgchdrmfb");
 
-	info->fbops = &inspur_drm_fb_ops;
+	info->fbops = &yhgch_drm_fb_ops;
 
 	drm_fb_helper_fill_fix(info, hi_fbdev->fb->fb.pitches[0],
 			       hi_fbdev->fb->fb.format->depth);
@@ -136,7 +136,7 @@ out_release_fbi:
 	}
 	ttm_bo_kunmap(&bo->kmap);
 out_unpin_bo:
-	inspur_bo_unpin(bo);
+	yhgch_bo_unpin(bo);
 out_unreserve_ttm_bo:
 	ttm_bo_unreserve(&bo->bo);
 out_unref_gem:
@@ -145,9 +145,9 @@ out_unref_gem:
 	return ret;
 }
 
-static void inspur_fbdev_destroy(struct inspur_fbdev *fbdev)
+static void yhgch_fbdev_destroy(struct yhgch_fbdev *fbdev)
 {
-	struct inspur_framebuffer *gfb = fbdev->fb;
+	struct yhgch_framebuffer *gfb = fbdev->fb;
 	struct drm_fb_helper *fbh = &fbdev->helper;
 
 //      drm_fb_helper_unregister_fbi(fbh);
@@ -158,26 +158,26 @@ static void inspur_fbdev_destroy(struct inspur_fbdev *fbdev)
 		drm_framebuffer_put(&gfb->fb);
 }
 
-static const struct drm_fb_helper_funcs inspur_fbdev_helper_funcs = {
-	.fb_probe = inspur_drm_fb_create,
+static const struct drm_fb_helper_funcs yhgch_fbdev_helper_funcs = {
+	.fb_probe = yhgch_drm_fb_create,
 };
 
-int inspur_fbdev_init(struct inspur_drm_private *priv)
+int yhgch_fbdev_init(struct yhgch_drm_private *priv)
 {
 	int ret;
 	struct fb_var_screeninfo *var;
 	struct fb_fix_screeninfo *fix;
-	struct inspur_fbdev *hifbdev;
+	struct yhgch_fbdev *hifbdev;
 
 	hifbdev = devm_kzalloc(priv->dev->dev, sizeof(*hifbdev), GFP_KERNEL);
 	if (!hifbdev) {
-		DRM_ERROR("failed to allocate inspur_fbdev\n");
+		DRM_ERROR("failed to allocate yhgch_fbdev\n");
 		return -ENOMEM;
 	}
 
 	priv->fbdev = hifbdev;
 	drm_fb_helper_prepare(priv->dev, &hifbdev->helper,
-			      &inspur_fbdev_helper_funcs);
+			      &yhgch_fbdev_helper_funcs);
 
 	/* Now just one crtc and one channel */
 	ret = drm_fb_helper_init(priv->dev, &hifbdev->helper, 1);
@@ -238,11 +238,11 @@ fini:
 	return ret;
 }
 
-void inspur_fbdev_fini(struct inspur_drm_private *priv)
+void yhgch_fbdev_fini(struct yhgch_drm_private *priv)
 {
 	if (!priv->fbdev)
 		return;
 
-	inspur_fbdev_destroy(priv->fbdev);
+	yhgch_fbdev_destroy(priv->fbdev);
 	priv->fbdev = NULL;
 }

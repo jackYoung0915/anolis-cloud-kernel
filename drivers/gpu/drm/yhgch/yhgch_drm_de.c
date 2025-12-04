@@ -6,31 +6,31 @@
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_crtc_helper.h>
 
-#include "inspur_drm_drv.h"
-#include "inspur_drm_regs.h"
+#include "yhgch_drm_drv.h"
+#include "yhgch_drm_regs.h"
 
-struct inspur_dislay_pll_config {
+struct yhgch_dislay_pll_config {
 	unsigned long hdisplay;
 	unsigned long vdisplay;
 	u32 pll1_config_value;
 	u32 pll2_config_value;
 };
 
-static const struct inspur_dislay_pll_config inspur_pll_table[] = {
+static const struct yhgch_dislay_pll_config yhgch_pll_table[] = {
 	{ 640, 480, CRT_PLL1_NS_25MHZ, CRT_PLL2_NS_25MHZ },
 	{ 800, 600, CRT_PLL1_NS_40MHZ, CRT_PLL2_NS_40MHZ },
 	{ 1024, 768, CRT_PLL1_NS_65MHZ, CRT_PLL2_NS_65MHZ },
-	{ 1280, 800, CRT_PLL1_NS_83MHZ, CRT_PLL2_NS_83MHZ },
+//	{ 1280, 800, CRT_PLL1_NS_83MHZ, CRT_PLL2_NS_83MHZ },
 	{ 1280, 1024, CRT_PLL1_NS_108MHZ, CRT_PLL2_NS_108MHZ },
-	{ 1440, 900, CRT_PLL1_NS_106MHZ, CRT_PLL2_NS_106MHZ },
-	{ 1680, 1050, CRT_PLL1_NS_146MHZ, CRT_PLL2_NS_146MHZ },
+//	{ 1440, 900, CRT_PLL1_NS_106MHZ, CRT_PLL2_NS_106MHZ },
+//	{ 1680, 1050, CRT_PLL1_NS_146MHZ, CRT_PLL2_NS_146MHZ },
 	{ 1920, 1080, CRT_PLL1_NS_148MHZ, CRT_PLL2_NS_148MHZ },
-	{ 1920, 1200, CRT_PLL1_NS_193MHZ, CRT_PLL2_NS_193MHZ },
+//	{ 1920, 1200, CRT_PLL1_NS_193MHZ, CRT_PLL2_NS_193MHZ },
 };
 
 #define PADDING(align, data) (((data) + (align) - 1) & (~((align) - 1)))
 
-static int inspur_plane_atomic_check(struct drm_plane *plane,
+static int yhgch_plane_atomic_check(struct drm_plane *plane,
 				     struct drm_plane_state *state)
 {
 	struct drm_framebuffer *fb = state->fb;
@@ -70,7 +70,7 @@ static int inspur_plane_atomic_check(struct drm_plane *plane,
 	return 0;
 }
 
-static void inspur_plane_atomic_update(struct drm_plane *plane,
+static void yhgch_plane_atomic_update(struct drm_plane *plane,
 				       struct drm_plane_state *old_state)
 {
 	struct drm_plane_state *state = plane->state;
@@ -78,44 +78,44 @@ static void inspur_plane_atomic_update(struct drm_plane *plane,
 	int ret;
 	u64 gpu_addr = 0;
 	unsigned int line_l;
-	struct inspur_drm_private *priv = plane->dev->dev_private;
-	struct inspur_framebuffer *inspur_fb;
-	struct inspur_bo *bo;
+	struct yhgch_drm_private *priv = plane->dev->dev_private;
+	struct yhgch_framebuffer *yhgch_fb;
+	struct yhgch_bo *bo;
 
 	if (!state->fb)
 		return;
 
-	inspur_fb = to_inspur_framebuffer(state->fb);
-	bo = gem_to_inspur_bo(inspur_fb->obj);
+	yhgch_fb = to_yhgch_framebuffer(state->fb);
+	bo = gem_to_yhgch_bo(yhgch_fb->obj);
 	ret = ttm_bo_reserve(&bo->bo, true, false, NULL);
 	if (ret) {
 		DRM_ERROR("failed to reserve ttm_bo: %d", ret);
 		return;
 	}
 
-	ret = inspur_bo_pin(bo, TTM_PL_FLAG_VRAM, &gpu_addr);
+	ret = yhgch_bo_pin(bo, TTM_PL_FLAG_VRAM, &gpu_addr);
 	ttm_bo_unreserve(&bo->bo);
 	if (ret) {
-		DRM_ERROR("failed to pin inspur_bo: %d", ret);
+		DRM_ERROR("failed to pin yhgch_bo: %d", ret);
 		return;
 	}
 
-	writel(gpu_addr, priv->mmio + INSPUR_CRT_FB_ADDRESS);
+	writel(gpu_addr, priv->mmio + YHGCH_CRT_FB_ADDRESS);
 
 	reg = state->fb->width * (state->fb->format->cpp[0]);
 
 	line_l = state->fb->pitches[0];
 
-	writel(INSPUR_FIELD(INSPUR_CRT_FB_WIDTH_WIDTH, reg) |
-	       INSPUR_FIELD(INSPUR_CRT_FB_WIDTH_OFFS, line_l),
-	       priv->mmio + INSPUR_CRT_FB_WIDTH);
+	writel(YHGCH_FIELD(YHGCH_CRT_FB_WIDTH_WIDTH, reg) |
+	       YHGCH_FIELD(YHGCH_CRT_FB_WIDTH_OFFS, line_l),
+	       priv->mmio + YHGCH_CRT_FB_WIDTH);
 
 	/* SET PIXEL FORMAT */
-	reg = readl(priv->mmio + INSPUR_CRT_DISP_CTL);
-	reg &= ~INSPUR_CRT_DISP_CTL_FORMAT_MASK;
-	reg |= INSPUR_FIELD(INSPUR_CRT_DISP_CTL_FORMAT,
+	reg = readl(priv->mmio + YHGCH_CRT_DISP_CTL);
+	reg &= ~YHGCH_CRT_DISP_CTL_FORMAT_MASK;
+	reg |= YHGCH_FIELD(YHGCH_CRT_DISP_CTL_FORMAT,
 			    state->fb->format->cpp[0] * 8 / 16);
-	writel(reg, priv->mmio + INSPUR_CRT_DISP_CTL);
+	writel(reg, priv->mmio + YHGCH_CRT_DISP_CTL);
 }
 
 static const u32 channel_formats1[] = {
@@ -125,7 +125,7 @@ static const u32 channel_formats1[] = {
 	DRM_FORMAT_ABGR8888
 };
 
-static struct drm_plane_funcs inspur_plane_funcs = {
+static struct drm_plane_funcs yhgch_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
 	.destroy = drm_plane_cleanup,
@@ -134,12 +134,12 @@ static struct drm_plane_funcs inspur_plane_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
 };
 
-static const struct drm_plane_helper_funcs inspur_plane_helper_funcs = {
-	.atomic_check = inspur_plane_atomic_check,
-	.atomic_update = inspur_plane_atomic_update,
+static const struct drm_plane_helper_funcs yhgch_plane_helper_funcs = {
+	.atomic_check = yhgch_plane_atomic_check,
+	.atomic_update = yhgch_plane_atomic_update,
 };
 
-static struct drm_plane *inspur_plane_init(struct inspur_drm_private *priv)
+static struct drm_plane *yhgch_plane_init(struct yhgch_drm_private *priv)
 {
 	struct drm_device *dev = priv->dev;
 	struct drm_plane *plane;
@@ -150,7 +150,7 @@ static struct drm_plane *inspur_plane_init(struct inspur_drm_private *priv)
 		DRM_ERROR("failed to alloc memory when init plane\n");
 		return ERR_PTR(-ENOMEM);
 	}
-	ret = drm_universal_plane_init(dev, plane, 1, &inspur_plane_funcs,
+	ret = drm_universal_plane_init(dev, plane, 1, &yhgch_plane_funcs,
 				       channel_formats1,
 				       ARRAY_SIZE(channel_formats1),
 				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
@@ -159,65 +159,65 @@ static struct drm_plane *inspur_plane_init(struct inspur_drm_private *priv)
 		return ERR_PTR(ret);
 	}
 
-	drm_plane_helper_add(plane, &inspur_plane_helper_funcs);
+	drm_plane_helper_add(plane, &yhgch_plane_helper_funcs);
 	return plane;
 }
 
-static void inspur_crtc_dpms(struct drm_crtc *crtc, int dpms)
+static void yhgch_crtc_dpms(struct drm_crtc *crtc, int dpms)
 {
-	struct inspur_drm_private *priv = crtc->dev->dev_private;
+	struct yhgch_drm_private *priv = crtc->dev->dev_private;
 	unsigned int reg;
 
-	reg = readl(priv->mmio + INSPUR_CRT_DISP_CTL);
-	reg &= ~INSPUR_CRT_DISP_CTL_DPMS_MASK;
-	reg |= INSPUR_FIELD(INSPUR_CRT_DISP_CTL_DPMS, dpms);
-	reg &= ~INSPUR_CRT_DISP_CTL_TIMING_MASK;
-	if (dpms == INSPUR_CRT_DPMS_ON)
-		reg |= INSPUR_CRT_DISP_CTL_TIMING(1);
-	writel(reg, priv->mmio + INSPUR_CRT_DISP_CTL);
+	reg = readl(priv->mmio + YHGCH_CRT_DISP_CTL);
+	reg &= ~YHGCH_CRT_DISP_CTL_DPMS_MASK;
+	reg |= YHGCH_FIELD(YHGCH_CRT_DISP_CTL_DPMS, dpms);
+	reg &= ~YHGCH_CRT_DISP_CTL_TIMING_MASK;
+	if (dpms == YHGCH_CRT_DPMS_ON)
+		reg |= YHGCH_CRT_DISP_CTL_TIMING(1);
+	writel(reg, priv->mmio + YHGCH_CRT_DISP_CTL);
 }
 
-static void inspur_crtc_atomic_enable(struct drm_crtc *crtc,
+static void yhgch_crtc_atomic_enable(struct drm_crtc *crtc,
 				      struct drm_crtc_state *old_state)
 {
 	unsigned int reg;
-	struct inspur_drm_private *priv = crtc->dev->dev_private;
+	struct yhgch_drm_private *priv = crtc->dev->dev_private;
 
-	inspur_set_power_mode(priv, INSPUR_PW_MODE_CTL_MODE_MODE0);
+	yhgch_set_power_mode(priv, YHGCH_PW_MODE_CTL_MODE_MODE0);
 
 	/* Enable display power gate & LOCALMEM power gate */
-	reg = readl(priv->mmio + INSPUR_CURRENT_GATE);
-	reg &= ~INSPUR_CURR_GATE_LOCALMEM_MASK;
-	reg &= ~INSPUR_CURR_GATE_DISPLAY_MASK;
-	reg |= INSPUR_CURR_GATE_LOCALMEM(1);
-	reg |= INSPUR_CURR_GATE_DISPLAY(1);
-	inspur_set_current_gate(priv, reg);
+	reg = readl(priv->mmio + YHGCH_CURRENT_GATE);
+	reg &= ~YHGCH_CURR_GATE_LOCALMEM_MASK;
+	reg &= ~YHGCH_CURR_GATE_DISPLAY_MASK;
+	reg |= YHGCH_CURR_GATE_LOCALMEM(1);
+	reg |= YHGCH_CURR_GATE_DISPLAY(1);
+	yhgch_set_current_gate(priv, reg);
 //      drm_crtc_vblank_on(crtc);
-	inspur_crtc_dpms(crtc, INSPUR_CRT_DPMS_ON);
+	yhgch_crtc_dpms(crtc, YHGCH_CRT_DPMS_ON);
 }
 
-static void inspur_crtc_atomic_disable(struct drm_crtc *crtc,
+static void yhgch_crtc_atomic_disable(struct drm_crtc *crtc,
 				       struct drm_crtc_state *old_state)
 {
 	unsigned int reg;
-	struct inspur_drm_private *priv = crtc->dev->dev_private;
+	struct yhgch_drm_private *priv = crtc->dev->dev_private;
 
-	inspur_crtc_dpms(crtc, INSPUR_CRT_DPMS_OFF);
+	yhgch_crtc_dpms(crtc, YHGCH_CRT_DPMS_OFF);
 //      drm_crtc_vblank_off(crtc);
 
-	inspur_set_power_mode(priv, INSPUR_PW_MODE_CTL_MODE_SLEEP);
+	yhgch_set_power_mode(priv, YHGCH_PW_MODE_CTL_MODE_SLEEP);
 
 	/* Enable display power gate & LOCALMEM power gate */
-	reg = readl(priv->mmio + INSPUR_CURRENT_GATE);
-	reg &= ~INSPUR_CURR_GATE_LOCALMEM_MASK;
-	reg &= ~INSPUR_CURR_GATE_DISPLAY_MASK;
-	reg |= INSPUR_CURR_GATE_LOCALMEM(0);
-	reg |= INSPUR_CURR_GATE_DISPLAY(0);
-	inspur_set_current_gate(priv, reg);
+	reg = readl(priv->mmio + YHGCH_CURRENT_GATE);
+	reg &= ~YHGCH_CURR_GATE_LOCALMEM_MASK;
+	reg &= ~YHGCH_CURR_GATE_DISPLAY_MASK;
+	reg |= YHGCH_CURR_GATE_LOCALMEM(0);
+	reg |= YHGCH_CURR_GATE_DISPLAY(0);
+	yhgch_set_current_gate(priv, reg);
 }
 
 static enum drm_mode_status
-inspur_crtc_mode_valid(struct drm_crtc *crtc,
+yhgch_crtc_mode_valid(struct drm_crtc *crtc,
 		       const struct drm_display_mode *mode)
 {
 	int i = 0;
@@ -226,19 +226,19 @@ inspur_crtc_mode_valid(struct drm_crtc *crtc,
 	if (vrefresh < 59 || vrefresh > 61)
 		return MODE_NOCLOCK;
 
-	for (i = 0; i < ARRAY_SIZE(inspur_pll_table); i++) {
-		if (inspur_pll_table[i].hdisplay == mode->hdisplay &&
-		    inspur_pll_table[i].vdisplay == mode->vdisplay)
+	for (i = 0; i < ARRAY_SIZE(yhgch_pll_table); i++) {
+		if (yhgch_pll_table[i].hdisplay == mode->hdisplay &&
+		    yhgch_pll_table[i].vdisplay == mode->vdisplay)
 			return MODE_OK;
 	}
 
 	return MODE_BAD;
 }
 
-static void set_vclock_inspur(struct drm_device *dev, unsigned long pll)
+static void set_vclock_yhgch(struct drm_device *dev, unsigned long pll)
 {
 	u32 val;
-	struct inspur_drm_private *priv = dev->dev_private;
+	struct yhgch_drm_private *priv = dev->dev_private;
 
 	val = readl(priv->mmio + CRT_PLL1_NS);
 	val &= ~(CRT_PLL1_NS_OUTER_BYPASS(1));
@@ -269,13 +269,13 @@ static void get_pll_config(unsigned long x, unsigned long y,
 			   u32 *pll1, u32 *pll2)
 {
 	int i;
-	int count = ARRAY_SIZE(inspur_pll_table);
+	int count = ARRAY_SIZE(yhgch_pll_table);
 
 	for (i = 0; i < count; i++) {
-		if (inspur_pll_table[i].hdisplay == x &&
-		    inspur_pll_table[i].vdisplay == y) {
-			*pll1 = inspur_pll_table[i].pll1_config_value;
-			*pll2 = inspur_pll_table[i].pll2_config_value;
+		if (yhgch_pll_table[i].hdisplay == x &&
+		    yhgch_pll_table[i].vdisplay == y) {
+			*pll1 = yhgch_pll_table[i].pll1_config_value;
+			*pll2 = yhgch_pll_table[i].pll2_config_value;
 			return;
 		}
 	}
@@ -299,28 +299,28 @@ static unsigned int display_ctrl_adjust(struct drm_device *dev,
 	unsigned long x, y;
 	u32 pll1;		/* bit[31:0] of PLL */
 	u32 pll2;		/* bit[63:32] of PLL */
-	struct inspur_drm_private *priv = dev->dev_private;
+	struct yhgch_drm_private *priv = dev->dev_private;
 
 	x = mode->hdisplay;
 	y = mode->vdisplay;
 
 	get_pll_config(x, y, &pll1, &pll2);
 	writel(pll2, priv->mmio + CRT_PLL2_NS);
-	set_vclock_inspur(dev, pll1);
+	set_vclock_yhgch(dev, pll1);
 
 	/*
-	 * inspur has to set up the top-left and bottom-right
+	 * yhgch has to set up the top-left and bottom-right
 	 * registers as well.
 	 * Note that normal chip only use those two register for
 	 * auto-centering mode.
 	 */
-	writel(INSPUR_FIELD(INSPUR_CRT_AUTO_CENTERING_TL_TOP, 0) |
-	       INSPUR_FIELD(INSPUR_CRT_AUTO_CENTERING_TL_LEFT, 0),
-	       priv->mmio + INSPUR_CRT_AUTO_CENTERING_TL);
+	writel(YHGCH_FIELD(YHGCH_CRT_AUTO_CENTERING_TL_TOP, 0) |
+	       YHGCH_FIELD(YHGCH_CRT_AUTO_CENTERING_TL_LEFT, 0),
+	       priv->mmio + YHGCH_CRT_AUTO_CENTERING_TL);
 
-	writel(INSPUR_FIELD(INSPUR_CRT_AUTO_CENTERING_BR_BOTTOM, y - 1) |
-	       INSPUR_FIELD(INSPUR_CRT_AUTO_CENTERING_BR_RIGHT, x - 1),
-	       priv->mmio + INSPUR_CRT_AUTO_CENTERING_BR);
+	writel(YHGCH_FIELD(YHGCH_CRT_AUTO_CENTERING_BR_BOTTOM, y - 1) |
+	       YHGCH_FIELD(YHGCH_CRT_AUTO_CENTERING_BR_RIGHT, x - 1),
+	       priv->mmio + YHGCH_CRT_AUTO_CENTERING_BR);
 
 	/*
 	 * Assume common fields in ctrl have been properly set before
@@ -329,74 +329,75 @@ static unsigned int display_ctrl_adjust(struct drm_device *dev,
 	 */
 
 	/* Set bit 25 of display controller: Select CRT or VGA clock */
-	ctrl &= ~INSPUR_CRT_DISP_CTL_CRTSELECT_MASK;
-	ctrl &= ~INSPUR_CRT_DISP_CTL_CLOCK_PHASE_MASK;
+	ctrl &= ~YHGCH_CRT_DISP_CTL_CRTSELECT_MASK;
+	ctrl &= ~YHGCH_CRT_DISP_CTL_CLOCK_PHASE_MASK;
 
-	ctrl |= INSPUR_CRT_DISP_CTL_CRTSELECT(INSPUR_CRTSELECT_CRT);
+	ctrl |= YHGCH_CRT_DISP_CTL_CRTSELECT(YHGCH_CRTSELECT_CRT);
 
 	/* clock_phase_polarity is 0 */
-	ctrl |= INSPUR_CRT_DISP_CTL_CLOCK_PHASE(0);
+	ctrl |= YHGCH_CRT_DISP_CTL_CLOCK_PHASE(0);
+	ctrl |= YHGCH_FIELD(YHGCH_CRT_DISP_CTL_FORMAT, 2);
 
-	writel(ctrl, priv->mmio + INSPUR_CRT_DISP_CTL);
+	writel(ctrl, priv->mmio + YHGCH_CRT_DISP_CTL);
 
 	return ctrl;
 }
 
-static void inspur_crtc_mode_set_nofb(struct drm_crtc *crtc)
+static void yhgch_crtc_mode_set_nofb(struct drm_crtc *crtc)
 {
 	unsigned int val;
 	struct drm_display_mode *mode = &crtc->state->mode;
 	struct drm_device *dev = crtc->dev;
-	struct inspur_drm_private *priv = dev->dev_private;
+	struct yhgch_drm_private *priv = dev->dev_private;
 	int width = mode->hsync_end - mode->hsync_start;
 	int height = mode->vsync_end - mode->vsync_start;
 
-	//writel(format_pll_reg(), priv->mmio + INSPUR_CRT_PLL_CTRL);
-	writel(INSPUR_FIELD(INSPUR_CRT_HORZ_TOTAL_TOTAL, mode->htotal - 1) |
-	       INSPUR_FIELD(INSPUR_CRT_HORZ_TOTAL_DISP_END, mode->hdisplay - 1),
-	       priv->mmio + INSPUR_CRT_HORZ_TOTAL);
+	//writel(format_pll_reg(), priv->mmio + YHGCH_CRT_PLL_CTRL);
+	writel(YHGCH_FIELD(YHGCH_CRT_HORZ_TOTAL_TOTAL, mode->htotal - 1) |
+	       YHGCH_FIELD(YHGCH_CRT_HORZ_TOTAL_DISP_END, mode->hdisplay - 1),
+	       priv->mmio + YHGCH_CRT_HORZ_TOTAL);
 
-	writel(INSPUR_FIELD(INSPUR_CRT_HORZ_SYNC_WIDTH, width) |
-	       INSPUR_FIELD(INSPUR_CRT_HORZ_SYNC_START, mode->hsync_start - 1),
-	       priv->mmio + INSPUR_CRT_HORZ_SYNC);
+	writel(YHGCH_FIELD(YHGCH_CRT_HORZ_SYNC_WIDTH, width) |
+	       YHGCH_FIELD(YHGCH_CRT_HORZ_SYNC_START, mode->hsync_start - 1),
+	       priv->mmio + YHGCH_CRT_HORZ_SYNC);
 
-	writel(INSPUR_FIELD(INSPUR_CRT_VERT_TOTAL_TOTAL, mode->vtotal - 1) |
-	       INSPUR_FIELD(INSPUR_CRT_VERT_TOTAL_DISP_END, mode->vdisplay - 1),
-	       priv->mmio + INSPUR_CRT_VERT_TOTAL);
+	writel(YHGCH_FIELD(YHGCH_CRT_VERT_TOTAL_TOTAL, mode->vtotal - 1) |
+	       YHGCH_FIELD(YHGCH_CRT_VERT_TOTAL_DISP_END, mode->vdisplay - 1),
+	       priv->mmio + YHGCH_CRT_VERT_TOTAL);
 
-	writel(INSPUR_FIELD(INSPUR_CRT_VERT_SYNC_HEIGHT, height) |
-	       INSPUR_FIELD(INSPUR_CRT_VERT_SYNC_START, mode->vsync_start - 1),
-	       priv->mmio + INSPUR_CRT_VERT_SYNC);
+	writel(YHGCH_FIELD(YHGCH_CRT_VERT_SYNC_HEIGHT, height) |
+	       YHGCH_FIELD(YHGCH_CRT_VERT_SYNC_START, mode->vsync_start - 1),
+	       priv->mmio + YHGCH_CRT_VERT_SYNC);
 
-	val = INSPUR_FIELD(INSPUR_CRT_DISP_CTL_VSYNC_PHASE, 0);
-	val |= INSPUR_FIELD(INSPUR_CRT_DISP_CTL_HSYNC_PHASE, 0);
-	val |= INSPUR_CRT_DISP_CTL_TIMING(1);
-	val |= INSPUR_CRT_DISP_CTL_PLANE(1);
+	val = YHGCH_FIELD(YHGCH_CRT_DISP_CTL_VSYNC_PHASE, 0);
+	val |= YHGCH_FIELD(YHGCH_CRT_DISP_CTL_HSYNC_PHASE, 0);
+	val |= YHGCH_CRT_DISP_CTL_TIMING(1);
+	val |= YHGCH_CRT_DISP_CTL_PLANE(1);
 
 	display_ctrl_adjust(dev, mode, val);
 }
 
-static void inspur_crtc_atomic_begin(struct drm_crtc *crtc,
+static void yhgch_crtc_atomic_begin(struct drm_crtc *crtc,
 				     struct drm_crtc_state *old_state)
 {
 	unsigned int reg;
 	struct drm_device *dev = crtc->dev;
-	struct inspur_drm_private *priv = dev->dev_private;
+	struct yhgch_drm_private *priv = dev->dev_private;
 
-	inspur_set_power_mode(priv, INSPUR_PW_MODE_CTL_MODE_MODE0);
+	yhgch_set_power_mode(priv, YHGCH_PW_MODE_CTL_MODE_MODE0);
 
 	/* Enable display power gate & LOCALMEM power gate */
-	reg = readl(priv->mmio + INSPUR_CURRENT_GATE);
-	reg &= ~INSPUR_CURR_GATE_DISPLAY_MASK;
-	reg &= ~INSPUR_CURR_GATE_LOCALMEM_MASK;
-	reg |= INSPUR_CURR_GATE_DISPLAY(1);
-	reg |= INSPUR_CURR_GATE_LOCALMEM(1);
-	inspur_set_current_gate(priv, reg);
+	reg = readl(priv->mmio + YHGCH_CURRENT_GATE);
+	reg &= ~YHGCH_CURR_GATE_DISPLAY_MASK;
+	reg &= ~YHGCH_CURR_GATE_LOCALMEM_MASK;
+	reg |= YHGCH_CURR_GATE_DISPLAY(1);
+	reg |= YHGCH_CURR_GATE_LOCALMEM(1);
+	yhgch_set_current_gate(priv, reg);
 
 	/* We can add more initialization as needed. */
 }
 
-static void inspur_crtc_atomic_flush(struct drm_crtc *crtc,
+static void yhgch_crtc_atomic_flush(struct drm_crtc *crtc,
 				     struct drm_crtc_state *old_state)
 {
 	unsigned long flags;
@@ -408,52 +409,52 @@ static void inspur_crtc_atomic_flush(struct drm_crtc *crtc,
 	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
 }
 
-static int inspur_crtc_enable_vblank(struct drm_crtc *crtc)
+static int yhgch_crtc_enable_vblank(struct drm_crtc *crtc)
 {
-	struct inspur_drm_private *priv = crtc->dev->dev_private;
+	struct yhgch_drm_private *priv = crtc->dev->dev_private;
 
-	writel(INSPUR_RAW_INTERRUPT_EN_VBLANK(1),
-	       priv->mmio + INSPUR_RAW_INTERRUPT_EN);
+	writel(YHGCH_RAW_INTERRUPT_EN_VBLANK(1),
+	       priv->mmio + YHGCH_RAW_INTERRUPT_EN);
 
 	return 0;
 }
 
-static void inspur_crtc_disable_vblank(struct drm_crtc *crtc)
+static void yhgch_crtc_disable_vblank(struct drm_crtc *crtc)
 {
-	struct inspur_drm_private *priv = crtc->dev->dev_private;
+	struct yhgch_drm_private *priv = crtc->dev->dev_private;
 
-	writel(INSPUR_RAW_INTERRUPT_EN_VBLANK(0),
-	       priv->mmio + INSPUR_RAW_INTERRUPT_EN);
+	writel(YHGCH_RAW_INTERRUPT_EN_VBLANK(0),
+	       priv->mmio + YHGCH_RAW_INTERRUPT_EN);
 }
 
-static const struct drm_crtc_funcs inspur_crtc_funcs = {
+static const struct drm_crtc_funcs yhgch_crtc_funcs = {
 	.page_flip = drm_atomic_helper_page_flip,
 	.set_config = drm_atomic_helper_set_config,
 	.destroy = drm_crtc_cleanup,
 	.reset = drm_atomic_helper_crtc_reset,
 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
-	.enable_vblank = inspur_crtc_enable_vblank,
-	.disable_vblank = inspur_crtc_disable_vblank,
+	.enable_vblank = yhgch_crtc_enable_vblank,
+	.disable_vblank = yhgch_crtc_disable_vblank,
 };
 
-static const struct drm_crtc_helper_funcs inspur_crtc_helper_funcs = {
-	.mode_set_nofb = inspur_crtc_mode_set_nofb,
-	.atomic_begin = inspur_crtc_atomic_begin,
-	.atomic_flush = inspur_crtc_atomic_flush,
-	.atomic_enable = inspur_crtc_atomic_enable,
-	.atomic_disable = inspur_crtc_atomic_disable,
-	.mode_valid = inspur_crtc_mode_valid,
+static const struct drm_crtc_helper_funcs yhgch_crtc_helper_funcs = {
+	.mode_set_nofb = yhgch_crtc_mode_set_nofb,
+	.atomic_begin = yhgch_crtc_atomic_begin,
+	.atomic_flush = yhgch_crtc_atomic_flush,
+	.atomic_enable = yhgch_crtc_atomic_enable,
+	.atomic_disable = yhgch_crtc_atomic_disable,
+	.mode_valid = yhgch_crtc_mode_valid,
 };
 
-int inspur_de_init(struct inspur_drm_private *priv)
+int yhgch_de_init(struct yhgch_drm_private *priv)
 {
 	struct drm_device *dev = priv->dev;
 	struct drm_crtc *crtc;
 	struct drm_plane *plane;
 	int ret;
 
-	plane = inspur_plane_init(priv);
+	plane = yhgch_plane_init(priv);
 	if (IS_ERR(plane)) {
 		DRM_ERROR("failed to create plane: %ld\n", PTR_ERR(plane));
 		return PTR_ERR(plane);
@@ -466,7 +467,7 @@ int inspur_de_init(struct inspur_drm_private *priv)
 	}
 
 	ret = drm_crtc_init_with_planes(dev, crtc, plane,
-					NULL, &inspur_crtc_funcs, NULL);
+					NULL, &yhgch_crtc_funcs, NULL);
 	if (ret) {
 		DRM_ERROR("failed to init crtc: %d\n", ret);
 		return ret;
@@ -477,7 +478,7 @@ int inspur_de_init(struct inspur_drm_private *priv)
 		DRM_ERROR("failed to set gamma size: %d\n", ret);
 		return ret;
 	}
-	drm_crtc_helper_add(crtc, &inspur_crtc_helper_funcs);
+	drm_crtc_helper_add(crtc, &yhgch_crtc_helper_funcs);
 
 	return 0;
 }
