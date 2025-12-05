@@ -483,6 +483,7 @@ struct mem_cgroup {
 
 	unsigned long offline_jiffies;
 	unsigned long reap_background;
+	unsigned int allow_uncachedio;
 
 #ifdef CONFIG_DUPTEXT
 	bool allow_duptext;
@@ -550,6 +551,10 @@ struct mem_cgroup {
 	struct mem_cgroup_per_node *nodeinfo[0];
 	/* WARNING: nodeinfo must be the last member here */
 };
+
+/* uncachedio bit defs for mem_cgroup->allow_uncachedio */
+#define MEMCG_UNCACHEDIO_READ  0x1
+#define MEMCG_UNCACHEDIO_WRITE 0x2
 
 /*
  * size of first charge trial. "32" comes from vmscan.c's magic value.

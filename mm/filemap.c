@@ -2454,6 +2454,10 @@ generic_file_buffered_read_no_cached_page(struct kiocb *iocb,
 		put_page(page);
 		return error != -EEXIST ? ERR_PTR(error) : NULL;
 	}
+#ifdef CONFIG_MEMCG
+	if (page->mem_cgroup && page->mem_cgroup->allow_uncachedio & MEMCG_UNCACHEDIO_READ)
+		__SetPageDropbehind(page);
+#endif
 
 	return generic_file_buffered_read_readpage(iocb, filp, mapping, page);
 }
@@ -3523,6 +3527,10 @@ struct page *grab_cache_page_write_begin(struct address_space *mapping,
 	if (page)
 		wait_for_stable_page(page);
 
+#ifdef CONFIG_MEMCG
+	if (page->mem_cgroup && page->mem_cgroup->allow_uncachedio & MEMCG_UNCACHEDIO_WRITE)
+		__SetPageDropbehind(page);
+#endif
 	return page;
 }
 EXPORT_SYMBOL(grab_cache_page_write_begin);
