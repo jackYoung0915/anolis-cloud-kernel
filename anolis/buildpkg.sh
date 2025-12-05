@@ -10,37 +10,38 @@ function do_rpmbuild() {
 	fi
 
 	# Now we have:
-	#  + variants: default, with-debug
+	#  + variants: default, with-debug, with-gcov
 	#  + extras: base, with-debuginfo, full
 	#  + modes: official, nightly, dev
-	#TODO: add with-gcov
 	#
 	# DIST_BUILD_ARM64_64K control whether 64k kernels are built,
 	# set DIST_BUILD_ARM64_64K=y to build 64k kernels.
 	#
 	# Matrix
 	#
-	# | BuildMode | KernelName      | GenerateSrpm |
-	# |-----------|-----------------|--------------|
+
 	# | official  | without sha id  | Yes          |
 	# | nightly   | with git sha id | Yes          |
 	# | devel     | with git sha id | No           |
 	#
-	# | Extra\Var | Default         |  With-debug  |
-	# |-----------|-----------------|--------------|
-	# | Base      |     +default    |   +default   |
-	# |           |      -debug     |   +debug     |
-	# |           |             +headers           |
-	# |-----------|--------------------------------|
-	# | debuginfo |            +debuginfo          |
-	# |-----------|--------------------------------|
-	# | full      |      +tools +doc +perf         |
+	# | Extra\Var | Default         |  With-debug  |  With-gcov   |
+	# |-----------|-----------------|--------------|--------------|
+
+	# | Base      |     +default    |   +default   |     gcov     |
+	# |           |      -debug     |   +debug     |              |
+	# |           |                   +headers                    |
+	# |-----------|--------------------------------|--------------|
+	# | debuginfo |            +debuginfo          |  +debuginfo  |
+	# |-----------|--------------------------------|--------------|
+	# | full      |      +tools +doc +perf         | +tools +doc  |
 	#
 
 	build_opts="--with headers --without bpftool"
 
 	if [ "_${DIST_BUILD_VARIANT}" == "_with-debug" ]; then
 		build_opts="$build_opts --with debug"
+	elif [ "_${DIST_BUILD_VARIANT}" == "_with-gcov" ]; then
+		build_opts="$build_opts --without debug --with gcov"
 	else # assume default
 		build_opts="$build_opts --without debug"
 	fi
