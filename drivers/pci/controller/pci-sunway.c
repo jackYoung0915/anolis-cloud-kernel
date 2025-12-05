@@ -1063,6 +1063,11 @@ static struct pci_host_bridge *sunway_pcie_of_init(struct platform_device *pdev)
 	return bridge;
 }
 
+int __weak sunway_iommu_early_init(struct pci_controller *hose)
+{
+	return -ENOENT;
+}
+
 static int sunway_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1099,6 +1104,8 @@ static int sunway_pcie_probe(struct platform_device *pdev)
 		pcie_bus_configure_settings(child);
 
 	pci_bus_add_devices(bus);
+
+	sunway_iommu_early_init(pci_bus_to_pci_controller(bus));
 
 	return 0;
 }
