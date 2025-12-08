@@ -919,6 +919,16 @@ void cxl_event_trace_record(const struct cxl_memdev *cxlmd,
 					evt->gen_media.type,
 					evt->gen_media.transaction_type);
 
+			// Enable DSA Poison reporting support for AliSCM devices
+			struct pci_dev *pdev = to_pci_dev(cxlds->dev);
+
+			if (cxl_pci_quirk_lookup(pdev, cxl_quirk_list)) {
+				u64 pfn = PHYS_PFN(hpa);
+
+				if (pfn_valid(pfn))
+					memory_failure_queue(pfn, MF_MUST_KILL|MF_ACTION_REQUIRED);
+			}
+
 			trace_cxl_general_media(cxlmd, type, cxlr, hpa,
 						&evt->gen_media);
 		} else if (event_type == CXL_CPER_EVENT_DRAM) {
