@@ -9121,28 +9121,31 @@ unlock:
 static int select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu, int *id_backup)
 {
 	bool idle = true;
+	bool is_expellee, share_core = true;
+	bool dummy_idle;
 	int cpu;
 
 	if (!static_branch_likely(&sched_smt_present))
 		return __select_idle_cpu(core, p, id_backup);
 
+
+	is_expellee = is_expellee_task(p);
+
 	for_each_cpu(cpu, cpu_smt_mask(core)) {
+		if (!group_identity_disabled()
+		    && id_idle_cpu(p, cpu, is_expellee, &dummy_idle, &share_core)
+		    && cpumask_test_cpu(cpu, cpus)) {
+			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu, p))
+				*id_backup = cpu;
+		}
+
 		if (!available_idle_cpu(cpu)) {
 			idle = false;
 			if (*idle_cpu == -1) {
 				if (sched_idle_cpu(cpu) && cpumask_test_cpu(cpu, cpus)) {
-					if (!group_identity_disabled() &&
-						is_cpu_in_sys_mode(cpu, p) &&
-						*id_backup == -1)
-						*id_backup = cpu;
-					else {
-						*idle_cpu = cpu;
-						break;
-					}
+					*idle_cpu = cpu;
+					break;
 				}
-				if (!group_identity_disabled() &&
-				    (*id_backup == -1 || !is_cpu_in_sys_mode(cpu, p)))
-					*id_backup = cpu;
 				continue;
 			}
 			break;
