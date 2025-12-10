@@ -3565,6 +3565,9 @@ again:
 			break;
 		}
 
+		if (iocb->ki_flags & IOCB_DONTCACHE)
+			flags |= AOP_FLAG_DONTCACHE;
+
 		status = a_ops->write_begin(file, mapping, pos, bytes, flags,
 						&page, &fsdata);
 		if (unlikely(status < 0))
