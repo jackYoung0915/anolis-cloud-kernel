@@ -585,7 +585,8 @@ static bool arm_spe__is_common_ds_encoding(struct arm_spe_queue *speq)
 		return false;
 }
 
-static u64 arm_spe__synth_data_source(const struct arm_spe_record *record, u64 midr)
+static u64 arm_spe__synth_data_source(struct arm_spe_queue *speq,
+				      const struct arm_spe_record *record)
 {
 	union perf_mem_data_src	data_src = { .mem_op = PERF_MEM_OP_NA };
 	bool is_common = arm_spe__is_common_ds_encoding(speq);
