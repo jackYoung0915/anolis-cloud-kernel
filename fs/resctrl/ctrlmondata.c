@@ -28,7 +28,7 @@ struct rdt_parse_data {
 
 typedef int (ctrlval_parser_t)(struct rdt_parse_data *data,
 			       struct resctrl_schema *s,
-			       struct rdt_domain *d);
+			       struct rdt_ctrl_domain *d);
 
 /*
  * Check whether MBA bandwidth percentage value is correct. The value is
@@ -67,7 +67,7 @@ static bool bw_validate(char *buf, unsigned long *data, struct rdt_resource *r)
 }
 
 static int parse_bw(struct rdt_parse_data *data, struct resctrl_schema *s,
-		    struct rdt_domain *d)
+		    struct rdt_ctrl_domain *d)
 {
 	struct resctrl_staged_config *cfg;
 	u32 closid = data->rdtgrp->closid;
@@ -76,7 +76,7 @@ static int parse_bw(struct rdt_parse_data *data, struct resctrl_schema *s,
 
 	cfg = &d->staged_config[s->conf_type];
 	if (cfg->have_new_ctrl) {
-		rdt_last_cmd_printf("Duplicate domain %d\n", d->id);
+		rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
 		return -EINVAL;
 	}
 
@@ -147,7 +147,7 @@ static bool cbm_validate(char *buf, u32 *data, struct rdt_resource *r)
  * resource type.
  */
 static int parse_cbm(struct rdt_parse_data *data, struct resctrl_schema *s,
-		     struct rdt_domain *d)
+		     struct rdt_ctrl_domain *d)
 {
 	struct rdtgroup *rdtgrp = data->rdtgrp;
 	struct resctrl_staged_config *cfg;
@@ -156,7 +156,7 @@ static int parse_cbm(struct rdt_parse_data *data, struct resctrl_schema *s,
 
 	cfg = &d->staged_config[s->conf_type];
 	if (cfg->have_new_ctrl) {
-		rdt_last_cmd_printf("Duplicate domain %d\n", d->id);
+		rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
 		return -EINVAL;
 	}
 
@@ -226,8 +226,8 @@ static int parse_line(char *line, struct resctrl_schema *s,
 	struct resctrl_staged_config *cfg;
 	struct rdt_resource *r = s->res;
 	struct rdt_parse_data data;
+	struct rdt_ctrl_domain *d;
 	char *dom = NULL, *id;
-	struct rdt_domain *d;
 	unsigned long dom_id;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -249,8 +249,8 @@ next:
 		return -EINVAL;
 	}
 	dom = strim(dom);
-	list_for_each_entry(d, &r->domains, list) {
-		if (d->id == dom_id) {
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
+		if (d->hdr.id == dom_id) {
 			data.buf = dom;
 			data.rdtgrp = rdtgrp;
 			if (parse_ctrlval(&data, s, d))
@@ -297,7 +297,7 @@ ssize_t rdtgroup_schemata_write(struct kernfs_open_file *of,
 {
 	struct resctrl_schema *s;
 	struct rdtgroup *rdtgrp;
-	struct rdt_domain *dom;
+	struct rdt_ctrl_domain *dom;
 	struct rdt_resource *r;
 	char *tok, *resname;
 	int ret = 0;
@@ -325,7 +325,7 @@ ssize_t rdtgroup_schemata_write(struct kernfs_open_file *of,
 	}
 
 	list_for_each_entry(s, &resctrl_schema_all, list) {
-		list_for_each_entry(dom, &s->res->domains, list)
+		list_for_each_entry(dom, &s->res->ctrl_domains, hdr.list)
 			memset(dom->staged_config, 0, sizeof(dom->staged_config));
 	}
 
@@ -379,7 +379,7 @@ out:
 static void show_doms(struct seq_file *s, struct resctrl_schema *schema, int closid)
 {
 	struct rdt_resource *r = schema->res;
-	struct rdt_domain *dom;
+	struct rdt_ctrl_domain *dom;
 	bool sep = false;
 	u32 ctrl_val;
 
@@ -387,7 +387,7 @@ static void show_doms(struct seq_file *s, struct resctrl_schema *schema, int clo
 	lockdep_assert_cpus_held();
 
 	seq_printf(s, "%*s:", max_name_width, schema->name);
-	list_for_each_entry(dom, &r->domains, list) {
+	list_for_each_entry(dom, &r->ctrl_domains, hdr.list) {
 		if (sep)
 			seq_puts(s, ";");
 
@@ -397,7 +397,7 @@ static void show_doms(struct seq_file *s, struct resctrl_schema *schema, int clo
 			ctrl_val = resctrl_arch_get_config(r, dom, closid,
 							   schema->conf_type);
 
-		seq_printf(s, r->format_str, dom->id, max_data_width,
+		seq_printf(s, r->format_str, dom->hdr.id, max_data_width,
 			   ctrl_val);
 		sep = true;
 	}
@@ -426,7 +426,7 @@ int rdtgroup_schemata_show(struct kernfs_open_file *of,
 			} else {
 				seq_printf(s, "%s:%d=%x\n",
 					   rdtgrp->plr->s->res->name,
-					   rdtgrp->plr->d->id,
+					   rdtgrp->plr->d->hdr.id,
 					   rdtgrp->plr->cbm);
 			}
 		} else {
@@ -444,8 +444,8 @@ int rdtgroup_schemata_show(struct kernfs_open_file *of,
 }
 
 void mon_event_read(struct rmid_read *rr, struct rdt_resource *r,
-		    struct rdt_domain *d, struct rdtgroup *rdtgrp,
-		    int evtid, int first)
+		    struct rdt_mon_domain *d, struct rdtgroup *rdtgrp,
+		    cpumask_t *cpumask, int evtid, int first)
 {
 	/* When picking a cpu from cpu_mask, ensure it can't race with cpuhp */
 	lockdep_assert_cpus_held();
@@ -461,18 +461,19 @@ void mon_event_read(struct rmid_read *rr, struct rdt_resource *r,
 	rr->val = 0;
 	rr->first = first;
 
-	smp_call_on_cpu(cpumask_any(&d->cpu_mask), mon_event_count, rr, false);
+	smp_call_on_cpu(cpumask_any(cpumask), mon_event_count, rr, false);
 }
 
 int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 {
 	struct kernfs_open_file *of = m->private;
+	struct rdt_domain_hdr *hdr;
+	struct rmid_read rr = {0};
+	struct rdt_mon_domain *d;
 	u32 resid, evtid, domid;
 	struct rdtgroup *rdtgrp;
 	struct rdt_resource *r;
 	union mon_data_bits md;
-	struct rdt_domain *d;
-	struct rmid_read rr;
 	int ret = 0, index;
 
 	rdtgrp = rdtgroup_kn_lock_live(of->kn);
@@ -485,12 +486,37 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 	resid = md.u.rid;
 	domid = md.u.domid;
 	evtid = md.u.evtid;
-
 	r = resctrl_arch_get_resource(resid);
-	d = resctrl_arch_find_domain(r, domid);
-	if (IS_ERR_OR_NULL(d)) {
+
+	if (md.u.sum) {
+		/*
+		 * This file requires summing across all domains that share
+		 * the L3 cache id that was provided in the "domid" field of the
+		 * mon_data_bits union. Search all domains in the resource for
+		 * one that matches this cache id.
+		 */
+		list_for_each_entry(d, &r->mon_domains, hdr.list) {
+			if (d->ci->id == domid) {
+				rr.ci = d->ci;
+				mon_event_read(&rr, r, NULL, rdtgrp,
+					       &d->ci->shared_cpu_map, evtid, false);
+				goto checkresult;
+			}
+		}
 		ret = -ENOENT;
 		goto out;
+	} else {
+		/*
+		 * This file provides data from a single domain. Search
+		 * the resource to find the domain with "domid".
+		 */
+		hdr = resctrl_arch_find_domain(&r->mon_domains, domid);
+		if (!hdr || WARN_ON_ONCE(hdr->type != RESCTRL_MON_DOMAIN)) {
+			ret = -ENOENT;
+			goto out;
+		}
+		d = container_of(hdr, struct rdt_mon_domain, hdr);
+		mon_event_read(&rr, r, d, rdtgrp, &d->hdr.cpu_mask, evtid, false);
 	}
 
 	if (resctrl_arch_get_abmc_enabled() && evtid != QOS_L3_OCCUP_EVENT_ID) {
@@ -501,7 +527,7 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 		}
 	}
 
-	mon_event_read(&rr, r, d, rdtgrp, evtid, false);
+checkresult:
 
 	if (rr.err == -EIO)
 		seq_puts(m, "Error\n");

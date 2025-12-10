@@ -221,7 +221,8 @@ struct mpam_msc_ris
 
 struct mpam_resctrl_dom {
 	struct mpam_component	*comp;
-	struct rdt_domain	resctrl_dom;
+	struct rdt_mon_domain	resctrl_mon_dom;
+	struct rdt_ctrl_domain	resctrl_ctrl_dom;
 };
 
 struct mpam_resctrl_res {

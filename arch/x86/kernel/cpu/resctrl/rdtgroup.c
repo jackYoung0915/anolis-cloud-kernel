@@ -12,7 +12,6 @@
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
-#include <linux/cacheinfo.h>
 #include <linux/cpu.h>
 #include <linux/debugfs.h>
 #include <linux/fs.h>
@@ -74,9 +73,9 @@ static void l2_qos_cfg_update(void *arg)
 static int set_cache_qos_cfg(int level, bool enable)
 {
 	void (*update)(void *arg);
+	struct rdt_ctrl_domain *d;
 	struct rdt_resource *r_l;
 	cpumask_var_t cpu_mask;
-	struct rdt_domain *d;
 	int cpu;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -93,14 +92,14 @@ static int set_cache_qos_cfg(int level, bool enable)
 		return -ENOMEM;
 
 	r_l = &rdt_resources_all[level].r_resctrl;
-	list_for_each_entry(d, &r_l->domains, list) {
+	list_for_each_entry(d, &r_l->ctrl_domains, hdr.list) {
 		if (r_l->cache.arch_has_per_cpu_cfg)
 			/* Pick all the CPUs in the domain instance */
-			for_each_cpu(cpu, &d->cpu_mask)
+			for_each_cpu(cpu, &d->hdr.cpu_mask)
 				cpumask_set_cpu(cpu, cpu_mask);
 		else
 			/* Pick one CPU from each domain instance to update MSR */
-			cpumask_set_cpu(cpumask_any(&d->cpu_mask), cpu_mask);
+			cpumask_set_cpu(cpumask_any(&d->hdr.cpu_mask), cpu_mask);
 	}
 
 	/* Update QOS_CFG MSR on all the CPUs in cpu_mask */
@@ -181,15 +180,15 @@ static void resctrl_abmc_set_one_amd(void *arg)
 
 static void _resctrl_abmc_enable(struct rdt_resource *r, bool enable)
 {
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 
 	/*
 	 * Hardware counters will reset after switching the monitor mode.
 	 * Reset the architectural state so that reading of hardware
 	 * counter is not considered as an overflow in the next update.
 	 */
-	list_for_each_entry(d, &r->domains, list) {
-		on_each_cpu_mask(&d->cpu_mask,
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
+		on_each_cpu_mask(&d->hdr.cpu_mask,
 				 resctrl_abmc_set_one_amd, &enable, 1);
 		resctrl_arch_reset_rmid_all(r, d);
 	}
@@ -258,8 +257,8 @@ static void rdtgroup_abmc_cfg(void *info)
 int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
 			     u32 rmid, u32 cntr_id, u32 closid, bool assign)
 {
-	struct rdt_domain *d = dom;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_mon_domain *d = dom;
+	struct rdt_hw_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
 	union l3_qos_abmc_cfg abmc_cfg = { 0 };
 	struct arch_mbm_state *arch_mbm;
 
@@ -277,7 +276,7 @@ int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
 		arch_mbm = &hw_dom->arch_mbm_local[rmid];
 	}
 
-	smp_call_function_any(&d->cpu_mask, rdtgroup_abmc_cfg, &abmc_cfg, 1);
+	smp_call_function_any(&d->hdr.cpu_mask, rdtgroup_abmc_cfg, &abmc_cfg, 1);
 
 	/*
 	 * Reset the architectural state so that reading of hardware
@@ -343,8 +342,8 @@ int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level l, bool hwdrc_mb)
 u32 resctrl_arch_event_config_get(void *dom,
 				  enum resctrl_event_id eventid)
 {
-	struct rdt_domain *d = dom;
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_mon_domain *d = dom;
+	struct rdt_hw_mon_domain *hw_dom = resctrl_to_arch_mon_dom(d);
 
 	switch (eventid) {
 	case QOS_L3_OCCUP_EVENT_ID:
@@ -365,7 +364,7 @@ u32 resctrl_arch_event_config_get(void *dom,
 void resctrl_arch_event_config_set(void *info)
 {
 	struct mon_config_info *mon_info = info;
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_mon_domain *hw_dom;
 	unsigned int index;
 
 	index = mon_event_config_index_get(mon_info->evtid);
@@ -374,7 +373,7 @@ void resctrl_arch_event_config_set(void *info)
 
 	wrmsr(MSR_IA32_EVT_CFG_BASE + index, mon_info->mon_config, 0);
 
-	hw_dom = resctrl_to_arch_dom(mon_info->d);
+	hw_dom = resctrl_to_arch_mon_dom(mon_info->d);
 
 	switch (mon_info->evtid) {
 	case QOS_L3_OCCUP_EVENT_ID:
@@ -391,7 +390,7 @@ void resctrl_arch_event_config_set(void *info)
 int resctrl_arch_mbm_config_write_domain(void *rdt_resource, void *dom, u32 evtid, u32 val)
 {
 	struct rdt_resource *r = rdt_resource;
-	struct rdt_domain *d = dom;
+	struct rdt_mon_domain *d = dom;
 	struct mon_config_info mon_info = {0};
 	u32 config_val;
 	int ret = 0;
@@ -418,7 +417,7 @@ int resctrl_arch_mbm_config_write_domain(void *rdt_resource, void *dom, u32 evti
 	 * are scoped at the domain level. Writing any of these MSRs
 	 * on one CPU is observed by all the CPUs in the domain.
 	 */
-	smp_call_function_any(&d->cpu_mask,
+	smp_call_function_any(&d->hdr.cpu_mask,
 			      resctrl_arch_event_config_set,
 			      &mon_info, 1);
 
@@ -440,10 +439,10 @@ out:
 static int reset_all_ctrls(struct rdt_resource *r)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_ctrl_domain *hw_dom;
 	struct msr_param msr_param;
 	cpumask_var_t cpu_mask;
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 	int i;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -458,12 +457,12 @@ static int reset_all_ctrls(struct rdt_resource *r)
 
 	/*
 	 * Disable resource control for this resource by setting all
-	 * CBMs in all domains to the maximum mask value. Pick one CPU
+	 * CBMs in all ctrl_domains to the maximum mask value. Pick one CPU
 	 * from each domain to update the MSRs below.
 	 */
-	list_for_each_entry(d, &r->domains, list) {
-		hw_dom = resctrl_to_arch_dom(d);
-		cpumask_set_cpu(cpumask_any(&d->cpu_mask), cpu_mask);
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
+		hw_dom = resctrl_to_arch_ctrl_dom(d);
+		cpumask_set_cpu(cpumask_any(&d->hdr.cpu_mask), cpu_mask);
 
 		for (i = 0; i < hw_res->num_closid; i++)
 			hw_dom->ctrl_val[i] = r->default_ctrl;

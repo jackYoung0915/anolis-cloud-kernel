@@ -108,26 +108,37 @@ const struct attribute_group *cache_get_priv_group(struct cacheinfo *this_leaf);
 unsigned long cache_of_get_id(struct device_node *np);
 
 /*
+ * Get the cacheinfo structure for the cache associated with @cpu at
+ * level @level.
+ * cpuhp lock must be held.
+ */
+static inline struct cacheinfo *get_cpu_cacheinfo_level(int cpu, int level)
+{
+	struct cpu_cacheinfo *ci = get_cpu_cacheinfo(cpu);
+	int i;
+
+	lockdep_assert_cpus_held();
+
+	for (i = 0; i < ci->num_leaves; i++) {
+		if (ci->info_list[i].level == level) {
+			if (ci->info_list[i].attributes & CACHE_ID)
+				return &ci->info_list[i];
+			return NULL;
+		}
+	}
+
+	return NULL;
+}
+
+/*
  * Get the id of the cache associated with @cpu at level @level.
  * cpuhp lock must be held.
  */
 static inline unsigned long get_cpu_cacheinfo_id(int cpu, int level)
 {
-	struct cpu_cacheinfo *ci = get_cpu_cacheinfo(cpu);
-	int i;
+	struct cacheinfo *ci = get_cpu_cacheinfo_level(cpu, level);
 
-	if (!ci->info_list)
-		return ~0UL;
-
-	for (i = 0; i < ci->num_leaves; i++) {
-		if (ci->info_list[i].level == level) {
-			if (ci->info_list[i].attributes & CACHE_ID)
-				return ci->info_list[i].id;
-			return ~0UL;
-		}
-	}
-
-	return ~0UL;
+	return ci ? ci->id : -1;
 }
 
 /*

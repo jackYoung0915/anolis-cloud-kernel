@@ -336,7 +336,7 @@ static int rdtgroup_cpus_show(struct kernfs_open_file *of,
 				rdt_last_cmd_puts("Cache domain offline\n");
 				ret = -ENODEV;
 			} else {
-				mask = &rdtgrp->plr->d->cpu_mask;
+				mask = &rdtgrp->plr->d->hdr.cpu_mask;
 				seq_printf(s, is_cpu_list(of) ?
 					   "%*pbl\n" : "%*pb\n",
 					   cpumask_pr_args(mask));
@@ -821,11 +821,11 @@ static int rdtgroup_mbm_mode_show(struct kernfs_open_file *of,
 static void rdtgroup_mbm_cntr_reset(struct rdt_resource *r)
 {
 	struct rdtgroup *prgrp, *crgrp;
-	struct rdt_domain *dom;
+	struct rdt_mon_domain *dom;
 
 	mbm_cntrs_init(r);
 
-	list_for_each_entry(dom, &r->domains, list)
+	list_for_each_entry(dom, &r->ctrl_domains, hdr.list)
 		bitmap_zero(dom->mbm_cntr_map, r->mon.num_mbm_cntrs);
 
 	/* Reset the cntr_id's for all the monitor groups */
@@ -888,7 +888,7 @@ static int rdtgroup_num_mbm_cntrs_show(struct kernfs_open_file *of,
 }
 
 static char *rdtgroup_mon_state_to_str(struct rdtgroup *rdtgrp,
-				       struct rdt_domain *d, char *str)
+				       struct rdt_mon_domain *d, char *str)
 {
 	char *tmp = str;
 	int index;
@@ -919,7 +919,7 @@ static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
 				     struct seq_file *s, void *v)
 {
 	struct rdt_resource *r = of->kn->parent->priv;
-	struct rdt_domain *dom;
+	struct rdt_mon_domain *dom;
 	struct rdtgroup *rdtg;
 	char str[10];
 
@@ -935,8 +935,8 @@ static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
 
 		seq_printf(s, "%s//", rdtg->kn->name);
 
-		list_for_each_entry(dom, &r->domains, list)
-			seq_printf(s, "%d=%s;", dom->id,
+		list_for_each_entry(dom, &r->mon_domains, hdr.list)
+			seq_printf(s, "%d=%s;", dom->hdr.id,
 				   rdtgroup_mon_state_to_str(rdtg, dom, str));
 		seq_putc(s, '\n');
 
@@ -944,8 +944,8 @@ static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
 				    mon.crdtgrp_list) {
 			seq_printf(s, "%s/%s/", rdtg->kn->name, crg->kn->name);
 
-			list_for_each_entry(dom, &r->domains, list)
-				seq_printf(s, "%d=%s;", dom->id,
+			list_for_each_entry(dom, &r->mon_domains, hdr.list)
+				seq_printf(s, "%d=%s;", dom->hdr.id,
 					   rdtgroup_mon_state_to_str(crg, dom, str));
 			seq_putc(s, '\n');
 		}
@@ -962,7 +962,7 @@ static int rdtgroup_mbm_control_show(struct kernfs_open_file *of,
  * the assignment else just update the assign state
  */
 static int rdtgroup_assign_update(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid,
-				  struct rdt_domain *d)
+				  struct rdt_mon_domain *d)
 {
 	int ret, index;
 
@@ -998,7 +998,7 @@ out_done:
  * update the unassign state
  */
 static int rdtgroup_unassign_update(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid,
-				    struct rdt_domain *d)
+				    struct rdt_mon_domain *d)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	int ret = 0, index;
@@ -1080,7 +1080,7 @@ static int rdtgroup_process_flags(struct rdt_resource *r,
 {
 	int op, mon_state, assign_state, unassign_state;
 	char *dom_str, *id_str, *op_str;
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	struct rdtgroup *rdtgrp;
 	unsigned long dom_id;
 	int ret, found = 0;
@@ -1120,8 +1120,8 @@ next:
 	}
 
 	/* Verify if the dom_id is valid */
-	list_for_each_entry(d, &r->domains, list) {
-		if (d->id == dom_id) {
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
+		if (d->hdr.id == dom_id) {
 			found = 1;
 			break;
 		}
@@ -1433,7 +1433,7 @@ static int rdt_bit_usage_show(struct kernfs_open_file *of,
 	unsigned long sw_shareable = 0, hw_shareable = 0;
 	unsigned long exclusive = 0, pseudo_locked = 0;
 	struct rdt_resource *r = s->res;
-	struct rdt_domain *dom;
+	struct rdt_ctrl_domain *dom;
 	int i, hwb, swb, excl, psl;
 	enum rdtgrp_mode mode;
 	bool sep = false;
@@ -1442,12 +1442,12 @@ static int rdt_bit_usage_show(struct kernfs_open_file *of,
 	mutex_lock(&rdtgroup_mutex);
 	hw_shareable = r->cache.shareable_bits;
 	rcu_read_lock();
-	list_for_each_entry_rcu(dom, &r->domains, list) {
+	list_for_each_entry_rcu(dom, &r->ctrl_domains, hdr.list) {
 		if (sep)
 			seq_putc(seq, ';');
 		sw_shareable = 0;
 		exclusive = 0;
-		seq_printf(seq, "%d=", dom->id);
+		seq_printf(seq, "%d=", dom->hdr.id);
 		for (i = 0; i < closids_supported(); i++) {
 			if (!closid_allocated(i))
 				continue;
@@ -1665,7 +1665,7 @@ static int rdt_has_sparse_bitmasks_show(struct kernfs_open_file *of,
  *
  * Return: false if CBM does not overlap, true if it does.
  */
-static bool __rdtgroup_cbm_overlaps(struct rdt_resource *r, struct rdt_domain *d,
+static bool __rdtgroup_cbm_overlaps(struct rdt_resource *r, struct rdt_ctrl_domain *d,
 				    unsigned long cbm, int closid,
 				    enum resctrl_conf_type type, bool exclusive)
 {
@@ -1720,7 +1720,7 @@ static bool __rdtgroup_cbm_overlaps(struct rdt_resource *r, struct rdt_domain *d
  *
  * Return: true if CBM overlap detected, false if there is no overlap
  */
-bool rdtgroup_cbm_overlaps(struct resctrl_schema *s, struct rdt_domain *d,
+bool rdtgroup_cbm_overlaps(struct resctrl_schema *s, struct rdt_ctrl_domain *d,
 			   unsigned long cbm, int closid, bool exclusive)
 {
 	enum resctrl_conf_type peer_type = resctrl_peer_type(s->conf_type);
@@ -1750,10 +1750,10 @@ bool rdtgroup_cbm_overlaps(struct resctrl_schema *s, struct rdt_domain *d,
 static bool rdtgroup_mode_test_exclusive(struct rdtgroup *rdtgrp)
 {
 	int closid = rdtgrp->closid;
+	struct rdt_ctrl_domain *d;
 	struct resctrl_schema *s;
 	struct rdt_resource *r;
 	bool has_cache = false;
-	struct rdt_domain *d;
 	u32 ctrl;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -1764,7 +1764,7 @@ static bool rdtgroup_mode_test_exclusive(struct rdtgroup *rdtgrp)
 		if (r->rid == RDT_RESOURCE_MBA || r->rid == RDT_RESOURCE_SMBA)
 			continue;
 		has_cache = true;
-		list_for_each_entry(d, &r->domains, list) {
+		list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 			ctrl = resctrl_arch_get_config(r, d, closid,
 						       s->conf_type);
 			if (rdtgroup_cbm_overlaps(s, d, ctrl, closid, false)) {
@@ -1871,20 +1871,19 @@ out:
  * bitmap functions work correctly.
  */
 unsigned int rdtgroup_cbm_to_size(struct rdt_resource *r,
-				  struct rdt_domain *d, unsigned long cbm)
+				  struct rdt_ctrl_domain *d, unsigned long cbm)
 {
-	struct cpu_cacheinfo *ci;
 	unsigned int size = 0;
-	int num_b, i;
+	struct cacheinfo *ci;
+	int num_b;
+
+	if (WARN_ON_ONCE(r->ctrl_scope != RESCTRL_L2_CACHE && r->ctrl_scope != RESCTRL_L3_CACHE))
+		return size;
 
 	num_b = bitmap_weight(&cbm, r->cache.cbm_len);
-	ci = get_cpu_cacheinfo(cpumask_any(&d->cpu_mask));
-	for (i = 0; i < ci->num_leaves; i++) {
-		if (ci->info_list[i].level == r->cache_level) {
-			size = ci->info_list[i].size / r->cache.cbm_len * num_b;
-			break;
-		}
-	}
+	ci = get_cpu_cacheinfo_level(cpumask_any(&d->hdr.cpu_mask), r->ctrl_scope);
+	if (ci)
+		size = ci->size / r->cache.cbm_len * num_b;
 
 	return size;
 }
@@ -1901,9 +1900,9 @@ static int rdtgroup_size_show(struct kernfs_open_file *of,
 {
 	struct resctrl_schema *schema;
 	enum resctrl_conf_type type;
+	struct rdt_ctrl_domain *d;
 	struct rdtgroup *rdtgrp;
 	struct rdt_resource *r;
-	struct rdt_domain *d;
 	unsigned int size;
 	int ret = 0;
 	u32 closid;
@@ -1927,7 +1926,7 @@ static int rdtgroup_size_show(struct kernfs_open_file *of,
 			size = rdtgroup_cbm_to_size(rdtgrp->plr->s->res,
 						    rdtgrp->plr->d,
 						    rdtgrp->plr->cbm);
-			seq_printf(s, "%d=%u\n", rdtgrp->plr->d->id, size);
+			seq_printf(s, "%d=%u\n", rdtgrp->plr->d->hdr.id, size);
 		}
 		goto out;
 	}
@@ -1939,7 +1938,7 @@ static int rdtgroup_size_show(struct kernfs_open_file *of,
 		type = schema->conf_type;
 		sep = false;
 		seq_printf(s, "%*s:", max_name_width, schema->name);
-		list_for_each_entry(d, &r->domains, list) {
+		list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 			if (sep)
 				seq_putc(s, ';');
 			if (rdtgrp->mode == RDT_MODE_PSEUDO_LOCKSETUP) {
@@ -1957,7 +1956,7 @@ static int rdtgroup_size_show(struct kernfs_open_file *of,
 				else
 					size = rdtgroup_cbm_to_size(r, d, ctrl);
 			}
-			seq_printf(s, "%d=%u", d->id, size);
+			seq_printf(s, "%d=%u", d->hdr.id, size);
 			sep = true;
 		}
 		seq_putc(s, '\n');
@@ -1971,13 +1970,13 @@ out:
 
 static int mbm_config_show(struct seq_file *s, struct rdt_resource *r, u32 evtid)
 {
-	struct rdt_domain *dom;
+	struct rdt_mon_domain *dom;
 	bool sep = false;
 	u32 val;
 
 	mutex_lock(&rdtgroup_mutex);
 
-	list_for_each_entry(dom, &r->domains, list) {
+	list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 		if (sep)
 			seq_puts(s, ";");
 
@@ -1985,7 +1984,7 @@ static int mbm_config_show(struct seq_file *s, struct rdt_resource *r, u32 evtid
 		if (val == INVALID_CONFIG_VALUE)
 			break;
 
-		seq_printf(s, "%d=0x%02x", dom->id, val);
+		seq_printf(s, "%d=0x%02x", dom->hdr.id, val);
 		sep = true;
 	}
 	seq_puts(s, "\n");
@@ -2023,7 +2022,7 @@ static int mbm_local_bytes_config_show(struct kernfs_open_file *of,
 #define MBM_EVENT_ARRAY_INDEX(_event) ((_event) - 2)
 
 static bool resctrl_mbm_event_assigned(struct rdtgroup *rdtg,
-				       struct rdt_domain *d, u32 evtid)
+				       struct rdt_mon_domain *d, u32 evtid)
 {
 	int index = MBM_EVENT_ARRAY_INDEX(evtid);
 	int cntr_id = rdtg->mon.cntr_id[index];
@@ -2032,9 +2031,9 @@ static bool resctrl_mbm_event_assigned(struct rdtgroup *rdtg,
 }
 
 static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
-					   struct rdt_domain *d, u32 evtid)
+					   struct rdt_mon_domain *d, u32 evtid)
 {
-	struct rdt_domain *dom;
+	struct rdt_mon_domain *dom;
 	struct rdtgroup *rdtg;
 	int ret = 0;
 
@@ -2044,7 +2043,7 @@ static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
 	list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
 		struct rdtgroup *crg;
 
-		list_for_each_entry(dom, &r->domains, list) {
+		list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 			if (d == dom && resctrl_mbm_event_assigned(rdtg, dom, evtid)) {
 				ret = rdtgroup_assign_cntr(rdtg, evtid);
 				if (ret)
@@ -2053,7 +2052,7 @@ static int resctrl_mbm_event_update_assign(struct rdt_resource *r,
 		}
 
 		list_for_each_entry(crg, &rdtg->mon.crdtgrp_list, mon.crdtgrp_list) {
-			list_for_each_entry(dom, &r->domains, list) {
+			list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 				if (d == dom && resctrl_mbm_event_assigned(crg, dom, evtid)) {
 					ret = rdtgroup_assign_cntr(crg, evtid);
 					if (ret)
@@ -2071,7 +2070,7 @@ static int mon_config_write(struct rdt_resource *r, char *tok, u32 evtid)
 {
 	char *dom_str = NULL, *id_str;
 	unsigned long dom_id, val;
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	int ret = 0;
 
 next:
@@ -2092,8 +2091,8 @@ next:
 		return -EINVAL;
 	}
 
-	list_for_each_entry(d, &r->domains, list) {
-		if (d->id == dom_id) {
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
+		if (d->hdr.id == dom_id) {
 			ret = resctrl_arch_mbm_config_write_domain(r, d, evtid, val);
 			if (ret) {
 				rdt_last_cmd_printf("Invalid event configuration: max valid mask is 0x%02x\n",
@@ -2200,7 +2199,7 @@ int rdtgroup_alloc_cntr(struct rdtgroup *rdtgrp, int index)
 int rdtgroup_assign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	int index;
 
 	index = mon_event_config_index_get(evtid);
@@ -2210,7 +2209,7 @@ int rdtgroup_assign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 	if (rdtgroup_alloc_cntr(rdtgrp, index))
 		return -EINVAL;
 
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->mon_domains, hdr.list) {
 		resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
 					 rdtgrp->mon.cntr_id[index],
 					 rdtgrp->closid, true);
@@ -2326,9 +2325,9 @@ static int rdtgroup_rmid_show(struct kernfs_open_file *of,
 
 static int rdtgroup_mbm_cntr_test(struct rdt_resource *r, u32 cntr_id)
 {
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 
-	list_for_each_entry(d, &r->domains, list)
+	list_for_each_entry(d, &r->mon_domains, hdr.list)
 		if (test_bit(cntr_id, d->mbm_cntr_map))
 			return 1;
 
@@ -2353,7 +2352,7 @@ void rdtgroup_free_cntr(struct rdt_resource *r, struct rdtgroup *rdtgrp,
 int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	int index;
 
 	index = mon_event_config_index_get(evtid);
@@ -2361,7 +2360,7 @@ int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 		return -EINVAL;
 
 	if (rdtgrp->mon.cntr_id[index] != MON_CNTR_UNSET) {
-		list_for_each_entry(d, &r->domains, list) {
+		list_for_each_entry(d, &r->mon_domains, hdr.list) {
 			resctrl_arch_assign_cntr(d, evtid, rdtgrp->mon.rmid,
 						 rdtgrp->mon.cntr_id[index],
 						 rdtgrp->closid, false);
@@ -2857,10 +2856,10 @@ static inline bool is_mba_linear(void)
 	return resctrl_arch_get_resource(RDT_RESOURCE_MBA)->membw.delay_linear;
 }
 
-static int mba_sc_domain_allocate(struct rdt_resource *r, struct rdt_domain *d)
+static int mba_sc_domain_allocate(struct rdt_resource *r, struct rdt_ctrl_domain *d)
 {
 	u32 num_closid = resctrl_arch_get_num_closid(r);
-	int cpu = cpumask_any(&d->cpu_mask);
+	int cpu = cpumask_any(&d->hdr.cpu_mask);
 	int i;
 
 	/*
@@ -2886,10 +2885,10 @@ static int mba_sc_domain_allocate(struct rdt_resource *r, struct rdt_domain *d)
 
 static int mba_sc_allocate(struct rdt_resource *r)
 {
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 	int ret = -EINVAL;
 
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 		ret = mba_sc_domain_allocate(r, d);
 		if (ret)
 			break;
@@ -2899,7 +2898,7 @@ static int mba_sc_allocate(struct rdt_resource *r)
 }
 
 static void mba_sc_domain_destroy(struct rdt_resource *r,
-				  struct rdt_domain *d)
+				  struct rdt_ctrl_domain *d)
 {
 	kfree(d->mbps_val);
 	d->mbps_val = NULL;
@@ -2907,24 +2906,28 @@ static void mba_sc_domain_destroy(struct rdt_resource *r,
 
 static void mba_sc_destroy(struct rdt_resource *r)
 {
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(d, &r->domains, list)
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list)
 		mba_sc_domain_destroy(r, d);
 }
 
 /*
  * MBA software controller is supported only if
- * MBM is supported and MBA is in linear scale.
+ * MBM is supported and MBA is in linear scale,
+ * and the MBM monitor scope is the same as MBA
+ * control scope.
  */
 static bool supports_mba_mbps(void)
 {
+	struct rdt_resource *rmbm = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
 
 	return (resctrl_is_mbm_enabled() &&
-		r->alloc_capable && is_mba_linear());
+		r->alloc_capable && is_mba_linear() &&
+		r->ctrl_scope == rmbm->mon_scope);
 }
 
 /*
@@ -3149,15 +3152,8 @@ static int schemata_list_create(void)
 static void schemata_list_destroy(void)
 {
 	struct resctrl_schema *s, *tmp;
-	struct rdt_domain *dom;
 
 	list_for_each_entry_safe(s, tmp, &resctrl_schema_all, list) {
-		/*
-		 * Clear staged_config on each domain before schemata list is
-		 * destroyed.
-		 */
-		list_for_each_entry(dom, &s->res->domains, list)
-			memset(dom->staged_config, 0, sizeof(dom->staged_config));
 		list_del(&s->list);
 		kfree(s);
 	}
@@ -3207,7 +3203,7 @@ static int rdt_get_tree(struct fs_context *fc)
 {
 	struct rdt_resource *l3 = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	struct rdt_fs_context *ctx = rdt_fc2context(fc);
-	struct rdt_domain *dom;
+	struct rdt_mon_domain *dom;
 	int ret;
 
 	cpus_read_lock();
@@ -3273,7 +3269,7 @@ static int rdt_get_tree(struct fs_context *fc)
 		resctrl_mounted = true;
 
 	if (resctrl_is_mbm_enabled()) {
-		list_for_each_entry(dom, &l3->domains, list)
+		list_for_each_entry(dom, &l3->mon_domains, hdr.list)
 			mbm_setup_overflow_handler(dom, MBM_OVERFLOW_INTERVAL, -1);
 	}
 
@@ -3325,6 +3321,7 @@ static int rdt_parse_param(struct fs_context *fc, struct fs_parameter *param)
 {
 	struct rdt_fs_context *ctx = rdt_fc2context(fc);
 	struct fs_parse_result result;
+	const char *msg;
 	int opt;
 
 	opt = fs_parse(fc, rdt_fs_parameters, param, &result);
@@ -3339,8 +3336,9 @@ static int rdt_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		ctx->enable_cdpl2 = true;
 		return 0;
 	case Opt_mba_mbps:
+		msg = "mba_MBps requires local MBM and linear scale MBA at L3 scope";
 		if (!supports_mba_mbps())
-			return -EINVAL;
+			return invalfc(fc, msg);
 		ctx->enable_mba_mbps = true;
 		return 0;
 	case Opt_hwdrc_mb:
@@ -3549,65 +3547,126 @@ static int mon_addfile(struct kernfs_node *parent_kn, const char *name,
 	return ret;
 }
 
+static void mon_rmdir_one_subdir(struct kernfs_node *pkn, char *name, char *subname)
+{
+	struct kernfs_node *kn;
+
+	kn = kernfs_find_and_get(pkn, name);
+	if (!kn)
+		return;
+	kernfs_put(kn);
+
+	if (kn->dir.subdirs <= 1)
+		kernfs_remove(kn);
+	else
+		kernfs_remove_by_name(kn, subname);
+}
+
 /*
  * Remove all subdirectories of mon_data of ctrl_mon groups
- * and monitor groups with given domain id.
+ * and monitor groups for the given domain.
+ * Remove files and directories containing "sum" of domain data
+ * when last domain being summed is removed.
  */
 static void rmdir_mondata_subdir_allrdtgrp(struct rdt_resource *r,
-					   unsigned int dom_id)
+					   struct rdt_mon_domain *d)
 {
 	struct rdtgroup *prgrp, *crgrp;
+	char subname[32];
+	bool snc_mode;
 	char name[32];
 
+	snc_mode = r->mon_scope == RESCTRL_L3_NODE;
+	sprintf(name, "mon_%s_%02ld", r->name, snc_mode ? d->ci->id : d->hdr.id);
+	if (snc_mode)
+		sprintf(subname, "mon_sub_%s_%02d", r->name, d->hdr.id);
+
 	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
-		sprintf(name, "mon_%s_%02d", r->name, dom_id);
-		kernfs_remove_by_name(prgrp->mon.mon_data_kn, name);
+		mon_rmdir_one_subdir(prgrp->mon.mon_data_kn, name, subname);
 
 		list_for_each_entry(crgrp, &prgrp->mon.crdtgrp_list, mon.crdtgrp_list)
-			kernfs_remove_by_name(crgrp->mon.mon_data_kn, name);
+			mon_rmdir_one_subdir(crgrp->mon.mon_data_kn, name, subname);
 	}
 }
 
-static int mkdir_mondata_subdir(struct kernfs_node *parent_kn,
-				struct rdt_domain *d,
-				struct rdt_resource *r, struct rdtgroup *prgrp)
+static int mon_add_all_files(struct kernfs_node *kn, struct rdt_mon_domain *d,
+			     struct rdt_resource *r, struct rdtgroup *prgrp,
+			     bool do_sum)
 {
+	struct rmid_read rr = {0};
 	union mon_data_bits priv;
-	struct kernfs_node *kn;
 	struct mon_evt *mevt;
-	struct rmid_read rr;
-	char name[32];
 	int ret;
 
-	sprintf(name, "mon_%s_%02d", r->name, d->id);
-	/* create the directory */
-	kn = kernfs_create_dir(parent_kn, name, parent_kn->mode, prgrp);
-	if (IS_ERR(kn))
-		return PTR_ERR(kn);
-
-	ret = rdtgroup_kn_set_ugid(kn);
-	if (ret)
-		goto out_destroy;
-
-	if (WARN_ON(list_empty(&r->mon.evt_list))) {
-		ret = -EPERM;
-		goto out_destroy;
-	}
+	if (WARN_ON(list_empty(&r->mon.evt_list)))
+		return -EPERM;
 
 	priv.u.rid = r->rid;
-	priv.u.domid = d->id;
+	priv.u.domid = do_sum ? d->ci->id : d->hdr.id;
+	priv.u.sum = do_sum;
 	list_for_each_entry(mevt, &r->mon.evt_list, list) {
-		if (!resctrl_arch_event_is_free_running(mevt->evtid))
-			continue;
-
 		priv.u.evtid = mevt->evtid;
 		ret = mon_addfile(kn, mevt->name, priv.priv);
 		if (ret)
+			return ret;
+
+		if (!do_sum && resctrl_is_mbm_event(mevt->evtid))
+			mon_event_read(&rr, r, d, prgrp, &d->hdr.cpu_mask, mevt->evtid, true);
+	}
+
+	return 0;
+}
+
+static int mkdir_mondata_subdir(struct kernfs_node *parent_kn,
+				struct rdt_mon_domain *d,
+				struct rdt_resource *r, struct rdtgroup *prgrp)
+{
+	struct kernfs_node *kn, *ckn;
+	char name[32];
+	bool snc_mode;
+	int ret = 0;
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	snc_mode = r->mon_scope == RESCTRL_L3_NODE;
+	sprintf(name, "mon_%s_%02ld", r->name, snc_mode ? d->ci->id : d->hdr.id);
+	kn = kernfs_find_and_get(parent_kn, name);
+	if (kn) {
+		/*
+		 * rdtgroup_mutex will prevent this directory from being
+		 * removed. No need to keep this hold.
+		 */
+		kernfs_put(kn);
+	} else {
+		kn = kernfs_create_dir(parent_kn, name, parent_kn->mode, prgrp);
+		if (IS_ERR(kn))
+			return PTR_ERR(kn);
+
+		ret = rdtgroup_kn_set_ugid(kn);
+		if (ret)
+			goto out_destroy;
+		ret = mon_add_all_files(kn, d, r, prgrp, snc_mode);
+		if (ret)
+			goto out_destroy;
+	}
+
+	if (snc_mode) {
+		sprintf(name, "mon_sub_%s_%02d", r->name, d->hdr.id);
+		ckn = kernfs_create_dir(kn, name, parent_kn->mode, prgrp);
+		if (IS_ERR(ckn)) {
+			ret = -EINVAL;
+			goto out_destroy;
+		}
+
+		ret = rdtgroup_kn_set_ugid(ckn);
+		if (ret)
 			goto out_destroy;
 
-		if (resctrl_is_mbm_event(mevt->evtid))
-			mon_event_read(&rr, r, d, prgrp, mevt->evtid, true);
+		ret = mon_add_all_files(ckn, d, r, prgrp, false);
+		if (ret)
+			goto out_destroy;
 	}
+
 	kernfs_activate(kn);
 	return 0;
 
@@ -3621,7 +3680,7 @@ out_destroy:
  * and "monitor" groups with given domain id.
  */
 static void mkdir_mondata_subdir_allrdtgrp(struct rdt_resource *r,
-					   struct rdt_domain *d)
+					   struct rdt_mon_domain *d)
 {
 	struct kernfs_node *parent_kn;
 	struct rdtgroup *prgrp, *crgrp;
@@ -3643,13 +3702,13 @@ static int mkdir_mondata_subdir_alldom(struct kernfs_node *parent_kn,
 				       struct rdt_resource *r,
 				       struct rdtgroup *prgrp)
 {
-	struct rdt_domain *dom;
+	struct rdt_mon_domain *dom;
 	int ret;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
 	lockdep_assert_cpus_held();
 
-	list_for_each_entry(dom, &r->domains, list) {
+	list_for_each_entry(dom, &r->mon_domains, hdr.list) {
 		ret = mkdir_mondata_subdir(parent_kn, dom, r, prgrp);
 		if (ret)
 			return ret;
@@ -3753,7 +3812,7 @@ static u32 cbm_ensure_valid(u32 _val, struct rdt_resource *r)
  * Set the RDT domain up to start off with all usable allocations. That is,
  * all shareable and unused bits. All-zero CBM is invalid.
  */
-static int __init_one_rdt_domain(struct rdt_domain *d, struct resctrl_schema *s,
+static int __init_one_rdt_domain(struct rdt_ctrl_domain *d, struct resctrl_schema *s,
 				 u32 closid)
 {
 	enum resctrl_conf_type peer_type = resctrl_peer_type(s->conf_type);
@@ -3813,7 +3872,7 @@ static int __init_one_rdt_domain(struct rdt_domain *d, struct resctrl_schema *s,
 	 */
 	tmp_cbm = cfg->new_ctrl;
 	if (bitmap_weight(&tmp_cbm, r->cache.cbm_len) < r->cache.min_cbm_bits) {
-		rdt_last_cmd_printf("No space on %s:%d\n", s->name, d->id);
+		rdt_last_cmd_printf("No space on %s:%d\n", s->name, d->hdr.id);
 		return -ENOSPC;
 	}
 	cfg->have_new_ctrl = true;
@@ -3833,10 +3892,10 @@ static int __init_one_rdt_domain(struct rdt_domain *d, struct resctrl_schema *s,
  */
 static int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
 {
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 	int ret;
 
-	list_for_each_entry(d, &s->res->domains, list) {
+	list_for_each_entry(d, &s->res->ctrl_domains, hdr.list) {
 		ret = __init_one_rdt_domain(d, s, closid);
 		if (ret < 0)
 			return ret;
@@ -3849,9 +3908,9 @@ static int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
 static void rdtgroup_init_mba(struct rdt_resource *r, u32 closid)
 {
 	struct resctrl_staged_config *cfg;
-	struct rdt_domain *d;
+	struct rdt_ctrl_domain *d;
 
-	list_for_each_entry(d, &r->domains, list) {
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 		if (is_mba_sc(r)) {
 			d->mbps_val[closid] = MBA_MAX_MBPS;
 			continue;
@@ -4366,7 +4425,7 @@ out:
 	return ret;
 }
 
-static void domain_destroy_mon_state(struct rdt_domain *d)
+static void domain_destroy_mon_state(struct rdt_mon_domain *d)
 {
 	bitmap_free(d->mbm_cntr_map);
 	bitmap_free(d->rmid_busy_llc);
@@ -4374,12 +4433,9 @@ static void domain_destroy_mon_state(struct rdt_domain *d)
 	kfree(d->mbm_local);
 }
 
-static void _resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d)
+static void _resctrl_offline_mon_domain(struct rdt_resource *r, struct rdt_mon_domain *d)
 {
 	lockdep_assert_held(&rdtgroup_mutex);
-
-	if (supports_mba_mbps() && r->rid == RDT_RESOURCE_MBA)
-		mba_sc_domain_destroy(r, d);
 
 	if (!r->mon_capable)
 		return;
@@ -4389,7 +4445,7 @@ static void _resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d
 	 * per domain monitor data directories.
 	 */
 	if (resctrl_mounted)
-		rmdir_mondata_subdir_allrdtgrp(r, d->id);
+		rmdir_mondata_subdir_allrdtgrp(r, d);
 
 	if (resctrl_is_mbm_enabled())
 		cancel_delayed_work(&d->mbm_over);
@@ -4409,14 +4465,22 @@ static void _resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d
 	domain_destroy_mon_state(d);
 }
 
-void resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d)
+void resctrl_offline_ctrl_domain(struct rdt_resource *r, struct rdt_ctrl_domain *d)
 {
 	mutex_lock(&rdtgroup_mutex);
-	_resctrl_offline_domain(r, d);
+	if (supports_mba_mbps() && r->rid == RDT_RESOURCE_MBA)
+		mba_sc_domain_destroy(r, d);
 	mutex_unlock(&rdtgroup_mutex);
 }
 
-static int domain_setup_mon_state(struct rdt_resource *r, struct rdt_domain *d)
+void resctrl_offline_mon_domain(struct rdt_resource *r, struct rdt_mon_domain *d)
+{
+	mutex_lock(&rdtgroup_mutex);
+	_resctrl_offline_mon_domain(r, d);
+	mutex_unlock(&rdtgroup_mutex);
+}
+
+static int domain_setup_mon_state(struct rdt_resource *r, struct rdt_mon_domain *d)
 {
 	u32 idx_limit = resctrl_arch_system_num_rmid_idx();
 	size_t tsize;
@@ -4456,15 +4520,11 @@ static int domain_setup_mon_state(struct rdt_resource *r, struct rdt_domain *d)
 	return 0;
 }
 
-static int _resctrl_online_domain(struct rdt_resource *r, struct rdt_domain *d)
+static int _resctrl_online_mon_domain(struct rdt_resource *r, struct rdt_mon_domain *d)
 {
 	int err;
 
 	lockdep_assert_held(&rdtgroup_mutex);
-
-	if (is_mba_sc(r))
-		/* RDT_RESOURCE_MBA is never mon_capable */
-		return mba_sc_domain_allocate(r, d);
 
 	if (!r->mon_capable)
 		return 0;
@@ -4487,12 +4547,26 @@ static int _resctrl_online_domain(struct rdt_resource *r, struct rdt_domain *d)
 	return 0;
 }
 
-int resctrl_online_domain(struct rdt_resource *r, struct rdt_domain *d)
+int resctrl_online_ctrl_domain(struct rdt_resource *r, struct rdt_ctrl_domain *d)
 {
 	int err;
 
 	mutex_lock(&rdtgroup_mutex);
-	err = _resctrl_online_domain(r, d);
+	if (supports_mba_mbps() && r->rid == RDT_RESOURCE_MBA) {
+		/* RDT_RESOURCE_MBA is never mon_capable */
+		err =  mba_sc_domain_allocate(r, d);
+	}
+	mutex_unlock(&rdtgroup_mutex);
+
+	return err;
+}
+
+int resctrl_online_mon_domain(struct rdt_resource *r, struct rdt_mon_domain *d)
+{
+	int err;
+
+	mutex_lock(&rdtgroup_mutex);
+	err = _resctrl_online_mon_domain(r, d);
 	mutex_unlock(&rdtgroup_mutex);
 
 	return err;
@@ -4521,7 +4595,7 @@ static void clear_childcpus(struct rdtgroup *r, unsigned int cpu)
 
 void resctrl_offline_cpu(unsigned int cpu)
 {
-	struct rdt_domain *d;
+	struct rdt_mon_domain *d;
 	struct rdtgroup *rdtgrp;
 	struct rdt_resource *l3 = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 
@@ -4533,7 +4607,7 @@ void resctrl_offline_cpu(unsigned int cpu)
 		}
 	}
 
-	d = resctrl_get_domain_from_cpu(cpu, l3);
+	d = resctrl_get_mon_domain_from_cpu(cpu, l3);
 	if (d) {
 		if (resctrl_is_mbm_enabled() && cpu == d->mbm_work_cpu) {
 			cancel_delayed_work(&d->mbm_over);

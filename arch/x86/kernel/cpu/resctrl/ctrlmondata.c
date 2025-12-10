@@ -21,14 +21,14 @@
 #include <linux/slab.h>
 #include "internal.h"
 
-static bool apply_config(struct rdt_hw_domain *hw_dom,
+static bool apply_config(struct rdt_hw_ctrl_domain *hw_dom,
 			 struct resctrl_staged_config *cfg, u32 idx,
 			 cpumask_var_t cpu_mask)
 {
-	struct rdt_domain *dom = &hw_dom->d_resctrl;
+	struct rdt_ctrl_domain *dom = &hw_dom->d_resctrl;
 
 	if (cfg->new_ctrl != hw_dom->ctrl_val[idx]) {
-		cpumask_set_cpu(cpumask_any(&dom->cpu_mask), cpu_mask);
+		cpumask_set_cpu(cpumask_any(&dom->hdr.cpu_mask), cpu_mask);
 		hw_dom->ctrl_val[idx] = cfg->new_ctrl;
 
 		return true;
@@ -37,15 +37,15 @@ static bool apply_config(struct rdt_hw_domain *hw_dom,
 	return false;
 }
 
-int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_domain *d,
+int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_ctrl_domain *d,
 			    u32 closid, enum resctrl_conf_type t, u32 cfg_val)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_ctrl_domain *hw_dom = resctrl_to_arch_ctrl_dom(d);
 	u32 idx = resctrl_get_config_index(closid, t);
 	struct msr_param msr_param;
 
-	if (!cpumask_test_cpu(smp_processor_id(), &d->cpu_mask))
+	if (!cpumask_test_cpu(smp_processor_id(), &d->hdr.cpu_mask))
 		return -EINVAL;
 
 	hw_dom->ctrl_val[idx] = cfg_val;
@@ -61,11 +61,11 @@ int resctrl_arch_update_one(struct rdt_resource *r, struct rdt_domain *d,
 int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid)
 {
 	struct resctrl_staged_config *cfg;
-	struct rdt_hw_domain *hw_dom;
+	struct rdt_hw_ctrl_domain *hw_dom;
 	struct msr_param msr_param;
+	struct rdt_ctrl_domain *d;
 	enum resctrl_conf_type t;
 	cpumask_var_t cpu_mask;
-	struct rdt_domain *d;
 	u32 idx;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
@@ -75,8 +75,8 @@ int resctrl_arch_update_domains(struct rdt_resource *r, u32 closid)
 		return -ENOMEM;
 
 	msr_param.res = NULL;
-	list_for_each_entry(d, &r->domains, list) {
-		hw_dom = resctrl_to_arch_dom(d);
+	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
+		hw_dom = resctrl_to_arch_ctrl_dom(d);
 		for (t = 0; t < CDP_NUM_TYPES; t++) {
 			cfg = &hw_dom->d_resctrl.staged_config[t];
 			if (!cfg->have_new_ctrl)
@@ -109,10 +109,10 @@ done:
 	return 0;
 }
 
-u32 resctrl_arch_get_config(struct rdt_resource *r, struct rdt_domain *d,
+u32 resctrl_arch_get_config(struct rdt_resource *r, struct rdt_ctrl_domain *d,
 			    u32 closid, enum resctrl_conf_type type)
 {
-	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct rdt_hw_ctrl_domain *hw_dom = resctrl_to_arch_ctrl_dom(d);
 	u32 idx = resctrl_get_config_index(closid, type);
 
 	return hw_dom->ctrl_val[idx];
