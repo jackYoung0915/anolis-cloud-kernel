@@ -1040,7 +1040,7 @@ struct mm_struct {
 		atomic_t async_fork_refcnt;
 #endif
 #ifdef CONFIG_FUTEX
-		unsigned int futex_nid;
+		int futex_nid;
 #endif
 	} __randomize_layout;
 
