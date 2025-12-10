@@ -30,6 +30,7 @@
  * @lowest_perf: the absolute lowest performance level of the processor
  * @min_limit_perf: Cached value of the performance corresponding to policy->min
  * @max_limit_perf: Cached value of the performance corresponding to policy->max
+ * @bios_min_perf: Cached perf value corresponding to the "Requested CPU Min Frequency" BIOS option
  */
 union perf_cached {
 	struct {
@@ -39,6 +40,7 @@ union perf_cached {
 		u8	lowest_perf;
 		u8	min_limit_perf;
 		u8	max_limit_perf;
+		u8	bios_min_perf;
 	};
 	u64	val;
 };
@@ -102,7 +104,6 @@ struct amd_cpudata {
 	bool	hw_prefcore;
 
 	/* EPP feature related attributes*/
-	u8	epp_cached;
 	u32	policy;
 	bool	suspended;
 	u8	epp_default;
