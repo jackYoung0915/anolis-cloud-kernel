@@ -480,7 +480,7 @@ class ImportOpTranslater():
         if refresh == "REFRESH":
             cmd += f"make KCONFIG_CONFIG={new_path} ARCH={arch} CROSS_COMPILE=scripts/dummy-tools/ "
             cmd += f"PAHOLE=scripts/dummy-tools/pahole "
-            cmd += f"-C {self.src_root} olddefconfig > /dev/null\n"
+            cmd += f"-C {self.src_root} olddefconfig > /dev/null 2>&1\n"
             cmd += f"rm -f {new_path}.old \n"
         return cmd
 
@@ -664,10 +664,10 @@ class GenerateTranslater():
         cmd += f" > {final_path} \n"
 
         # refresh configs
-        cmd += f"echo \"* generated file: {final_path}\"\n"
+        # cmd += f"echo \"* generated file: {final_path}\"\n"
         cmd += f"make KCONFIG_CONFIG={final_path} ARCH={e.arch} CROSS_COMPILE=scripts/dummy-tools/ "
         cmd += f"PAHOLE=scripts/dummy-tools/pahole "
-        cmd += f"-C {self.src_root} olddefconfig > /dev/null\n"
+        cmd += f"-C {self.src_root} olddefconfig > /dev/null 2>&1\n"
         cmd += f"rm -f {final_path}.old \n"
         cmd += f"echo \"* processed file: {final_path}\"\n"
 

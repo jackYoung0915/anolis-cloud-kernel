@@ -40,14 +40,14 @@ function prepare_env() {
 }
 
 function generate_configs() {
-    log "collect all old configs..."
+    # log "collect all old configs..."
     # generate old config files
     sh ${SCRIPT_DIR}/generate_configs.sh
 }
 
 function split_new_configs() {
     # split new config files
-    echo "split new configs..."
+    # echo "split new configs..."
     cp ${IMPORT_ACTION} ${DIST_OUTPUT}/kconfig_import
     sed -i "s#%%DIST_OUTPUT%%#\${DIST_OUTPUT}#" ${DIST_OUTPUT}/kconfig_import
     sed -i "s#%%DIST_SRCROOT%%#\${DIST_SRCROOT}#" ${DIST_OUTPUT}/kconfig_import
@@ -59,7 +59,7 @@ function split_new_configs() {
 }
 
 function replace_with_new_configs() {
-    log "replace old configs with new configs...."
+    # log "replace old configs with new configs...."
 
     rm -rf ${BACKUP_CONFIG_DIR}
     mkdir -p ${BACKUP_CONFIG_DIR}
