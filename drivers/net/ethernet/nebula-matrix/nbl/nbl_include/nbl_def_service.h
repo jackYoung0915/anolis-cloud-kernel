@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEF_SERVICE_H_
@@ -12,20 +12,11 @@
 #define NBL_SERV_OPS_TBL_TO_OPS(serv_ops_tbl)	((serv_ops_tbl)->ops)
 #define NBL_SERV_OPS_TBL_TO_PRIV(serv_ops_tbl)	((serv_ops_tbl)->priv)
 
-struct nbl_service_traffic_switch {
-	u16 normal_vsi;
-	u16 sync_other_vsi;
-	u16 async_other_vsi;
-	bool promisc;
-	bool has_lacp;
-	bool has_lldp;
-};
-
 struct nbl_service_ops {
-	int (*init_chip_factory)(void *priv);
-	int (*destroy_chip_factory)(void *p);
+	int (*clear_mirrior_table)(void *p);
 	int (*init_chip)(void *p);
 	int (*destroy_chip)(void *p);
+	int (*init_p4)(void *priv);
 	int (*configure_msix_map)(void *p, u16 num_net_msix, u16 num_others_msix,
 				  bool net_msix_mask_en);
 	int (*destroy_msix_map)(void *priv);
@@ -40,6 +31,8 @@ struct nbl_service_ops {
 	void (*get_ctrl_irq_num)(void *priv, struct nbl_ctrl_irq_num *irq_num);
 	int (*get_port_attributes)(void *p);
 	int (*update_template_config)(void *priv);
+	int (*get_part_number)(void *priv, char *part_number);
+	int (*get_serial_number)(void *priv, char *serial_number);
 	int (*enable_port)(void *p, bool enable);
 	void (*init_port)(void *priv);
 	void (*set_netdev_carrier_state)(void *p, struct net_device *netdev, u8 link_state);
@@ -47,13 +40,14 @@ struct nbl_service_ops {
 	int (*vsi_open)(void *priv, struct net_device *netdev, u16 vsi_index,
 			u16 real_qps, bool use_napi);
 	int (*vsi_stop)(void *priv, u16 vsi_index);
-	int (*switch_traffic_default_dest)(void *priv, struct nbl_service_traffic_switch *info);
+	int (*switch_traffic_default_dest)(void *priv, int op);
 	int (*config_fd_flow_state)(void *priv, enum nbl_chan_fdir_rule_type type, u32 state);
 
+	/* For netdev ops */
 	int (*netdev_open)(struct net_device *netdev);
 	int (*netdev_stop)(struct net_device *netdev);
-	netdev_tx_t (*start_xmit)(struct sk_buff *skb, struct net_device *netdev);
 	int (*change_mtu)(struct net_device *netdev, int new_mtu);
+	int (*change_rep_mtu)(struct net_device *netdev, int new_mtu);
 	void (*get_stats64)(struct net_device *netdev, struct rtnl_link_stats64 *stats);
 	void (*set_rx_mode)(struct net_device *dev);
 	void (*change_rx_flags)(struct net_device *dev, int flag);
@@ -64,24 +58,24 @@ struct nbl_service_ops {
 	netdev_features_t (*features_check)(struct sk_buff *skb, struct net_device *dev,
 					    netdev_features_t features);
 	int (*setup_tc)(struct net_device *dev, enum tc_setup_type type, void *type_data);
+	int (*get_phys_port_name)(struct net_device *dev, char *name, size_t len);
+	int (*get_port_parent_id)(struct net_device *dev, struct netdev_phys_item_id *ppid);
 	int (*set_vf_spoofchk)(struct net_device *netdev, int vf_id, bool ena);
-	void (*tx_timeout)(struct net_device *netdev, u32 txqueue);
-
-	int (*bridge_setlink)(struct net_device *netdev, struct nlmsghdr *nlh,
-			      u16 flags, struct netlink_ext_ack *extack);
-
-	int (*bridge_getlink)(struct sk_buff *skb, u32 pid, u32 seq,
-			      struct net_device *dev, u32 filter_mask, int nlflags);
 	int (*set_vf_link_state)(struct net_device *dev, int vf_id, int link_state);
 	int (*set_vf_mac)(struct net_device *netdev, int vf_id, u8 *mac);
 	int (*set_vf_rate)(struct net_device *netdev, int vf_id, int min_rate, int max_rate);
 	int (*set_vf_vlan)(struct net_device *dev, int vf_id, u16 vlan, u8 pri, __be16 proto);
 	int (*get_vf_config)(struct net_device *dev, int vf_id, struct ifla_vf_info *ivi);
+	int (*get_vf_stats)(struct net_device *dev, int vf_id, struct ifla_vf_stats *vf_stats);
+	void (*tx_timeout)(struct net_device *netdev, u32 txqueue);
+
+	int (*bridge_setlink)(struct net_device *netdev, struct nlmsghdr *nlh,
+			      u16 flags, struct netlink_ext_ack *extack);
+	int (*bridge_getlink)(struct sk_buff *skb, u32 pid, u32 seq,
+			      struct net_device *dev, u32 filter_mask, int nlflags);
 	u16 (*select_queue)(struct net_device *netdev, struct sk_buff *skb,
 			    struct net_device *sb_dev);
-	int (*get_phys_port_name)(struct net_device *dev, char *name, size_t len);
-	int (*get_port_parent_id)(struct net_device *dev, struct netdev_phys_item_id *ppid);
-
+	int (*set_vf_trust)(struct net_device *netdev, int vf_id, bool trusted);
 	int (*register_net)(void *priv, struct nbl_register_net_param *register_param,
 			    struct nbl_register_net_result *register_result);
 	int (*unregister_net)(void *priv);
@@ -93,6 +87,7 @@ struct nbl_service_ops {
 	void (*remove_q2vsi)(void *priv, u16 vsi_id);
 	int (*setup_rss)(void *priv, u16 vsi_id);
 	void (*remove_rss)(void *priv, u16 vsi_id);
+	int (*setup_rss_indir)(void *priv, u16 vsi_id);
 	int (*check_offload_status)(void *priv);
 	u32 (*get_chip_temperature)(void *priv, enum nbl_hwmon_type type, u32 senser_id);
 	int (*get_module_temperature)(void *priv, u8 eth_id, enum nbl_hwmon_type type);
@@ -103,8 +98,12 @@ struct nbl_service_ops {
 	int (*enable_napis)(void *priv, u16 vsi_index);
 	void (*disable_napis)(void *priv, u16 vsi_index);
 	void (*set_mask_en)(void *priv, bool enable);
-	int (*start_net_flow)(void *priv, struct net_device *dev, u16 vsi_id, u16 vid);
+	int (*start_net_flow)(void *priv, struct net_device *dev, u16 vsi_id, u16 vid,
+			      bool trusted);
 	void (*stop_net_flow)(void *priv, u16 vsi_id);
+	void (*clear_flow)(void *priv, u16 vsi_id);
+	int (*set_promisc_mode)(void *priv, u16 vsi_id, u16 mode);
+	int (*cfg_multi_mcast)(void *priv, u16 vsi, u16 enable);
 	int (*set_lldp_flow)(void *priv, u16 vsi_id);
 	void (*remove_lldp_flow)(void *priv, u16 vsi_id);
 	int (*start_mgt_flow)(void *priv);
@@ -121,6 +120,9 @@ struct nbl_service_ops {
 	int (*setup_net_resource_mgt)(void *priv, struct net_device *dev,
 				      u16 vlan_proto, u16 vlan_tci, u32 rate);
 	void (*remove_net_resource_mgt)(void *priv);
+	int (*init_hw_stats)(void *priv);
+	int (*remove_hw_stats)(void *priv);
+	int (*get_rx_dropped)(void *priv, u64 *rx_dropped);
 	int (*enable_lag_protocol)(void *priv, u16 eth_id, bool lag_en);
 	int (*cfg_lag_hash_algorithm)(void *priv, u16 eth_id, u16 lag_id,
 				      enum netdev_lag_hash hash_type);
@@ -133,6 +135,7 @@ struct nbl_service_ops {
 			      bool open, bool is_force);
 	int (*get_board_id)(void *priv);
 	void (*cfg_eth_bond_event)(void *priv, bool enable);
+	void (*get_board_info)(void *priv, struct nbl_board_port_info *board_info);
 
 	/* rep associated */
 	int (*rep_netdev_open)(struct net_device *netdev);
@@ -189,11 +192,16 @@ struct nbl_service_ops {
 	void (*get_channels)(struct net_device *netdev, struct ethtool_channels *channels);
 	int (*set_channels)(struct net_device *netdev, struct ethtool_channels *channels);
 	u32 (*get_link)(struct net_device *netdev);
+	int (*get_link_ext_state)(struct net_device *netdev,
+				  struct ethtool_link_ext_state_info *link_ext_state_info);
 	int (*get_ksettings)(struct net_device *netdev, struct ethtool_link_ksettings *cmd);
 	int (*set_ksettings)(struct net_device *netdev, const struct ethtool_link_ksettings *cmd);
 	void (*get_ringparam)(struct net_device *netdev, struct ethtool_ringparam *ringparam);
 	int (*set_ringparam)(struct net_device *netdev, struct ethtool_ringparam *ringparam);
-
+	int (*flash_device)(struct net_device *netdev, struct ethtool_flash *flash);
+	int (*get_dump_flag)(struct net_device *netdev, struct ethtool_dump *dump);
+	int (*get_dump_data)(struct net_device *netdev, struct ethtool_dump *dump, void *buffer);
+	int (*set_dump)(struct net_device *netdev, struct ethtool_dump *dump);
 	int (*get_coalesce)(struct net_device *netdev, struct ethtool_coalesce *ec);
 	int (*set_coalesce)(struct net_device *netdev, struct ethtool_coalesce *ec);
 
@@ -202,6 +210,7 @@ struct nbl_service_ops {
 	u32 (*get_rxfh_indir_size)(struct net_device *netdev);
 	u32 (*get_rxfh_key_size)(struct net_device *netdev);
 	int (*get_rxfh)(struct net_device *netdev, u32 *indir, u8 *key, u8 *hfunc);
+	int (*set_rxfh)(struct net_device *netdev, const u32 *indir, const u8 *key, const u8 hfunc);
 	u32 (*get_msglevel)(struct net_device *netdev);
 	void (*set_msglevel)(struct net_device *netdev, u32 msglevel);
 	int (*get_regs_len)(struct net_device *netdev);
@@ -214,6 +223,7 @@ struct nbl_service_ops {
 	void (*self_test)(struct net_device *netdev, struct ethtool_test *eth_test, u64 *data);
 	u32 (*get_priv_flags)(struct net_device *netdev);
 	int (*set_priv_flags)(struct net_device *netdev, u32 priv_flags);
+	void (*get_pause_stats)(struct net_device *netdev, struct ethtool_pause_stats *pause_stats);
 	int (*set_pause_param)(struct net_device *netdev, struct ethtool_pauseparam *param);
 	void (*get_pause_param)(struct net_device *netdev, struct ethtool_pauseparam *param);
 	int (*set_fec_param)(struct net_device *netdev, struct ethtool_fecparam *fec);
@@ -225,6 +235,8 @@ struct nbl_service_ops {
 	int (*get_rep_sset_count)(struct net_device *netdev, int sset);
 	void (*get_rep_ethtool_stats)(struct net_device *netdev,
 				      struct ethtool_stats *stats, u64 *data);
+	void (*get_wol)(struct net_device *netdev, struct ethtool_wolinfo *wol);
+	int (*set_wol)(struct net_device *netdev, struct ethtool_wolinfo *wol);
 
 	u16 (*get_rdma_cap_num)(void *priv);
 	void (*setup_rdma_id)(void *priv);
@@ -248,9 +260,9 @@ struct nbl_service_ops {
 
 	int (*get_devlink_info)(struct devlink *devlink, struct devlink_info_req *req,
 				struct netlink_ext_ack *extack);
-	int (*update_devlink_flash)(struct devlink *devlink, const char *file_name,
-				    const char *component, struct netlink_ext_ack *extack);
-
+	int (*update_devlink_flash)(struct devlink *devlink,
+				    struct devlink_flash_update_params *params,
+				    struct netlink_ext_ack *extack);
 	u32 (*get_adminq_tx_buf_size)(void *priv);
 	int (*emp_console_write)(void *priv, char *buf, size_t count);
 	bool (*check_fw_heartbeat)(void *priv);
@@ -280,20 +292,63 @@ struct nbl_service_ops {
 	void (*configure_rdma_msix_off)(void *priv, u16 vector);
 	void (*configure_virtio_dev_ready)(void *priv);
 
-	int (*setup_st)(void *priv, void *st_table_param);
+	int (*setup_st)(void *priv, void *st_table_param, char *st_name);
 	void (*remove_st)(void *priv, void *st_table_param);
+	void (*register_real_st_name)(void *priv, char *st_name);
+
 	u16 (*get_vf_base_vsi_id)(void *priv, u16 func_id);
 	int (*setup_vf_config)(void *priv, int num_vfs, bool is_flush);
 	void (*remove_vf_config)(void *priv);
+	void (*register_dev_name)(void *priv, u16 vsi_id, char *name);
+	void (*get_dev_name)(void *priv, u16 vsi_id, char *name);
+
+	void (*get_mirror_table_id)(void *priv, u16 vsi_id, int dir, bool mirror_en,
+				    u8 *mt_id);
+	int (*configure_mirror)(void *priv, u16 func_id, bool mirror_en, int dir,
+				u8 mt_id);
+	int (*configure_mirror_table)(void *priv, bool mirror_en, u16 func_id, u8 mt_id);
+	int (*clear_mirror_cfg)(void *priv, u16 func_id);
+
 	int (*setup_vf_resource)(void *priv, int num_vfs);
 	void (*remove_vf_resource)(void *priv);
 	void (*cfg_fd_update_event)(void *priv, bool enable);
+
 	void (*get_xdp_queue_info)(void *priv, u16 *queue_num, u16 *queue_size, u16 vsi_id);
+	int (*set_xdp)(struct net_device *netdev, struct netdev_bpf *xdp);
 	void (*set_hw_status)(void *priv, enum nbl_hw_status hw_status);
 	void (*get_active_func_bitmaps)(void *priv, unsigned long *bitmap, int max_func);
-	int (*configure_qos)(void *priv, u8 eth_id, u8 *pfc, u8 trust, u8 *dscp2prio_map);
-	int (*get_pfc_buffer_size)(void *priv, u8 eth_id, u8 prio, int *xoff, int *xon);
+	void (*get_rdma_bw)(void *priv, int *rdma_bw);
+	void (*get_rdma_rate)(void *priv, int *rdma_rate);
+	void (*get_net_rate)(void *priv, int *net_rate);
+	int (*configure_rdma_bw)(void *priv, u8 eth_id, int rdma_bw);
+	int (*configure_pfc)(void *priv, u8 eth_id, u8 *pfc);
+	int (*configure_trust)(void *priv, u8 eth_id, u8 trust);
+	int (*configure_dscp2prio)(void *priv, u8 eth_id, const char *buf, size_t count);
 	int (*set_pfc_buffer_size)(void *priv, u8 eth_id, u8 prio, int xoff, int xon);
+	int (*set_rate_limit)(void *priv, enum nbl_traffic_type type, u32 rate);
+	ssize_t (*trust_mode_show)(void *priv, u8 eth_id, char *buf);
+	ssize_t (*pfc_show)(void *priv, u8 eth_id, char *buf);
+	ssize_t (*dscp2prio_show)(void *priv, u8 eth_id, char *buf);
+	ssize_t (*pfc_buffer_size_show)(void *priv, u8 eth_id, char *buf);
+
+	/* dcb nl ops */
+	int (*ieee_setets)(struct net_device *netdev, struct ieee_ets *ets);
+	int (*ieee_getets)(struct net_device *netdev, struct ieee_ets *ets);
+	int (*ieee_setpfc)(struct net_device *netdev, struct ieee_pfc *pfc);
+	int (*ieee_getpfc)(struct net_device *netdev, struct ieee_pfc *pfc);
+	int (*ieee_setapp)(struct net_device *netdev, struct dcb_app *app);
+	int (*ieee_delapp)(struct net_device *netdev, struct dcb_app *app);
+	void (*dcbnl_getpfccfg)(struct net_device *netdev, int prio, u8 *setting);
+	void (*dcbnl_setpfccfg)(struct net_device *netdev, int prio, u8 set);
+	int (*dcbnl_getnumtcs)(struct net_device *netdev, int tcid, u8 *num);
+	u8 (*ieee_getdcbx)(struct net_device *netdev);
+	u8 (*ieee_setdcbx)(struct net_device *netdev, u8 mode);
+	u8 (*dcbnl_getstate)(struct net_device *netdev);
+	u8 (*dcbnl_setstate)(struct net_device *netdev, u8 state);
+	u8 (*dcbnl_getpfcstate)(struct net_device *netdev);
+	u8 (*dcbnl_getcap)(struct net_device *netdev, int capid, u8 *cap);
+	u16 (*get_vf_function_id)(void *priv, int vf_id);
+	void (*cfg_mirror_outputport_event)(void *priv, bool enable);
 };
 
 struct nbl_service_ops_tbl {

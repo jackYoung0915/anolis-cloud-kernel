@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2022 nebula-matrix Limited.
+ * Author:
+ */
+
 #include <net/vxlan.h>
 #include <linux/if_vlan.h>
 #include <linux/udp.h>
@@ -25,6 +31,15 @@ static int nbl_copy_tun_info(const struct ip_tunnel_info *tun_info,
 	return 0;
 }
 
+/* only support vxlan currently */
+static struct nbl_tc_tunnel *nbl_tc_get_tunnel(struct net_device *tunnel_dev)
+{
+	if (netif_is_vxlan(tunnel_dev))
+		return &nbl_vxlan_tunnel;
+	else
+		return NULL;
+}
+
 static int nbl_tc_tun_gen_tunnel_header_vxlan(char buf[], u8 *ip_proto,
 					      const struct ip_tunnel_key *tun_key)
 {
@@ -45,21 +60,6 @@ static int nbl_tc_tun_gen_tunnel_header_vxlan(char buf[], u8 *ip_proto,
 static int nbl_tc_tun_get_vxlan_hdr_len(void)
 {
 	return sizeof(struct vxlanhdr);
-}
-
-struct nbl_tc_tunnel vxlan_tun = {
-	.tunnel_type = NBL_TC_TUNNEL_TYPE_VXLAN,
-	.generate_tunnel_hdr = nbl_tc_tun_gen_tunnel_header_vxlan,
-	.get_tun_hlen = nbl_tc_tun_get_vxlan_hdr_len,
-};
-
-/* only support vxlan currently */
-static struct nbl_tc_tunnel *nbl_tc_get_tunnel(struct net_device *tunnel_dev)
-{
-	if (netif_is_vxlan(tunnel_dev))
-		return &vxlan_tun;
-	else
-		return NULL;
 }
 
 static void nbl_tc_tun_route_cleanup(struct nbl_tc_tunnel_route_info *tun_route_info)
@@ -96,9 +96,8 @@ static int nbl_route_lookup_ipv4(const struct nbl_common_info *common,
 	if (is_vlan_dev(out_dev)) {
 		parent_dev = vlan_dev_priv(out_dev)->real_dev;
 		if (is_vlan_dev(parent_dev)) {
-			nbl_debug(common, NBL_DEBUG_FLOW, "ipv4 encap out dev is %s, "
-				 "parent_dev:%s is vlan, not support two vlan\n",
-				 out_dev->name, parent_dev ? parent_dev->name : "NULL");
+			nbl_debug(common, NBL_DEBUG_FLOW, "encap o_dev is %s p_dev:%s\n",
+				  out_dev->name, parent_dev ? parent_dev->name : "NULL");
 			ret = -EOPNOTSUPP;
 			goto rt_err;
 		}
@@ -123,8 +122,7 @@ static int nbl_route_lookup_ipv4(const struct nbl_common_info *common,
 	if (!tun_route_info->ttl)
 		tun_route_info->ttl = (u8)ip4_dst_hoplimit(&rt->dst);
 
-	nbl_debug(common, NBL_DEBUG_FLOW, "route lookup: rt->rt_type:%u, "
-		  "rt->dst.dev:%s, rt->dst.ops:%p, real_dev:%s, ttl:%u",
+	nbl_debug(common, NBL_DEBUG_FLOW, "route: type:%u, dev:%s, ops:%p, real_dev:%s, ttl:%u",
 		  rt->rt_type, rt->dst.dev ? rt->dst.dev->name : "null",
 		  rt->dst.ops, real_out_dev ? real_out_dev->name : "NULL",
 		  tun_route_info->ttl);
@@ -167,8 +165,7 @@ static char *nbl_tc_tun_gen_eth_hdr(char *buf, struct net_device *dev,
 		eth->h_proto = vlan_dev_vlan_proto(dev);
 		vlan->h_vlan_TCI = htons(vlan_dev_vlan_id(dev));
 		vlan->h_vlan_encapsulated_proto = htons(proto);
-		nbl_debug(common, NBL_DEBUG_FLOW, "output is vlan dev: "
-			  "vlan_TCI:0x%x, vlan_proto:0x%x, eth_proto:0x%x",
+		nbl_debug(common, NBL_DEBUG_FLOW, "TCI:0x%x, vlan_proto:0x%x, eth_proto:0x%x",
 			  vlan->h_vlan_TCI, vlan->h_vlan_encapsulated_proto,
 			  eth->h_proto);
 	} else {
@@ -324,9 +321,8 @@ static int nbl_route_lookup_ipv6(const struct nbl_common_info *common,
 		parent_dev = vlan_dev_priv(out_dev)->real_dev;
 		real_out_dev = vlan_dev_real_dev(out_dev);
 		if (is_vlan_dev(parent_dev)) {
-			nbl_debug(common, NBL_DEBUG_FLOW, "ipv6 encap out dev is %s, "
-				 "parent_dev:%s is vlan, not support two vlan\n",
-				 out_dev->name, parent_dev ? parent_dev->name : "NULL");
+			nbl_debug(common, NBL_DEBUG_FLOW, "ipv6 encap o_dev is %s, p_dev:%s\n",
+				  out_dev->name, parent_dev ? parent_dev->name : "NULL");
 			ret = -EOPNOTSUPP;
 			goto err;
 		}
@@ -554,3 +550,9 @@ malloc_err:
 
 	return ret;
 }
+
+struct nbl_tc_tunnel nbl_vxlan_tunnel = {
+	.tunnel_type = NBL_TC_TUNNEL_TYPE_VXLAN,
+	.generate_tunnel_hdr = nbl_tc_tun_gen_tunnel_header_vxlan,
+	.get_tun_hlen = nbl_tc_tun_get_vxlan_hdr_len,
+};

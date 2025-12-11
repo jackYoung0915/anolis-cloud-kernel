@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2021 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_lag.h"
@@ -170,9 +170,12 @@ static void nbl_display_lag_info(struct nbl_dev_mgt *dev_mgt, u8 lag_id)
 static void nbl_lag_create_bond_adev(struct nbl_dev_mgt *dev_mgt,
 				     struct nbl_lag_instance *lag_info)
 {
-	struct nbl_event_rdma_bond_update event_data;
+	struct nbl_event_param event_data;
 	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
+	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	struct nbl_lag_member *mem_tmp, *notify_mem = NULL;
+	struct nbl_lag_member_list_param *list_param = &event_data.param;
+	struct nbl_rdma_register_param register_param = {0};
 	int mem_num = 0;
 	int i = 0;
 
@@ -189,6 +192,17 @@ static void nbl_lag_create_bond_adev(struct nbl_dev_mgt *dev_mgt,
 	if (!notify_mem) {
 		nbl_err(common, NBL_DEBUG_MAIN,
 			"notify to create the bond adev failed, member count %u.\n", mem_num);
+		return;
+	}
+	event_data.param.lag_num = mem_num;
+
+	/* Checking if we can support and create the rdma bond */
+	serv_ops->register_rdma_bond(NBL_DEV_MGT_TO_SERV_PRIV(dev_mgt),
+				     list_param, &register_param);
+
+	if (!register_param.has_rdma) {
+		nbl_warn(common, NBL_DEBUG_MAIN,
+			 "Can not support to create rdma bond, vsi %u.\n", notify_mem->vsi_id);
 		return;
 	}
 
@@ -216,7 +230,7 @@ static void nbl_lag_member_recover_adev(struct nbl_dev_mgt *dev_mgt,
 					struct nbl_lag_instance *lag_info,
 					struct nbl_lag_member *lag_mem)
 {
-	struct nbl_event_rdma_bond_update event_data;
+	struct nbl_event_param event_data;
 	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
 	struct nbl_lag_member *mem_tmp, *adev_mem = NULL;
 	int i = 0, has_self = 0, mem_num = 0;
@@ -254,7 +268,7 @@ static void nbl_lag_member_recover_adev(struct nbl_dev_mgt *dev_mgt,
 
 	for (i = 0; i < mem_num; i++) {
 		event_data.subevent = NBL_SUBEVENT_CREATE_ADEV;
-		/* Notify the dev to resotre the rdma adev. */
+		/* Notify the dev to restore the rdma adev. */
 		nbl_event_notify(NBL_EVENT_RDMA_BOND_UPDATE, &event_data,
 				 event_data.param.member_list[i].vsi_id,
 				 NBL_COMMON_TO_BOARD_ID(common));
@@ -271,7 +285,7 @@ static void update_lag_member_list(struct nbl_dev_mgt *dev_mgt,
 	struct nbl_service_ops *serv_ops = NBL_DEV_MGT_TO_SERV_OPS(dev_mgt);
 	struct nbl_common_info *common = NBL_DEV_MGT_TO_COMMON(dev_mgt);
 	struct nbl_lag_member *mem_tmp;
-	struct nbl_event_rdma_bond_update event_data;
+	struct nbl_event_param event_data;
 	struct nbl_lag_member_list_param mem_list_param = {0};
 	u16 mem_id, tx_enabled_id = U16_MAX;
 	u8 fwd;
@@ -430,7 +444,7 @@ static int del_lag_member(struct nbl_dev_mgt *dev_mgt,
 			break;
 	}
 
-	if (nbl_list_entry_is_head(mem_tmp, &lag_info->mem_list_head, mem_list_node))
+	if (list_entry_is_head(mem_tmp, &lag_info->mem_list_head, mem_list_node))
 		return -ENOENT;
 
 	if (mem_count == 0 || mem_count > NBL_LAG_MAX_PORTS) {
@@ -1068,7 +1082,6 @@ static int nbl_lag_alloc_resource(struct nbl_dev_mgt *dev_mgt)
 	lag_resource_tmp = kzalloc(sizeof(*lag_resource_tmp), GFP_KERNEL);
 	if (!lag_resource_tmp)
 		goto ret_fail;
-
 	kref_init(&lag_resource_tmp->kref);
 	lag_resource_tmp->board_key = board_key;
 	INIT_LIST_HEAD(&lag_resource_tmp->lag_instance_head);

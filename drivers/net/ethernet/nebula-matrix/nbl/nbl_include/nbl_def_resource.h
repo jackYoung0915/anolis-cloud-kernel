@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEF_RESOURCE_H_
@@ -17,13 +17,16 @@ struct nbl_resource_pt_ops {
 	netdev_tx_t (*rep_xmit)(struct sk_buff *skb, struct net_device *netdev);
 	netdev_tx_t (*self_test_xmit)(struct sk_buff *skb, struct net_device *netdev);
 	int (*napi_poll)(struct napi_struct *napi, int budget);
+	int (*xdp_xmit)(struct net_device *netdev, int n, struct xdp_frame **frame, u32 flags);
 };
 
 struct nbl_resource_ops {
 	int (*init_chip_module)(void *priv);
+	void (*deinit_chip_module)(void *priv);
 	void (*get_resource_pt_ops)(void *priv, struct nbl_resource_pt_ops *pt_ops);
 	int (*queue_init)(void *priv);
 	int (*vsi_init)(void *priv);
+	int (*init_vf_msix_map)(void *priv, u16 func_id, bool enable);
 	int (*configure_msix_map)(void *priv, u16 func_id, u16 num_net_msix, u16 num_others_msix,
 				  bool net_msix_mask_en);
 	int (*destroy_msix_map)(void *priv, u16 func_id);
@@ -51,7 +54,7 @@ struct nbl_resource_ops {
 	void (*set_rings_xdp_prog)(void *priv, void *prog);
 	int (*register_xdp_rxq)(void *priv, u8 ring_index);
 	void (*unregister_xdp_rxq)(void *priv, u8 ring_index);
-	struct napi_struct *(*get_vector_napi)(void *priv, u16 index);
+	struct nbl_napi_struct *(*get_vector_napi)(void *priv, u16 index);
 	void (*set_vector_info)(void *priv, u8 *irq_enable_base, u32 irq_data,
 				u16 index, bool mask_en);
 	void (*register_vsi_ring)(void *priv, u16 vsi_index, u16 ring_offset, u16 ring_num);
@@ -68,9 +71,10 @@ struct nbl_resource_ops {
 	int (*setup_rss)(void *priv, u16 vsi_id);
 	void (*remove_rss)(void *priv, u16 vsi_id);
 	int (*setup_queue)(void *priv, struct nbl_txrx_queue_param *param, bool is_tx);
+	int (*remove_queue)(void *priv, struct nbl_txrx_queue_param *param, bool is_tx);
 	void (*remove_all_queues)(void *priv, u16 vsi_id);
 	int (*cfg_dsch)(void *priv, u16 vsi_id, bool vld);
-	int (*setup_cqs)(void *priv, u16 vsi_id, u16 real_qps);
+	int (*setup_cqs)(void *priv, u16 vsi_id, u16 real_qps, bool rss_indir_set);
 	void (*remove_cqs)(void *priv, u16 vsi_id);
 	int (*cfg_qdisc_mqprio)(void *priv, struct nbl_tc_qidsc_param *param);
 	void (*clear_queues)(void *priv, u16 vsi_id);
@@ -92,6 +96,8 @@ struct nbl_resource_ops {
 	void (*del_lldp_flow)(void *priv, u16 vsi);
 	int (*add_multi_rule)(void *priv, u16 vsi);
 	void (*del_multi_rule)(void *priv, u16 vsi);
+	int (*add_multi_mcast)(void *priv, u16 vsi);
+	void (*del_multi_mcast)(void *priv, u16 vsi);
 	int (*setup_multi_group)(void *priv);
 	void (*remove_multi_group)(void *priv);
 	void (*clear_accel_flow)(void *priv, u16 vsi_id);
@@ -105,6 +111,8 @@ struct nbl_resource_ops {
 	void (*get_rep_feature)(void *priv, struct nbl_register_net_result *register_result);
 	void (*get_rep_queue_info)(void *priv, u16 *queue_num, u16 *queue_size);
 	void (*get_user_queue_info)(void *priv, u16 *queue_num, u16 *queue_size, u16 vsi_id);
+	int (*set_mtu)(void *priv, u16 vsi_id, u16 mtu);
+	int (*get_max_mtu)(void *priv);
 
 	void (*set_eswitch_mode)(void *priv, u16 switch_mode);
 	u16 (*get_eswitch_mode)(void *priv);
@@ -129,9 +137,16 @@ struct nbl_resource_ops {
 	int (*get_queue_err_stats)(void *priv, u16 func_id, u8 queue_id,
 				   struct nbl_queue_err_stats *queue_err_stats, bool is_tx);
 	void (*get_net_stats)(void *priv, struct nbl_stats *queue_stats);
+	int (*get_eth_ctrl_stats)(void *priv, u32 eth_id,
+				  struct nbl_eth_ctrl_stats *eth_ctrl_stats);
 	void (*get_private_stat_len)(void *priv, u32 *len);
-	void (*get_private_stat_data)(void *priv, u32 eth_id, u64 *data);
+	void (*get_private_stat_data)(void *priv, u32 eth_id, u64 *data, u32 data_len);
+	int (*get_pause_stats)(void *priv, u32 eth_id, struct nbl_pause_stats *pause_stats);
+	int (*get_eth_mac_stats)(void *priv, u32 eth_id, struct nbl_eth_mac_stats *eth_mac_stats);
+	int (*get_rmon_stats)(void *priv, u32 eth_id, struct nbl_rmon_stats *rmon_stats);
 	void (*fill_private_stat_strings)(void *priv, u8 *strings);
+	int (*get_eth_abnormal_stats)(void *priv, u32 eth_id,
+				      struct nbl_eth_abnormal_stats *eth_abnormal_stats);
 	u16 (*get_max_desc_num)(void);
 	u16 (*get_min_desc_num)(void);
 	u16 (*get_tx_desc_num)(void *priv, u32 ring_index);
@@ -147,11 +162,12 @@ struct nbl_resource_ops {
 					u16 num_net_msix, u16 level);
 	void (*get_rxfh_indir_size)(void *priv, u16 vsi_id, u32 *rxfh_indir_size);
 	void (*get_rxfh_indir)(void *priv, u16 vsi_id, u32 *indir);
+	int (*set_rxfh_indir)(void *priv, u16 vsi_id, const u32 *indir, u32 indir_size);
 	void (*get_rxfh_rss_key_size)(void *priv, u32 *rxfh_rss_key_size);
 	void (*get_rxfh_rss_key)(void *priv, u8 *rss_key);
-	void (*get_rss_alg_sel)(void *priv, u8 *alg_sel, u8 eth_id);
+	void (*get_rss_alg_sel)(void *priv, u16 vsi_id, u8 *alg_sel);
+	int (*set_rss_alg_sel)(void *priv, u16 vsi_id, u8 alg_sel);
 	int (*get_firmware_version)(void *priv, char *firmware_verion);
-	int (*get_driver_info)(void *priv, struct nbl_driver_info *driver_info);
 	int (*nway_reset)(void *priv, u8 eth_id);
 	void (*cfg_txrx_vlan)(void *priv, u16 vlan_tci, u16 vlan_proto, u8 vsi_index);
 
@@ -175,7 +191,6 @@ struct nbl_resource_ops {
 	int (*cfg_lag_member_up_attr)(void *priv, u16 eth_id, u16 lag_id, bool enable);
 	int (*cfg_duppkt_info)(void *priv, struct nbl_lag_member_list_param *param);
 	int (*cfg_duppkt_mcc)(void *priv, struct nbl_lag_member_list_param *param);
-	int (*cfg_lag_mcc)(void *priv, u16 eth_id, u16 lag_id, bool enable);
 	int (*cfg_bond_shaping)(void *priv, u8 eth_id, bool enable);
 	void (*cfg_bgid_back_pressure)(void *priv, u8 main_eth_id, u8 other_eth_id, bool enable);
 
@@ -186,20 +201,27 @@ struct nbl_resource_ops {
 	int (*update_rdma_mem_type)(void *priv);
 	u16 (*get_rdma_cap_num)(void *priv);
 	int (*set_ring_num)(void *priv, struct nbl_fw_cmd_net_ring_num_param *param);
+	int (*get_part_number)(void *priv, char *part_number);
+	int (*get_serial_number)(void *priv, char *serial_number);
 	int (*enable_port)(void *priv, bool enable);
 	int (*cfg_eth_bond_info)(void *priv, struct nbl_lag_member_list_param *param);
 	int (*get_eth_bond_info)(void *priv, struct nbl_bond_param *param);
 	void (*cfg_eth_bond_event)(void *priv, bool enable);
 	void (*recv_port_notify)(void *priv, void *data);
 	int (*get_port_state)(void *priv, u8 eth_id, struct nbl_port_state *port_state);
+	int (*get_fec_stats)(void *priv, u32 eth_id, struct nbl_fec_stats *fec_stats);
 	int (*set_port_advertising)(void *priv, struct nbl_port_advertising *port_advertising);
 	int (*get_module_info)(void *priv, u8 eth_id, struct ethtool_modinfo *info);
 	int (*get_module_eeprom)(void *priv, u8 eth_id, struct ethtool_eeprom *eeprom, u8 *data);
 	int (*get_link_state)(void *priv, u8 eth_id, struct nbl_eth_link_info *eth_link_info);
+	int (*get_link_down_count)(void *priv, u8 eth_id, u64 *link_down_count);
+	int (*get_link_status_opcode)(void *priv, u8 eth_id, u32 *link_status_opcode);
 	int (*set_eth_mac_addr)(void *priv, u8 *mac, u8 eth_id);
 	int (*process_abnormal_event)(void *priv, struct nbl_abnormal_event_info *abnomal_info);
 	int (*ctrl_port_led)(void *priv, u8 eth_id, enum nbl_led_reg_ctrl led_ctrl, u32 *led_reg);
+	int (*set_wol)(void *priv, u8 eth_id, bool enable);
 	void (*adapt_desc_gother)(void *priv);
+	void (*set_desc_high_throughput)(void *priv);
 	void (*flr_clear_net)(void *priv, u16 vfid);
 	void (*flr_clear_queues)(void *priv, u16 vfid);
 	void (*flr_clear_accel_flow)(void *priv, u16 vfid);
@@ -212,6 +234,14 @@ struct nbl_resource_ops {
 	int (*set_bridge_mode)(void *priv, u16 func_id, u16 bmode);
 	u16 (*get_vf_function_id)(void *priv, u16 vsi_id, int vf_id);
 	u16 (*get_vf_vsi_id)(void *priv, u16 vsi_id, int vf_id);
+	bool (*check_vf_is_active)(void *priv, u16 func_id);
+	int (*check_vf_is_vdpa)(void *priv, u16 func_id, u8 *is_vdpa);
+	int (*get_vdpa_vf_stats)(void *priv, u16 func_id, struct nbl_vf_stats *vf_stats);
+	int (*get_uvn_pkt_drop_stats)(void *priv, u16 vsi_id,
+				      u16 num_queues, u32 *uvn_stat_pkt_drop);
+	int (*get_ustore_pkt_drop_stats)(void *priv);
+	int (*get_ustore_total_pkt_drop_stats)(void *priv, u8 eth_id,
+					       struct nbl_ustore_stats *ustore_stats);
 
 	bool (*check_fw_heartbeat)(void *priv);
 	bool (*check_fw_reset)(void *priv);
@@ -273,13 +303,14 @@ struct nbl_resource_ops {
 	void (*register_func_mac)(void *priv, u8 *mac, u16 func_id);
 	int (*register_func_link_forced)(void *priv, u16 func_id, u8 link_forced,
 					 bool *should_notify);
+	int (*register_func_trust)(void *priv, u16 func_id,
+				   bool trust, bool *should_notify);
 	int (*register_func_vlan)(void *priv, u16 func_id,
 				  u16 vlan_tci, u16 vlan_proto, bool *should_notify);
 	int (*register_func_rate)(void *priv, u16 func_id, int rate);
 	int (*get_link_forced)(void *priv, u16 vsi_id);
-	int (*set_tx_rate)(void *priv, u16 func_id, int tx_rate);
-
-	void (*get_driver_version)(void *priv, char *ver, int len);
+	int (*set_tx_rate)(void *priv, u16 func_id, int tx_rate, int burst);
+	int (*set_rx_rate)(void *priv, u16 func_id, int rx_rate, int burst);
 
 	int (*get_fd_flow)(void *priv, u16 vsi_id, u32 location,
 			   enum nbl_chan_fdir_rule_type rule_type,
@@ -329,10 +360,7 @@ struct nbl_resource_ops {
 	void (*get_flow_acl_switch)(void *priv, u8 *acl_enable);
 	void (*get_board_info)(void *priv, struct nbl_board_port_info *board_info);
 
-	/* For virtio */
-	void (*configure_virtio_dev_msix)(void *priv, u16 vector);
 	void (*configure_rdma_msix_off)(void *priv, u16 vector);
-	void (*configure_virtio_dev_ready)(void *priv);
 
 	int (*switchdev_init_cmdq)(void *priv);
 	int (*switchdev_deinit_cmdq)(void *priv, u8 index);
@@ -365,9 +393,29 @@ struct nbl_resource_ops {
 	void (*set_hw_status)(void *priv, enum nbl_hw_status hw_status);
 	void (*get_active_func_bitmaps)(void *priv, unsigned long *bitmap, int max_func);
 	int (*configure_qos)(void *priv, u8 eth_id, u8 *pfc, u8 trust, u8 *dscp2prio_map);
+	int (*configure_rdma_bw)(void *priv, u8 eth_id, int rdma_bw);
 	int (*set_eth_pfc)(void *priv, u8 eth_id, u8 *pfc);
 	int (*get_pfc_buffer_size)(void *priv, u8 eth_id, u8 prio, int *xoff, int *xon);
 	int (*set_pfc_buffer_size)(void *priv, u8 eth_id, u8 prio, int xoff, int xon);
+	int (*set_rate_limit)(void *priv, u16 func_id, enum nbl_traffic_type type, u32 rate);
+	int (*set_tc_wgt)(void *priv, u16 vsi_id, u8 *weight, u8 num_tc);
+
+	u32 (*get_perf_dump_length)(void *priv);
+	u32 (*get_perf_dump_data)(void *priv, u8 *buffer, u32 size);
+
+	void (*register_dev_name)(void *priv, u16 vsi_id, char *name);
+	void (*get_dev_name)(void *priv, u16 vsi_id, char *name);
+
+	int (*get_mirror_table_id)(void *priv, u16 vsi_id, int dir, bool mirror_en,
+				   u8 *mt_id);
+	int (*configure_mirror)(void *priv, u16 func_id, bool mirror_en, int dir,
+				u8 mt_id);
+	int (*configure_mirror_table)(void *priv, bool mirror_en, u16 func_id, u8 mt_id);
+	int (*clear_mirror_cfg)(void *priv, u16 func_id);
+	void (*cfg_mirror_outputport_event)(void *priv, bool enable);
+	int (*check_flow_table_spec)(void *priv, u16 vlan_cnt, u16 unicast_cnt, u16 multicast_cnt);
+	u32 (*get_dvn_desc_req)(void *priv);
+	void (*set_dvn_desc_req)(void *priv, u32 desc_req);
 };
 
 struct nbl_resource_ops_tbl {

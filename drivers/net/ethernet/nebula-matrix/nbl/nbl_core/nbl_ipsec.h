@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2023 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author: Rocky Xie <rocky.xie@nebula-matrix.com>
  */
 
 #ifndef _NBL_IPSEC_H

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_interrupt.h"
@@ -113,6 +113,7 @@ static int nbl_res_intr_configure_msix_map(void *priv, u16 func_id, u16 num_net_
 
 	intr_mgt->func_intr_res[func_id].interrupts = interrupts;
 	intr_mgt->func_intr_res[func_id].num_interrupts = requested;
+	intr_mgt->func_intr_res[func_id].num_net_interrupts = num_net_msix;
 
 	for (i = 0; i < num_net_msix; i++) {
 		intr_index = find_first_zero_bit(intr_mgt->interrupt_net_bitmap,
@@ -156,7 +157,7 @@ static int nbl_res_intr_configure_msix_map(void *priv, u16 func_id, u16 num_net_
 
 	/* use ctrl dev bdf */
 	phy_ops->configure_msix_map(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), func_id, true,
-				    msix_map_table->dma, common->bus, common->devid,
+				    msix_map_table->dma, common->hw_bus, common->devid,
 				    NBL_COMMON_TO_PCI_FUNC_ID(common));
 
 	return 0;
@@ -180,6 +181,42 @@ alloc_interrupts_err:
 	msix_map_table->size = 0;
 	msix_map_table->base_addr = NULL;
 	msix_map_table->dma = 0;
+
+	return ret;
+}
+
+static int nbl_res_init_vf_msix_map(void *priv, u16 func_id, bool enable)
+{
+#define NBL_VF_NET_MSIX_NUM (4)
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	u16 net_msix_num = NBL_VF_NET_MSIX_NUM;
+	u16 tx_queue_num = 0;
+	u16 rx_queue_num = 0;
+
+	if (enable) {
+		if (res_mgt->common_ops.get_queue_num) {
+			res_mgt->common_ops.get_queue_num(priv, func_id,
+							  &tx_queue_num, &rx_queue_num);
+			net_msix_num = tx_queue_num + rx_queue_num;
+		}
+
+		return nbl_res_intr_configure_msix_map(priv, func_id, net_msix_num, 1, true);
+	}
+
+	nbl_res_intr_destroy_msix_map(priv, func_id);
+
+	return 0;
+}
+
+static int nbl_res_intr_destroy_msix_map_export(void *priv, u16 func_id)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	int ret = 0;
+
+	ret = nbl_res_intr_destroy_msix_map(priv, func_id);
+
+	if (func_id >= NBL_RES_MGT_TO_PF_NUM(res_mgt))
+		ret |= nbl_res_init_vf_msix_map(priv, func_id, true);
 
 	return ret;
 }
@@ -305,7 +342,7 @@ static int nbl_res_intr_get_abnormal_irq_num(void *priv)
 	return 1;
 }
 
-static u16 nbl_res_intr_get_suppress_level(void *priv, u64 rates, u16 last_level)
+u16 nbl_res_intr_get_suppress_level(void *priv, u64 rates, u16 last_level)
 {
 	switch (last_level) {
 	case NBL_INTR_SUPPRESS_LEVEL0:
@@ -314,17 +351,24 @@ static u16 nbl_res_intr_get_suppress_level(void *priv, u64 rates, u16 last_level
 		else
 			return NBL_INTR_SUPPRESS_LEVEL0;
 	case NBL_INTR_SUPPRESS_LEVEL1:
-		if (rates > NBL_INTR_SUPPRESS_LEVEL1_DOWNGRADE_THRESHOLD)
+		if (rates > NBL_INTR_SUPPRESS_LEVEL2_THRESHOLD)
+			return NBL_INTR_SUPPRESS_LEVEL2;
+		else if (rates > NBL_INTR_SUPPRESS_LEVEL1_DOWNGRADE_THRESHOLD)
 			return NBL_INTR_SUPPRESS_LEVEL1;
 		else
 			return NBL_INTR_SUPPRESS_LEVEL0;
+	case NBL_INTR_SUPPRESS_LEVEL2:
+		if (rates > NBL_INTR_SUPPRESS_LEVEL2_DOWNGRADE_THRESHOLD)
+			return NBL_INTR_SUPPRESS_LEVEL2;
+		else
+			return NBL_INTR_SUPPRESS_LEVEL1;
 	default:
 		return NBL_INTR_SUPPRESS_LEVEL0;
 	}
 }
 
-static void nbl_res_intr_set_intr_suppress_level(void *priv, u16 func_id, u16 vector_id,
-						 u16 num_net_msix, u16 level)
+void nbl_res_intr_set_intr_suppress_level(void *priv, u16 func_id, u16 vector_id,
+					  u16 num_net_msix, u16 level)
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
@@ -343,11 +387,24 @@ static void nbl_res_intr_set_intr_suppress_level(void *priv, u16 func_id, u16 ve
 			rate = NBL_INTR_SUPPRESS_LEVEL1_25G_RATE;
 		}
 		break;
+	case NBL_INTR_SUPPRESS_LEVEL2:
+		if (res_mgt->resource_info->board_info.eth_speed == NBL_FW_PORT_SPEED_100G) {
+			pnum = NBL_INTR_SUPPRESS_LEVEL2_100G_PNUM;
+			rate = NBL_INTR_SUPPRESS_LEVEL2_100G_RATE;
+		} else {
+			pnum = NBL_INTR_SUPPRESS_LEVEL1_25G_PNUM;
+			rate = NBL_INTR_SUPPRESS_LEVEL1_25G_RATE;
+		}
+		break;
 	default:
 		pnum = NBL_INTR_SUPPRESS_LEVEL0_PNUM;
 		rate = NBL_INTR_SUPPRESS_LEVEL0_RATE;
 		break;
 	}
+
+	if (num_net_msix == U16_MAX)
+		num_net_msix = intr_mgt->func_intr_res[func_id].num_net_interrupts;
+
 	for (i = 0; i < num_net_msix; i++) {
 		global_vector_id = intr_mgt->func_intr_res[func_id].interrupts[vector_id + i];
 		phy_ops->set_coalesce(NBL_RES_MGT_TO_PHY_PRIV(res_mgt),
@@ -357,12 +414,7 @@ static void nbl_res_intr_set_intr_suppress_level(void *priv, u16 func_id, u16 ve
 
 static void nbl_res_flr_clear_interrupt(void *priv, u16 vf_id)
 {
-	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
-	u16 func_id = vf_id + NBL_MAX_PF;
-	struct nbl_interrupt_mgt *intr_mgt = NBL_RES_MGT_TO_INTR_MGT(res_mgt);
-
-	if (intr_mgt->func_intr_res[func_id].interrupts)
-		nbl_res_intr_destroy_msix_map(priv, func_id);
+	return;
 }
 
 static void nbl_res_intr_unmask(struct nbl_resource_mgt *res_mgt, u16 interrupts_id)
@@ -393,8 +445,9 @@ static void nbl_res_unmask_all_interrupts(void *priv)
  */
 #define NBL_INTR_OPS_TBL								\
 do {											\
+	NBL_INTR_SET_OPS(init_vf_msix_map, nbl_res_init_vf_msix_map);			\
 	NBL_INTR_SET_OPS(configure_msix_map, nbl_res_intr_configure_msix_map);		\
-	NBL_INTR_SET_OPS(destroy_msix_map, nbl_res_intr_destroy_msix_map);		\
+	NBL_INTR_SET_OPS(destroy_msix_map, nbl_res_intr_destroy_msix_map_export);	\
 	NBL_INTR_SET_OPS(enable_mailbox_irq, nbl_res_intr_enable_mailbox_irq);		\
 	NBL_INTR_SET_OPS(enable_abnormal_irq, nbl_res_intr_enable_abnormal_irq);	\
 	NBL_INTR_SET_OPS(enable_adminq_irq, nbl_res_intr_enable_adminq_irq);		\

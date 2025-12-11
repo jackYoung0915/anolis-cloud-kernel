@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEBUGFS_H_
@@ -10,6 +10,11 @@
 #include "nbl_core.h"
 
 #define NBL_DEBUGFS_MGT_TO_COMMON(debugfs_mgt)		((debugfs_mgt)->common)
+#define NBL_DEBUGFS_MGT_TO_SERV_OPS_TBL(debugfs_mgt)	((debugfs_mgt)->serv_ops_tbl)
+#define NBL_DEBUGFS_MGT_TO_SERV_OPS(debugfs_mgt)					\
+	(NBL_DEBUGFS_MGT_TO_SERV_OPS_TBL(debugfs_mgt)->ops)
+#define NBL_DEBUGFS_MGT_TO_SERV_PRIV(debugfs_mgt)					\
+	(NBL_DEBUGFS_MGT_TO_SERV_OPS_TBL(debugfs_mgt)->priv)
 #define NBL_DEBUGFS_MGT_TO_DISP_OPS_TBL(debugfs_mgt)	((debugfs_mgt)->disp_ops_tbl)
 #define NBL_DEBUGFS_MGT_TO_DISP_OPS(debugfs_mgt)					\
 	(NBL_DEBUGFS_MGT_TO_DISP_OPS_TBL(debugfs_mgt)->ops)
@@ -23,6 +28,7 @@
 
 struct nbl_debugfs_mgt {
 	struct dentry *nbl_debugfs_root;
+	struct nbl_service_ops_tbl *serv_ops_tbl;
 	struct nbl_dispatch_ops_tbl *disp_ops_tbl;
 	struct nbl_channel_ops_tbl *chan_ops_tbl;
 	struct nbl_common_info *common;

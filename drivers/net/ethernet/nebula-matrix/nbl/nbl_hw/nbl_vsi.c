@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_vsi.h"
@@ -42,11 +42,19 @@ static int nbl_res_set_vf_spoof_check(void *priv, u16 vsi_id, int vfid, u8 enabl
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_phy_ops *phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
-	int pfid = nbl_res_vsi_id_to_pf_id(res_mgt, vsi_id);
-	u16 vf_vsi = vfid == -1 ? vsi_id : nbl_res_pfvfid_to_vsi_id(res_mgt, pfid, vfid,
-				NBL_VSI_DATA);
+	u16 func_id = nbl_res_vsi_id_to_func_id(res_mgt, vsi_id);
+	u16 pfid = 0;
+	u16 vf_vsi_id = 0;
 
-	return phy_ops->set_spoof_check_enable(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vf_vsi, enable);
+	/* when ip link set eth0 vf <num> spoofchk */
+	if (func_id < NBL_MAX_PF) {
+		pfid = nbl_res_vsi_id_to_pf_id(res_mgt, vsi_id);
+		vf_vsi_id = nbl_res_pfvfid_to_vsi_id(res_mgt, pfid, vfid, NBL_VSI_DATA);
+	} else {
+		vf_vsi_id = vsi_id;
+	}
+
+	return phy_ops->set_spoof_check_enable(NBL_RES_MGT_TO_PHY_PRIV(res_mgt), vf_vsi_id, enable);
 }
 
 static u16 nbl_res_get_vf_function_id(void *priv, u16 vsi_id, int vfid)
@@ -68,6 +76,16 @@ static u16 nbl_res_get_vf_vsi_id(void *priv, u16 vsi_id, int vfid)
 
 	vf_vsi = vfid == -1 ? vsi_id : nbl_res_pfvfid_to_vsi_id(res_mgt, pfid, vfid, NBL_VSI_DATA);
 	return vf_vsi;
+}
+
+static void nbl_res_vsi_deinit_chip_module(void *priv)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_phy_ops *phy_ops;
+
+	phy_ops = NBL_RES_MGT_TO_PHY_OPS(res_mgt);
+
+	phy_ops->deinit_chip_module(NBL_RES_MGT_TO_PHY_PRIV(res_mgt));
 }
 
 static int nbl_res_vsi_init_chip_module(void *priv)
@@ -121,6 +139,9 @@ static void nbl_res_register_func_mac(void *priv, u8 *mac, u16 func_id)
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
 
+	if (func_id >= NBL_MAX_FUNC)
+		return;
+
 	ether_addr_copy(vsi_info->mac_info[func_id].mac, mac);
 }
 
@@ -129,6 +150,9 @@ static int nbl_res_register_func_link_forced(void *priv, u16 func_id, u8 link_fo
 {
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
 
 	resource_info->link_forced_info[func_id] = link_forced;
 	*should_notify = test_bit(func_id, resource_info->func_bitmap);
@@ -142,7 +166,26 @@ static int nbl_res_get_link_forced(void *priv, u16 vsi_id)
 	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
 	u16 func_id = nbl_res_vsi_id_to_func_id(res_mgt, vsi_id);
 
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
+
 	return resource_info->link_forced_info[func_id];
+}
+
+static int nbl_res_register_func_trust(void *priv, u16 func_id,
+				       bool trusted, bool *should_notify)
+{
+	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
+	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
+	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
+
+	vsi_info->mac_info[func_id].trusted = trusted;
+	*should_notify = test_bit(func_id, resource_info->func_bitmap);
+
+	return 0;
 }
 
 static int nbl_res_register_func_vlan(void *priv, u16 func_id,
@@ -151,6 +194,9 @@ static int nbl_res_register_func_vlan(void *priv, u16 func_id,
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_resource_info *resource_info = NBL_RES_MGT_TO_RES_INFO(res_mgt);
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
+
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
 
 	vsi_info->mac_info[func_id].vlan_proto = vlan_proto;
 	vsi_info->mac_info[func_id].vlan_tci = vlan_tci;
@@ -164,6 +210,9 @@ static int nbl_res_register_rate(void *priv, u16 func_id, int rate)
 	struct nbl_resource_mgt *res_mgt = (struct nbl_resource_mgt *)priv;
 	struct nbl_vsi_info *vsi_info = NBL_RES_MGT_TO_VSI_INFO(res_mgt);
 
+	if (func_id >= NBL_MAX_FUNC)
+		return -EINVAL;
+
 	vsi_info->mac_info[func_id].rate = rate;
 
 	return 0;
@@ -176,6 +225,7 @@ static int nbl_res_register_rate(void *priv, u16 func_id, int rate)
 #define NBL_VSI_OPS_TBL								\
 do {										\
 	NBL_VSI_SET_OPS(init_chip_module, nbl_res_vsi_init_chip_module);	\
+	NBL_VSI_SET_OPS(deinit_chip_module, nbl_res_vsi_deinit_chip_module);	\
 	NBL_VSI_SET_OPS(vsi_init, nbl_res_vsi_init);				\
 	NBL_VSI_SET_OPS(set_promisc_mode, nbl_res_set_promisc_mode);		\
 	NBL_VSI_SET_OPS(set_spoof_check_addr, nbl_res_set_spoof_check_addr);	\
@@ -187,7 +237,8 @@ do {										\
 	NBL_VSI_SET_OPS(register_func_link_forced, nbl_res_register_func_link_forced);	\
 	NBL_VSI_SET_OPS(register_func_vlan, nbl_res_register_func_vlan);	\
 	NBL_VSI_SET_OPS(get_link_forced, nbl_res_get_link_forced);		\
-	NBL_VSI_SET_OPS(register_func_rate, nbl_res_register_rate);	\
+	NBL_VSI_SET_OPS(register_func_rate, nbl_res_register_rate);		\
+	NBL_VSI_SET_OPS(register_func_trust, nbl_res_register_func_trust);	\
 } while (0)
 
 /* Structure starts here, adding an op should not modify anything below */

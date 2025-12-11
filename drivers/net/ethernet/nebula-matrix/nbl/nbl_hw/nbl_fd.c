@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #include "nbl_fd.h"
@@ -187,7 +187,7 @@ static struct nbl_flow_direct_entry *nbl_fd_add_flow(struct nbl_flow_direct_mgt 
 			if (next->param.location >= entry->param.location)
 				break;
 
-		if (nbl_list_entry_is_head(next, &info->list[param->rule_type], node))
+		if (list_entry_is_head(next, &info->list[param->rule_type], node))
 			list_add(&entry->node, &info->list[param->rule_type]);
 		else
 			list_add(&entry->node, &list_prev_entry(next, node)->node);

@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEF_DEV_H_
@@ -34,6 +34,8 @@ int nbl_dev_destroy_rep(void *p);
 
 int nbl_dev_setup_vf_config(void *p, int num_vfs);
 void nbl_dev_remove_vf_config(void *p);
+void nbl_dev_register_dev_name(void *p);
+void nbl_dev_get_dev_name(void *p, char *dev_name);
 int nbl_dev_resume(void *p);
 int nbl_dev_suspend(void *p);
 #endif

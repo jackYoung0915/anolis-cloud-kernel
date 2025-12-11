@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
- * Author: Bennie Yan <bennie@nebula-matrix.com>
+ * Author:
  */
 
 #ifndef _NBL_DEF_PHY_H_
@@ -14,6 +14,7 @@
 
 struct nbl_phy_ops {
 	int (*init_chip_module)(void *priv, u8 eth_speed, u8 eth_num);
+	void (*deinit_chip_module)(void *priv);
 	int (*get_firmware_version)(void *priv, char *firmware_verion);
 	int (*flow_init)(void *priv);
 	int (*init_qid_map_table)(void *priv);
@@ -38,19 +39,24 @@ struct nbl_phy_ops {
 	int (*cfg_q2tc_tcid)(void *priv, u16 queue_id, u16 tcid);
 	int (*set_tc_wgt)(void *priv, u16 func_id, u8 *weight, u16 num_tc);
 	int (*set_tc_spwrr)(void *priv, u16 func_id, u8 spwrr);
-	int (*set_shaping)(void *priv, u16 func_id, u64 total_tx_rate, u8 vld, bool active);
+	int (*set_shaping)(void *priv, u16 func_id, u64 total_tx_rate, u64 burst,
+			   u8 vld, bool active);
 	void (*active_shaping)(void *priv, u16 func_id);
 	void (*deactive_shaping)(void *priv, u16 func_id);
+	int (*set_ucar)(void *priv, u16 func_id, u64 total_tx_rate, u64 burst,
+			u8 vld);
 	int (*cfg_dsch_net_to_group)(void *priv, u16 func_id, u16 group_id, u16 vld);
 	int (*cfg_dsch_group_to_port)(void *priv, u16 group_id, u16 dport, u16 vld);
 	int (*init_epro_rss_key)(void *priv);
 	void (*read_rss_key)(void *priv, u8 *rss_key);
 	void (*read_rss_indir)(void *priv, u16 vsi_id, u32 *rss_indir,
 			       u16 rss_ret_base, u16 rss_entry_size);
-	void (*get_rss_alg_sel)(void *priv, u8 eth_id, u8 *rss_alg_sel);
+	void (*get_rss_alg_sel)(void *priv, u16 vsi_id, u8 *alg_sel);
+	int (*set_rss_alg_sel)(void *priv, u16 vsi_id, u8 alg_sel);
 	int (*init_epro_vpt_tbl)(void *priv, u16 vsi_id);
 	int (*set_epro_rss_default)(void *priv, u16 vsi_id);
-	int (*cfg_epro_rss_ret)(void *priv, u32 index, u8 size_type, u32 q_num, u16 *queue_list);
+	int (*cfg_epro_rss_ret)(void *priv, u32 index, u8 size_type, u32 q_num,
+				u16 *queue_list, const u32 *indir);
 	int (*set_epro_rss_pt)(void *priv, u16 vsi_id, u16 rss_ret_base, u16 rss_entry_size);
 	int (*clear_epro_rss_pt)(void *priv, u16 vsi_id);
 	int (*disable_dvn)(void *priv, u16 queue_id);
@@ -79,6 +85,8 @@ struct nbl_phy_ops {
 	void (*get_coalesce)(void *priv, u16 interrupt_id, u16 *pnum, u16 *rate);
 	void (*set_coalesce)(void *priv, u16 interrupt_id, u16 pnum, u16 rate);
 
+	void (*write_ped_tbl)(void *priv, u8 *data, u16 idx, enum nbl_flow_ped_type ped_type);
+
 	void (*update_mailbox_queue_tail_ptr)(void *priv, u16 tail_ptr, u8 txrx);
 	void (*config_mailbox_rxq)(void *priv, dma_addr_t dma_addr, int size_bwid);
 	void (*config_mailbox_txq)(void *priv, dma_addr_t dma_addr, int size_bwid);
@@ -87,7 +95,10 @@ struct nbl_phy_ops {
 	u16 (*get_mailbox_rx_tail_ptr)(void *priv);
 	bool (*check_mailbox_dma_err)(void *priv, bool tx);
 	u32 (*get_host_pf_mask)(void *priv);
-	u32 (*get_host_pf_fid)(void *priv, u8 func_id);
+	u32 (*get_host_pf_fid)(void *priv, u16 func_id);
+	u32 (*get_real_bus)(void *priv);
+	u64 (*get_pf_bar_addr)(void *priv, u16 func_id);
+	u64 (*get_vf_bar_addr)(void *priv, u16 func_id);
 	void (*cfg_mailbox_qinfo)(void *priv, u16 func_id, u16 bus, u16 devid, u16 function);
 	void (*enable_mailbox_irq)(void *priv, u16 func_id, bool enable_msix, u16 global_vector_id);
 	void (*enable_abnormal_irq)(void *priv, bool enable_msix, u16 global_vector_id);
@@ -108,6 +119,7 @@ struct nbl_phy_ops {
 
 	int (*set_spoof_check_addr)(void *priv, u16 vsi_id, u8 *mac);
 	int (*set_spoof_check_enable)(void *priv, u16 vsi_id, u8 enable);
+	int (*set_vsi_mtu)(void *priv, u16 vsi_id, u16 mtu_sel);
 
 	u8 __iomem * (*get_hw_addr)(void *priv, size_t *size);
 	int (*enable_lag_protocol)(void *priv, u16 eth_id, void *data);
@@ -117,7 +129,6 @@ struct nbl_phy_ops {
 	int (*set_sfp_state)(void *priv, u8 eth_id, u8 state);
 	int (*cfg_lag_member_list)(void *priv, struct nbl_lag_member_list_param *param);
 	int (*cfg_lag_member_up_attr)(void *priv, u16 eth_id, u16 lag_id, bool enable);
-	int (*cfg_lag_mcc)(void *priv, u16 mcc_id, u16 action);
 	bool (*get_lag_fwd)(void *priv, u16 eth_id);
 
 	int (*cfg_bond_shaping)(void *priv, u8 eth_id, u8 speed, bool enable);
@@ -135,6 +146,8 @@ struct nbl_phy_ops {
 	int (*set_fd_action_ram)(void *priv, u32 action, u16 ram_index, u32 depth_index);
 	void (*set_hw_status)(void *priv, enum nbl_hw_status hw_status);
 	enum nbl_hw_status (*get_hw_status)(void *priv);
+	int (*set_mtu)(void *priv, u16 mtu_index, u16 mtu);
+	u16 (*get_mtu_index)(void *priv, u16 vsi_id);
 
 	/* For leonis */
 	int (*set_ht)(void *priv, u16 hash, u16 hash_other, u8 ht_table,
@@ -143,8 +156,9 @@ struct nbl_phy_ops {
 	int (*search_key)(void *priv, u8 *key, u8 key_type);
 	int (*add_tcam)(void *priv, u32 index, u8 *key, u32 *action, u8 key_type, u8 pp_type);
 	void (*del_tcam)(void *priv, u32 index, u8 key_type, u8 pp_type);
-	int (*add_mcc)(void *priv, u16 mcc_id, u16 prev_mcc_id, u16 action);
+	int (*add_mcc)(void *priv, u16 mcc_id, u16 prev_mcc_id, u16 next_mcc_id, u16 action);
 	void (*del_mcc)(void *priv, u16 mcc_id, u16 prev_mcc_id, u16 next_mcc_id);
+	void (*update_mcc_next_node)(void *priv, u16 mcc_id, u16 next_mcc_id);
 	int (*add_tnl_encap)(void *priv, const u8 encap_buf[], u16 encap_idx,
 			     union nbl_flow_encap_offset_tbl_u encap_idx_info);
 	void (*del_tnl_encap)(void *priv, u16 encap_idx);
@@ -215,21 +229,17 @@ struct nbl_phy_ops {
 	void (*set_ped_tab_vsi_type)(void *priv, u32 port_id, u16 eth_proto);
 	void (*load_p4)(void *priv, u32 addr, u32 size, u8 *data);
 	void (*configure_qos)(void *priv, u8 eth_id, u8 *pfc, u8 trust, u8 *dscp2prio_map);
+	void (*configure_rdma_bw)(void *priv, u8 eth_id, int rdma_bw);
 	void (*get_pfc_buffer_size)(void *priv, u8 eth_id, u8 prio, int *xoff, int *xon);
 	int (*set_pfc_buffer_size)(void *priv, u8 eth_id, u8 prio, int xoff, int xon);
+	void (*set_rate_limit)(void *priv, u16 func_id, enum nbl_traffic_type type, u32 rate);
+	int (*get_dstat_vsi_stat)(void *priv, u16 vsi_id, u64 *fwd_pkt, u64 *fwd_byte);
+	int (*get_ustat_vsi_stat)(void *priv, u16 vsi_id, u64 *fwd_pkt, u64 *fwd_byte);
+	int (*get_uvn_pkt_drop_stats)(void *priv, u16 global_queue_id, u32 *uvn_stat_pkt_drop);
+	int (*get_ustore_pkt_drop_stats)(void *priv, u8 eth_id,
+					 struct nbl_ustore_stats *ustore_stats);
 
-	/* For bootis */
-	int (*add_mv_tbl)(void *priv, u16 vsi, const void *key, const void *act, u16 result_idx);
-	int (*del_mv_tbl)(void *priv, const void *key);
-	int (*cfg_rss_alg)(void *priv, u16 vsi, const void *param);
-	void (*cfg_padpt_txrx_enable)(void *priv, bool tx_enable, bool rx_enable);
-	int (*init_port)(void *priv);
-	int (*init_fec)(void *priv);
 	int (*setup_loopback)(void *priv, u32 eth_id, u32 enable);
-	bool (*sfp_is_present)(void *priv, u32 eth_id);
-	int (*read_i2c)(void *priv, u32 eth_id, u16 slave_addr,
-			u8 channel, u8 read_byte, u8 addr, u32 *rdata);
-	int (*get_eth_mac_address)(void *priv, u32 eth_id, u8 *mac_addr);
 	int (*ctrl_port_led)(void *priv, u8 eth_id, enum nbl_led_reg_ctrl led_ctrl, u32 *led_reg);
 
 	/* for board cfg */
@@ -255,13 +265,25 @@ struct nbl_phy_ops {
 	void (*get_eth_ip_reg)(void *priv, u32 eth_id, u64 addr_off, u32 *data);
 	int (*set_eth_fec_mode)(void *priv, u32 eth_id, enum nbl_port_mode mode);
 	void (*clear_profile_table_action)(void *priv);
-
-	/* For virtio */
+	void (*ipro_chksum_err_ctrl)(void *priv, u8 status);
 	void (*get_common_cfg)(void *priv, u32 offset, void *buf, u32 len);
 	void (*set_common_cfg)(void *priv, u32 offset, void *buf, u32 len);
 	void (*get_device_cfg)(void *priv, u32 offset, void *buf, u32 len);
 	void (*set_device_cfg)(void *priv, u32 offset, void *buf, u32 len);
 	bool (*get_rdma_capability)(void *priv);
+
+	u32 (*get_perf_dump_length)(void *priv);
+	u32 (*get_perf_dump_data)(void *priv, u8 *buffer, u32 size);
+
+	int (*get_mirror_table_id)(void *priv, u16 vsi_id, int dir,
+				   bool mirror_en, u8 *mt_id);
+	int (*configure_mirror)(void *priv, u16 vsi_id, bool mirror_en, int dir,
+				u8 mt_id);
+	int (*configure_mirror_table)(void *priv, bool mirror_en,
+				      u16 mirror_vsi_id, u16 mirror_queue_id, u8 mt_id);
+	int (*clear_mirror_cfg)(void *priv, u16 vsi_id);
+	u32 (*get_dvn_desc_req)(void *priv);
+	void (*set_dvn_desc_req)(void *priv, u32 desc_req);
 };
 
 struct nbl_phy_ops_tbl {
