@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
  */
+
 #ifndef _NBL_TC_FLOW_LEONIS_H_
 #define _NBL_TC_FLOW_LEONIS_H_
 
@@ -51,12 +52,11 @@
 #define NBL_FEM_AT_HALF_LEN				16
 #define NBL_AT_WIDTH					22
 
-#define NBL_PP1_AT2_OFFSET				(94 * 1024)
-#define NBL_PP1_AT_OFFSET				(88 * 1024)
-#define NBL_PP2_AT2_OFFSET				(72 * 1024)
+#define NBL_PP1_AT2_OFFSET				(92 * 1024)
+#define NBL_PP1_AT_OFFSET				(80 * 1024)
+#define NBL_PP2_AT2_OFFSET				(64 * 1024)
 
-#define NBL_PP0_POWER					0
-#define NBL_PP1_POWER					12
+#define NBL_PP1_POWER					13
 #define NBL_PP2_POWER					14
 
 #define NBL_FEM_AT_NO_ENTRY				(0)
@@ -88,7 +88,6 @@
 
 #define NBL_FLOW_TAB_ONE_TIME				1
 #define NBL_FLOW_TAB_TWO_TIME				2
-#define NBL_FLOW_TABLE_IPV4_DEFAULT_MASK		0xFFFFFFFF
 #define NBL_INVALID_U32					0xFFFFFFFF
 #define NBL_FLOW_TABLE_L4_PORT_DEFAULT_MASK		0xFFFF
 #define NBL_FLOW_TABLE_FULL_MASK_AS_U32			0xFFFFFFFF
@@ -97,6 +96,13 @@
 
 #define NBL_GET_ARG_LEN(sz) ((sz) / sizeof(u32))
 #define NBL_GET_ARG_COPY_LEN(sz) ((sz) * sizeof(u32))
+
+#define NBL_FLOW_TC_PEDIT_MAC	1024
+#define NBL_FLOW_TC_PEDIT_IP	1024
+#define NBL_FLOW_TC_PEDIT_IP6	512
+
+#define NBL_FLOW_TC_PEDIT_MAC_BASE 0
+#define NBL_FLOW_TC_PEDIT_IP_BASE NBL_FLOW_TC_PEDIT_MAC
 
 /* at node's idx has two continuous idx, and the begin idx need to be even number */
 #define NBL_FLOW_AT_IDX_NUM				2
@@ -112,6 +118,7 @@ struct nbl_tc_flow {
 		void *profile_rule[NBL_ASSOC_PROFILE_STAGE_NUM];
 	};
 	struct nbl_encap_key *encap_key;
+	struct nbl_tc_pedit_node_res pedit_node;
 };
 
 struct nbl_tcam_item {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0*/
 /*
  * Copyright (c) 2022 nebula-matrix Limited.
  * Author: Bennie Yan <bennie@nebula-matrix.com>
@@ -26,7 +26,16 @@ enum nbl_qos_param_types {
 	NBL_QOS_PFC_BUFFER,
 	NBL_QOS_TRUST,
 	NBL_QOS_DSCP2PRIO,
+	NBL_QOS_RDMA_BW,
+	NBL_QOS_RDMA_RATE,
+	NBL_QOS_NET_RATE,
 	NBL_QOS_TYPE_MAX
+};
+
+enum nbl_mirror_param_types {
+	NBL_MIRROR_SELECT_SRC_PORT,
+	NBL_MIRROR_SELECT_DST_PORT,
+	NBL_MIRROR_TYPE_MAX
 };
 
 struct nbl_sysfs_qos_info {
@@ -38,10 +47,19 @@ struct nbl_sysfs_qos_info {
 struct nbl_net_qos {
 	struct kobject *qos_kobj;
 	struct nbl_sysfs_qos_info qos_info[NBL_QOS_TYPE_MAX];
-	u8 pfc[NBL_MAX_PFC_PRIORITIES];
-	u8 trust_mode;		/* Trust Mode value 0:802.1p 1: dscp */
-	u8 dscp2prio_map[NBL_DSCP_MAX]; /* DSCP -> Priority map */
-	int buffer_sizes[NBL_MAX_PFC_PRIORITIES][2];
+};
+
+struct nbl_sysfs_mirror_info {
+	int offset;
+	int mirror_en;
+	u16 vf_id;
+	struct nbl_dev_net *net_dev;
+	struct kobj_attribute kobj_attr;
+};
+
+struct nbl_net_mirror {
+	struct kobject *mirror_kobj;
+	struct nbl_sysfs_mirror_info mirror_info[NBL_MIRROR_TYPE_MAX];
 };
 
 #endif
