@@ -1856,6 +1856,11 @@ static int fuse_get_tree(struct fs_context *fsc)
 	 * connection
 	 */
 	is_virtfuse = is_virtfuse_device(ctx->file);
+	/* bind fc to init_user_ns for virtfuse */
+	if (is_virtfuse) {
+		put_user_ns(fc->user_ns);
+		fc->user_ns = get_user_ns(&init_user_ns);
+	}
 	fud = READ_ONCE(ctx->file->private_data);
 	if ((ctx->file->f_op == &fuse_dev_operations || is_virtfuse) && fud) {
 		fsc->sget_key = fud->fc;
