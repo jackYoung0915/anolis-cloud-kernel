@@ -33,7 +33,7 @@ fi
 sh ${DIST_OUTPUT}/generate.sh | tee ${FILE_LIST}
 
 if [ "${DIST_DO_GENERATE_DOT_CONFIG}" = "Y" ]; then
-    file=$(cat ${FILE_LIST} | grep "generated" | awk '{print $4}' | head -1)
+    file=$(cat ${FILE_LIST} | grep "processed" | awk '{print $4}' | head -1)
     cp -f ${file} ${DIST_SRCROOT}.config
 fi
 
