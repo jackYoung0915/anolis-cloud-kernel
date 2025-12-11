@@ -1989,11 +1989,67 @@ struct kvm_csv_receive_encrypt_context {
 	__u32 trans_len;
 };
 
-#define KVM_CSV3_RELEASE_SHARED_MEMORY (0x0001)
-
+/**
+ * struct kvm_csv_handle_memory - IOCTL data structure for CSV3 memory
+ *				  operations.
+ *
+ * This union is used to pass input and output parameters between userspace
+ * and kernel for KVM_CSV3 memory management commands.
+ *
+ * It supports two ioctl commands:
+ *   - KVM_CSV3_RELEASE_SHARED_MEMORY: Notify userspace VMM to madvise pages
+ *     as unused, releasing shared memory mappings.
+ *   - KVM_CSV3_GET_SHARED_MEMORY: Query how many pages are currently pinned
+ *     at a given GPA range.
+ *
+ * The union contains three nested structs:
+ *   - Input (for both commands)
+ *   - Output (for KVM_CSV3_RELEASE_SHARED_MEMORY)
+ *   - Output (for KVM_CSV3_GET_SHARED_MEMORY)
+ */
 struct kvm_csv_handle_memory {
-	__u64 gpa;
-	__u32 num_pages;
-	__u32 opcode;
+	union {
+		/* Input of the ioctl command. */
+		/**
+		 * @gpa: The start guest physical address (GPA) to be handled.
+		 * @num_pages: The number of consecutive pages starting at
+		 *	       @gpa.
+		 * @opcode: The command ID to determine which operation to
+		 *	    perform.
+		 **/
+		struct {
+			__u64 gpa;
+			__u32 num_pages;
+#define KVM_CSV3_RELEASE_SHARED_MEMORY	0x0001
+#define KVM_CSV3_GET_SHARED_MEMORY	0x0002
+			__u32 opcode;
+		};
+		/* Output of ioctl command KVM_CSV3_RELEASE_SHARED_MEMORY. */
+		/**
+		 * @start_hva: The start host virtual address (HVA) that
+		 *	       userspace VMM should madvise as unused.
+		 * @unpinned: The number of pages that were successfully
+		 *	      unpinned and can now be madvised in userspace.
+		 * @unused0: Padding for alignment.
+		 */
+		struct {
+			__u64 start_hva;
+			__u32 unpinned;
+			__u32 unused0;
+		};
+		/* Output of ioctl command KVM_CSV3_GET_SHARED_MEMORY. */
+		/**
+		 * @unused1: Padding for alignment.
+		 * @npinned: The number of pages currently pinned at the
+		 *	     specified GPA. The userspace VMM need this
+		 *	     information to move forward.
+		 * @unused2: Padding for alignment.
+		 */
+		struct {
+			__u64 unused1;
+			__u32 npinned;
+			__u32 unused2;
+		};
+	};
 };
 #endif /* __LINUX_KVM_H */
