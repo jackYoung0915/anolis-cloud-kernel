@@ -2137,10 +2137,14 @@ struct sock *smc_accept_dequeue(struct sock *parent,
 				continue;
 			}
 			new_sk->sk_prot->unhash(new_sk);
+			lock_sock(new_sk);
+			if (!isk->use_fallback)
+				smc_conn_free(&isk->conn);
 			if (isk->clcsock) {
 				sock_release(isk->clcsock);
 				isk->clcsock = NULL;
 			}
+			release_sock(new_sk);
 			sock_put(new_sk); /* final */
 			continue;
 		}
