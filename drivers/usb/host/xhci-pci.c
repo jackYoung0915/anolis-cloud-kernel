@@ -310,10 +310,8 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 	if (pdev->vendor == PCI_VENDOR_ID_ZHAOXIN)
 		xhci->quirks |= XHCI_SUSPEND_DELAY;
 
-	if (pdev->vendor == PCI_VENDOR_ID_ZHAOXIN) {
-		xhci->quirks |= XHCI_LPM_SUPPORT;
+	if (pdev->vendor == PCI_VENDOR_ID_ZHAOXIN)
 		xhci->quirks |= XHCI_ZHAOXIN_HOST;
-	}
 
 	/* See https://bugzilla.kernel.org/show_bug.cgi?id=79511 */
 	if (pdev->vendor == PCI_VENDOR_ID_VIA &&
