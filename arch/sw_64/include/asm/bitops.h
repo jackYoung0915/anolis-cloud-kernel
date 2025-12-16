@@ -22,6 +22,31 @@
  * bit 0 is the LSB of addr; bit 64 is the LSB of (addr+1).
  */
 
+static inline bool xor_unlock_is_negative_byte(unsigned long mask,
+	volatile unsigned long *p)
+{
+	unsigned long temp1, temp2, old, base;
+
+	__asm__ __volatile__(
+
+	"	ldi	%4, %6\n"
+	"1:	lldw	%0, 0(%4)\n"
+	"	ldi	%1, 1\n"
+	"	wr_f	%1\n"
+	"	mov %0, %3\n"
+	"	xor %0, %5,%0\n"
+	"	lstw	%0, 0(%4)\n"
+	"	rd_f	%0\n"
+	"	beq %0, 2f\n"
+	".subsection 2\n"
+	"2:	br 1b\n"
+	".previous"
+	: "=&r" (temp1), "=&r" (temp2), "=m" (*p), "=&r" (old), "=&r" (base)
+	: "Ir" (mask), "m" (*p));
+
+	return (old & BIT(7)) != 0;
+}
+
 static inline void
 set_bit(unsigned long nr, volatile void *addr)
 {
@@ -200,6 +225,29 @@ test_and_change_bit(unsigned long nr, volatile void *addr)
 }
 
 #else /* !CONFIG_SUBARCH_C3B */
+
+static inline bool xor_unlock_is_negative_byte(unsigned long mask,
+	volatile unsigned long *p)
+{
+	unsigned long temp1, temp2, old, base;
+
+	__asm__ __volatile__(
+
+	"	ldi	%4, %6\n"
+	"1:	lldw	%0, 0(%4)\n"
+	"	mov %0, %3\n"
+	"	xor %0, %5,%0\n"
+	"	lstw	%0, 0(%4)\n"
+	"	beq %0, 2f\n"
+	".subsection 2\n"
+	"2:	br 1b\n"
+	".previous"
+	: "=&r" (temp1), "=&r" (temp2), "=m" (*p), "=&r" (old), "=&r" (base)
+	: "Ir" (mask), "m" (*p));
+
+	return (old & BIT(7)) != 0;
+}
+
 static inline void
 set_bit(unsigned long nr, volatile void *addr)
 {
@@ -437,26 +485,6 @@ arch___test_and_change_bit(unsigned long nr, volatile unsigned long *addr)
 
 #define arch_test_bit generic_test_bit
 #define arch_test_bit_acquire generic_test_bit_acquire
-
-static inline bool xor_unlock_is_negative_byte(unsigned long mask,
-		volatile unsigned long *p)
-{
-	unsigned long temp, old;
-
-	__asm__ __volatile__(
-	"1:	ldl %0,%4\n"
-	"	mov %0,%2\n"
-	"	xor %0,%3,%0\n"
-	"	stl %0,%1\n"
-	"	beq %0,2f\n"
-	".subsection 2\n"
-	"2:	br 1b\n"
-	".previous"
-	:"=&r" (temp), "=m" (*p), "=&r" (old)
-	:"Ir" (mask), "m" (*p));
-
-	return (old & BIT(7)) != 0;
-}
 
 /*
  * ffz = Find First Zero in word. Undefined if no zero exists,
