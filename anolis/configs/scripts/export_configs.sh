@@ -14,7 +14,7 @@ LEVEL_INFO=${DIST_OUTPUT}/level_info
 
 mkdir -p ${DIST_OUTPUT}
 
-sh ${SCRIPT_DIR}/generate_configs.sh | tee ${FILE_LIST}
+bash ${SCRIPT_DIR}/generate_configs.sh | tee ${FILE_LIST}
 
 python3 ${SCRIPT_DIR}/anolis_kconfig.py collect_level --top_dir ${BASE_CONFIG_DIR} \
     --dist ${DIST_CONFIG_KERNEL_NAME}  > ${LEVEL_INFO}

@@ -42,7 +42,7 @@ function prepare_env() {
 function generate_configs() {
     # log "collect all old configs..."
     # generate old config files
-    sh ${SCRIPT_DIR}/generate_configs.sh
+    bash ${SCRIPT_DIR}/generate_configs.sh
 }
 
 function split_new_configs() {
@@ -55,7 +55,7 @@ function split_new_configs() {
         --input_dir ${BASE_CONFIG_DIR} \
         --output_dir ${NEW_CONFIG_DIR} \
         --src_root ${DIST_SRCROOT} ${DIST_OUTPUT}/kconfig_import > ${DIST_OUTPUT}/import.sh
-    sh -e ${DIST_OUTPUT}/import.sh
+    bash -e ${DIST_OUTPUT}/import.sh
 }
 
 function replace_with_new_configs() {

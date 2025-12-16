@@ -30,7 +30,7 @@ else
     done
 fi
 
-sh ${DIST_OUTPUT}/generate.sh | tee ${FILE_LIST}
+bash ${DIST_OUTPUT}/generate.sh | tee ${FILE_LIST}
 
 if [ "x${DIST_DO_GENERATE_DOT_CONFIG}" = "xY" ]; then
     file=$(cat ${FILE_LIST} | grep "processed" | awk '{print $4}' | head -1)
