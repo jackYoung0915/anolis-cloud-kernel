@@ -22,7 +22,7 @@ function do_prep() {
     git archive --format=tar --prefix="${pkgname}/" ${DIST_PKG_COMMIT_ID} | xz -T$(nproc) > ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/${pkgname}.tar.xz
     md5sum ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/${pkgname}.tar.xz > ${DIST_RPMBUILDDIR_OUTPUT}/SOURCES/download
     popd > /dev/null
-    DIST_OUTPUT=${DIST_RPMBUILDDIR_OUTPUT}/SPECS/ sh genspec.sh
+    DIST_OUTPUT=${DIST_RPMBUILDDIR_OUTPUT}/SPECS/ bash genspec.sh
 
     # the kconfigs of x86 and arm64 has been moved to kconfig baseline,
     # so use `make dist-configs` to generate them
