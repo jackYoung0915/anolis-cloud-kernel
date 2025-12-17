@@ -1310,7 +1310,7 @@ static int __group_identity_flip(void *data)
 	struct task_struct *p;
 	struct cfs_rq *cfs_rq;
 	struct sched_entity *se;
-	bool enable = (bool *)data;
+	bool enable = *(bool *)data;
 
 	rq = this_rq();
 	rq_lock(rq, &rf);
