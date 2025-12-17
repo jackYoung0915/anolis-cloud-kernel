@@ -1294,7 +1294,6 @@ static int tg_clear_counters_down(struct task_group *tg, void *data)
 	struct rq *rq = data;
 	struct cfs_rq *cfs_rq = tg->cfs_rq[cpu_of(rq)];
 
-	WARN_ONCE(!RB_EMPTY_ROOT(&cfs_rq->under_timeline.rb_root), "cfs_rq->undertimeline is not empty\n");
 #ifdef CONFIG_SCHED_SMT
 	cfs_rq->h_nr_expel_immune = 0;
 #endif
@@ -1303,6 +1302,7 @@ static int tg_clear_counters_down(struct task_group *tg, void *data)
 	return 0;
 }
 
+static int task_is_throttled_fair(struct task_struct *p, int cpu);
 static int __group_identity_flip(void *data)
 {
 	struct rq *rq;
@@ -1315,24 +1315,27 @@ static int __group_identity_flip(void *data)
 	rq = this_rq();
 	rq_lock(rq, &rf);
 	rq->nr_expel_immune = 0;
+	rq->nr_high_running = 0;
+	rq->nr_under_running = 0;
 
+	rcu_read_lock();
 	walk_tg_tree_from(&root_task_group, tg_clear_counters_down, tg_nop, (void *)rq);
+	rcu_read_unlock();
 
 	if (!enable)
 		goto out;
 
 	list_for_each_entry(p, &rq->cfs_tasks, se.group_node) {
 		se = &p->se;
-		for_each_sched_entity(se) {
-			if (!se->on_rq)
-				break;
-			cfs_rq = cfs_rq_of(se);
+		cfs_rq = cfs_rq_of(se);
+		if (cfs_rq)
 			cfs_rq->nr_tasks++;
-
-			if (cfs_rq_throttled(cfs_rq))
-				break;
+		if (!task_is_throttled_fair(p, cpu_of(rq))) {
+			if (is_highclass_task(p))
+				rq->nr_high_running++;
+			else if (is_underclass_task(p))
+				rq->nr_under_running++;
 		}
-		se = &p->se;
 		hierarchy_update_nr_expel_immune(se, 1);
 	}
 
