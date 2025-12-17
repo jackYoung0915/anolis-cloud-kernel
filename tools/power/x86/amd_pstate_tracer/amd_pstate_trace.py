@@ -27,7 +27,12 @@ import re
 import signal
 import sys
 import getopt
-import Gnuplot
+try:
+    import Gnuplot
+    GNUPLOT_AVAILABLE = True
+except ImportError:
+    GNUPLOT_AVAILABLE = False
+    print("Warning: Gnuplot module not available. Plotting will be skipped.")
 from numpy import *
 from decimal import *
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "intel_pstate_tracer"))
@@ -337,14 +342,17 @@ if graph_data_present == False:
     print('No valid data to plot')
     sys.exit(2)
 
-for cpu_no in range(0, current_max_cpu + 1):
-    plot_per_cpu_freq(cpu_no)
-    plot_per_cpu_des_perf(cpu_no)
-    plot_per_cpu_load(cpu_no)
+if GNUPLOT_AVAILABLE:
+    for cpu_no in range(0, current_max_cpu + 1):
+        plot_per_cpu_freq(cpu_no)
+        plot_per_cpu_des_perf(cpu_no)
+        plot_per_cpu_load(cpu_no)
 
-plot_all_cpu_des_perf()
-plot_all_cpu_frequency()
-plot_all_cpu_load()
+    plot_all_cpu_des_perf()
+    plot_all_cpu_frequency()
+    plot_all_cpu_load()
+else:
+    print('Gnuplot not available. Skipping plot generation. CSV files have been generated.')
 
 for root, dirs, files in os.walk('.'):
     for f in files:

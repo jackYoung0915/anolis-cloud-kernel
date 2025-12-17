@@ -32,7 +32,10 @@ import re
 import signal
 import sys
 import getopt
-import Gnuplot
+try:
+    import Gnuplot
+except ImportError:
+    Gnuplot = None
 from numpy import *
 from decimal import *
 
