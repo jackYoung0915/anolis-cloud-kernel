@@ -468,7 +468,7 @@ static void dump_oom_summary(struct oom_control *oc, struct task_struct *victim)
 		from_kuid(&init_user_ns, task_uid(victim)));
 }
 
-static void dump_header(struct oom_control *oc, struct task_struct *p)
+static void dump_header(struct oom_control *oc)
 {
 	pr_warn("%s invoked oom-killer: gfp_mask=%#x(%pGg), order=%d, oom_score_adj=%hd\n",
 		current->comm, oc->gfp_mask, &oc->gfp_mask, oc->order,
@@ -477,13 +477,24 @@ static void dump_header(struct oom_control *oc, struct task_struct *p)
 		pr_warn("COMPACTION is disabled!!!\n");
 
 	dump_stack();
-	if (is_memcg_oom(oc))
-		mem_cgroup_print_oom_meminfo(oc->memcg);
-	else {
-		__show_mem(SHOW_MEM_FILTER_NODES, oc->nodemask, gfp_zone(oc->gfp_mask));
-		if (should_dump_unreclaim_slab())
-			dump_unreclaimable_slab();
-	}
+}
+
+static void dump_global_header(struct oom_control *oc, struct task_struct *p)
+{
+	dump_header(oc);
+	__show_mem(SHOW_MEM_FILTER_NODES, oc->nodemask, gfp_zone(oc->gfp_mask));
+	if (should_dump_unreclaim_slab())
+		dump_unreclaimable_slab();
+	if (sysctl_oom_dump_tasks)
+		dump_tasks(oc);
+	if (p)
+		dump_oom_summary(oc, p);
+}
+
+static void dump_memcg_header(struct oom_control *oc, struct task_struct *p)
+{
+	dump_header(oc);
+	mem_cgroup_print_oom_meminfo(oc->memcg);
 	if (sysctl_oom_dump_tasks)
 		dump_tasks(oc);
 	if (p)
@@ -933,11 +944,18 @@ static bool task_will_free_mem(struct task_struct *task)
 	return ret;
 }
 
-static void __oom_kill_process(struct task_struct *victim, const char *message)
+static void __oom_kill_process(struct task_struct *victim, const char *message,
+							   bool is_memcg)
 {
 	struct task_struct *p;
 	struct mm_struct *mm;
 	bool can_oom_reap = true;
+	bool suppress_print = false;
+
+#ifdef CONFIG_PRINTK
+	if (is_memcg && __ratelimit(&oom_memcg_rs))
+		suppress_print = true;
+#endif
 
 	p = find_lock_task_mm(victim);
 	if (!p) {
@@ -968,13 +986,14 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	mark_oom_victim(victim);
 	report_fault_event(raw_smp_processor_id(), victim,
 		NORMAL_FAULT, FE_SIGNAL, "sigkill by oom");
-	pr_err("%s: Killed process %d (%s) total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB, UID:%u pgtables:%lukB oom_score_adj:%hd\n",
-		message, task_pid_nr(victim), victim->comm, K(mm->total_vm),
-		K(get_mm_counter(mm, MM_ANONPAGES)),
-		K(get_mm_counter(mm, MM_FILEPAGES)),
-		K(get_mm_counter(mm, MM_SHMEMPAGES)),
-		from_kuid(&init_user_ns, task_uid(victim)),
-		mm_pgtables_bytes(mm) >> 10, victim->signal->oom_score_adj);
+	if (!suppress_print)
+		pr_err("%s: Killed process %d (%s) total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB, UID:%u pgtables:%lukB oom_score_adj:%hd\n",
+				message, task_pid_nr(victim), victim->comm, K(mm->total_vm),
+				K(get_mm_counter(mm, MM_ANONPAGES)),
+				K(get_mm_counter(mm, MM_FILEPAGES)),
+				K(get_mm_counter(mm, MM_SHMEMPAGES)),
+				from_kuid(&init_user_ns, task_uid(victim)),
+				mm_pgtables_bytes(mm) >> 10, victim->signal->oom_score_adj);
 	task_unlock(victim);
 
 	/*
@@ -1028,16 +1047,18 @@ static int oom_kill_memcg_member(struct task_struct *task, void *message)
 	if (task->signal->oom_score_adj != OOM_SCORE_ADJ_MIN &&
 	    !is_global_init(task)) {
 		get_task_struct(task);
-		__oom_kill_process(task, message);
+		__oom_kill_process(task, message, true);
 	}
 	return 0;
 }
+
+DEFINE_RATELIMIT_STATE(oom_memcg_rs, 10 * HZ, 5);
 
 static void oom_kill_process(struct oom_control *oc, const char *message)
 {
 	struct task_struct *victim = oc->chosen;
 	struct mem_cgroup *oom_group;
-	static DEFINE_RATELIMIT_STATE(oom_rs, DEFAULT_RATELIMIT_INTERVAL,
+	static DEFINE_RATELIMIT_STATE(oom_global_rs, DEFAULT_RATELIMIT_INTERVAL,
 					      DEFAULT_RATELIMIT_BURST);
 
 	/*
@@ -1055,8 +1076,10 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	}
 	task_unlock(victim);
 
-	if (__ratelimit(&oom_rs))
-		dump_header(oc, victim);
+	if (is_memcg_oom(oc) && __ratelimit(&oom_memcg_rs))
+		dump_memcg_header(oc, victim);
+	else if (!is_memcg_oom(oc) && __ratelimit(&oom_global_rs))
+		dump_global_header(oc, victim);
 
 	/*
 	 * Do we need to kill the entire memory cgroup?
@@ -1065,7 +1088,7 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	 */
 	oom_group = mem_cgroup_get_oom_group(victim, oc->memcg);
 
-	__oom_kill_process(victim, message);
+	__oom_kill_process(victim, message, is_memcg_oom(oc));
 
 	/*
 	 * If necessary, kill all tasks in the selected memory cgroup.
@@ -1098,9 +1121,20 @@ static void check_panic_on_oom(struct oom_control *oc)
 	/* Do not panic for oom kills triggered by sysrq */
 	if (is_sysrq_oom(oc))
 		return;
-	dump_header(oc, NULL);
-	panic("Out of memory: %s panic_on_oom is enabled\n",
-		sysctl_panic_on_oom == 2 ? "compulsory" : "system-wide");
+
+	if (sysctl_panic_on_oom == 2 && panic_on_warn) {
+	    if (is_memcg_oom(oc) && __ratelimit(&oom_memcg_rs)) {
+			dump_memcg_header(oc, NULL);
+			panic("Out of memory: compulsory memcg panic_on_oom is enabled\n");
+		}
+	} else {
+		if (is_memcg_oom(oc))
+			dump_memcg_header(oc, NULL);
+		else
+			dump_global_header(oc, NULL);
+		panic("Out of memory: %s panic_on_oom is enabled\n",
+			sysctl_panic_on_oom == 2 ? "compulsory" : "system-wide");
+	}
 }
 
 static BLOCKING_NOTIFIER_HEAD(oom_notify_list);
@@ -1184,7 +1218,11 @@ bool out_of_memory(struct oom_control *oc)
 	select_bad_process(oc);
 	/* Found nothing?!?! */
 	if (!oc->chosen) {
-		dump_header(oc, NULL);
+		if (is_memcg_oom(oc) && __ratelimit(&oom_memcg_rs))
+			dump_memcg_header(oc, NULL);
+		else if (!is_memcg_oom(oc))
+			dump_global_header(oc, NULL);
+
 		pr_warn("Out of memory and no killable processes...\n");
 		/*
 		 * If we got here due to an actual allocation at the
