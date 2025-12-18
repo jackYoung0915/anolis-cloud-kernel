@@ -337,7 +337,7 @@ static ssize_t psblk_generic_blk_write(const char *buf, size_t bytes,
 	inode_lock(bdev->bd_inode);
 	ret = generic_write_checks(&kiocb, &iter);
 	if (ret > 0)
-		ret = generic_perform_write(&file, &iter, pos);
+		ret = generic_perform_write(&kiocb, &iter);
 	inode_unlock(bdev->bd_inode);
 
 	if (likely(ret > 0)) {

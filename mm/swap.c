@@ -458,6 +458,9 @@ void mark_page_accessed(struct page *page)
 {
 	page = compound_head(page);
 
+	if (PageDropbehind(page))
+		return;
+
 	if (lru_gen_enabled()) {
 		page_inc_refs(page);
 		return;

@@ -452,6 +452,24 @@ int filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 EXPORT_SYMBOL(filemap_fdatawrite_range);
 
 /**
+ * filemap_fdatawrite_range_kick - start writeback on a range
+ * @mapping:	target address_space
+ * @start:	index to start writeback on
+ * @end:	last (inclusive) index for writeback
+ *
+ * This is a non-integrity writeback helper, to start writing back folios
+ * for the indicated range.
+ *
+ * Return: %0 on success, negative error code otherwise.
+ */
+int filemap_fdatawrite_range_kick(struct address_space *mapping, loff_t start,
+				  loff_t end)
+{
+	return __filemap_fdatawrite_range(mapping, start, end, WB_SYNC_NONE);
+}
+EXPORT_SYMBOL_GPL(filemap_fdatawrite_range_kick);
+
+/**
  * filemap_flush - mostly a non-blocking flush
  * @mapping:	target address_space
  *
@@ -1527,6 +1545,42 @@ void unlock_page(struct page *page)
 }
 EXPORT_SYMBOL(unlock_page);
 
+static void filemap_end_dropbehind(struct page *page)
+{
+	struct address_space *mapping = page->mapping;
+
+	VM_BUG_ON_PAGE(!PageLocked(page), page);
+
+	if (PageWriteback(page) || PageDirty(page))
+		return;
+	if (!TestClearPageDropbehind(page))
+		return;
+	if (mapping)
+		page_unmap_invalidate(mapping, page, 0);
+}
+
+/*
+ * If page was marked as dropbehind, then pages should be dropped when writeback
+ * completes. Do that now. If we fail, it's likely because of a big page -
+ * just reset dropbehind for that case and latter completions should invalidate.
+ */
+static void filemap_end_dropbehind_write(struct page *page)
+{
+	if (!PageDropbehind(page))
+		return;
+	/*
+	 * Hitting !in_task() should not happen off RWF_DONTCACHE writeback,
+	 * but can happen if normal writeback just happens to find dirty pages
+	 * that were created as part of uncached writeback, and that writeback
+	 * would otherwise not need non-IRQ handling. Just skip the
+	 * invalidation in that case.
+	 */
+	if (in_task() && trylock_page(page)) {
+		filemap_end_dropbehind(page);
+		unlock_page(page);
+	}
+}
+
 /**
  * end_page_writeback - end writeback against a page
  * @page: the page
@@ -1557,6 +1611,8 @@ void end_page_writeback(struct page *page)
 
 	smp_mb__after_atomic();
 	wake_up_page(page, PG_writeback);
+
+	filemap_end_dropbehind_write(page);
 	put_page(page);
 }
 EXPORT_SYMBOL(end_page_writeback);
@@ -1904,6 +1960,8 @@ no_page:
 		/* Init accessed so avoid atomic mark_page_accessed later */
 		if (fgp_flags & FGP_ACCESSED)
 			__SetPageReferenced(page);
+		if (fgp_flags & FGP_DONTCACHE)
+			__SetPageDropbehind(page);
 
 		err = add_to_page_cache_lru(page, mapping, index, gfp_mask);
 		if (unlikely(err)) {
@@ -1920,6 +1978,10 @@ no_page:
 		if (page && (fgp_flags & FGP_FOR_MMAP))
 			unlock_page(page);
 	}
+
+	/* not an uncached lookup, clear uncached if set */
+	if (page && PageDropbehind(page) && !(fgp_flags & FGP_DONTCACHE))
+		ClearPageDropbehind(page);
 
 	return page;
 }
@@ -2383,6 +2445,8 @@ generic_file_buffered_read_no_cached_page(struct kiocb *iocb,
 	page = page_cache_alloc(mapping);
 	if (!page)
 		return ERR_PTR(-ENOMEM);
+	if (iocb->ki_flags & IOCB_DONTCACHE)
+		__SetPageDropbehind(page);
 
 	error = add_to_page_cache_lru(page, mapping, index,
 				      mapping_gfp_constraint(mapping, GFP_KERNEL));
@@ -2401,10 +2465,10 @@ static int generic_file_buffered_read_get_pages(struct kiocb *iocb,
 {
 	struct file *filp = iocb->ki_filp;
 	struct address_space *mapping = filp->f_mapping;
-	struct file_ra_state *ra = &filp->f_ra;
 	pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
 	pgoff_t last_index = (iocb->ki_pos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT;
 	int i, j, nr_got, err = 0;
+	DEFINE_READAHEAD(ractl, filp, &filp->f_ra, mapping, index);
 
 	nr = min_t(unsigned long, last_index - index, nr);
 find_page:
@@ -2418,7 +2482,10 @@ find_page:
 	if (iocb->ki_flags & IOCB_NOIO)
 		return -EAGAIN;
 
-	page_cache_sync_readahead(mapping, ra, filp, index, last_index - index);
+	if (iocb->ki_flags & IOCB_DONTCACHE)
+		ractl.dropbehind = 1;
+
+	page_cache_sync_ra(&ractl, last_index - index);
 
 	nr_got = find_get_pages_contig(mapping, index, nr, pages);
 	if (nr_got)
@@ -2435,6 +2502,7 @@ got_pages:
 		loff_t pg_pos = max(iocb->ki_pos,
 				    (loff_t) pg_index << PAGE_SHIFT);
 		loff_t pg_count = iocb->ki_pos + iter->count - pg_pos;
+		DEFINE_READAHEAD(ractl_async, filp, &filp->f_ra, mapping, pg_index);
 
 		if (PageReadahead(page)) {
 			if (iocb->ki_flags & IOCB_NOIO) {
@@ -2444,8 +2512,11 @@ got_pages:
 				err = -EAGAIN;
 				break;
 			}
-			page_cache_async_readahead(mapping, ra, filp, page,
-					pg_index, last_index - pg_index);
+
+			if (iocb->ki_flags & IOCB_DONTCACHE)
+				ractl_async.dropbehind = 1;
+
+			page_cache_async_ra(&ractl_async, page, last_index - pg_index);
 		}
 
 		if (!PageUptodate(page)) {
@@ -2485,6 +2556,19 @@ static inline bool pos_same_page(loff_t pos1, loff_t pos2, struct page *page)
 	unsigned int shift = page_shift(page);
 
 	return (pos1 >> shift == pos2 >> shift);
+}
+
+
+static void filemap_end_dropbehind_read(struct page *page)
+{
+	if (!PageDropbehind(page))
+		return;
+	if (PageWriteback(page) || PageDirty(page))
+		return;
+	if (trylock_page(page)) {
+		filemap_end_dropbehind(page);
+		unlock_page(page);
+	}
 }
 
 /**
@@ -2610,8 +2694,12 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb,
 			}
 		}
 put_pages:
-		for (i = 0; i < pg_nr; i++)
-			put_page(pages[i]);
+		for (i = 0; i < pg_nr; i++) {
+			struct page *page = pages[i];
+
+			filemap_end_dropbehind_read(page);
+			put_page(page);
+		}
 	} while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
 
 	file_accessed(filp);
@@ -3427,6 +3515,8 @@ struct page *grab_cache_page_write_begin(struct address_space *mapping,
 
 	if (flags & AOP_FLAG_NOFS)
 		fgp_flags |= FGP_NOFS;
+	if (flags & AOP_FLAG_DONTCACHE)
+		fgp_flags |= FGP_DONTCACHE;
 
 	page = pagecache_get_page(mapping, index, fgp_flags,
 			mapping_gfp_mask(mapping));
@@ -3437,9 +3527,10 @@ struct page *grab_cache_page_write_begin(struct address_space *mapping,
 }
 EXPORT_SYMBOL(grab_cache_page_write_begin);
 
-ssize_t generic_perform_write(struct file *file,
-				struct iov_iter *i, loff_t pos)
+ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 {
+	struct file *file = iocb->ki_filp;
+	loff_t pos = iocb->ki_pos;
 	struct address_space *mapping = file->f_mapping;
 	const struct address_space_operations *a_ops = mapping->a_ops;
 	long status = 0;
@@ -3473,6 +3564,9 @@ again:
 			status = -EINTR;
 			break;
 		}
+
+		if (iocb->ki_flags & IOCB_DONTCACHE)
+			flags |= AOP_FLAG_DONTCACHE;
 
 		status = a_ops->write_begin(file, mapping, pos, bytes, flags,
 						&page, &fsdata);
@@ -3569,7 +3663,8 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		if (written < 0 || !iov_iter_count(from) || IS_DAX(inode))
 			goto out;
 
-		status = generic_perform_write(file, from, pos = iocb->ki_pos);
+		pos = iocb->ki_pos;
+		status = generic_perform_write(iocb, from);
 		/*
 		 * If generic_perform_write() returned a synchronous error
 		 * then we want to return the number of bytes which were
@@ -3601,7 +3696,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 */
 		}
 	} else {
-		written = generic_perform_write(file, from, iocb->ki_pos);
+		written = generic_perform_write(iocb, from);
 		if (likely(written > 0))
 			iocb->ki_pos += written;
 	}

@@ -668,6 +668,15 @@ void invalidate_mapping_pagevec(struct address_space *mapping,
 	__invalidate_mapping_pages(mapping, start, end, nr_pagevec);
 }
 
+static int do_launder_page(struct address_space *mapping, struct page *page)
+{
+	if (!PageDirty(page))
+		return 0;
+	if (page->mapping != mapping || mapping->a_ops->launder_page == NULL)
+		return 0;
+	return mapping->a_ops->launder_page(page);
+}
+
 /*
  * This is like invalidate_complete_page(), except it ignores the page's
  * refcount.  We do this because invalidate_inode_pages2() needs stronger
@@ -675,16 +684,26 @@ void invalidate_mapping_pagevec(struct address_space *mapping,
  * shrink_page_list() has a temp ref on them, or because they're transiently
  * sitting in the lru_cache_add() pagevecs.
  */
-static int
-invalidate_complete_page2(struct address_space *mapping, struct page *page)
+int page_unmap_invalidate(struct address_space *mapping, struct page *page,
+			  gfp_t gfp)
 {
 	unsigned long flags;
+	int ret;
 
+	VM_BUG_ON_PAGE(!PageLocked(page), page);
+
+	if (page_mapped(page))
+		unmap_mapping_page(page);
+	BUG_ON(page_mapped(page));
+
+	ret = do_launder_page(mapping, page);
+	if (ret)
+		return ret;
 	if (page->mapping != mapping)
-		return 0;
+		return -EBUSY;
 
-	if (page_has_private(page) && !try_to_release_page(page, GFP_KERNEL))
-		return 0;
+	if (page_has_private(page) && !try_to_release_page(page, gfp))
+		return -EBUSY;
 
 	xa_lock_irqsave(&mapping->i_pages, flags);
 	if (PageDirty(page))
@@ -709,16 +728,7 @@ invalidate_complete_page2(struct address_space *mapping, struct page *page)
 	return 1;
 failed:
 	xa_unlock_irqrestore(&mapping->i_pages, flags);
-	return 0;
-}
-
-static int do_launder_page(struct address_space *mapping, struct page *page)
-{
-	if (!PageDirty(page))
-		return 0;
-	if (page->mapping != mapping || mapping->a_ops->launder_page == NULL)
-		return 0;
-	return mapping->a_ops->launder_page(page);
+	return -EBUSY;
 }
 
 /**
@@ -784,15 +794,7 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 			}
 			wait_on_page_writeback(page);
 
-			if (page_mapped(page))
-				unmap_mapping_page(page);
-			BUG_ON(page_mapped(page));
-
-			ret2 = do_launder_page(mapping, page);
-			if (ret2 == 0) {
-				if (!invalidate_complete_page2(mapping, page))
-					ret2 = -EBUSY;
-			}
+			ret2 = page_unmap_invalidate(mapping, page, GFP_KERNEL);
 			if (ret2 < 0)
 				ret = ret2;
 			unlock_page(page);
