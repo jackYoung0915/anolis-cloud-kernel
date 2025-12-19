@@ -113,6 +113,8 @@ extern const struct cpumask *cpu_clustergroup_mask(int cpu);
 #define topology_ppin(cpu)			(cpu_data(cpu).ppin)
 
 extern unsigned int __max_die_per_package;
+extern struct cpumask __cpu_primary_thread_mask;
+#define cpu_primary_thread_mask ((const struct cpumask *)&__cpu_primary_thread_mask)
 
 #ifdef CONFIG_SMP
 #define topology_cluster_id(cpu)		(per_cpu(cpu_l2c_id, cpu))
@@ -141,9 +143,6 @@ static inline int topology_max_smt_threads(void)
 int topology_update_package_map(unsigned int apicid, unsigned int cpu);
 int topology_update_die_map(unsigned int dieid, unsigned int cpu);
 int topology_phys_to_logical_pkg(unsigned int pkg);
-
-extern struct cpumask __cpu_primary_thread_mask;
-#define cpu_primary_thread_mask ((const struct cpumask *)&__cpu_primary_thread_mask)
 
 /**
  * topology_is_primary_thread - Check whether CPU is the primary SMT thread
