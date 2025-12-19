@@ -1377,7 +1377,9 @@ static void smc_buf_unuse(struct smc_connection *conn,
 /* remove a finished connection from its link group */
 void smc_conn_free(struct smc_connection *conn)
 {
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
 	struct smc_link_group *lgr = conn->lgr;
+	struct net *net = sock_net(&smc->sk);
 
 	if (!lgr || conn->freed)
 		/* Connection has never been registered in a
@@ -1406,6 +1408,12 @@ void smc_conn_free(struct smc_connection *conn)
 	if (!list_empty(&lgr->list)) {
 		smc_buf_unuse(conn, lgr); /* allow buffer reuse */
 		smc_lgr_unregister_conn(conn);
+	} else {
+		/* need to subtract allocated memory */
+		if (conn->sndbuf_desc)
+			smc_net_mem_allocated_sub(net, conn->sndbuf_desc->len);
+		if (conn->rmb_desc)
+			smc_net_mem_allocated_sub(net, conn->rmb_desc->len);
 	}
 
 	if (!lgr->conns_num)
