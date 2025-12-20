@@ -159,6 +159,7 @@ static int p2pmem_alloc_mmap(struct file *filp, struct kobject *kobj,
 			 * p2pdma_folio_free() path.
 			 */
 			set_page_count(page, 0);
+			percpu_ref_put(ref);
 			return ret;
 		}
 		percpu_ref_get(ref);
