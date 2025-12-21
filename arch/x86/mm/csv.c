@@ -90,11 +90,14 @@ unsigned int csv_smr_num;
 EXPORT_SYMBOL_GPL(csv_smr_num);
 
 #ifdef CONFIG_SYSFS
-/*
- * Global counters exposed via sysfs /sys. Updated atomically during VM creation/destruction.
+/**
+ * Global counters exposed via /sys/kernel/mm/csv3_cma/mem_info. Updated
+ * atomically during VM creation/destruction.
+ *
  * csv3_npt_size: total size of NPT tables allocated.
  * csv3_pri_mem: total private memory allocated for CSV guests.
  * csv3_meta: metadata overhead for CSV memory regions.
+ * csv3_shared_mem: size of all the CSV3 VMs' shared memory.
  */
 atomic_long_t csv3_npt_size = ATOMIC_LONG_INIT(0);
 EXPORT_SYMBOL_GPL(csv3_npt_size);
@@ -105,7 +108,7 @@ EXPORT_SYMBOL_GPL(csv3_pri_mem);
 unsigned long csv3_meta;
 EXPORT_SYMBOL_GPL(csv3_meta);
 
-atomic_long_t *csv3_shared_mem;
+atomic_long_t csv3_shared_mem[MAX_NUMNODES];
 EXPORT_SYMBOL_GPL(csv3_shared_mem);
 #endif
 
@@ -480,8 +483,6 @@ static struct kobject *csv_cma_kobj_root;
 
 static int __init csv_cma_sysfs_init(void)
 {
-	int node_count;
-	size_t mem_size;
 	int err, i;
 
 	if (!is_x86_vendor_hygon() || !boot_cpu_has(X86_FEATURE_CSV3))
@@ -495,20 +496,7 @@ static int __init csv_cma_sysfs_init(void)
 	if (err)
 		goto out;
 
-	node_count = num_online_nodes();
-	if (node_count <= 0) {
-		pr_err("No online NUMA nodes detected\n");
-		goto out;
-	}
-
-	mem_size = node_count * sizeof(atomic_long_t);
-	csv3_shared_mem = kzalloc(mem_size, GFP_KERNEL);
-	if (!csv3_shared_mem) {
-		pr_err("Failed to allocate shared memory\n");
-		goto out;
-	}
-
-	for (i = 0; i < node_count; i++)
+	for (i = 0; i < MAX_NUMNODES; i++)
 		atomic_long_set(&csv3_shared_mem[i], 0);
 
 	return 0;
@@ -526,9 +514,6 @@ static void csv_cma_sysfs_exit(void)
 	 */
 	if (csv_cma_kobj_root != NULL)
 		kobject_put(csv_cma_kobj_root);
-
-	kfree(csv3_shared_mem);
-	csv3_shared_mem = NULL;
 }
 
 #else	/* !CONFIG_SYSFS */
