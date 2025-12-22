@@ -19,7 +19,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/fpu/api.h>
 
-#define DRIVER_VERSION "1.0.0"
+#define DRIVER_VERSION "1.0.1"
 
 static inline void padlock_output_block(uint32_t *src, uint32_t *dst, size_t count)
 {
@@ -246,12 +246,13 @@ static struct shash_alg sha256_alg_zhaoxin = {
 	}
 };
 
-static const struct x86_cpu_id zhaoxin_sha_ids[] = {
-	{ X86_VENDOR_CENTAUR, 7, X86_MODEL_ANY, X86_STEPPING_ANY, X86_FEATURE_PHE },
-	{ X86_VENDOR_ZHAOXIN, 7, X86_MODEL_ANY, X86_STEPPING_ANY, X86_FEATURE_PHE },
+static const struct x86_cpu_id zhaoxin_sha_cpu_ids[] = {
+	X86_MATCH_VENDOR_FAM_FEATURE(ZHAOXIN, 6, X86_FEATURE_PHE, NULL),
+	X86_MATCH_VENDOR_FAM_FEATURE(CENTAUR, 7, X86_FEATURE_PHE, NULL),
+	X86_MATCH_VENDOR_FAM_FEATURE(ZHAOXIN, 7, X86_FEATURE_PHE, NULL),
 	{}
 };
-MODULE_DEVICE_TABLE(x86cpu, zhaoxin_sha_ids);
+MODULE_DEVICE_TABLE(x86cpu, zhaoxin_sha_cpu_ids);
 
 static int __init padlock_init(void)
 {
@@ -259,7 +260,7 @@ static int __init padlock_init(void)
 	struct shash_alg *sha1;
 	struct shash_alg *sha256;
 
-	if (!x86_match_cpu(zhaoxin_sha_ids) || !boot_cpu_has(X86_FEATURE_PHE_EN))
+	if (!x86_match_cpu(zhaoxin_sha_cpu_ids) || !boot_cpu_has(X86_FEATURE_PHE_EN))
 		return -ENODEV;
 
 	sha1 = &sha1_alg_zhaoxin;
