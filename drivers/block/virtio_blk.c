@@ -58,7 +58,9 @@ MODULE_PARM_DESC(poll_queues, "The number of dedicated virtqueues for polling I/
 static int major;
 static DEFINE_IDA(vd_index_ida);
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 static DEFINE_IDA(vd_chr_minor_ida);
+#endif
 static dev_t vd_chr_devt;
 static struct class *vd_chr_class;
 
@@ -2626,6 +2628,7 @@ static int virtblk_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
 	return ret;
 }
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 static void virtblk_cdev_rel(struct device *dev)
 {
 	ida_free(&vd_chr_minor_ida, MINOR(dev->devt));
@@ -2669,6 +2672,7 @@ fail:
 	put_device(cdev_device);
 	return ret;
 }
+#endif
 
 static int virtblk_chr_open(struct inode *inode, struct file *file)
 {
@@ -2815,7 +2819,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 {
 	struct virtio_blk *vblk;
 	struct request_queue *q;
-	int err, index, i;
+	int err, index;
 
 	u32 v, blk_size, max_size, sg_elems, opt_io_size;
 	u32 max_discard_segs = 0;
@@ -2919,6 +2923,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	 * executed.
 	 */
 	if (vblk->ring_pair) {
+		int i;
 		vblk->indir_desc = kmalloc_array(vblk->num_vqs / VIRTBLK_RING_NUM,
 						sizeof(struct virtblk_indir_desc *),
 						GFP_KERNEL | __GFP_ZERO);
