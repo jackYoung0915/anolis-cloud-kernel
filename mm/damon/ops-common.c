@@ -10,6 +10,7 @@
 #include <linux/pagemap.h>
 #include <linux/rmap.h>
 
+#include "../internal.h"
 #include "ops-common.h"
 
 /*
