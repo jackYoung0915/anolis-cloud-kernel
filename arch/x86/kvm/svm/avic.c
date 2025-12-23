@@ -594,19 +594,6 @@ void svm_toggle_avic_for_irq_window(struct kvm_vcpu *vcpu, bool activate)
 	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
 }
 
-void svm_set_virtual_apic_mode(struct kvm_vcpu *vcpu)
-{
-	return;
-}
-
-void svm_hwapic_irr_update(struct kvm_vcpu *vcpu, int max_irr)
-{
-}
-
-void svm_hwapic_isr_update(struct kvm_vcpu *vcpu, int max_isr)
-{
-}
-
 static int svm_set_pi_irte_mode(struct kvm_vcpu *vcpu, bool activate)
 {
 	int ret = 0;
@@ -666,11 +653,6 @@ void svm_refresh_apicv_exec_ctrl(struct kvm_vcpu *vcpu)
 	svm_set_pi_irte_mode(vcpu, activated);
 }
 
-void svm_load_eoi_exitmap(struct kvm_vcpu *vcpu, u64 *eoi_exit_bitmap)
-{
-	return;
-}
-
 int svm_deliver_avic_intr(struct kvm_vcpu *vcpu, int vec)
 {
 	if (!vcpu->arch.apicv_active)
@@ -689,11 +671,6 @@ int svm_deliver_avic_intr(struct kvm_vcpu *vcpu, int vec)
 		kvm_vcpu_wake_up(vcpu);
 
 	return 0;
-}
-
-bool svm_dy_apicv_has_pending_interrupt(struct kvm_vcpu *vcpu)
-{
-	return false;
 }
 
 static void svm_ir_list_del(struct vcpu_svm *svm, struct amd_iommu_pi_data *pi)

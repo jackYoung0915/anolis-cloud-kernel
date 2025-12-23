@@ -1161,7 +1161,6 @@ struct kvm_x86_ops {
 	int (*hardware_enable)(void);
 	void (*hardware_disable)(void);
 	void (*hardware_unsetup)(void);
-	bool (*cpu_has_accelerated_tpr)(void);
 	bool (*has_emulated_msr)(struct kvm *kvm, u32 index);
 	void (*vcpu_after_set_cpuid)(struct kvm_vcpu *vcpu);
 
@@ -1414,6 +1413,26 @@ extern u64 __read_mostly host_efer;
 extern bool __read_mostly allow_smaller_maxphyaddr;
 extern struct kvm_x86_ops kvm_x86_ops;
 
+#define KVM_X86_OP(func) \
+	DECLARE_STATIC_CALL(kvm_x86_##func, *(((struct kvm_x86_ops *)0)->func));
+#define KVM_X86_OP_OPTIONAL KVM_X86_OP
+#define KVM_X86_OP_OPTIONAL_RET0 KVM_X86_OP
+#include <asm/kvm-x86-ops.h>
+
+static inline void kvm_ops_static_call_update(void)
+{
+#define __KVM_X86_OP(func) \
+	static_call_update(kvm_x86_##func, kvm_x86_ops.func);
+#define KVM_X86_OP(func) \
+	WARN_ON(!kvm_x86_ops.func); __KVM_X86_OP(func)
+#define KVM_X86_OP_OPTIONAL __KVM_X86_OP
+#define KVM_X86_OP_OPTIONAL_RET0(func) \
+	static_call_update(kvm_x86_##func, kvm_x86_ops.func ? : \
+			   (void *) __static_call_return0);
+#include <asm/kvm-x86-ops.h>
+#undef __KVM_X86_OP
+}
+
 #define __KVM_HAVE_ARCH_VM_ALLOC
 static inline struct kvm *kvm_arch_alloc_vm(void)
 {
@@ -1425,7 +1444,7 @@ void kvm_arch_free_vm(struct kvm *kvm);
 static inline int kvm_arch_flush_remote_tlb(struct kvm *kvm)
 {
 	if (kvm_x86_ops.tlb_remote_flush &&
-	    !kvm_x86_ops.tlb_remote_flush(kvm))
+	    !static_call(kvm_x86_tlb_remote_flush)(kvm))
 		return 0;
 	else
 		return -ENOTSUPP;
@@ -1817,14 +1836,12 @@ static inline bool kvm_irq_is_postable(struct kvm_lapic_irq *irq)
 
 static inline void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu)
 {
-	if (kvm_x86_ops.vcpu_blocking)
-		kvm_x86_ops.vcpu_blocking(vcpu);
+	static_call_cond(kvm_x86_vcpu_blocking)(vcpu);
 }
 
 static inline void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu)
 {
-	if (kvm_x86_ops.vcpu_unblocking)
-		kvm_x86_ops.vcpu_unblocking(vcpu);
+	static_call_cond(kvm_x86_vcpu_unblocking)(vcpu);
 }
 
 static inline void kvm_arch_vcpu_block_finish(struct kvm_vcpu *vcpu) {}

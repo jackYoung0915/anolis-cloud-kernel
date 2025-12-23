@@ -1879,7 +1879,7 @@ static void svm_set_segment(struct kvm_vcpu *vcpu,
 	vmcb_mark_dirty(svm->vmcb, VMCB_SEG);
 }
 
-static void update_exception_bitmap(struct kvm_vcpu *vcpu)
+static void svm_update_exception_bitmap(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
@@ -3537,7 +3537,7 @@ static void svm_set_irq(struct kvm_vcpu *vcpu)
 		SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_INTR;
 }
 
-static void update_cr8_intercept(struct kvm_vcpu *vcpu, int tpr, int irr)
+static void svm_update_cr8_intercept(struct kvm_vcpu *vcpu, int tpr, int irr)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
@@ -3653,7 +3653,7 @@ static int svm_interrupt_allowed(struct kvm_vcpu *vcpu, bool for_injection)
 	return !svm_interrupt_blocked(vcpu);
 }
 
-static void enable_irq_window(struct kvm_vcpu *vcpu)
+static void svm_enable_irq_window(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
@@ -3677,7 +3677,7 @@ static void enable_irq_window(struct kvm_vcpu *vcpu)
 	}
 }
 
-static void enable_nmi_window(struct kvm_vcpu *vcpu)
+static void svm_enable_nmi_window(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
@@ -3697,16 +3697,6 @@ static void enable_nmi_window(struct kvm_vcpu *vcpu)
 	svm->nmi_singlestep_guest_rflags = svm_get_rflags(vcpu);
 	svm->nmi_singlestep = true;
 	svm->vmcb->save.rflags |= (X86_EFLAGS_TF | X86_EFLAGS_RF);
-}
-
-static int svm_set_tss_addr(struct kvm *kvm, unsigned int addr)
-{
-	return 0;
-}
-
-static int svm_set_identity_map_addr(struct kvm *kvm, u64 ident_addr)
-{
-	return 0;
 }
 
 void svm_flush_tlb(struct kvm_vcpu *vcpu)
@@ -4118,11 +4108,6 @@ static int __init svm_check_processor_compat(void)
 	return 0;
 }
 
-static bool svm_cpu_has_accelerated_tpr(void)
-{
-	return false;
-}
-
 /*
  * The kvm parameter can be NULL (module initialization, or invocation before
  * VM creation). Be sure to check the kvm parameter before using it.
@@ -4152,11 +4137,6 @@ static bool svm_has_emulated_msr(struct kvm *kvm, u32 index)
 	}
 
 	return true;
-}
-
-static u64 svm_get_mt_mask(struct kvm_vcpu *vcpu, gfn_t gfn, bool is_mmio)
-{
-	return 0;
 }
 
 static void svm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
@@ -4488,7 +4468,7 @@ static int svm_pre_leave_smm(struct kvm_vcpu *vcpu, const char *smstate)
 	return ret;
 }
 
-static void enable_smi_window(struct kvm_vcpu *vcpu)
+static void svm_enable_smi_window(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
@@ -4714,7 +4694,6 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.hardware_unsetup = svm_hardware_teardown,
 	.hardware_enable = svm_hardware_enable,
 	.hardware_disable = svm_hardware_disable,
-	.cpu_has_accelerated_tpr = svm_cpu_has_accelerated_tpr,
 	.has_emulated_msr = svm_has_emulated_msr,
 
 	.vcpu_create = svm_create_vcpu,
@@ -4731,7 +4710,7 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.vcpu_blocking = svm_vcpu_blocking,
 	.vcpu_unblocking = svm_vcpu_unblocking,
 
-	.update_exception_bitmap = update_exception_bitmap,
+	.update_exception_bitmap = svm_update_exception_bitmap,
 	.get_msr_feature = svm_get_msr_feature,
 	.get_msr = svm_get_msr,
 	.set_msr = svm_set_msr,
@@ -4774,22 +4753,14 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.nmi_allowed = svm_nmi_allowed,
 	.get_nmi_mask = svm_get_nmi_mask,
 	.set_nmi_mask = svm_set_nmi_mask,
-	.enable_nmi_window = enable_nmi_window,
-	.enable_irq_window = enable_irq_window,
-	.update_cr8_intercept = update_cr8_intercept,
-	.set_virtual_apic_mode = svm_set_virtual_apic_mode,
+	.enable_nmi_window = svm_enable_nmi_window,
+	.enable_irq_window = svm_enable_irq_window,
+	.update_cr8_intercept = svm_update_cr8_intercept,
 	.refresh_apicv_exec_ctrl = svm_refresh_apicv_exec_ctrl,
 	.check_apicv_inhibit_reasons = svm_check_apicv_inhibit_reasons,
 	.pre_update_apicv_exec_ctrl = svm_pre_update_apicv_exec_ctrl,
-	.load_eoi_exitmap = svm_load_eoi_exitmap,
-	.hwapic_irr_update = svm_hwapic_irr_update,
-	.hwapic_isr_update = svm_hwapic_isr_update,
 	.sync_pir_to_irr = kvm_lapic_find_highest_irr,
 	.apicv_post_state_restore = avic_post_state_restore,
-
-	.set_tss_addr = svm_set_tss_addr,
-	.set_identity_map_addr = svm_set_identity_map_addr,
-	.get_mt_mask = svm_get_mt_mask,
 
 	.get_exit_info = svm_get_exit_info,
 
@@ -4812,14 +4783,13 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.nested_ops = &svm_nested_ops,
 
 	.deliver_posted_interrupt = svm_deliver_avic_intr,
-	.dy_apicv_has_pending_interrupt = svm_dy_apicv_has_pending_interrupt,
 	.update_pi_irte = svm_update_pi_irte,
 	.setup_mce = svm_setup_mce,
 
 	.smi_allowed = svm_smi_allowed,
 	.pre_enter_smm = svm_pre_enter_smm,
 	.pre_leave_smm = svm_pre_leave_smm,
-	.enable_smi_window = enable_smi_window,
+	.enable_smi_window = svm_enable_smi_window,
 
 	.mem_enc_op = svm_mem_enc_op,
 	.mem_enc_reg_region = svm_register_enc_region,
