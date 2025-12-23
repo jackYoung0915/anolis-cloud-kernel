@@ -93,4 +93,41 @@ void read_cdat_data(struct cxl_port *port);
 void cxl_cor_error_detected(struct pci_dev *pdev);
 pci_ers_result_t cxl_error_detected(struct pci_dev *pdev,
 				    pci_channel_state_t state);
+
+#define PCI_VENDOR_ID_ALISCM		0x2042
+
+struct cxl_pci_quirk {
+	u16 vendor;
+	u16 device;
+};
+
+static const struct cxl_pci_quirk cxl_quirk_list[] = {
+	{ 0x2042, 0x0ddb}, /* aliscm1.0 */
+	{ } /* END */
+};
+
+static inline const struct cxl_pci_quirk *
+cxl_pci_quirk_lookup_id(u16 vendor, u16 device,
+			const struct cxl_pci_quirk *list)
+{
+	const struct cxl_pci_quirk *q;
+
+	for (q = list; q->vendor || q->device; q++) {
+		if (q->vendor != vendor)
+			continue;
+		if (!q->device || device == q->device)
+			return q;
+	}
+	return NULL;
+}
+
+static inline const struct cxl_pci_quirk *
+cxl_pci_quirk_lookup(struct pci_dev *pci, const struct cxl_pci_quirk *list)
+{
+	if (!pci)
+		return NULL;
+	return cxl_pci_quirk_lookup_id(pci->vendor,
+				       pci->device,
+				       list);
+}
 #endif /* __CXL_PCI_H__ */
