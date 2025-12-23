@@ -45,11 +45,16 @@ module_param(xsk_num_percent,   int, 0644);
 module_param(xsk_budget,        int, 0644);
 
 static bool csum = true, gso = true, napi_tx = true, force_xdp;
+/* Use only the first page under multi-buffer mergeable receiving.
+ * This is a workaround for multi-buffer xdp to handle jumbo frame xdp.
+ */
+static bool xdp_peek_page;
 static bool lro;
 module_param(csum, bool, 0444);
 module_param(gso, bool, 0444);
 module_param(napi_tx, bool, 0644);
 module_param(force_xdp, bool, 0644);
+module_param(xdp_peek_page, bool, 0644);
 module_param(lro, bool, 0644);
 
 /* 7 days are long enough by default. */
@@ -1247,7 +1252,10 @@ static struct sk_buff *receive_mergeable(struct net_device *dev,
 	struct bpf_prog *xdp_prog;
 	unsigned int truesize = mergeable_ctx_to_truesize(ctx);
 	unsigned int headroom = mergeable_ctx_to_headroom(ctx);
+	int init_offset = offset, init_len = len;
+	bool xdp_peeked = false;
 	unsigned int metasize = 0;
+	int page_off, tailroom;
 	unsigned int frame_sz;
 	int err;
 
@@ -1285,6 +1293,33 @@ static struct sk_buff *receive_mergeable(struct net_device *dev,
 		 */
 		frame_sz = headroom ? PAGE_SIZE : truesize;
 
+		if (unlikely(xdp_peek_page && num_buf > 1)) {
+			if (!headroom) {
+				/* buffer generated before xdp enabled */
+				tailroom = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+				page_off = VIRTIO_XDP_HEADROOM;
+
+				if (page_off + len + tailroom > PAGE_SIZE)
+					goto err_xdp;
+
+				xdp_page = alloc_page(GFP_ATOMIC);
+				if (!xdp_page)
+					goto err_xdp;
+
+				memcpy(page_address(xdp_page) + page_off,
+				       page_address(page) + offset, len);
+				page_off += len;
+				len = page_off - VIRTIO_XDP_HEADROOM;
+
+				frame_sz = PAGE_SIZE;
+				offset = VIRTIO_XDP_HEADROOM;
+			} else {
+				xdp_page = page;
+			}
+			xdp_peeked = true;
+			goto xdp_page_got;
+		}
+
 		/* This happens when rx buffer size is underestimated
 		 * or headroom is not enough because of the buffer
 		 * was refilled before XDP is set. This should only
@@ -1306,7 +1341,7 @@ static struct sk_buff *receive_mergeable(struct net_device *dev,
 		} else {
 			xdp_page = page;
 		}
-
+xdp_page_got:
 		/* Allow consuming headroom but reserve enough space to push
 		 * the descriptor on if we get an XDP_TX return code.
 		 */
@@ -1323,6 +1358,16 @@ static struct sk_buff *receive_mergeable(struct net_device *dev,
 
 		switch (act) {
 		case XDP_PASS:
+			if (unlikely(xdp_peeked)) {
+				rcu_read_unlock();
+				if (unlikely(xdp_page != page))
+					put_page(xdp_page);
+				/* read-only, use original len and offset */
+				offset = init_offset;
+				len = init_len;
+				goto xdp_peek_done;
+			}
+
 			metasize = xdp.data - xdp.data_meta;
 
 			/* recalculate offset to account for any header
@@ -1366,6 +1411,11 @@ static struct sk_buff *receive_mergeable(struct net_device *dev,
 			rcu_read_unlock();
 			goto xdp_xmit;
 		case XDP_REDIRECT:
+			if (unlikely(xdp_peeked)) {
+				if (unlikely(xdp_page != page))
+					put_page(xdp_page);
+				goto err_xdp;
+			}
 			u64_stats_inc(&stats->xdp_redirects);
 			err = xdp_do_redirect(dev, &xdp, xdp_prog);
 			if (err) {
@@ -1391,7 +1441,7 @@ static struct sk_buff *receive_mergeable(struct net_device *dev,
 		}
 	}
 	rcu_read_unlock();
-
+xdp_peek_done:
 	head_skb = page_to_skb(vi, rq, page, offset, len, truesize, !xdp_prog,
 			       metasize, headroom);
 	curr_skb = head_skb;
@@ -1475,7 +1525,23 @@ err_skb:
 err_buf:
 	u64_stats_inc(&stats->drops);
 	dev_kfree_skb(head_skb);
+	return NULL;
 xdp_xmit:
+	if (unlikely(xdp_peeked)) {
+		/* free all possible buffers excluding the first xdp_page */
+		while (num_buf-- > 1) {
+			buf = virtqueue_get_buf(rq->vq, &len);
+			if (unlikely(!buf)) {
+				pr_debug("%s: rx error: %d buffers missing\n",
+					 dev->name, num_buf);
+				dev->stats.rx_length_errors++;
+				break;
+			}
+			u64_stats_add(&stats->bytes, len);
+			page = virt_to_head_page(buf);
+			put_page(page);
+		}
+	}
 	return NULL;
 }
 
@@ -4661,7 +4727,7 @@ static int virtnet_xdp_set(struct net_device *dev, struct bpf_prog *prog,
 		return -EINVAL;
 	}
 
-	if (dev->mtu > max_sz) {
+	if (!xdp_peek_page && dev->mtu > max_sz) {
 		NL_SET_ERR_MSG_MOD(extack, "MTU too large to enable XDP");
 		netdev_warn(dev, "XDP requires MTU less than %lu\n", max_sz);
 		return -EINVAL;
