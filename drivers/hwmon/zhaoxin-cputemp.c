@@ -143,9 +143,9 @@ static int zhaoxin_cputemp_probe(struct platform_device *pdev)
 	data->id = pdev->id;
 	data->name = "zhaoxin_cputemp";
 	data->msr_temp = 0x1423;
-	if (c->x86_model == 0x6b) {
-		data->msr_crit  = 0x175b;
-		data->msr_max   = 0x175a;
+	if (c->x86_model == 0x6b || c->x86_model == 0x7b) {
+		data->msr_crit = 0x175b;
+		data->msr_max = 0x175a;
 	} else {
 		data->msr_crit = 0x1416;
 		data->msr_max = 0x1415;
@@ -269,6 +269,8 @@ static const struct x86_cpu_id zhaoxin_cputemp_cpu_ids[] __initconst = {
 	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x5b, NULL),
 	X86_MATCH_VENDOR_FAM_MODEL(ZHAOXIN, 7, 0x6b, NULL),
 	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x6b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x7b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(ZHAOXIN, 7, 0x7b, NULL),
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, zhaoxin_cputemp_cpu_ids);
