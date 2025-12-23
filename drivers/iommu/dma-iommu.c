@@ -470,6 +470,12 @@ static int iommu_dma_init_domain(struct iommu_domain *domain, dma_addr_t base,
 			return -EFAULT;
 		}
 
+#if defined(CONFIG_X86)
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_CENTAUR ||
+		    boot_cpu_data.x86_vendor == X86_VENDOR_ZHAOXIN)
+			return iova_reserve_iommu_regions(dev, domain);
+#endif
+
 		return 0;
 	}
 
