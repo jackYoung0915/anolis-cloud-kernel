@@ -62,6 +62,9 @@
 #include <linux/uidgid.h>
 #include <linux/cred.h>
 
+#include <linux/pid_namespace.h>
+#include <linux/memcontrol.h>
+
 #include <linux/nospec.h>
 
 #include <linux/kmsg_dump.h>
@@ -2587,19 +2590,66 @@ static int do_sysinfo(struct sysinfo *info)
 	unsigned long mem_total, sav_total;
 	unsigned int mem_unit, bitcount;
 	struct timespec64 tp;
+	struct mem_cgroup *memcg = NULL;
+	struct sysinfo_ext dummy_ext;
 
 	memset(info, 0, sizeof(struct sysinfo));
 
 	ktime_get_boottime_ts64(&tp);
 	timens_add_boottime(&tp);
+
+	rcu_read_lock();
+	if (in_rich_container(current, RC_UPTIME)) {
+		struct task_struct *init_tsk;
+
+		read_lock(&tasklist_lock);
+		init_tsk = task_active_pid_ns(current)->child_reaper;
+		get_task_struct(init_tsk);
+		read_unlock(&tasklist_lock);
+
+		tp = timespec64_sub(tp,
+				ns_to_timespec64(init_tsk->start_time));
+		put_task_struct(init_tsk);
+
+	}
+	rcu_read_unlock();
 	info->uptime = tp.tv_sec + (tp.tv_nsec ? 1 : 0);
 
-	get_avenrun(info->loads, 0, SI_LOAD_SHIFT - FSHIFT);
+	rcu_read_lock();
+	if (in_rich_container(current, RC_LOADAVG)) {
+		struct task_struct *init_tsk;
+		enum rich_container_source from;
+
+		read_lock(&tasklist_lock);
+		init_tsk = task_active_pid_ns(current)->child_reaper;
+		get_task_struct(init_tsk);
+		read_unlock(&tasklist_lock);
+
+		rich_container_source(&from);
+		rich_container_get_avenrun(from, init_tsk, info->loads, 0,
+					   SI_LOAD_SHIFT - FSHIFT, false);
+		put_task_struct(init_tsk);
+	} else {
+		get_avenrun(info->loads, 0, SI_LOAD_SHIFT - FSHIFT);
+	}
+	rcu_read_unlock();
 
 	info->procs = nr_threads;
 
-	si_meminfo(info);
-	si_swapinfo(info);
+
+#ifdef CONFIG_MEMCG
+	rcu_read_lock();
+	if (in_rich_container(current, RC_MEMINFO))
+		memcg = rich_container_get_memcg();
+	rcu_read_unlock();
+#endif
+
+	if (!memcg) {
+		si_meminfo(info);
+		si_swapinfo(info);
+	} else {
+		memcg_meminfo(memcg, info, &dummy_ext);
+	}
 
 	/*
 	 * If the sum of all the available memory (i.e. ram + swap)
