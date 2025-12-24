@@ -764,7 +764,7 @@ static inline void __update_rq_on_expel(struct rq *rq)
  */
 static inline void update_rq_on_expel(struct rq *rq)
 {
-	if (group_identity_disabled())
+	if (!group_identity_enabled(rq))
 		return;
 
 	if (!sched_feat(ID_LOOSE_EXPEL))
@@ -787,7 +787,7 @@ static inline bool __rq_on_expel(struct rq *rq)
 
 inline bool rq_on_expel(struct rq *rq)
 {
-	if (group_identity_disabled())
+	if (!group_identity_enabled(rq))
 		return false;
 
 	return __rq_on_expel(rq);
@@ -796,7 +796,7 @@ inline bool rq_on_expel(struct rq *rq)
 #ifdef CONFIG_SCHED_SMT
 bool rq_expel_by_smt_sibling(struct rq *rq)
 {
-	if (group_identity_disabled())
+	if (!group_identity_enabled(rq))
 		return false;
 
 	return rq->expel_by_smt_sibling;
@@ -810,7 +810,7 @@ bool rq_expel_by_smt_sibling(struct rq *rq)
  */
 static inline bool expellee_only(struct rq *rq)
 {
-	if (group_identity_disabled())
+	if (!group_identity_enabled(rq))
 		return false;
 
 	return __rq_on_expel(rq) && !rq->nr_expel_immune && rq->cfs.h_nr_running;
@@ -938,7 +938,7 @@ static inline unsigned long expel_score(struct rq *rq)
  */
 static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 {
-	if (group_identity_disabled())
+	if (!group_identity_enabled(rq))
 		return false;
 
 	return __rq_on_expel(rq) && !is_expel_immune(se);
@@ -1033,11 +1033,11 @@ id_wake_affine(struct task_struct *p, int this_cpu, int prev_cpu)
 	struct rq *this_rq;
 	struct rq *prev_rq;
 
-	if (group_identity_disabled())
-		return true;
-
 	this_rq = cpu_rq(this_cpu);
 	prev_rq = cpu_rq(prev_cpu);
+	if (!group_identity_enabled(this_rq) || !group_identity_enabled(prev_rq))
+		return true;
+
 	/* Last highclass should stay */
 	if (__is_highclass_task(p) && prev_rq->nr_high_running < 1)
 		return false;
@@ -1143,10 +1143,10 @@ id_idle_cpu(struct task_struct *p, int cpu, bool expellee, bool *idle, bool *sha
 	bool is_idle = available_idle_cpu(cpu);
 	u64 avg_idle;
 
-	if (group_identity_disabled())
+	rq = cpu_rq(cpu);
+	if (!group_identity_enabled(rq))
 		return is_idle;
 
-	rq = cpu_rq(cpu);
 	need_expel = __rq_on_expel(rq) && expellee;
 	is_saver = is_idle_saver_task(p);
 	avg_idle = rq->avg_idle;
@@ -1911,7 +1911,7 @@ static inline void check_expellee_se(struct cfs_rq *cfs_rq)
 	struct sched_entity *se, *tmp;
 
 	list_for_each_entry_safe(se, tmp, &cfs_rq->expel_list, expel_node) {
-		if (__rq_on_expel(rq_of(cfs_rq)) && expellee_se(se))
+		if (rq_of(cfs_rq)->gi_enabled && __rq_on_expel(rq_of(cfs_rq)) && expellee_se(se))
 			continue;
 
 		list_del_init(&se->expel_node);
@@ -1928,7 +1928,7 @@ static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 		struct sched_entity *se =
 			rb_entry(left, struct sched_entity, run_node);
 
-		if (!expellee_se(se))
+		if (!rq_of(cfs_rq)->gi_enabled || !expellee_se(se))
 			break;
 
 		left = rb_next(&se->run_node);
