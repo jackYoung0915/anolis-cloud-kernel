@@ -1546,13 +1546,12 @@ int acpi_iommu_fwspec_init(struct device *dev, u32 id,
 			   struct fwnode_handle *fwnode,
 			   const struct iommu_ops *ops)
 {
-	int ret;
+	int ret = iommu_fwspec_init(dev, fwnode, ops);
 
-	ret = iommu_fwspec_init(dev, fwnode, ops);
-	if (ret)
-		return ret;
+	if (!ret)
+		ret = iommu_fwspec_add_ids(dev, &id, 1);
 
-	return iommu_fwspec_add_ids(dev, &id, 1);
+	return ret;
 }
 
 static inline const struct iommu_ops *acpi_iommu_fwspec_ops(struct device *dev)
