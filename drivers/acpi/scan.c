@@ -1543,11 +1543,12 @@ int acpi_dma_get_range(struct device *dev, const struct bus_dma_region **map)
 
 #ifdef CONFIG_IOMMU_API
 int acpi_iommu_fwspec_init(struct device *dev, u32 id,
-			   struct fwnode_handle *fwnode)
+			   struct fwnode_handle *fwnode,
+			   const struct iommu_ops *ops)
 {
 	int ret;
 
-	ret = iommu_fwspec_init(dev, fwnode);
+	ret = iommu_fwspec_init(dev, fwnode, ops);
 	if (ret)
 		return ret;
 
@@ -1604,7 +1605,8 @@ static const struct iommu_ops *acpi_iommu_configure_id(struct device *dev,
 #else /* !CONFIG_IOMMU_API */
 
 int acpi_iommu_fwspec_init(struct device *dev, u32 id,
-			   struct fwnode_handle *fwnode)
+			   struct fwnode_handle *fwnode,
+			   const struct iommu_ops *ops)
 {
 	return -ENODEV;
 }

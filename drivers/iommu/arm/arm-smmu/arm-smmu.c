@@ -166,7 +166,8 @@ static int arm_smmu_register_legacy_master(struct device *dev,
 		it.cur_count = 1;
 	}
 
-	err = iommu_fwspec_init(dev, NULL);
+	err = iommu_fwspec_init(dev, &smmu_dev->of_node->fwnode,
+				&arm_smmu_ops);
 	if (err)
 		return err;
 
