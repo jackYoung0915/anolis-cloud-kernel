@@ -19,3 +19,7 @@ config AS_TPAUSE
 	def_bool $(as-instr,tpause %ecx)
 	help
 	  Supported by binutils >= 2.31.1 and LLVM integrated assembler >= V7
+config AS_PAUSEOPT
+	def_bool $(as-instr,pauseopt)
+	help
+	  Supported by binutils >= xxx-TBD and LLVM integrated assembler xxx-TBD

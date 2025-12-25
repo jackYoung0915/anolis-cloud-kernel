@@ -75,6 +75,9 @@ static void early_init_zhaoxin(struct cpuinfo_x86 *c)
 
 	if (detect_extended_topology_early(c) < 0)
 		detect_ht_early(c);
+
+	if ((cpuid_eax(0xC0000000) >= 0xC0000006) && (cpuid_eax(0xC0000006) & 0x1))
+		setup_force_cpu_cap(X86_FEATURE_PAUSEOPT);
 }
 
 static void init_zhaoxin(struct cpuinfo_x86 *c)
