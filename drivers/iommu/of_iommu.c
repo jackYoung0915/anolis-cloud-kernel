@@ -17,6 +17,8 @@
 #include <linux/slab.h>
 #include <linux/fsl/mc.h>
 
+#define NO_IOMMU	1
+
 static int of_iommu_xlate(struct device *dev,
 			  struct of_phandle_args *iommu_spec)
 {
@@ -27,7 +29,7 @@ static int of_iommu_xlate(struct device *dev,
 	ops = iommu_ops_from_fwnode(fwnode);
 	if ((ops && !ops->of_xlate) ||
 	    !of_device_is_available(iommu_spec->np))
-		return -ENODEV;
+		return NO_IOMMU;
 
 	ret = iommu_fwspec_init(dev, fwnode, ops);
 	if (ret)
@@ -59,7 +61,7 @@ static int of_iommu_configure_dev_id(struct device_node *master_np,
 			 "iommu-map-mask", &iommu_spec.np,
 			 iommu_spec.args);
 	if (err)
-		return err;
+		return err == -ENODEV ? NO_IOMMU : err;
 
 	err = of_iommu_xlate(dev, &iommu_spec);
 	of_node_put(iommu_spec.np);
@@ -70,7 +72,7 @@ static int of_iommu_configure_dev(struct device_node *master_np,
 				  struct device *dev)
 {
 	struct of_phandle_args iommu_spec;
-	int err = -ENODEV, idx = 0;
+	int err = NO_IOMMU, idx = 0;
 
 	while (!of_parse_phandle_with_args(master_np, "iommus",
 					   "#iommu-cells",
@@ -115,8 +117,9 @@ static int of_iommu_configure_device(struct device_node *master_np,
 int of_iommu_configure(struct device *dev, struct device_node *master_np,
 		       const u32 *id)
 {
+	const struct iommu_ops *ops = NULL;
 	struct iommu_fwspec *fwspec;
-	int err;
+	int err = NO_IOMMU;
 
 	if (!master_np)
 		return -ENODEV;
@@ -150,21 +153,37 @@ int of_iommu_configure(struct device *dev, struct device_node *master_np,
 	} else {
 		err = of_iommu_configure_device(master_np, dev, id);
 	}
+
+	/*
+	 * Two success conditions can be represented by non-negative err here:
+	 * >0 : there is no IOMMU, or one was unavailable for non-fatal reasons
+	 *  0 : we found an IOMMU, and dev->fwspec is initialised appropriately
+	 * <0 : any actual error
+	 */
+	if (!err) {
+		/* The fwspec pointer changed, read it again */
+		fwspec = dev_iommu_fwspec_get(dev);
+		ops    = fwspec->ops;
+	}
 	mutex_unlock(&iommu_probe_device_lock);
 
-	if (err == -ENODEV || err == -EPROBE_DEFER)
+	/*
+	 * If we have reason to believe the IOMMU driver missed the initial
+	 * probe for dev, replay it to get things in order.
+	 */
+	if (!err && dev->bus)
+		err = iommu_probe_device(dev);
+
+	/* Ignore all other errors apart from EPROBE_DEFER */
+	if (err < 0) {
+		if (err == -EPROBE_DEFER)
+			return err;
+		dev_dbg(dev, "Adding to IOMMU failed: %pe\n", ERR_PTR(err));
 		return err;
-	if (err)
-		goto err_log;
-
-	err = iommu_probe_device(dev);
-	if (err)
-		goto err_log;
+	}
+	if (!ops)
+		return -ENODEV;
 	return 0;
-
-err_log:
-	dev_dbg(dev, "Adding to IOMMU failed: %pe\n", ERR_PTR(err));
-	return err;
 }
 
 static enum iommu_resv_type __maybe_unused
