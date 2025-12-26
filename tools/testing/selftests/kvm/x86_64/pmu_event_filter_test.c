@@ -445,6 +445,11 @@ static bool use_amd_pmu(void)
 		 is_zen3(family, model));
 }
 
+static bool use_hygon_pmu(void)
+{
+	return host_cpu_is_hygon;
+}
+
 /*
  * "MEM_INST_RETIRED.ALL_LOADS", "MEM_INST_RETIRED.ALL_STORES", and
  * "MEM_INST_RETIRED.ANY" from https://perfmon-events.intel.com/
@@ -924,7 +929,7 @@ int main(int argc, char *argv[])
 	TEST_REQUIRE(kvm_has_cap(KVM_CAP_PMU_EVENT_FILTER));
 	TEST_REQUIRE(kvm_has_cap(KVM_CAP_PMU_EVENT_MASKED_EVENTS));
 
-	TEST_REQUIRE(use_intel_pmu() || use_amd_pmu());
+	TEST_REQUIRE(use_intel_pmu() || use_amd_pmu() || use_hygon_pmu());
 	guest_code = use_intel_pmu() ? intel_guest_code : amd_guest_code;
 
 	vm = vm_create_with_one_vcpu(&vcpu, guest_code);
@@ -934,7 +939,7 @@ int main(int argc, char *argv[])
 
 	TEST_REQUIRE(sanity_check_pmu(vcpu));
 
-	if (use_amd_pmu())
+	if (use_amd_pmu() || use_hygon_pmu())
 		test_amd_deny_list(vcpu);
 
 	test_without_filter(vcpu);
@@ -947,7 +952,7 @@ int main(int argc, char *argv[])
 	    supports_event_mem_inst_retired() &&
 	    kvm_cpu_property(X86_PROPERTY_PMU_NR_GP_COUNTERS) >= 3)
 		vcpu2 = vm_vcpu_add(vm, 2, intel_masked_events_guest_code);
-	else if (use_amd_pmu())
+	else if (use_amd_pmu() || use_hygon_pmu())
 		vcpu2 = vm_vcpu_add(vm, 2, amd_masked_events_guest_code);
 
 	if (vcpu2)
