@@ -21,6 +21,7 @@
 
 extern bool host_cpu_is_intel;
 extern bool host_cpu_is_amd;
+extern bool host_cpu_is_hygon;
 
 #define NMI_VECTOR		0x02
 
@@ -650,6 +651,11 @@ static inline bool this_cpu_is_intel(void)
 static inline bool this_cpu_is_amd(void)
 {
 	return this_cpu_vendor_string_is("AuthenticAMD");
+}
+
+static inline bool this_cpu_is_hygon(void)
+{
+	return this_cpu_vendor_string_is("HygonGenuine");
 }
 
 static inline uint32_t __this_cpu_has(uint32_t function, uint32_t index,
