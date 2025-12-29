@@ -839,28 +839,22 @@ static bool folio_referenced_one(struct folio *folio,
 			return false; /* To break the loop */
 		}
 
+		if (pvmw.pte && folio_test_large(folio)) {
+			unsigned long end_addr = pmd_addr_end(address, vma->vm_end);
+			unsigned int max_nr = (end_addr - address) >> PAGE_SHIFT;
+			pte_t pteval = ptep_get(pvmw.pte);
+
+			nr = folio_pte_batch(folio, pvmw.pte, pteval, max_nr);
+			ptes += nr;
+		}
+
 		if (lru_gen_enabled() && pvmw.pte) {
-			if (lru_gen_look_around(&pvmw))
+			if (lru_gen_look_around(&pvmw, nr))
 				referenced++;
 		} else if (pvmw.pte) {
-			if (folio_test_large(folio)) {
-				unsigned long end_addr =
-					pmd_addr_end(address, vma->vm_end);
-				unsigned int max_nr =
-					(end_addr - address) >> PAGE_SHIFT;
-				pte_t pteval = ptep_get(pvmw.pte);
-
-				nr = folio_pte_batch(folio, pvmw.pte,
-						     pteval, max_nr);
-			}
-
-			ptes += nr;
 			if (clear_flush_young_ptes_notify(vma, address,
 						pvmw.pte, nr))
 				referenced++;
-			/* Skip the batched PTEs */
-			pvmw.pte += nr - 1;
-			pvmw.address += (nr - 1) * PAGE_SIZE;
 		} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
 			if (pmdp_clear_flush_young_notify(vma, address,
 						pvmw.pmd))
@@ -871,6 +865,11 @@ static bool folio_referenced_one(struct folio *folio,
 		}
 
 		pra->mapcount -= nr;
+		if (nr > 1) {
+			/* Skip the batched PTEs */
+			pvmw.pte += nr - 1;
+			pvmw.address += (nr - 1) * PAGE_SIZE;
+		}
 		/*
 		 * If we are sure that we batched the entire folio,
 		 * we can just optimize and stop right here.
