@@ -145,6 +145,8 @@ struct cpuinfo_x86 boot_cpu_data __read_mostly;
 EXPORT_SYMBOL(boot_cpu_data);
 #endif
 
+struct extra_zx_cpuinfo_x86 extra_zx_boot_cpu_data __read_mostly;
+
 
 #if !defined(CONFIG_X86_PAE) || defined(CONFIG_X86_64)
 __visible unsigned long mmu_cr4_features __ro_after_init;

@@ -146,6 +146,12 @@ struct cpuid_regs {
 	u32 eax, ebx, ecx, edx;
 };
 
+struct extra_zx_cpuinfo_x86 {
+#ifdef CONFIG_X86_VMX_FEATURE_NAMES
+	unsigned long		vmx_tertiary_capability[NVMX_ZX_TERTIARY_INTS];
+#endif
+} __randomize_layout;
+
 enum cpuid_regs_idx {
 	CPUID_EAX = 0,
 	CPUID_EBX,
@@ -171,6 +177,7 @@ enum cpuid_regs_idx {
  */
 extern struct cpuinfo_x86	boot_cpu_data;
 extern struct cpuinfo_x86	new_cpu_data;
+extern struct extra_zx_cpuinfo_x86	extra_zx_boot_cpu_data;
 
 extern __u32			cpu_caps_cleared[NCAPINTS + NBUGINTS];
 extern __u32			cpu_caps_set[NCAPINTS + NBUGINTS];
@@ -181,6 +188,14 @@ DECLARE_PER_CPU_READ_MOSTLY(struct cpuinfo_x86, cpu_info);
 #else
 #define cpu_info		boot_cpu_data
 #define cpu_data(cpu)		boot_cpu_data
+#endif
+
+#ifdef CONFIG_SMP
+DECLARE_PER_CPU_READ_MOSTLY(struct extra_zx_cpuinfo_x86, extra_zx_cpu_info);
+#define extra_zx_cpu_data(cpu)	per_cpu(extra_zx_cpu_info, cpu)
+#else
+#define extra_zx_cpu_info	extra_zx_boot_cpu_data
+#define extra_zx_cpu_data(cpu)	extra_zx_boot_cpu_data
 #endif
 
 extern const struct seq_operations cpuinfo_op;

@@ -232,6 +232,9 @@ struct vcpu_vmx {
 
 	u64		      spec_ctrl;
 	u32		      msr_ia32_umwait_control;
+	u32		      msr_pauseopt_control;
+	bool		      pauseopt_in_progress;
+	unsigned long	      pauseopt_rip;
 
 	u32 secondary_exec_control;
 
@@ -389,6 +392,9 @@ static inline u8 vmx_get_rvi(void)
 	return vmcs_read16(GUEST_INTR_STATUS) & 0xff;
 }
 
+#define KVM_REQUIRED_VMX_ZX_TERTIARY_VM_EXEC_CONTROL 0
+#define KVM_OPTIONAL_VMX_ZX_TERTIARY_VM_EXEC_CONTROL (ZX_TERTIARY_EXEC_GUEST_PAUSEOPT)
+
 #define BUILD_CONTROLS_SHADOW(lname, uname, bits)				\
 static inline void lname##_controls_set(struct vcpu_vmx *vmx, u##bits val)	\
 {										\
@@ -419,6 +425,7 @@ BUILD_CONTROLS_SHADOW(pin, PIN_BASED_VM_EXEC_CONTROL, 32)
 BUILD_CONTROLS_SHADOW(exec, CPU_BASED_VM_EXEC_CONTROL, 32)
 BUILD_CONTROLS_SHADOW(secondary_exec, SECONDARY_VM_EXEC_CONTROL, 32)
 BUILD_CONTROLS_SHADOW(tertiary_exec, TERTIARY_VM_EXEC_CONTROL, 64)
+BUILD_CONTROLS_SHADOW(zx_tertiary_exec, ZX_TERTIARY_VM_EXEC_CONTROL, 32)
 
 static inline void vmx_register_cache_reset(struct kvm_vcpu *vcpu)
 {
@@ -515,6 +522,12 @@ static inline bool vmx_has_waitpkg(struct vcpu_vmx *vmx)
 		SECONDARY_EXEC_ENABLE_USR_WAIT_PAUSE;
 }
 
+static inline bool vmx_guest_pauseopt_enabled(struct vcpu_vmx *vmx)
+{
+	return zx_tertiary_exec_controls_get(vmx) &
+		ZX_TERTIARY_EXEC_GUEST_PAUSEOPT;
+}
+
 static inline bool vmx_need_pf_intercept(struct kvm_vcpu *vcpu)
 {
 	if (!enable_ept)
@@ -542,5 +555,14 @@ static inline bool vmx_can_use_ipiv(struct kvm_vcpu *vcpu)
 {
 	return  lapic_in_kernel(vcpu) && enable_ipiv;
 }
+
+static inline bool is_zhaoxin_cpu(void)
+{
+	/* Now Zhaoxin owns 2 x86 vendor brands, Zhaoxin and Centaur */
+	return (boot_cpu_data.x86_vendor == X86_VENDOR_ZHAOXIN ||
+		boot_cpu_data.x86_vendor == X86_VENDOR_CENTAUR);
+}
+
+#define KVM_MSR_RET_UNHANDLED 2
 
 #endif /* __KVM_X86_VMX_H */
