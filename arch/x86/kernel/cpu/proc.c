@@ -10,6 +10,7 @@
 
 #ifdef CONFIG_X86_VMX_FEATURE_NAMES
 extern const char * const x86_vmx_flags[NVMXINTS*32];
+extern const char * const x86_vmx_zx_tertiary_flags[NVMX_ZX_TERTIARY_INTS*32];
 #endif
 
 /*
@@ -66,6 +67,18 @@ static void show_cpuinfo_misc(struct seq_file *m, struct cpuinfo_x86 *c)
 		   c->cpuid_level);
 }
 #endif
+
+static void show_cpuinfo_zx_vmx(struct seq_file *m, unsigned int cpu)
+{
+	int i;
+	struct extra_zx_cpuinfo_x86 *zx = &extra_zx_cpu_data(cpu);
+
+	for (i = 0; i < 32*NVMX_ZX_TERTIARY_INTS; i++) {
+		if (test_bit(i, zx->vmx_tertiary_capability) &&
+		    x86_vmx_zx_tertiary_flags[i] != NULL)
+			seq_printf(m, " %s", x86_vmx_zx_tertiary_flags[i]);
+	}
+}
 
 static int show_cpuinfo(struct seq_file *m, void *v)
 {
@@ -144,6 +157,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 			    x86_vmx_flags[i] != NULL)
 				seq_printf(m, " %s", x86_vmx_flags[i]);
 		}
+		show_cpuinfo_zx_vmx(m, cpu);
 	}
 #endif
 

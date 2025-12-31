@@ -1945,6 +1945,24 @@ static int vmx_get_msr_feature(struct kvm_msr_entry *msr)
 	}
 }
 
+static int zx_vmx_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+
+	if (!is_zhaoxin_cpu())
+		return KVM_MSR_RET_UNHANDLED;
+
+	switch (msr_info->index) {
+	case MSR_PAUSEOPT_CONTROL:
+		if (!msr_info->host_initiated && !vmx_guest_pauseopt_enabled(vmx))
+			return 1;
+		msr_info->data = vmx->msr_pauseopt_control;
+		return 0;
+	default:
+		return KVM_MSR_RET_UNHANDLED; /* Non-zhaoxin MSRs */
+	}
+}
+
 /*
  * Reads an msr value (of 'msr_index') into 'pdata'.
  * Returns 0 on success, non-0 otherwise.
@@ -1955,6 +1973,17 @@ static int vmx_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	struct vcpu_vmx *vmx = to_vmx(vcpu);
 	struct vmx_uret_msr *msr;
 	u32 index;
+	int ret;
+
+	ret = zx_vmx_get_msr(vcpu, msr_info);
+	switch (ret) {
+	case 0:
+	case 1:
+		return ret;
+	case KVM_MSR_RET_UNHANDLED:
+		ret = 0;
+		break;
+	}
 
 	switch (msr_info->index) {
 #ifdef CONFIG_X86_64
@@ -2126,6 +2155,31 @@ static u64 vcpu_supported_debugctl(struct kvm_vcpu *vcpu)
 	return debugctl;
 }
 
+static int zx_vmx_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+	u32 msr_index = msr_info->index;
+	u64 data = msr_info->data;
+
+	if (!is_zhaoxin_cpu())
+		return KVM_MSR_RET_UNHANDLED;
+
+	switch (msr_index) {
+	case MSR_PAUSEOPT_CONTROL:
+		if (!msr_info->host_initiated && !vmx_guest_pauseopt_enabled(vmx))
+			return 1;
+
+		/* The reserved bit 1 and non-32 bit [63:32] should be zero */
+		if (data & (BIT_ULL(1) | GENMASK_ULL(63, 32)))
+			return 1;
+
+		vmx->msr_pauseopt_control = data;
+		return 0;
+	default:
+		return KVM_MSR_RET_UNHANDLED; /* Non-zhaoxin MSRs */
+	}
+}
+
 /*
  * Writes msr value into the appropriate "register".
  * Returns 0 on success, non-0 otherwise.
@@ -2139,6 +2193,16 @@ static int vmx_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	u32 msr_index = msr_info->index;
 	u64 data = msr_info->data;
 	u32 index;
+
+	ret = zx_vmx_set_msr(vcpu, msr_info);
+	switch (ret) {
+	case 0:
+	case 1:
+		return ret;
+	case KVM_MSR_RET_UNHANDLED:
+		ret = 0;
+		break;
+	}
 
 	switch (msr_index) {
 	case MSR_EFER:
@@ -2620,6 +2684,47 @@ static __init u64 adjust_vmx_controls64(u64 ctl_opt, u32 msr)
 	return  ctl_opt & allowed;
 }
 
+static int setup_zhaoxin_vmcs_controls(struct vmcs_config *vmcs_conf)
+{
+	u32 zx_ext_vmcs_cap, msr_high, ign;
+	u32 zx_ctl3 = 0;
+	int ret;
+
+	if (!is_zhaoxin_cpu())
+		return 0;
+
+	/*
+	 * Zhaoxin uses MSR_ZX_EXT_VMCS_CAPS to enumerate the 3rd CPU-based
+	 * control, rather than a bit in the 2nd CPU-based control.
+	 */
+	rdmsr_safe(MSR_ZX_EXT_VMCS_CAPS, &zx_ext_vmcs_cap, &ign);
+	if (!(zx_ext_vmcs_cap & MSR_ZX_VMCS_EXEC_CTL3_EN))
+		return 0;
+
+	ret = rdmsr_safe(MSR_ZX_VMX_PROCBASED_CTLS3, &ign, &msr_high);
+	if (msr_high & 0x1) {
+		/* ZX CPU with ZX_VMX_PROCBASED_CTLS3 support */
+		ret = adjust_vmx_controls(KVM_REQUIRED_VMX_ZX_TERTIARY_VM_EXEC_CONTROL,
+					  KVM_OPTIONAL_VMX_ZX_TERTIARY_VM_EXEC_CONTROL,
+					  MSR_ZX_VMX_PROCBASED_CTLS3, &zx_ctl3);
+
+		if (ret)
+			return -EIO;
+	} else {
+		/*
+		 * ZX CPU without ZX_VMX_PROCBASED_CTLS3 support:
+		 * assume PAUSEOPT is supported and set that bit
+		 */
+		zx_ctl3 |= ZX_TERTIARY_EXEC_GUEST_PAUSEOPT;
+	}
+
+	/* Will be exetended in the future for more 3rd controls */
+
+	vmcs_conf->zx_cpu_based_3rd_exec_ctrl = zx_ctl3;
+
+	return 0;
+}
+
 static __init int setup_vmcs_config(struct vmcs_config *vmcs_conf,
 				    struct vmx_capability *vmx_cap)
 {
@@ -2825,6 +2930,9 @@ static __init int setup_vmcs_config(struct vmcs_config *vmcs_conf,
 	vmcs_conf->cpu_based_3rd_exec_ctrl = _cpu_based_3rd_exec_control;
 	vmcs_conf->vmexit_ctrl         = _vmexit_control;
 	vmcs_conf->vmentry_ctrl        = _vmentry_control;
+
+	if (setup_zhaoxin_vmcs_controls(vmcs_conf))
+		return -EIO;
 
 #if IS_ENABLED(CONFIG_HYPERV)
 	if (enlightened_vmcs)
@@ -4434,6 +4542,24 @@ static u64 vmx_tertiary_exec_control(struct vcpu_vmx *vmx)
 	return exec_control;
 }
 
+static u32 zx_vmx_tertiary_exec_control(struct vcpu_vmx *vmx)
+{
+	struct kvm_vcpu *vcpu = &vmx->vcpu;
+	u32 exec_control = vmcs_config.zx_cpu_based_3rd_exec_ctrl;
+
+	/*
+	 * We might need to modify the way the third level control corrections
+	 * are handled here in the future by introducing a check using the
+	 * CTLS3 MSR.
+	 */
+	if (!guest_cpuid_has(vcpu, X86_FEATURE_PAUSEOPT))
+		exec_control &= ~ZX_TERTIARY_EXEC_GUEST_PAUSEOPT;
+
+	/* Adjust other features here */
+
+	return exec_control;
+}
+
 /*
  * Adjust a single secondary execution control bit to intercept/allow an
  * instruction in the guest.  This is usually done based on whether or not a
@@ -4616,6 +4742,26 @@ static int vmx_vcpu_precreate(struct kvm *kvm)
 
 #define VMX_XSS_EXIT_BITMAP 0
 
+static void zx_setup_3rd_ctrls(struct vcpu_vmx *vmx)
+{
+	if (!cpu_has_zx_tertiary_exec_ctrls())
+		return;
+
+	zx_tertiary_exec_controls_set(vmx, zx_vmx_tertiary_exec_control(vmx));
+
+	/*
+	 * Regardless of whether the guest has PAUSEOPT support or not,
+	 * as long as there is a 3rd control, initialize this field to 0.
+	 */
+	if (cpu_has_vmx_pauseopt())
+		vmcs_write64(PAUSEOPT_TARGET_TSC, 0);
+}
+
+static void zx_init_vmcs(struct vcpu_vmx *vmx)
+{
+	zx_setup_3rd_ctrls(vmx);
+}
+
 /*
  * Noting that the initialization of Guest-state Area of VMCS is in
  * vmx_vcpu_reset().
@@ -4645,6 +4791,8 @@ static void init_vmcs(struct vcpu_vmx *vmx)
 
 	if (cpu_has_tertiary_exec_ctrls())
 		tertiary_exec_controls_set(vmx, vmx_tertiary_exec_control(vmx));
+
+	zx_init_vmcs(vmx);
 
 	if (kvm_vcpu_apicv_active(&vmx->vcpu)) {
 		vmcs_write64(EOI_EXIT_BITMAP0, 0);
@@ -4735,6 +4883,9 @@ static void vmx_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
 	vmx->spec_ctrl = 0;
 
 	vmx->msr_ia32_umwait_control = 0;
+	vmx->msr_pauseopt_control = 0;
+	vmx->pauseopt_in_progress = false;
+	vmx->pauseopt_rip = 0;
 
 	vmx->vcpu.arch.regs[VCPU_REGS_RDX] = get_rdx_init_val();
 	vmx->hv_deadline_tsc = -1;
@@ -6250,6 +6401,14 @@ void dump_vmcs(void)
 	else
 		tertiary_exec_control = 0;
 
+	if (cpu_has_zx_tertiary_exec_ctrls()) {
+		pr_err("*** Zhaoxin Specific Fields ***\n");
+		pr_err("Zhaoxin TertiaryExec Cntl = 0x%016x\n",
+		       vmcs_read32(ZX_TERTIARY_VM_EXEC_CONTROL));
+		pr_err("PAUSEOPT Saved TSC = 0x%016llx\n",
+		       vmcs_read64(PAUSEOPT_TARGET_TSC));
+	}
+
 	pr_err("*** Guest State ***\n");
 	pr_err("CR0: actual=0x%016lx, shadow=0x%016lx, gh_mask=%016lx\n",
 	       vmcs_readl(GUEST_CR0), vmcs_readl(CR0_READ_SHADOW),
@@ -7192,6 +7351,47 @@ static noinstr void vmx_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 	instrumentation_end();
 }
 
+static void zx_vmx_vcpu_run_pre(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+
+	if (!is_zhaoxin_cpu())
+		return;
+
+	if (!cpu_has_vmx_pauseopt())
+		return;
+
+	if (!vmx->pauseopt_in_progress)
+		return;
+
+	if (kvm_rip_read(vcpu) != vmx->pauseopt_rip) {
+		vmcs_write64(PAUSEOPT_TARGET_TSC, 0);
+		vmx->pauseopt_in_progress = false;
+		vmx->pauseopt_rip = 0;
+	}
+}
+
+static void zx_vmx_vcpu_run_post(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+	u64 target;
+
+	if (!is_zhaoxin_cpu())
+		return;
+
+	if (!cpu_has_vmx_pauseopt())
+		return;
+
+	target = vmcs_read64(PAUSEOPT_TARGET_TSC);
+	if (target) {
+		vmx->pauseopt_in_progress = true;
+		vmx->pauseopt_rip = kvm_rip_read(vcpu);
+	} else {
+		vmx->pauseopt_in_progress = false;
+		vmx->pauseopt_rip = 0;
+	}
+}
+
 static fastpath_t vmx_vcpu_run(struct kvm_vcpu *vcpu)
 {
 	fastpath_t exit_fastpath;
@@ -7224,6 +7424,8 @@ reenter_guest:
 		vmcs_writel(GUEST_RSP, vcpu->arch.regs[VCPU_REGS_RSP]);
 	if (kvm_register_is_dirty(vcpu, VCPU_REGS_RIP))
 		vmcs_writel(GUEST_RIP, vcpu->arch.regs[VCPU_REGS_RIP]);
+
+	zx_vmx_vcpu_run_pre(vcpu);
 
 	cr3 = __get_current_cr3_fast();
 	if (unlikely(cr3 != vmx->loaded_vmcs->host_state.cr3)) {
@@ -7317,6 +7519,8 @@ reenter_guest:
 
 	vmx->loaded_vmcs->launched = 1;
 	vmx->idt_vectoring_info = vmcs_read32(IDT_VECTORING_INFO_FIELD);
+
+	zx_vmx_vcpu_run_post(vcpu);
 
 	vmx_recover_nmi_blocking(vmx);
 	vmx_complete_interrupts(vmx);
@@ -8022,6 +8226,8 @@ static void vmx_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 		vmcs_set_secondary_exec_control(vmx);
 	}
 
+	zx_setup_3rd_ctrls(vmx);
+
 	if (nested_vmx_allowed(vcpu))
 		to_vmx(vcpu)->msr_ia32_feature_control_valid_bits |=
 			FEAT_CTL_VMX_ENABLED_INSIDE_SMX |
@@ -8076,6 +8282,12 @@ static void vmx_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 	vmx_update_exception_bitmap(vcpu);
 }
 
+static void zx_vmx_set_cpu_caps(void)
+{
+	if (cpu_has_vmx_pauseopt())
+		kvm_cpu_cap_check_and_set(X86_FEATURE_PAUSEOPT);
+}
+
 static __init void vmx_set_cpu_caps(void)
 {
 	kvm_set_cpu_caps();
@@ -8120,6 +8332,8 @@ static __init void vmx_set_cpu_caps(void)
 
 	if (cpu_has_vmx_waitpkg())
 		kvm_cpu_cap_check_and_set(X86_FEATURE_WAITPKG);
+
+	zx_vmx_set_cpu_caps();
 
 	if (!cpu_has_vmx_pasid_trans())
 		kvm_cpu_cap_clear(X86_FEATURE_ENQCMD);

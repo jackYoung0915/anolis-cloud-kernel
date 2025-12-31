@@ -89,6 +89,7 @@
 #define EXIT_REASON_XRSTORS             64
 #define EXIT_REASON_UMWAIT              67
 #define EXIT_REASON_TPAUSE              68
+#define EXIT_REASON_PAUSEOPT            68
 #define EXIT_REASON_ENQCMD_PASID        72
 #define EXIT_REASON_ENQCMDS_PASID       73
 #define EXIT_REASON_BUS_LOCK            74

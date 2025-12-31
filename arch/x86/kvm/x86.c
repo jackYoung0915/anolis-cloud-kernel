@@ -1291,6 +1291,7 @@ static const u32 msrs_to_save_all[] = {
 	MSR_IA32_RTIT_ADDR2_A, MSR_IA32_RTIT_ADDR2_B,
 	MSR_IA32_RTIT_ADDR3_A, MSR_IA32_RTIT_ADDR3_B,
 	MSR_IA32_UMWAIT_CONTROL,
+	MSR_PAUSEOPT_CONTROL,
 
 	MSR_ARCH_PERFMON_FIXED_CTR0, MSR_ARCH_PERFMON_FIXED_CTR1,
 	MSR_ARCH_PERFMON_FIXED_CTR0 + 2,
@@ -6164,6 +6165,10 @@ static void kvm_init_msr_list(void)
 			break;
 		case MSR_IA32_UMWAIT_CONTROL:
 			if (!kvm_cpu_cap_has(X86_FEATURE_WAITPKG))
+				continue;
+			break;
+		case MSR_PAUSEOPT_CONTROL:
+			if (!kvm_cpu_cap_has(X86_FEATURE_PAUSEOPT))
 				continue;
 			break;
 		case MSR_IA32_RTIT_CTL:
