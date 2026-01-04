@@ -480,7 +480,7 @@ static ssize_t zhaoxin_event_sysfs_show(char *page, u64 config)
 	return x86_event_sysfs_show(page, config, event);
 }
 
-static struct perf_guest_switch_msr *zhaoxin_guest_get_msrs(int *nr)
+static struct perf_guest_switch_msr *zhaoxin_guest_get_msrs(int *nr, void *data)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct perf_guest_switch_msr *arr = cpuc->guest_switch_msrs;
