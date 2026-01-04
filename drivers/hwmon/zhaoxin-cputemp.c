@@ -143,9 +143,9 @@ static int zhaoxin_cputemp_probe(struct platform_device *pdev)
 	data->id = pdev->id;
 	data->name = "zhaoxin_cputemp";
 	data->msr_temp = 0x1423;
-	if (c->x86_model == 0x6b) {
-		data->msr_crit  = 0x175b;
-		data->msr_max   = 0x175a;
+	if (c->x86_model == 0x6b || c->x86_model == 0x7b) {
+		data->msr_crit = 0x175b;
+		data->msr_max = 0x175a;
 	} else {
 		data->msr_crit = 0x1416;
 		data->msr_max = 0x1415;
@@ -262,16 +262,18 @@ static int zhaoxin_cputemp_down_prep(unsigned int cpu)
 	mutex_unlock(&pdev_list_mutex);
 	return 0;
 }
-static const struct x86_cpu_id cputemp_ids[] __initconst = {
-	{X86_VENDOR_CENTAUR, 7, 0x3b, },
-	{X86_VENDOR_ZHAOXIN, 7, 0x3b, },
-	{X86_VENDOR_CENTAUR, 7, 0x5b, },
-	{X86_VENDOR_ZHAOXIN, 7, 0x5b, },
-	{X86_VENDOR_CENTAUR, 7, 0x6b, },
-	{X86_VENDOR_ZHAOXIN, 7, 0x6b, },
+static const struct x86_cpu_id zhaoxin_cputemp_cpu_ids[] __initconst = {
+	X86_MATCH_VENDOR_FAM_MODEL(ZHAOXIN, 7, 0x3b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x3b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(ZHAOXIN, 7, 0x5b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x5b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(ZHAOXIN, 7, 0x6b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x6b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(CENTAUR, 7, 0x7b, NULL),
+	X86_MATCH_VENDOR_FAM_MODEL(ZHAOXIN, 7, 0x7b, NULL),
 	{}
 };
-MODULE_DEVICE_TABLE(x86cpu, cputemp_ids);
+MODULE_DEVICE_TABLE(x86cpu, zhaoxin_cputemp_cpu_ids);
 
 static enum cpuhp_state zhaoxin_temp_online;
 
@@ -279,15 +281,13 @@ static int __init zhaoxin_cputemp_init(void)
 {
 	int err;
 
-	if (!x86_match_cpu(cputemp_ids))
+	if (!x86_match_cpu(zhaoxin_cputemp_cpu_ids))
 		return -ENODEV;
 	err = platform_driver_register(&zhaoxin_cputemp_driver);
 	if (err)
 		goto exit;
-	err = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
-					"hwmon/zhaoxin:online",
-					zhaoxin_cputemp_online,
-					zhaoxin_cputemp_down_prep);
+	err = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "hwmon/zhaoxin:online",
+				zhaoxin_cputemp_online, zhaoxin_cputemp_down_prep);
 	if (err < 0)
 		goto exit_driver_unreg;
 	zhaoxin_temp_online = err;
