@@ -1756,6 +1756,7 @@ unsigned long shmem_allowable_huge_orders(struct inode *inode,
 	unsigned int global_orders;
 	loff_t i_size;
 	int order;
+	unsigned long orders;
 
 	if (vma && ((vm_flags & VM_NOHUGEPAGE) ||
 	    test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags)))
@@ -1771,7 +1772,11 @@ unsigned long shmem_allowable_huge_orders(struct inode *inode,
 	if (!vma || !vma_is_anon_shmem(vma)) {
 		unsigned int file_allow_orders = file_orders_always();
 
-		return global_orders & file_allow_orders;
+		global_orders &= file_allow_orders;
+		if (vma)
+			global_orders &= bpf_hook_thp_get_orders(vma, TVA_PAGEFAULT, global_orders);
+
+		return global_orders;
 	}
 
 	/*
@@ -1807,7 +1812,11 @@ unsigned long shmem_allowable_huge_orders(struct inode *inode,
 	if (global_orders > 0)
 		mask |= READ_ONCE(huge_shmem_orders_inherit);
 
-	return THP_ORDERS_ALL_FILE_DEFAULT & mask;
+	orders = THP_ORDERS_ALL_FILE_DEFAULT & mask;
+	if (vma)
+		orders &= bpf_hook_thp_get_orders(vma, TVA_PAGEFAULT, orders);
+
+	return orders;
 }
 
 static unsigned long shmem_suitable_orders(struct inode *inode, struct vm_fault *vmf,
