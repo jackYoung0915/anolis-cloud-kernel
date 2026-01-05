@@ -99,6 +99,7 @@ struct vfio_dma {
 	unsigned long		*bitmap;
 	struct mm_struct	*mm;
 	size_t			locked_vm;
+	bool			mmio_fast_unmap;
 };
 
 struct vfio_batch {
@@ -1097,16 +1098,36 @@ static long vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma,
 			continue;
 		}
 
-		/*
-		 * To optimize for fewer iommu_unmap() calls, each of which
-		 * may require hardware cache flushing, try to find the
-		 * largest contiguous physical memory chunk to unmap.
-		 */
-		for (len = PAGE_SIZE;
-		     !domain->fgsp && iova + len < end; len += PAGE_SIZE) {
-			next = iommu_iova_to_phys(domain->domain, iova + len);
-			if (next != phys + len)
-				break;
+		if (dma->mmio_fast_unmap && is_invalid_reserved_pfn(phys >> PAGE_SHIFT)) {
+			/*
+			 * Safety of collapsing the whole remaining range into a
+			 * single iommu_unmap() relies on the invariant established
+			 * at map time: vfio_pin_map_dma() validates every segment
+			 * with is_invalid_reserved_pfn() and silently downgrades
+			 * dma->mmio_fast_unmap if any segment is not reserved. So
+			 * once dma->mmio_fast_unmap is set, the entire DMA region
+			 * is guaranteed to back contiguous reserved MMIO whose
+			 * physical layout is stable for the lifetime of the IOMMU
+			 * domain. The is_invalid_reserved_pfn() check on the first
+			 * page here is a defensive re-confirmation of that
+			 * invariant before taking the shortcut; partial unmap from
+			 * iommu_unmap() is still handled below as a safety net.
+			 */
+			len = end - iova;
+			pr_debug("vfio: skip iova translate, iova:%llx, end: %llx, len: %lx\n",
+					iova, end, len);
+		} else {
+			/*
+			 * To optimize for fewer iommu_unmap() calls, each of which
+			 * may require hardware cache flushing, try to find the
+			 * largest contiguous physical memory chunk to unmap.
+			 */
+			for (len = PAGE_SIZE;
+				!domain->fgsp && iova + len < end; len += PAGE_SIZE) {
+				next = iommu_iova_to_phys(domain->domain, iova + len);
+				if (next != phys + len)
+					break;
+			}
 		}
 
 		/*
@@ -1122,6 +1143,20 @@ static long vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma,
 						    phys, &unlocked);
 			if (WARN_ON(!unmapped))
 				break;
+		}
+		if (dma->mmio_fast_unmap && unmapped != len) {
+			pr_warn_ratelimited("vfio: FAST_UNMAP partial iommu_unmap, unmapped: %lx != len: %lx\n",
+					    unmapped, len);
+			/*
+			 * Unexpected partial iommu_unmap() under the FAST_UNMAP
+			 * shortcut: either the user-side promise is violated or
+			 * there is an unexpected hole in the mapping. Drop the
+			 * shortcut so that subsequent iterations fall back to the
+			 * standard per-page iommu_iova_to_phys() chunk-merging
+			 * path, which probes real mappings and skips holes,
+			 * preventing repeated whole-range retries and log spam.
+			 */
+			dma->mmio_fast_unmap = false;
 		}
 	}
 
@@ -1498,12 +1533,15 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 	int ret = 0;
 	struct mm_struct *mm = current->mm;
 	bool mmio_dont_pin = map_flags & VFIO_DMA_MAP_FLAG_MMIO_DONT_PIN;
+	bool mmio_fast_unmap = map_flags & VFIO_DMA_MAP_FLAG_MMIO_FAST_UNMAP;
 
 	/* This code path is only user initiated */
 	if (!mm) {
 		ret = -ENODEV;
 		goto out;
 	}
+
+	dma->mmio_fast_unmap = false;
 
 	vfio_batch_init(&batch);
 
@@ -1554,6 +1592,19 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 			break;
 		}
 
+		/*
+		 * FAST_UNMAP collapses the whole mapping into a single
+		 * iommu_unmap() at unmap time, which is only safe when the
+		 * region is a contiguous reserved MMIO range. If any segment
+		 * is not reserved, drop the optimization silently and fall
+		 * back to the standard per-page path.
+		 */
+		if (mmio_fast_unmap && !is_invalid_reserved_pfn(pfn)) {
+			pr_warn_ratelimited("vfio: FAST_UNMAP requested but pfn %lx is not reserved, downgrade\n",
+					    pfn);
+			mmio_fast_unmap = false;
+		}
+
 		size -= npage << PAGE_SHIFT;
 		dma->size += npage << PAGE_SHIFT;
 	}
@@ -1564,6 +1615,11 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 out:
 	if (ret)
 		vfio_remove_dma(iommu, dma);
+	else if (mmio_fast_unmap) {
+		dma->mmio_fast_unmap = true;
+		pr_debug("vfio: set dma->mmio_fast_unmap, iova: %llx, size: %lx\n",
+			 dma->iova, map_size);
+	}
 
 	return ret;
 }
@@ -2715,6 +2771,7 @@ static int vfio_iommu_type1_check_extension(struct vfio_iommu *iommu,
 	case VFIO_TYPE1_IOMMU:
 	case VFIO_TYPE1v2_IOMMU:
 	case VFIO_DMA_MAP_MMIO_DONT_PIN:
+	case VFIO_DMA_MAP_MMIO_FAST_UNMAP:
 	case VFIO_UNMAP_ALL:
 		return 1;
 	case VFIO_UPDATE_VADDR:
@@ -2887,7 +2944,8 @@ static int vfio_iommu_type1_map_dma(struct vfio_iommu *iommu,
 	struct vfio_iommu_type1_dma_map map;
 	unsigned long minsz;
 	uint32_t mask = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE |
-			VFIO_DMA_MAP_FLAG_VADDR | VFIO_DMA_MAP_FLAG_MMIO_DONT_PIN;
+			VFIO_DMA_MAP_FLAG_VADDR | VFIO_DMA_MAP_FLAG_MMIO_DONT_PIN |
+			VFIO_DMA_MAP_FLAG_MMIO_FAST_UNMAP;
 
 	minsz = offsetofend(struct vfio_iommu_type1_dma_map, size);
 

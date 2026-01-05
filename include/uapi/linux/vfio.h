@@ -91,6 +91,12 @@
 #define IOMMUFD_VFIO_IOMMU_IOAS_MAP_MMIO 62
 
 /*
+ * Support VFIO_DMA_MAP_FLAG_MMIO_FAST_UNMAP for DMA unmap.
+ * Fast DMA Unmapping via Skipping Per-page IOVA Translation
+ */
+#define VFIO_DMA_MAP_MMIO_FAST_UNMAP	64
+
+/*
  * The IOCTL interface is designed for extensibility by embedding the
  * structure length (argsz) and flags into structures passed between
  * kernel and userspace.  We therefore use the _IO() macro for these
@@ -1622,6 +1628,27 @@ struct vfio_iommu_type1_dma_map {
 #define VFIO_DMA_MAP_FLAG_READ (1 << 0)		/* readable from device */
 #define VFIO_DMA_MAP_FLAG_WRITE (1 << 1)	/* writable from device */
 #define VFIO_DMA_MAP_FLAG_VADDR (1 << 2)
+/*
+ * Fast path for unmapping a contiguous reserved MMIO region. When this
+ * flag is set, the client asserts that the entire mapping covers a single
+ * contiguous reserved MMIO range, which allows the kernel to skip the
+ * per-page IOVA-to-physical translation via iommu_iova_to_phys() during
+ * unmap and collapse the whole region into a single iommu_unmap() call.
+ *
+ * Page unpinning still runs as usual; for reserved MMIO pages put_pfn()
+ * short-circuits via is_invalid_reserved_pfn(), so the per-page cost is
+ * negligible and is intentionally not skipped to keep refcount handling
+ * identical to the standard path.
+ *
+ * The client must ensure that those affected pages are valid until the
+ * underlying IOMMU domain has been destroyed. Misusing this flag on
+ * non-reserved (refcounted) memory is unsafe because the whole-range
+ * iommu_unmap() shortcut assumes physical contiguity that does not hold
+ * for ordinary RAM; the kernel has a downgrade safeguard in
+ * vfio_pin_map_dma() that silently clears this flag for non-reserved
+ * segments, but callers must not rely on it.
+ */
+#define VFIO_DMA_MAP_FLAG_MMIO_FAST_UNMAP (1 << 30)
 #define VFIO_DMA_MAP_FLAG_MMIO_DONT_PIN (1 << 31)	/* MMIO doesn't need pin page */
 	__u64	vaddr;				/* Process virtual address */
 	__u64	iova;				/* IO virtual address */
