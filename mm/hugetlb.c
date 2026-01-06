@@ -2464,6 +2464,26 @@ struct folio *alloc_buddy_hugetlb_folio_with_mpol(struct hstate *h,
 	return folio;
 }
 
+struct folio *alloc_hugetlb_folio_reserve(struct hstate *h, int preferred_nid,
+		nodemask_t *nmask, gfp_t gfp_mask)
+{
+	struct folio *folio;
+
+	spin_lock_irq(&hugetlb_lock);
+	if (!h->resv_huge_pages) {
+		spin_unlock_irq(&hugetlb_lock);
+		return NULL;
+	}
+
+	folio = dequeue_hugetlb_folio_nodemask(h, gfp_mask, preferred_nid,
+					       nmask);
+	if (folio)
+		h->resv_huge_pages--;
+
+	spin_unlock_irq(&hugetlb_lock);
+	return folio;
+}
+
 /* folio migration callback function */
 struct folio *alloc_hugetlb_folio_nodemask(struct hstate *h, int preferred_nid,
 		nodemask_t *nmask, gfp_t gfp_mask, bool allow_alloc_fallback)
@@ -6807,6 +6827,8 @@ long hugetlb_change_protection(struct vm_area_struct *vma,
 						psize);
 		}
 		spin_unlock(ptl);
+
+		cond_resched();
 	}
 	/*
 	 * Must flush TLB before releasing i_mmap_rwsem: x86's huge_pmd_unshare

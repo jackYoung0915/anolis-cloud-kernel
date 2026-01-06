@@ -83,23 +83,52 @@ struct folio *memfd_alloc_folio(struct file *memfd, pgoff_t idx)
 		 * alloc from. Also, the folio will be pinned for an indefinite
 		 * amount of time, so it is not expected to be migrated away.
 		 */
-		gfp_mask = htlb_alloc_mask(hstate_file(memfd));
-		gfp_mask &= ~(__GFP_HIGHMEM | __GFP_MOVABLE);
+		struct hstate *h = hstate_file(memfd);
 
-		folio = alloc_hugetlb_folio_nodemask(hstate_file(memfd),
-						     numa_node_id(),
-						     NULL,
-						     gfp_mask,
-						     false);
-		if (folio && folio_try_get(folio)) {
+		gfp_mask = htlb_alloc_mask(h);
+		gfp_mask &= ~(__GFP_HIGHMEM | __GFP_MOVABLE);
+		idx >>= huge_page_order(h);
+
+		folio = alloc_hugetlb_folio_reserve(h,
+						    numa_node_id(),
+						    NULL,
+						    gfp_mask);
+		if (folio) {
+			u32 hash;
+
+			/*
+			 * Zero the folio to prevent information leaks to userspace.
+			 * Use folio_zero_user() which is optimized for huge/gigantic
+			 * pages. Pass 0 as addr_hint since this is not a faulting path
+			 * and we don't have a user virtual address yet.
+			 */
+			clear_huge_page(&folio->page, 0, pages_per_huge_page(h));
+
+			/*
+			 * Mark the folio uptodate before adding to page cache,
+			 * as required by filemap.c and other hugetlb paths.
+			 */
+			__folio_mark_uptodate(folio);
+
+			/*
+			 * Serialize hugepage allocation and instantiation to prevent
+			 * races with concurrent allocations, as required by all other
+			 * callers of hugetlb_add_to_page_cache().
+			 */
+			hash = hugetlb_fault_mutex_hash(memfd->f_mapping, idx);
+			mutex_lock(&hugetlb_fault_mutex_table[hash]);
+
 			err = hugetlb_add_to_page_cache(folio,
 							memfd->f_mapping,
 							idx);
+
+			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
+
 			if (err) {
 				folio_put(folio);
-				free_huge_folio(folio);
 				return ERR_PTR(err);
 			}
+			folio_unlock(folio);
 			return folio;
 		}
 		return ERR_PTR(-ENOMEM);

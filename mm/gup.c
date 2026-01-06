@@ -2060,7 +2060,7 @@ static unsigned long collect_longterm_unpinnable_folios(
 {
 	unsigned long i, collected = 0;
 	struct folio *prev_folio = NULL;
-	bool drain_allow = true;
+	int drained = 0;
 
 	for (i = 0; i < pofs->nr_entries; i++) {
 		struct folio *folio = pofs_get_folio(pofs, i);
@@ -2082,9 +2082,17 @@ static unsigned long collect_longterm_unpinnable_folios(
 			continue;
 		}
 
-		if (!folio_test_lru(folio) && drain_allow) {
+		if (drained == 0 && folio_may_be_lru_cached(folio) &&
+				folio_ref_count(folio) !=
+				folio_expected_ref_count(folio) + 1) {
+			lru_add_drain();
+			drained = 1;
+		}
+		if (drained == 1 && folio_may_be_lru_cached(folio) &&
+				folio_ref_count(folio) !=
+				folio_expected_ref_count(folio) + 1) {
 			lru_add_drain_all();
-			drain_allow = false;
+			drained = 2;
 		}
 
 		if (!folio_isolate_lru(folio))
@@ -3697,6 +3705,7 @@ long memfd_pin_folios(struct file *memfd, loff_t start, loff_t end,
 					ret = PTR_ERR(folio);
 					if (ret != -EEXIST)
 						goto err;
+					folio = NULL;
 				}
 			}
 		}
