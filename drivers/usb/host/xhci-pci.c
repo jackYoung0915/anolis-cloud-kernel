@@ -308,9 +308,6 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 		xhci->quirks |= XHCI_RESET_ON_RESUME;
 
 	if (pdev->vendor == PCI_VENDOR_ID_ZHAOXIN)
-		xhci->quirks |= XHCI_SUSPEND_DELAY;
-
-	if (pdev->vendor == PCI_VENDOR_ID_ZHAOXIN)
 		xhci->quirks |= XHCI_ZHAOXIN_HOST;
 
 	/* See https://bugzilla.kernel.org/show_bug.cgi?id=79511 */
