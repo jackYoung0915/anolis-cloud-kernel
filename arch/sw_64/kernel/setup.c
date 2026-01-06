@@ -29,6 +29,7 @@
 #include <linux/cpu.h>
 #include <linux/cgroup.h>
 
+#include <asm/cpufeature.h>
 #include <asm/efi.h>
 #include <asm/early_ioremap.h>
 #include <asm/mmu_context.h>
@@ -592,7 +593,7 @@ cmd_handle:
 
 static void __init setup_cpu_caps(void)
 {
-	if (cpuid(GET_FEATURES, 0) & CPU_FEAT_UNA)
+	if (cpu_have_named_feature(HWUNA))
 		static_branch_enable(&hw_una_enabled);
 }
 
@@ -691,6 +692,8 @@ setup_arch(char **cmdline_p)
 #ifdef CONFIG_GENERIC_EARLY_IOREMAP
 	early_ioremap_setup();
 #endif
+
+	setup_cpu_features();
 
 	jump_label_init();
 
