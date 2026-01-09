@@ -2487,18 +2487,21 @@ static struct smc_buf_desc *smcr_new_buf_create(struct smc_link_group *lgr,
 
 	switch (lgr->buf_type) {
 	case SMCR_PHYS_CONT_BUFS:
+		buf_desc->order = min(buf_desc->order, MAX_PAGE_ORDER);
+		fallthrough;
 	case SMCR_MIXED_BUFS:
-		buf_desc->order = get_order(bufsize);
-		buf_desc->pages = alloc_pages(GFP_KERNEL | __GFP_NOWARN |
-					      __GFP_NOMEMALLOC | __GFP_COMP |
-					      __GFP_NORETRY | __GFP_ZERO,
-					      buf_desc->order);
-		if (buf_desc->pages) {
-			buf_desc->cpu_addr =
-				(void *)page_address(buf_desc->pages);
-			buf_desc->len = bufsize;
-			buf_desc->is_vm = false;
-			break;
+		if (buf_desc->order <= MAX_PAGE_ORDER) {
+			buf_desc->pages = alloc_pages(GFP_KERNEL | __GFP_NOWARN |
+						      __GFP_NOMEMALLOC | __GFP_COMP |
+						      __GFP_NORETRY | __GFP_ZERO,
+						      buf_desc->order);
+			if (buf_desc->pages) {
+				buf_desc->cpu_addr =
+					(void *)page_address(buf_desc->pages);
+				buf_desc->len = bufsize;
+				buf_desc->is_vm = false;
+				break;
+			}
 		}
 		if (lgr->buf_type == SMCR_PHYS_CONT_BUFS)
 			goto out;
