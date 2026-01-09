@@ -52,8 +52,7 @@
 enum __kvm_host_smccc_func {
 	/* Hypercalls available only prior to pKVM finalisation */
 	/* __KVM_HOST_SMCCC_FUNC___kvm_hyp_init */
-	__KVM_HOST_SMCCC_FUNC___kvm_get_mdcr_el2 = __KVM_HOST_SMCCC_FUNC___kvm_hyp_init + 1,
-	__KVM_HOST_SMCCC_FUNC___pkvm_init,
+	__KVM_HOST_SMCCC_FUNC___pkvm_init = __KVM_HOST_SMCCC_FUNC___kvm_hyp_init + 1,
 	__KVM_HOST_SMCCC_FUNC___pkvm_create_private_mapping,
 	__KVM_HOST_SMCCC_FUNC___pkvm_cpu_set_vector,
 	__KVM_HOST_SMCCC_FUNC___kvm_enable_ssbs,
@@ -119,8 +118,10 @@ enum __kvm_host_smccc_func {
 
 #ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
 #define this_cpu_ptr_wrapper(sym)	this_cpu_ptr(sym)
+#define this_cpu_ptr_hyp_sym_wrapper(sym)	this_cpu_ptr(sym)
 #else
 #define this_cpu_ptr_wrapper(sym)	this_cpu_ptr(&sym)
+#define this_cpu_ptr_hyp_sym_wrapper(sym)	this_cpu_ptr(&sym)
 #endif
 
 #if defined(__KVM_NVHE_HYPERVISOR__)
@@ -192,6 +193,7 @@ struct kvm_nvhe_init_params {
 	unsigned long hcr_el2;
 	unsigned long vttbr;
 	unsigned long vtcr;
+	unsigned long tmp;
 };
 
 /*
@@ -257,8 +259,6 @@ extern u64 __vgic_v3_get_gic_config(void);
 extern u64 __vgic_v3_read_vmcr(void);
 extern void __vgic_v3_write_vmcr(u32 vmcr);
 extern void __vgic_v3_init_lrs(void);
-
-extern u64 __kvm_get_mdcr_el2(void);
 
 #define __KVM_EXTABLE(from, to)						\
 	"	.pushsection	__kvm_ex_table, \"a\"\n"		\

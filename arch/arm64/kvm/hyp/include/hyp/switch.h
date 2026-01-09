@@ -42,7 +42,7 @@ extern struct kvm_exception_table_entry __stop___kvm_ex_table;
 /* Check whether the FP regs are owned by the guest */
 static inline bool guest_owns_fp_regs(struct kvm_vcpu *vcpu)
 {
-	return vcpu->arch.fp_state == FP_STATE_GUEST_OWNED;
+	return *host_data_ptr(fp_owner) == FP_STATE_GUEST_OWNED;
 }
 
 /* Save the 32-bit only FPSIMD system register state */
@@ -82,7 +82,7 @@ static inline void __activate_traps_fpsimd32(struct kvm_vcpu *vcpu)
 
 static inline void __activate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 {
-	struct kvm_cpu_context *hctxt = &this_cpu_ptr_wrapper(kvm_host_data)->host_ctxt;
+	struct kvm_cpu_context *hctxt = host_data_ptr(host_ctxt);
 	u64 r_clr = 0, w_clr = 0, r_set = 0, w_set = 0, tmp;
 	u64 r_val, w_val;
 
@@ -157,7 +157,7 @@ static inline void __activate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 
 static inline void __deactivate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 {
-	struct kvm_cpu_context *hctxt = &this_cpu_ptr_wrapper(kvm_host_data)->host_ctxt;
+	struct kvm_cpu_context *hctxt = host_data_ptr(host_ctxt);
 
 	if (!cpus_have_final_cap(ARM64_HAS_FGT))
 		return;
@@ -218,13 +218,13 @@ static inline void __activate_traps_common(struct kvm_vcpu *vcpu)
 
 		write_sysreg(0, pmselr_el0);
 
-		hctxt = &this_cpu_ptr_wrapper(kvm_host_data)->host_ctxt;
+		hctxt = host_data_ptr(host_ctxt);
 		ctxt_sys_reg(hctxt, PMUSERENR_EL0) = read_sysreg(pmuserenr_el0);
 		write_sysreg(ARMV8_PMU_USERENR_MASK, pmuserenr_el0);
 		vcpu_set_flag(vcpu, PMUSERENR_ON_CPU);
 	}
 
-	vcpu->arch.mdcr_el2_host = read_sysreg(mdcr_el2);
+	*host_data_ptr(host_debug_state.mdcr_el2) = read_sysreg(mdcr_el2);
 	write_sysreg(vcpu->arch.mdcr_el2, mdcr_el2);
 
 	if (cpus_have_final_cap(ARM64_HAS_HCX)) {
@@ -247,13 +247,13 @@ static inline void __activate_traps_common(struct kvm_vcpu *vcpu)
 
 static inline void __deactivate_traps_common(struct kvm_vcpu *vcpu)
 {
-	write_sysreg(vcpu->arch.mdcr_el2_host, mdcr_el2);
+	write_sysreg(*host_data_ptr(host_debug_state.mdcr_el2), mdcr_el2);
 
 	write_sysreg(0, hstr_el2);
 	if (kvm_arm_support_pmu_v3()) {
 		struct kvm_cpu_context *hctxt;
 
-		hctxt = &this_cpu_ptr_wrapper(kvm_host_data)->host_ctxt;
+		hctxt = host_data_ptr(host_ctxt);
 		write_sysreg(ctxt_sys_reg(hctxt, PMUSERENR_EL0), pmuserenr_el0);
 		vcpu_clear_flag(vcpu, PMUSERENR_ON_CPU);
 	}
@@ -418,7 +418,7 @@ static inline bool kvm_hyp_handle_fpsimd(struct kvm_vcpu *vcpu, u64 *exit_code)
 	if (!(read_sysreg(hcr_el2) & HCR_RW))
 		write_sysreg(__vcpu_sys_reg(vcpu, FPEXC32_EL2), fpexc32_el2);
 
-	vcpu->arch.fp_state = FP_STATE_GUEST_OWNED;
+	*host_data_ptr(fp_owner) = FP_STATE_GUEST_OWNED;
 
 	return true;
 }

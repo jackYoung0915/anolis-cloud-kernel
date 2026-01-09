@@ -6,9 +6,11 @@
 #ifndef __PERF_ARM_PMUV3_H
 #define __PERF_ARM_PMUV3_H
 
-#define ARMV8_PMU_MAX_GENERAL_COUNTERS	31
-#define ARMV8_PMU_CYCLE_IDX		31
-#define ARMV8_PMU_INSTR_IDX		32 /* Not accessible from AArch32 */
+#include <assert.h>
+#include <asm/bug.h>
+
+#define ARMV8_PMU_MAX_COUNTERS	32
+#define ARMV8_PMU_COUNTER_MASK	(ARMV8_PMU_MAX_COUNTERS - 1)
 
 /*
  * Common architectural and microarchitectural event numbers.
@@ -228,10 +230,8 @@
  */
 #define ARMV8_PMU_OVSR_P		GENMASK(30, 0)
 #define ARMV8_PMU_OVSR_C		BIT(31)
-#define ARMV8_PMU_OVSR_F		BIT_ULL(32) /* arm64 only */
 /* Mask for writable bits is both P and C fields */
-#define ARMV8_PMU_OVERFLOWED_MASK	(ARMV8_PMU_OVSR_P | ARMV8_PMU_OVSR_C | \
-					ARMV8_PMU_OVSR_F)
+#define ARMV8_PMU_OVERFLOWED_MASK	(ARMV8_PMU_OVSR_P | ARMV8_PMU_OVSR_C)
 
 /*
  * PMXEVTYPER: Event selection reg
@@ -243,9 +243,12 @@
 /*
  * Event filters for PMUv3
  */
-#define ARMV8_PMU_EXCLUDE_EL1	(1U << 31)
-#define ARMV8_PMU_EXCLUDE_EL0	(1U << 30)
-#define ARMV8_PMU_INCLUDE_EL2	(1U << 27)
+#define ARMV8_PMU_EXCLUDE_EL1		(1U << 31)
+#define ARMV8_PMU_EXCLUDE_EL0		(1U << 30)
+#define ARMV8_PMU_EXCLUDE_NS_EL1	(1U << 29)
+#define ARMV8_PMU_EXCLUDE_NS_EL0	(1U << 28)
+#define ARMV8_PMU_INCLUDE_EL2		(1U << 27)
+#define ARMV8_PMU_EXCLUDE_EL3		(1U << 26)
 
 /*
  * PMUSERENR: user enable reg
@@ -305,10 +308,10 @@
 		PMEVN_CASE(28, case_macro);			\
 		PMEVN_CASE(29, case_macro);			\
 		PMEVN_CASE(30, case_macro);			\
-		default: WARN(1, "Invalid PMEV* index\n");	\
+		default:					\
+			WARN(1, "Invalid PMEV* index\n");	\
+			assert(0);				\
 		}						\
 	} while (0)
-
-#include <asm/arm_pmuv3.h>
 
 #endif

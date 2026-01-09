@@ -86,7 +86,8 @@ void kvm_arch_vcpu_load_fp(struct kvm_vcpu *vcpu)
 	 * that PSTATE.{SM,ZA} == {0,0}.
 	 */
 	fpsimd_save_and_flush_cpu_state();
-	vcpu->arch.fp_state = FP_STATE_FREE;
+	*host_data_ptr(fp_owner) = FP_STATE_FREE;
+	*host_data_ptr(fpsimd_state) = kern_hyp_va(&current->thread.uw.fpsimd_state);
 }
 
 /*
@@ -99,7 +100,7 @@ void kvm_arch_vcpu_load_fp(struct kvm_vcpu *vcpu)
 void kvm_arch_vcpu_ctxflush_fp(struct kvm_vcpu *vcpu)
 {
 	if (test_thread_flag(TIF_FOREIGN_FPSTATE))
-		vcpu->arch.fp_state = FP_STATE_FREE;
+		*host_data_ptr(fp_owner) = FP_STATE_FREE;
 }
 
 /*
@@ -115,7 +116,7 @@ void kvm_arch_vcpu_ctxsync_fp(struct kvm_vcpu *vcpu)
 
 	WARN_ON_ONCE(!irqs_disabled());
 
-	if (vcpu->arch.fp_state == FP_STATE_GUEST_OWNED) {
+	if (*host_data_ptr(fp_owner) == FP_STATE_GUEST_OWNED) {
 
 		/*
 		 * Currently we do not support SME guests so SVCR is
@@ -151,7 +152,7 @@ void kvm_arch_vcpu_put_fp(struct kvm_vcpu *vcpu)
 
 	local_irq_save(flags);
 
-	if (vcpu->arch.fp_state == FP_STATE_GUEST_OWNED) {
+	if (*host_data_ptr(fp_owner) == FP_STATE_GUEST_OWNED) {
 		/*
 		 * Flush (save and invalidate) the fpsimd/sve state so that if
 		 * the host tries to use fpsimd/sve, it's not using stale data

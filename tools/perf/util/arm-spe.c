@@ -1477,14 +1477,14 @@ int arm_spe_process_auxtrace_info(union perf_event *event,
 	}
 
 	spe = zalloc(sizeof(struct arm_spe));
-	if (!spe)
-		return -ENOMEM;
-
-	err = auxtrace_queues__init(&spe->queues);
 	if (!spe) {
 		err = -ENOMEM;
 		goto err_free_metadata;
 	}
+
+	err = auxtrace_queues__init(&spe->queues);
+	if (err)
+		goto err_free;
 
 	spe->session = session;
 	spe->machine = &session->machines.host; /* No kvm support */
@@ -1493,10 +1493,10 @@ int arm_spe_process_auxtrace_info(union perf_event *event,
 		spe->pmu_type = auxtrace_info->priv[ARM_SPE_PMU_TYPE];
 	else
 		spe->pmu_type = auxtrace_info->priv[ARM_SPE_PMU_TYPE_V2];
+	spe->is_homogeneous = arm_spe__is_homogeneous(metadata, nr_cpu);
 	spe->metadata = metadata;
 	spe->metadata_ver = metadata_ver;
 	spe->metadata_nr_cpu = nr_cpu;
-	spe->is_homogeneous = arm_spe__is_homogeneous(metadata, nr_cpu);
 
 	spe->timeless_decoding = arm_spe__is_timeless_decoding(spe);
 
