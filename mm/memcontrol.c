@@ -6499,6 +6499,24 @@ static int memcg_reap_background_write(struct cgroup_subsys_state *css,
 	return 0;
 }
 
+static u64 mem_cgroup_allow_uncachedio_read(struct cgroup_subsys_state *css,
+				      struct cftype *cft)
+{
+	return mem_cgroup_from_css(css)->allow_uncachedio;
+}
+
+static int mem_cgroup_allow_uncachedio_write(struct cgroup_subsys_state *css,
+					  struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 3)
+		return -EINVAL;
+	memcg->allow_uncachedio = val & 0x3;
+
+	return 0;
+}
+
 #ifdef CONFIG_DUPTEXT
 static u64 mem_cgroup_allow_duptext_read(struct cgroup_subsys_state *css,
 					 struct cftype *cft)
@@ -7395,6 +7413,11 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_high_show,
 		.write = memory_high_write,
+	},
+	{
+		.name = "allow_uncachedio",
+		.read_u64 = mem_cgroup_allow_uncachedio_read,
+		.write_u64 = mem_cgroup_allow_uncachedio_write,
 	},
 #ifdef CONFIG_DUPTEXT
 	{
@@ -9253,6 +9276,11 @@ static struct cftype memory_files[] = {
 		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
 	},
 #endif
+	{
+		.name = "allow_uncachedio",
+		.read_u64 = mem_cgroup_allow_uncachedio_read,
+		.write_u64 = mem_cgroup_allow_uncachedio_write,
+	},
 	{ }	/* terminate */
 };
 

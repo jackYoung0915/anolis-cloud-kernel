@@ -245,6 +245,11 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 				i = ractl->_index + ractl->_nr_pages - index - 1;
 				continue;
 			}
+#ifdef CONFIG_MEMCG
+			if (page->mem_cgroup &&
+			    page->mem_cgroup->allow_uncachedio & MEMCG_UNCACHEDIO_READ)
+				__SetPageDropbehind(page);
+#endif
 		}
 		if (i == nr_to_read - lookahead_size)
 			SetPageReadahead(page);
