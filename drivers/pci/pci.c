@@ -5360,6 +5360,24 @@ void pci_reset_secondary_bus(struct pci_dev *dev)
 
 	ctrl &= ~PCI_BRIDGE_CTL_BUS_RESET;
 	pci_write_config_word(dev, PCI_BRIDGE_CONTROL, ctrl);
+
+	/*
+	 * Trhfa for conventional PCI is 2^25 clock cycles.
+	 * Assuming a minimum 33MHz clock this results in a 1s
+	 * delay before we can consider subordinate devices to
+	 * be re-initialized. PCIe has some ways to shorten this,
+	 * but we don't make use of them yet.
+	 *
+	 * Notes:
+	 * Some GPUs cannot become ready at the same time as the
+	 * first device, which causes those GPUs to become inaccessible
+	 * after SBR. We are currently submitting a patch upstream to
+	 * address this issue, but the upstream review and acceptance
+	 * process will take some time. Therefore, as a temporary workaround,
+	 * we are reverting to waiting for 1 second.
+	 * Once our patch is accepted by upstream, we will revert this workaround.
+	 */
+	ssleep(1);
 }
 
 void __weak pcibios_reset_secondary_bus(struct pci_dev *dev)
