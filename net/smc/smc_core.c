@@ -714,9 +714,11 @@ void smc_lgr_cleanup_early(struct smc_link_group *lgr)
 
 	smc_lgr_list_head(lgr, &lgr_lock);
 	spin_lock_bh(lgr_lock);
-	/* do not use this link group for new connections */
-	if (!list_empty(&lgr->list))
-		list_del_init(&lgr->list);
+	if (list_empty(&lgr->list) || lgr->terminating || lgr->freeing) {
+		spin_unlock_bh(lgr_lock);
+		return;	/* lgr already terminating */
+	}
+	list_del_init(&lgr->list);
 	spin_unlock_bh(lgr_lock);
 	__smc_lgr_terminate(lgr, true);
 }
@@ -779,6 +781,7 @@ static void smc_lgr_terminate_work(struct work_struct *work)
 						  terminate_work);
 
 	__smc_lgr_terminate(lgr, true);
+	smc_lgr_put(lgr); /* lgr_hold in schedule_work(&lgr->terminate_work) */
 }
 
 /* return next unique link id for the lgr */
@@ -1374,7 +1377,9 @@ static void smc_buf_unuse(struct smc_connection *conn,
 /* remove a finished connection from its link group */
 void smc_conn_free(struct smc_connection *conn)
 {
+	struct smc_sock *smc = container_of(conn, struct smc_sock, conn);
 	struct smc_link_group *lgr = conn->lgr;
+	struct net *net = sock_net(&smc->sk);
 
 	if (!lgr || conn->freed)
 		/* Connection has never been registered in a
@@ -1403,6 +1408,12 @@ void smc_conn_free(struct smc_connection *conn)
 	if (!list_empty(&lgr->list)) {
 		smc_buf_unuse(conn, lgr); /* allow buffer reuse */
 		smc_lgr_unregister_conn(conn);
+	} else {
+		/* need to subtract allocated memory */
+		if (conn->sndbuf_desc)
+			smc_net_mem_allocated_sub(net, conn->sndbuf_desc->len);
+		if (conn->rmb_desc)
+			smc_net_mem_allocated_sub(net, conn->rmb_desc->len);
 	}
 
 	if (!lgr->conns_num)
@@ -1688,12 +1699,20 @@ static void __smc_lgr_terminate(struct smc_link_group *lgr, bool soft)
 	struct smc_connection *conn;
 	struct smc_sock *smc;
 	struct rb_node *node;
+	spinlock_t *lgr_lock;
 
-	if (lgr->terminating)
-		return;	/* lgr already terminating */
+	smc_lgr_list_head(lgr, &lgr_lock);
+
+	spin_lock_bh(lgr_lock);
+	if (lgr->terminating) {
+		spin_unlock_bh(lgr_lock);
+		return;
+	}
+	lgr->terminating = 1;
+	spin_unlock_bh(lgr_lock);
+
 	/* cancel free_work sync, will terminate when lgr->freeing is set */
 	cancel_delayed_work(&lgr->free_work);
-	lgr->terminating = 1;
 
 	/* kill remaining link group connections */
 	read_lock_bh(&lgr->conns_lock);
@@ -1729,6 +1748,7 @@ void smc_lgr_terminate_sched(struct smc_link_group *lgr)
 	list_del_init(&lgr->list);
 	lgr->freeing = 1;
 	spin_unlock_bh(lgr_lock);
+	smc_lgr_hold(lgr); /* lgr_put in smc_lgr_terminate_work() */
 	schedule_work(&lgr->terminate_work);
 }
 
@@ -1758,6 +1778,7 @@ void smc_smcd_terminate(struct smcd_dev *dev, struct smcd_gid *peer_gid,
 	/* cancel the regular free workers and actually free lgrs */
 	list_for_each_entry_safe(lgr, l, &lgr_free_list, list) {
 		list_del_init(&lgr->list);
+		smc_lgr_hold(lgr);	/* lgr_put in smc_lgr_terminate_work() */
 		schedule_work(&lgr->terminate_work);
 	}
 }
@@ -1770,13 +1791,16 @@ void smc_smcd_terminate_all(struct smcd_dev *smcd)
 
 	spin_lock_bh(&smcd->lgr_lock);
 	list_splice_init(&smcd->lgr_list, &lgr_free_list);
-	list_for_each_entry(lgr, &lgr_free_list, list)
+	list_for_each_entry(lgr, &lgr_free_list, list) {
 		lgr->freeing = 1;
+		smc_lgr_hold(lgr);	/* lgr_put bellow */
+	}
 	spin_unlock_bh(&smcd->lgr_lock);
 
 	list_for_each_entry_safe(lgr, lg, &lgr_free_list, list) {
 		list_del_init(&lgr->list);
 		__smc_lgr_terminate(lgr, false);
+		smc_lgr_put(lgr); /* lgr_hold above */
 	}
 
 	if (atomic_read(&smcd->lgr_cnt))
@@ -1796,8 +1820,10 @@ void smc_smcr_terminate_all(struct smc_ib_device *smcibdev)
 	spin_lock_bh(&smc_lgr_list.lock);
 	if (!smcibdev) {
 		list_splice_init(&smc_lgr_list.list, &lgr_free_list);
-		list_for_each_entry(lgr, &lgr_free_list, list)
+		list_for_each_entry(lgr, &lgr_free_list, list) {
 			lgr->freeing = 1;
+			smc_lgr_hold(lgr); /* lgr_put bellow */
+		}
 	} else {
 		list_for_each_entry_safe(lgr, lg, &smc_lgr_list.list, list) {
 			for (i = 0; i < SMC_LINKS_PER_LGR_MAX; i++) {
@@ -1812,6 +1838,7 @@ void smc_smcr_terminate_all(struct smc_ib_device *smcibdev)
 		list_del_init(&lgr->list);
 		smc_llc_set_termination_rsn(lgr, SMC_LLC_DEL_OP_INIT_TERM);
 		__smc_lgr_terminate(lgr, false);
+		smc_lgr_put(lgr); /* lgr_hold above */
 	}
 
 	if (smcibdev) {

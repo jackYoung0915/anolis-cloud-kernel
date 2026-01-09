@@ -140,6 +140,8 @@ void smc_close_active_abort(struct smc_sock *smc)
 	struct sock *sk = &smc->sk;
 	bool release_clcsock = false;
 
+	sock_hold(sk);	/* sock_put bellow */
+
 	if (sk->sk_state != SMC_INIT && smc->clcsock && smc->clcsock->sk) {
 		sk->sk_err = ECONNABORTED;
 		if (smc->clcsock && smc->clcsock->sk)
@@ -150,23 +152,23 @@ void smc_close_active_abort(struct smc_sock *smc)
 	case SMC_APPCLOSEWAIT1:
 	case SMC_APPCLOSEWAIT2:
 		sk->sk_state = SMC_PEERABORTWAIT;
+		sock_put(sk); /* (postponed) passive closing */
 		smc_close_cancel_work(smc);
 		if (sk->sk_state != SMC_PEERABORTWAIT)
 			break;
 		sk->sk_state = SMC_CLOSED;
-		sock_put(sk); /* (postponed) passive closing */
 		break;
 	case SMC_PEERCLOSEWAIT1:
 	case SMC_PEERCLOSEWAIT2:
 	case SMC_PEERFINCLOSEWAIT:
 		sk->sk_state = SMC_PEERABORTWAIT;
+		sock_put(sk); /* passive closing */
 		smc_close_cancel_work(smc);
 		if (sk->sk_state != SMC_PEERABORTWAIT)
 			break;
 		sk->sk_state = SMC_CLOSED;
 		smc_conn_free(&smc->conn);
 		release_clcsock = true;
-		sock_put(sk); /* passive closing */
 		break;
 	case SMC_PROCESSABORT:
 	case SMC_APPFINCLOSEWAIT:
@@ -184,6 +186,7 @@ void smc_close_active_abort(struct smc_sock *smc)
 		break;
 	}
 
+	smc->sk.sk_shutdown |= RCV_SHUTDOWN;
 	smc_sock_set_flag(sk, SOCK_DEAD);
 	sk->sk_state_change(sk);
 
@@ -192,6 +195,8 @@ void smc_close_active_abort(struct smc_sock *smc)
 		smc_clcsock_release(smc);
 		lock_sock(sk);
 	}
+
+	sock_put(sk);	/* sock_hold above */
 }
 
 static inline bool smc_close_sent_any_close(struct smc_connection *conn)

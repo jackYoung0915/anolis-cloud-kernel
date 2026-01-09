@@ -1943,6 +1943,8 @@ struct sock *smc_accept_dequeue(struct sock *parent,
 				sock_release(isk->clcsock);
 				isk->clcsock = NULL;
 			}
+			if (!isk->use_fallback)
+				smc_conn_free(&isk->conn);
 			sock_put(new_sk); /* final */
 			continue;
 		}
