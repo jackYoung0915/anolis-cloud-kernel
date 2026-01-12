@@ -30,7 +30,7 @@ do {                                                                       \
 struct sxe_trace_tx_ring g_sxe_trace_tx[SXE_TXRX_RING_NUM_MAX] = { { 0 } };
 struct sxe_trace_rx_ring g_sxe_trace_rx[SXE_TXRX_RING_NUM_MAX] = { { 0 } };
 
-void sxe_file_close(struct file **file)
+static void sxe_file_close(struct file **file)
 {
 	filp_close(*file, NULL);
 	*file = NULL;

@@ -83,8 +83,10 @@ s32 sxevf_dev_reset(struct sxevf_hw *hw)
 
 	msg.msg_type = SXEVF_RESET;
 
+	spin_lock_bh(&adapter->mbx_lock);
 	ret = sxevf_send_and_rcv_msg(hw, (u32 *)&msg,
 				     SXEVF_MSG_NUM(sizeof(msg)));
+	spin_unlock_bh(&adapter->mbx_lock);
 
 	if (ret) {
 		LOG_ERROR_BDF("vf reset msg:%d len:%zu mailbox fail.(err:%d)\n",
@@ -401,8 +403,8 @@ static int sxevf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto l_adapter_create_failed;
 	}
 
-	strscpy(adapter->dev_name, device_name,
-		min_t(u32, strlen(device_name) + 1, DEV_NAME_LEN));
+	SXE_STRCPY(adapter->dev_name, device_name,
+		   min_t(u32, strlen(device_name) + 1, DEV_NAME_LEN));
 	adapter->hw.board_type = id ? id->driver_data : SXE_BOARD_VF;
 
 	ret = sxevf_pci_init(adapter);
@@ -470,6 +472,7 @@ l_adapter_create_failed:
 static void sxevf_fuc_exit(struct sxevf_adapter *adapter)
 {
 	cancel_work_sync(&adapter->monitor_ctxt.work);
+	clear_bit(SXEVF_MONITOR_WORK_SCHED, &adapter->monitor_ctxt.state);
 }
 
 static void sxevf_remove(struct pci_dev *pdev)
@@ -539,7 +542,7 @@ static s32 sxevf_suspend(struct device *dev)
 	return ret;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static s32 sxevf_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -607,8 +610,7 @@ static void sxevf_io_resume(struct pci_dev *pdev)
 
 static pci_ers_result_t sxevf_io_slot_reset(struct pci_dev *pdev)
 {
-	struct net_device *netdev = pci_get_drvdata(pdev);
-	struct sxevf_adapter *adapter = netdev_priv(netdev);
+	struct sxevf_adapter *adapter = pci_get_drvdata(pdev);
 	pci_ers_result_t ret;
 
 	LOG_INFO_BDF("oops, vf pci dev[%p] got io slot reset\n", pdev);
@@ -636,14 +638,14 @@ l_out:
 static pci_ers_result_t sxevf_io_error_detected(struct pci_dev *pdev,
 						pci_channel_state_t state)
 {
-	struct net_device *netdev = pci_get_drvdata(pdev);
-	struct sxevf_adapter *adapter = netdev_priv(netdev);
+	struct sxevf_adapter *adapter = pci_get_drvdata(pdev);
+	struct net_device *netdev = adapter->netdev;
 	pci_ers_result_t ret;
 
 	LOG_DEBUG_BDF("oops,vf pci dev[%p] got io error detect, state=0x%x\n",
 		      pdev, (u32)state);
 
-	if (!test_bit(SXEVF_MONITOR_WORK_INITED, &adapter->state)) {
+	if (!test_bit(SXEVF_MONITOR_WORK_INITED, &adapter->monitor_ctxt.state)) {
 		LOG_ERROR_BDF("vf monitor not inited\n");
 		ret = PCI_ERS_RESULT_DISCONNECT;
 		goto l_out;

@@ -22,9 +22,8 @@
 #include "sxe_errno.h"
 #include "sxe_logs.h"
 #include "sxe.h"
-
-#include "sxe_hw.h"
 #endif
+#include "sxe_hw.h"
 
 #define SXE_PFMSG_MASK (0xFF00)
 
@@ -87,8 +86,6 @@ u16 sxe_mac_reg_num_get(void)
 	return ARRAY_SIZE(mac_regs);
 }
 
-#ifndef SXE_DPDK
-
 void sxe_hw_fault_handle(struct sxe_hw *hw)
 {
 	struct sxe_adapter *adapter = hw->adapter;
@@ -113,7 +110,7 @@ static u32 sxe_hw_fault_check(struct sxe_hw *hw, u32 reg)
 	u8 __iomem *base_addr = hw->reg_base_addr;
 	struct sxe_adapter *adapter = hw->adapter;
 
-	if (sxe_is_hw_fault(hw))
+	if (sxe_is_hw_fault(hw) || pci_channel_offline(adapter->pdev))
 		goto l_out;
 
 	for (i = 0; i < SXE_REG_READ_RETRY; i++) {
@@ -124,7 +121,7 @@ static u32 sxe_hw_fault_check(struct sxe_hw *hw, u32 reg)
 		mdelay(3);
 	}
 
-	if (value == SXE_REG_READ_FAIL) {
+	if (value == SXE_REG_READ_FAIL && !pci_channel_offline(adapter->pdev)) {
 		LOG_ERROR_BDF("read registers multiple times failed, ret=%#x\n",
 			      value);
 		sxe_hw_fault_handle(hw);
@@ -170,49 +167,6 @@ static void sxe_write_reg(struct sxe_hw *hw, u32 reg, u32 value)
 l_ret:
 	return;
 }
-
-#else
-
-static u32 sxe_read_reg(struct sxe_hw *hw, u32 reg)
-{
-	u32 i, value;
-	u8 __iomem *base_addr = hw->reg_base_addr;
-
-	value = rte_le_to_cpu_32(rte_read32(base_addr + reg));
-	if (unlikely(value == SXE_REG_READ_FAIL)) {
-		value = rte_le_to_cpu_32(rte_read32(base_addr + SXE_STATUS));
-		if (unlikely(value != SXE_REG_READ_FAIL)) {
-			value = rte_le_to_cpu_32(rte_read32(base_addr + reg));
-		} else {
-			LOG_ERROR("reg[0x%x] and reg[0x%x] read failed, ret=%#x\n",
-				  reg, SXE_STATUS, value);
-			for (i = 0; i < SXE_REG_READ_RETRY; i++) {
-				value = rte_le_to_cpu_32(rte_read32(base_addr + SXE_STATUS));
-				if (unlikely(value != SXE_REG_READ_FAIL)) {
-					value = rte_le_to_cpu_32(rte_read32(base_addr + reg));
-					LOG_INFO("reg[0x%x] read ok, value=%#x\n",
-						 reg, value);
-					break;
-				}
-
-				LOG_ERROR("reg[0x%x] and reg[0x%x] read failed\n"
-					  "\tret=%#x\n", reg, SXE_STATUS, value);
-
-				mdelay(3);
-			}
-		}
-	}
-
-	return value;
-}
-
-static void sxe_write_reg(struct sxe_hw *hw, u32 reg, u32 value)
-{
-	u8 __iomem *base_addr = hw->reg_base_addr;
-
-	rte_write32((rte_cpu_to_le_32(value)), (base_addr + reg));
-}
-#endif
 
 static void sxe_write_reg64(struct sxe_hw *hw, u32 reg, u64 value)
 {
@@ -850,12 +804,12 @@ void sxe_hw_specific_irq_enable(struct sxe_hw *hw, u32 value)
 	SXE_REG_WRITE(hw, SXE_EIMS, value);
 }
 
-static u32 sxe_hw_spp_state_get(struct sxe_hw *hw)
+u32 sxe_hw_spp_state_get(struct sxe_hw *hw)
 {
 	return SXE_REG_READ(hw, SXE_SPP_STATE);
 }
 
-static void sxe_hw_rx_los_disable(struct sxe_hw *hw)
+void sxe_hw_rx_los_disable(struct sxe_hw *hw)
 {
 	u32 value;
 
@@ -864,7 +818,7 @@ static void sxe_hw_rx_los_disable(struct sxe_hw *hw)
 	SXE_REG_WRITE(hw, SXE_EIMS, value);
 }
 
-static void sxe_hw_rx_los_enable(struct sxe_hw *hw)
+void sxe_hw_rx_los_enable(struct sxe_hw *hw)
 {
 	u32 value;
 
@@ -883,7 +837,7 @@ void sxe_hw_all_irq_disable(struct sxe_hw *hw)
 	SXE_WRITE_FLUSH(hw);
 }
 
-static void sxe_hw_spp_configure(struct sxe_hw *hw, u32 hw_spp_proc_delay_us)
+void sxe_hw_spp_configure(struct sxe_hw *hw, u32 hw_spp_proc_delay_us)
 {
 	u32 reg = SXE_REG_READ(hw, SXE_SPP_PROC);
 
@@ -2425,10 +2379,8 @@ static s32 sxe_hw_fnav_filter_cmd_set(struct sxe_hw *hw,
 	fnavcmd = SXE_FNAVCMD_CMD_ADD_FLOW | SXE_FNAVCMD_FILTER_UPDATE |
 		  SXE_FNAVCMD_LAST | SXE_FNAVCMD_QUEUE_EN;
 
-#ifndef SXE_DPDK
 	if (queue == SXE_FNAV_DROP_QUEUE)
 		fnavcmd |= SXE_FNAVCMD_DROP;
-#endif
 
 	fnavcmd |= input->ntuple.flow_type << SXE_FNAVCMD_FLOW_TYPE_SHIFT;
 	fnavcmd |= (u32)queue << SXE_FNAVCMD_RX_QUEUE_SHIFT;
@@ -3688,8 +3640,8 @@ static void sxe_hw_tx_tph_update(struct sxe_hw *hw, u8 ring_idx, u8 cpu)
 
 	value <<= SXE_TPH_TXCTRL_CPUID_SHIFT;
 
-	value |= SXE_TPH_TXCTRL_DESC_RRO_EN | SXE_TPH_TXCTRL_DATA_RRO_EN |
-		 SXE_TPH_TXCTRL_DESC_TPH_EN;
+	value |= SXE_TPH_TXCTRL_DESC_TPH_EN | SXE_TPH_TXCTRL_DESC_RRO_EN |
+		 SXE_TPH_TXCTRL_DESC_WRO_EN | SXE_TPH_TXCTRL_DATA_RRO_EN;
 
 	SXE_REG_WRITE(hw, SXE_TPH_TXCTRL(ring_idx), value);
 }
@@ -3700,8 +3652,8 @@ static void sxe_hw_rx_tph_update(struct sxe_hw *hw, u8 ring_idx, u8 cpu)
 
 	value <<= SXE_TPH_RXCTRL_CPUID_SHIFT;
 
-	value |= SXE_TPH_RXCTRL_DESC_RRO_EN | SXE_TPH_RXCTRL_DATA_TPH_EN |
-		 SXE_TPH_RXCTRL_DESC_TPH_EN;
+	value |= SXE_TPH_RXCTRL_DESC_TPH_EN | SXE_TPH_RXCTRL_DESC_RRO_EN |
+		 SXE_TPH_RXCTRL_DATA_WRO_EN | SXE_TPH_RXCTRL_HEAD_WRO_EN;
 
 	SXE_REG_WRITE(hw, SXE_TPH_RXCTRL(ring_idx), value);
 }
@@ -3712,6 +3664,28 @@ static void sxe_hw_tph_switch(struct sxe_hw *hw, bool is_enable)
 		SXE_REG_WRITE(hw, SXE_TPH_CTRL, SXE_TPH_CTRL_MODE_CB2);
 	else
 		SXE_REG_WRITE(hw, SXE_TPH_CTRL, SXE_TPH_CTRL_DISABLE);
+}
+
+void sxe_hw_rx_ro_enable(struct sxe_hw *hw, u8 ring_idx)
+{
+	u32 value = SXE_REG_READ(hw, SXE_TPH_RXCTRL(ring_idx));
+
+	value |= SXE_TPH_RXCTRL_DESC_RRO_EN |
+		SXE_TPH_RXCTRL_DATA_WRO_EN |
+		SXE_TPH_RXCTRL_HEAD_WRO_EN;
+
+	SXE_REG_WRITE(hw, SXE_TPH_RXCTRL(ring_idx), value);
+}
+
+void sxe_hw_tx_ro_enable(struct sxe_hw *hw, u8 ring_idx)
+{
+	u32 value = SXE_REG_READ(hw, SXE_TPH_TXCTRL(ring_idx));
+
+	value |= SXE_TPH_TXCTRL_DESC_RRO_EN |
+		SXE_TPH_TXCTRL_DESC_WRO_EN |
+		SXE_TPH_TXCTRL_DATA_RRO_EN;
+
+	SXE_REG_WRITE(hw, SXE_TPH_TXCTRL(ring_idx), value);
 }
 
 static const struct sxe_dma_operations sxe_dma_ops = {
@@ -3727,6 +3701,7 @@ static const struct sxe_dma_operations sxe_dma_ops = {
 	.rx_drop_switch = sxe_hw_rx_drop_switch,
 	.pool_rx_ring_drop_enable = sxe_hw_pool_rx_ring_drop_enable,
 	.rx_tph_update = sxe_hw_rx_tph_update,
+	.rx_ro_enable = sxe_hw_rx_ro_enable,
 
 	.tx_enable = sxe_hw_tx_enable,
 	.tx_multi_ring_configure = sxe_hw_tx_multi_ring_configure,
@@ -3739,6 +3714,7 @@ static const struct sxe_dma_operations sxe_dma_ops = {
 	.tx_desc_ctrl_get = sxe_hw_tx_desc_ctrl_get,
 	.tx_ring_info_get = sxe_hw_tx_ring_info_get,
 	.tx_tph_update = sxe_hw_tx_tph_update,
+	.tx_ro_enable = sxe_hw_tx_ro_enable,
 
 	.tph_switch = sxe_hw_tph_switch,
 
@@ -4070,10 +4046,6 @@ static void sxe_hw_stats_seq_get(struct sxe_hw *hw, struct sxe_mac_stats *stats)
 {
 	u8 i;
 	u64 tx_pfc_num = 0;
-#ifdef SXE_DPDK
-	u64 gotch = 0;
-	u32 rycle_cnt = 10;
-#endif
 
 	for (i = 0; i < 8; i++) {
 		stats->prcpf[i] += SXE_REG_READ(hw, SXE_PRCPF(i));
@@ -4085,15 +4057,6 @@ static void sxe_hw_stats_seq_get(struct sxe_hw *hw, struct sxe_mac_stats *stats)
 	stats->total_gptc += SXE_REG_READ(hw, SXE_GPTC);
 	stats->total_gotc += (SXE_REG_READ(hw, SXE_GOTCL) |
 			      ((u64)SXE_REG_READ(hw, SXE_GOTCH) << 32));
-#ifdef SXE_DPDK
-	do {
-		gotch = SXE_REG_READ(hw, SXE_GOTCH);
-		rycle_cnt--;
-	} while (gotch != 0 && rycle_cnt != 0);
-
-	if (gotch != 0)
-		LOG_INFO("GOTCH is not clear!\n");
-#endif
 }
 
 void sxe_hw_stats_seq_clean(struct sxe_hw *hw, struct sxe_mac_stats *stats)
@@ -4127,10 +4090,6 @@ void sxe_hw_stats_get(struct sxe_hw *hw, struct sxe_mac_stats *stats)
 	u64 rjc;
 	u32 i, rx_dbu_drop, ring_drop = 0;
 	u64 tpr = 0;
-#ifdef SXE_DPDK
-	u32 rycle_cnt = 10;
-	u64 gorch, torh = 0;
-#endif
 
 	for (i = 0; i < 16; i++) {
 		stats->qptc[i] += SXE_REG_READ(hw, SXE_QPTC(i));
@@ -4227,39 +4186,11 @@ void sxe_hw_stats_get(struct sxe_hw *hw, struct sxe_mac_stats *stats)
 	stats->gprc += SXE_REG_READ(hw, SXE_GPRC);
 	stats->gorc += (SXE_REG_READ(hw, SXE_GORCL) |
 			((u64)SXE_REG_READ(hw, SXE_GORCH) << 32));
-#ifdef SXE_DPDK
-	do {
-		gorch = SXE_REG_READ(hw, SXE_GORCH);
-		rycle_cnt--;
-	} while (gorch != 0 && rycle_cnt != 0);
-
-	if (gorch != 0)
-		LOG_INFO("GORCH is not clear!\n");
-#endif
-
 	stats->tor += (SXE_REG_READ(hw, SXE_TORL) |
 		       ((u64)SXE_REG_READ(hw, SXE_TORH) << 32));
-#ifdef SXE_DPDK
-	rycle_cnt = 10;
-	do {
-		torh = SXE_REG_READ(hw, SXE_TORH);
-		rycle_cnt--;
-	} while (torh != 0 && rycle_cnt != 0);
 
-	if (torh != 0)
-		LOG_INFO("TORH is not clear!\n");
-#endif
-
-#ifdef SXE_DPDK
-	stats->tor -= tpr * RTE_ETHER_CRC_LEN;
-	stats->gptc = stats->total_gptc - stats->total_tx_pause;
-	stats->gotc = stats->total_gotc -
-		      stats->total_tx_pause * RTE_ETHER_MIN_LEN -
-		      stats->gptc * RTE_ETHER_CRC_LEN;
-#else
 	stats->gptc = stats->total_gptc;
 	stats->gotc = stats->total_gotc;
-#endif
 }
 
 static u32 sxe_hw_tx_packets_num_get(struct sxe_hw *hw)
@@ -4372,7 +4303,9 @@ static bool sxe_hw_mbx_lock(struct sxe_hw *hw, u8 vf_idx)
 	u32 retry = hw->mbx.retry;
 
 	while (retry--) {
-		SXE_REG_WRITE(hw, SXE_PFMAILBOX(vf_idx), SXE_PFMAILBOX_PFU);
+		value = SXE_REG_READ(hw, SXE_PFMAILBOX(vf_idx));
+		value |= SXE_PFMAILBOX_PFU;
+		SXE_REG_WRITE(hw, SXE_PFMAILBOX(vf_idx), value);
 
 		value = SXE_REG_READ(hw, SXE_PFMAILBOX(vf_idx));
 		if (value & SXE_PFMAILBOX_PFU) {
@@ -4386,7 +4319,8 @@ static bool sxe_hw_mbx_lock(struct sxe_hw *hw, u8 vf_idx)
 	return ret;
 }
 
-s32 sxe_hw_rcv_msg_from_vf(struct sxe_hw *hw, u32 *msg, u16 msg_len, u16 index)
+static s32 sxe_hw_rcv_msg_from_vf(struct sxe_hw *hw, u32 *msg,
+				  u16 msg_len, u16 index)
 {
 	struct sxe_mbx_info *mbx = &hw->mbx;
 	u8 i;
@@ -4416,7 +4350,8 @@ l_out:
 	return ret;
 }
 
-s32 sxe_hw_send_msg_to_vf(struct sxe_hw *hw, u32 *msg, u16 msg_len, u16 index)
+static s32 sxe_hw_send_msg_to_vf(struct sxe_hw *hw, u32 *msg,
+				 u16 msg_len, u16 index)
 {
 	struct sxe_mbx_info *mbx = &hw->mbx;
 	u8 i;
@@ -4945,1251 +4880,3 @@ u32 sxe_hw_rss_field_get(struct sxe_hw *hw)
 
 	return (mrqc & SXE_RSS_FIELD_MASK);
 }
-
-#ifdef SXE_DPDK
-
-#define SXE_TRAFFIC_CLASS_MAX 8
-
-#define SXE_MR_VLAN_MSB_REG_OFFSET 4
-#define SXE_MR_VIRTUAL_POOL_MSB_REG_OFFSET 4
-
-#define SXE_MR_TYPE_MASK 0x0F
-#define SXE_MR_DST_POOL_OFFSET 8
-
-void sxe_hw_crc_strip_config(struct sxe_hw *hw, bool keep_crc)
-{
-	u32 crcflag = SXE_REG_READ(hw, SXE_CRC_STRIP_REG);
-
-	if (keep_crc)
-		crcflag |= SXE_KEEP_CRC_EN;
-	else
-		crcflag &= ~SXE_KEEP_CRC_EN;
-
-	SXE_REG_WRITE(hw, SXE_CRC_STRIP_REG, crcflag);
-}
-
-void sxe_hw_rx_pkt_buf_size_set(struct sxe_hw *hw, u8 tc_idx, u16 pbsize)
-{
-	u32 rxpbsize = pbsize << SXE_RX_PKT_BUF_SIZE_SHIFT;
-
-	sxe_hw_rx_pkt_buf_switch(hw, false);
-	SXE_REG_WRITE(hw, SXE_RXPBSIZE(tc_idx), rxpbsize);
-	sxe_hw_rx_pkt_buf_switch(hw, true);
-}
-
-void sxe_hw_dcb_vmdq_mq_configure(struct sxe_hw *hw, u8 num_pools)
-{
-	u16 pbsize;
-	u8 i, nb_tcs;
-	u32 mrqc;
-
-	nb_tcs = SXE_VMDQ_DCB_NUM_QUEUES / num_pools;
-
-	pbsize = (u8)(SXE_RX_PKT_BUF_SIZE / nb_tcs);
-
-	for (i = 0; i < nb_tcs; i++)
-		sxe_hw_rx_pkt_buf_size_set(hw, i, pbsize);
-
-	for (i = nb_tcs; i < ETH_DCB_NUM_USER_PRIORITIES; i++)
-		sxe_hw_rx_pkt_buf_size_set(hw, i, 0);
-
-	mrqc = (num_pools == RTE_ETH_16_POOLS) ? SXE_MRQC_VMDQRT8TCEN :
-						       SXE_MRQC_VMDQRT4TCEN;
-	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
-
-	SXE_REG_WRITE(hw, SXE_RTRPCS, SXE_RTRPCS_RRM);
-}
-
-static const struct sxe_reg_info sxe_regs_general_group[] = {
-	{ SXE_CTRL, 1, 1, "SXE_CTRL" },
-	{ SXE_STATUS, 1, 1, "SXE_STATUS" },
-	{ SXE_CTRL_EXT, 1, 1, "SXE_CTRL_EXT" },
-	{ 0, 0, 0, "" }
-};
-
-static const struct sxe_reg_info sxe_regs_interrupt_group[] = {
-	{ SXE_EICS, 1, 1, "SXE_EICS" },
-	{ SXE_EIMS, 1, 1, "SXE_EIMS" },
-	{ SXE_EIMC, 1, 1, "SXE_EIMC" },
-	{ SXE_EIAC, 1, 1, "SXE_EIAC" },
-	{ SXE_EIAM, 1, 1, "SXE_EIAM" },
-	{ SXE_EITR_BASE, 24, 4, "SXE_EITR" },
-	{ SXE_IVAR(0), 24, 4, "SXE_IVAR" },
-	{ SXE_GPIE, 1, 1, "SXE_GPIE" },
-	{ 0, 0, 0, "" }
-};
-
-static const struct sxe_reg_info sxe_regs_fctl_group[] = {
-	{ SXE_PFCTOP, 1, 1, "SXE_PFCTOP" },
-	{ SXE_FCRTV, 1, 1, "SXE_FCRTV" },
-	{ SXE_TFCS, 1, 1, "SXE_TFCS" },
-	{ 0, 0, 0, "" }
-};
-
-static const struct sxe_reg_info sxe_regs_rxdma_group[] = {
-	{ SXE_RDBAL_BASE, 64, 0x40, "SXE_RDBAL" },
-	{ SXE_RDBAH_BASE, 64, 0x40, "SXE_RDBAH" },
-	{ SXE_RDLEN_BASE, 64, 0x40, "SXE_RDLEN" },
-	{ SXE_RDH_BASE, 64, 0x40, "SXE_RDH" },
-	{ SXE_RDT_BASE, 64, 0x40, "SXE_RDT" },
-	{ SXE_RXDCTL_BASE, 64, 0x40, "SXE_RXDCTL" },
-	{ SXE_SRRCTL_BASE, 16, 0x4, "SXE_SRRCTL" },
-	{ SXE_TPH_RXCTRL_BASE, 16, 4, "SXE_TPH_RXCTRL" },
-	{ SXE_RDRXCTL, 1, 1, "SXE_RDRXCTL" },
-	{ SXE_RXPBSIZE(0), 8, 4, "SXE_RXPBSIZE" },
-	{ SXE_RXCTRL, 1, 1, "SXE_RXCTRL" },
-	{ 0, 0, 0, "" }
-};
-
-static const struct sxe_reg_info sxe_regs_rx_group[] = {
-	{ SXE_RXCSUM, 1, 1, "SXE_RXCSUM" },
-	{ SXE_RFCTL, 1, 1, "SXE_RFCTL" },
-	{ SXE_RAL(0), 16, 8, "SXE_RAL" },
-	{ SXE_RAH(0), 16, 8, "SXE_RAH" },
-	{ SXE_PSRTYPE(0), 1, 4, "SXE_PSRTYPE" },
-	{ SXE_FCTRL, 1, 1, "SXE_FCTRL" },
-	{ SXE_VLNCTRL, 1, 1, "SXE_VLNCTRL" },
-	{ SXE_MCSTCTRL, 1, 1, "SXE_MCSTCTRL" },
-	{ SXE_MRQC, 1, 1, "SXE_MRQC" },
-	{ SXE_VMD_CTL, 1, 1, "SXE_VMD_CTL" },
-
-	{ 0, 0, 0, "" }
-};
-
-static struct sxe_reg_info sxe_regs_tx_group[] = {
-	{ SXE_TDBAL(0), 32, 0x40, "SXE_TDBAL" },
-	{ SXE_TDBAH(0), 32, 0x40, "SXE_TDBAH" },
-	{ SXE_TDLEN(0), 32, 0x40, "SXE_TDLEN" },
-	{ SXE_TDH(0), 32, 0x40, "SXE_TDH" },
-	{ SXE_TDT(0), 32, 0x40, "SXE_TDT" },
-	{ SXE_TXDCTL(0), 32, 0x40, "SXE_TXDCTL" },
-	{ SXE_TPH_TXCTRL(0), 16, 4, "SXE_TPH_TXCTRL" },
-	{ SXE_TXPBSIZE(0), 8, 4, "SXE_TXPBSIZE" },
-	{ 0, 0, 0, "" }
-};
-
-static const struct sxe_reg_info sxe_regs_wakeup_group[] = {
-	{ SXE_WUC, 1, 1, "SXE_WUC" },
-	{ SXE_WUFC, 1, 1, "SXE_WUFC" },
-	{ SXE_WUS, 1, 1, "SXE_WUS" },
-	{ 0, 0, 0, "" }
-};
-
-static const struct sxe_reg_info sxe_regs_dcb_group[] = { { 0, 0, 0, "" } };
-
-static const struct sxe_reg_info sxe_regs_diagnostic_group[] = {
-	{ SXE_MFLCN, 1, 1, "SXE_MFLCN" },
-	{ 0, 0, 0, "" },
-};
-
-static const struct sxe_reg_info *sxe_regs_group[] = {
-	sxe_regs_general_group,	   sxe_regs_interrupt_group,
-	sxe_regs_fctl_group,	   sxe_regs_rxdma_group,
-	sxe_regs_rx_group,	   sxe_regs_tx_group,
-	sxe_regs_wakeup_group,	   sxe_regs_dcb_group,
-	sxe_regs_diagnostic_group, NULL
-};
-
-static u32 sxe_regs_group_count(const struct sxe_reg_info *regs)
-{
-	int i = 0;
-	int count = 0;
-
-	while (regs[i].count)
-		count += regs[i++].count;
-
-	return count;
-};
-
-static u32 sxe_hw_regs_group_read(struct sxe_hw *hw,
-				  const struct sxe_reg_info *regs, u32 *reg_buf)
-{
-	u32 j, i = 0;
-	int count = 0;
-
-	while (regs[i].count) {
-		for (j = 0; j < regs[i].count; j++) {
-			reg_buf[count + j] =
-				SXE_REG_READ(hw, regs[i].addr + j * regs[i].stride);
-			LOG_INFO("regs= %s, regs_addr=%x, regs_value=%04x\n",
-				 regs[i].name, regs[i].addr, reg_buf[count + j]);
-		}
-
-		i++;
-		count += j;
-	}
-
-	return count;
-};
-
-u32 sxe_hw_all_regs_group_num_get(void)
-{
-	u32 i = 0;
-	u32 count = 0;
-	const struct sxe_reg_info *reg_group;
-	const struct sxe_reg_info **reg_set = sxe_regs_group;
-
-	while ((reg_group = reg_set[i++]))
-		count += sxe_regs_group_count(reg_group);
-
-	return count;
-}
-
-void sxe_hw_all_regs_group_read(struct sxe_hw *hw, u32 *data)
-{
-	u32 count = 0, i = 0;
-	const struct sxe_reg_info *reg_group;
-	const struct sxe_reg_info **reg_set = sxe_regs_group;
-
-	while ((reg_group = reg_set[i++]))
-		count += sxe_hw_regs_group_read(hw, reg_group, &data[count]);
-
-	LOG_INFO("read regs cnt=%u, regs num=%u\n", count,
-		 sxe_hw_all_regs_group_num_get());
-}
-
-static void sxe_hw_default_pool_configure(struct sxe_hw *hw,
-					  u8 default_pool_enabled,
-					  u8 default_pool_idx)
-{
-	u32 vt_ctl;
-
-	vt_ctl = SXE_VT_CTL_VT_ENABLE | SXE_VT_CTL_REPLEN;
-	if (default_pool_enabled)
-		vt_ctl |= (default_pool_idx << SXE_VT_CTL_POOL_SHIFT);
-	else
-		vt_ctl |= SXE_VT_CTL_DIS_DEFPL;
-
-	SXE_REG_WRITE(hw, SXE_VT_CTL, vt_ctl);
-}
-
-void sxe_hw_dcb_vmdq_default_pool_configure(struct sxe_hw *hw,
-					    u8 default_pool_enabled,
-					    u8 default_pool_idx)
-{
-	sxe_hw_default_pool_configure(hw, default_pool_enabled,
-				      default_pool_idx);
-}
-
-u32 sxe_hw_ring_irq_switch_get(struct sxe_hw *hw, u8 idx)
-{
-	u32 mask;
-
-	if (idx == 0)
-		mask = SXE_REG_READ(hw, SXE_EIMS_EX(0));
-	else
-		mask = SXE_REG_READ(hw, SXE_EIMS_EX(1));
-
-	return mask;
-}
-
-void sxe_hw_ring_irq_switch_set(struct sxe_hw *hw, u8 idx, u32 value)
-{
-	if (idx == 0)
-		SXE_REG_WRITE(hw, SXE_EIMS_EX(0), value);
-	else
-		SXE_REG_WRITE(hw, SXE_EIMS_EX(1), value);
-}
-
-void sxe_hw_dcb_vmdq_up_2_tc_configure(struct sxe_hw *hw, u8 *tc_arr)
-{
-	u32 up2tc;
-	u8 i;
-
-	up2tc = 0;
-	for (i = 0; i < MAX_USER_PRIORITY; i++)
-		up2tc |= ((tc_arr[i] & 0x07) << (i * 3));
-
-	SXE_REG_WRITE(hw, SXE_RTRUP2TC, up2tc);
-}
-
-u32 sxe_hw_uta_hash_table_get(struct sxe_hw *hw, u8 reg_idx)
-{
-	return SXE_REG_READ(hw, SXE_UTA(reg_idx));
-}
-
-void sxe_hw_uta_hash_table_set(struct sxe_hw *hw, u8 reg_idx, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_UTA(reg_idx), value);
-}
-
-u32 sxe_hw_vlan_type_get(struct sxe_hw *hw)
-{
-	return SXE_REG_READ(hw, SXE_VLNCTRL);
-}
-
-void sxe_hw_vlan_type_set(struct sxe_hw *hw, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_VLNCTRL, value);
-}
-
-void sxe_hw_dcb_vmdq_vlan_configure(struct sxe_hw *hw, u8 num_pools)
-{
-	u32 vlanctrl;
-	u8 i;
-
-	vlanctrl = SXE_REG_READ(hw, SXE_VLNCTRL);
-	vlanctrl |= SXE_VLNCTRL_VFE;
-	SXE_REG_WRITE(hw, SXE_VLNCTRL, vlanctrl);
-
-	for (i = 0; i < SXE_VFT_TBL_SIZE; i++)
-		SXE_REG_WRITE(hw, SXE_VFTA(i), 0xFFFFFFFF);
-
-	SXE_REG_WRITE(hw, SXE_VFRE(0),
-		      num_pools == RTE_ETH_16_POOLS ? 0xFFFF : 0xFFFFFFFF);
-
-	SXE_REG_WRITE(hw, SXE_MPSAR_LOW(0), 0xFFFFFFFF);
-	SXE_REG_WRITE(hw, SXE_MPSAR_HIGH(0), 0xFFFFFFFF);
-}
-
-void sxe_hw_vlan_ext_type_set(struct sxe_hw *hw, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_EXVET, value);
-}
-
-u32 sxe_hw_txctl_vlan_type_get(struct sxe_hw *hw)
-{
-	return SXE_REG_READ(hw, SXE_DMATXCTL);
-}
-
-void sxe_hw_txctl_vlan_type_set(struct sxe_hw *hw, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_DMATXCTL, value);
-}
-
-u32 sxe_hw_ext_vlan_get(struct sxe_hw *hw)
-{
-	return SXE_REG_READ(hw, SXE_CTRL_EXT);
-}
-
-void sxe_hw_ext_vlan_set(struct sxe_hw *hw, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_CTRL_EXT, value);
-}
-
-void sxe_hw_rxq_stat_map_set(struct sxe_hw *hw, u8 idx, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_RQSMR(idx), value);
-}
-
-void sxe_hw_dcb_vmdq_pool_configure(struct sxe_hw *hw, u8 pool_idx, u16 vlan_id,
-				    u64 pools_map)
-{
-	SXE_REG_WRITE(hw, SXE_VLVF(pool_idx),
-		      (SXE_VLVF_VIEN | (vlan_id & 0xFFF)));
-
-	SXE_REG_WRITE(hw, SXE_VLVFB(pool_idx * 2), pools_map);
-}
-
-void sxe_hw_txq_stat_map_set(struct sxe_hw *hw, u8 idx, u32 value)
-{
-	SXE_REG_WRITE(hw, SXE_TQSM(idx), value);
-}
-
-void sxe_hw_dcb_rx_configure(struct sxe_hw *hw, bool is_vt_on, u8 sriov_active,
-			     u8 tc_num)
-{
-	u32 reg;
-	u32 vlanctrl;
-	u8 i;
-	u32 q;
-
-	reg = SXE_RTRPCS_RRM | SXE_RTRPCS_RAC | SXE_RTRPCS_ARBDIS;
-	SXE_REG_WRITE(hw, SXE_RTRPCS, reg);
-
-	reg = SXE_REG_READ(hw, SXE_MRQC);
-	if (tc_num == 4) {
-		if (is_vt_on) {
-			reg = (reg & ~SXE_MRQC_MRQE_MASK) |
-			      SXE_MRQC_VMDQRT4TCEN;
-		} else {
-			SXE_REG_WRITE(hw, SXE_VT_CTL, 0);
-			reg = (reg & ~SXE_MRQC_MRQE_MASK) | SXE_MRQC_RTRSS4TCEN;
-		}
-	}
-
-	if (tc_num == 8) {
-		if (is_vt_on) {
-			reg = (reg & ~SXE_MRQC_MRQE_MASK) |
-			      SXE_MRQC_VMDQRT8TCEN;
-		} else {
-			SXE_REG_WRITE(hw, SXE_VT_CTL, 0);
-			reg = (reg & ~SXE_MRQC_MRQE_MASK) | SXE_MRQC_RTRSS8TCEN;
-		}
-	}
-
-	SXE_REG_WRITE(hw, SXE_MRQC, reg);
-
-	if (sriov_active == 0) {
-		for (q = 0; q < SXE_HW_TXRX_RING_NUM_MAX; q++) {
-			SXE_REG_WRITE(hw, SXE_QDE,
-				      (SXE_QDE_WRITE |
-				       (q << SXE_QDE_IDX_SHIFT)));
-		}
-	} else {
-		for (q = 0; q < SXE_HW_TXRX_RING_NUM_MAX; q++) {
-			SXE_REG_WRITE(hw, SXE_QDE,
-				      (SXE_QDE_WRITE |
-				       (q << SXE_QDE_IDX_SHIFT) |
-				       SXE_QDE_ENABLE));
-		}
-	}
-
-	vlanctrl = SXE_REG_READ(hw, SXE_VLNCTRL);
-	vlanctrl |= SXE_VLNCTRL_VFE;
-	SXE_REG_WRITE(hw, SXE_VLNCTRL, vlanctrl);
-
-	for (i = 0; i < SXE_VFT_TBL_SIZE; i++)
-		SXE_REG_WRITE(hw, SXE_VFTA(i), 0xFFFFFFFF);
-
-	reg = SXE_RTRPCS_RRM | SXE_RTRPCS_RAC;
-	SXE_REG_WRITE(hw, SXE_RTRPCS, reg);
-}
-
-void sxe_hw_fc_status_get(struct sxe_hw *hw, bool *rx_pause_on,
-			  bool *tx_pause_on)
-{
-	u32 flctrl;
-
-	flctrl = SXE_REG_READ(hw, SXE_FLCTRL);
-	if (flctrl & (SXE_FCTRL_RFCE_PFC_EN | SXE_FCTRL_RFCE_LFC_EN))
-		*rx_pause_on = true;
-	else
-		*rx_pause_on = false;
-
-	if (flctrl & (SXE_FCTRL_TFCE_PFC_EN | SXE_FCTRL_TFCE_LFC_EN))
-		*tx_pause_on = true;
-	else
-		*tx_pause_on = false;
-}
-
-void sxe_hw_fc_base_init(struct sxe_hw *hw)
-{
-	u8 i;
-
-	hw->fc.requested_mode = SXE_FC_NONE;
-	hw->fc.current_mode = SXE_FC_NONE;
-	hw->fc.pause_time = SXE_DEFAULT_FCPAUSE;
-	hw->fc.disable_fc_autoneg = false;
-
-	for (i = 0; i < MAX_TRAFFIC_CLASS; i++) {
-		hw->fc.low_water[i] = SXE_FC_DEFAULT_LOW_WATER_MARK;
-		hw->fc.high_water[i] = SXE_FC_DEFAULT_HIGH_WATER_MARK;
-	}
-
-	hw->fc.send_xon = 1;
-}
-
-u32 sxe_hw_fc_tc_high_water_mark_get(struct sxe_hw *hw, u8 tc_idx)
-{
-	return hw->fc.high_water[tc_idx];
-}
-
-u32 sxe_hw_fc_tc_low_water_mark_get(struct sxe_hw *hw, u8 tc_idx)
-{
-	return hw->fc.low_water[tc_idx];
-}
-
-u16 sxe_hw_fc_send_xon_get(struct sxe_hw *hw)
-{
-	return hw->fc.send_xon;
-}
-
-void sxe_hw_fc_send_xon_set(struct sxe_hw *hw, u16 send_xon)
-{
-	hw->fc.send_xon = send_xon;
-}
-
-u16 sxe_hw_fc_pause_time_get(struct sxe_hw *hw)
-{
-	return hw->fc.pause_time;
-}
-
-void sxe_hw_fc_pause_time_set(struct sxe_hw *hw, u16 pause_time)
-{
-	hw->fc.pause_time = pause_time;
-}
-
-void sxe_hw_dcb_tx_configure(struct sxe_hw *hw, bool is_vt_on, u8 tc_num)
-{
-	u32 reg;
-
-	reg = SXE_REG_READ(hw, SXE_RTTDCS);
-	reg |= SXE_RTTDCS_ARBDIS;
-	SXE_REG_WRITE(hw, SXE_RTTDCS, reg);
-
-	if (tc_num == 8)
-		reg = SXE_MTQC_RT_ENA | SXE_MTQC_8TC_8TQ;
-	else
-		reg = SXE_MTQC_RT_ENA | SXE_MTQC_4TC_4TQ;
-
-	if (is_vt_on)
-		reg |= SXE_MTQC_VT_ENA;
-
-	SXE_REG_WRITE(hw, SXE_MTQC, reg);
-
-	reg = SXE_REG_READ(hw, SXE_RTTDCS);
-	reg &= ~SXE_RTTDCS_ARBDIS;
-	SXE_REG_WRITE(hw, SXE_RTTDCS, reg);
-}
-
-void sxe_hw_rx_ip_checksum_offload_switch(struct sxe_hw *hw, bool is_on)
-{
-	u32 rxcsum;
-
-	rxcsum = SXE_REG_READ(hw, SXE_RXCSUM);
-	if (is_on)
-		rxcsum |= SXE_RXCSUM_IPPCSE;
-	else
-		rxcsum &= ~SXE_RXCSUM_IPPCSE;
-
-	SXE_REG_WRITE(hw, SXE_RXCSUM, rxcsum);
-}
-
-void sxe_hw_rss_cap_switch(struct sxe_hw *hw, bool is_on)
-{
-	u32 mrqc = SXE_REG_READ(hw, SXE_MRQC);
-
-	if (is_on)
-		mrqc |= SXE_MRQC_RSSEN;
-	else
-		mrqc &= ~SXE_MRQC_RSSEN;
-
-	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
-}
-
-void sxe_hw_pool_xmit_enable(struct sxe_hw *hw, u16 reg_idx, u8 pool_num)
-{
-	SXE_REG_WRITE(hw, SXE_VFTE(reg_idx),
-		      pool_num == RTE_ETH_16_POOLS ? 0xFFFF : 0xFFFFFFFF);
-}
-
-void sxe_hw_rss_field_set(struct sxe_hw *hw, u32 rss_field)
-{
-	u32 mrqc = SXE_REG_READ(hw, SXE_MRQC);
-
-	mrqc &= ~SXE_RSS_FIELD_MASK;
-	mrqc |= rss_field;
-	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
-}
-
-static void sxe_hw_dcb_4tc_vmdq_off_stats_configure(struct sxe_hw *hw)
-{
-	u32 reg;
-	u8 i;
-
-	for (i = 0; i < 32; i++) {
-		if (i % 8 > 3)
-			continue;
-
-		reg = 0x01010101 * (i / 8);
-		SXE_REG_WRITE(hw, SXE_RQSMR(i), reg);
-	}
-	for (i = 0; i < 32; i++) {
-		if (i < 16)
-			reg = 0x00000000;
-		else if (i < 24)
-			reg = 0x01010101;
-		else if (i < 28)
-			reg = 0x02020202;
-		else
-			reg = 0x03030303;
-
-		SXE_REG_WRITE(hw, SXE_TQSM(i), reg);
-	}
-}
-
-static void sxe_hw_dcb_4tc_vmdq_on_stats_configure(struct sxe_hw *hw)
-{
-	u8 i;
-
-	for (i = 0; i < 32; i++)
-		SXE_REG_WRITE(hw, SXE_RQSMR(i), 0x03020100);
-
-	for (i = 0; i < 32; i++)
-		SXE_REG_WRITE(hw, SXE_TQSM(i), 0x03020100);
-}
-
-void sxe_hw_rss_redir_tbl_set_by_idx(struct sxe_hw *hw, u16 reg_idx, u32 value)
-{
-	sxe_hw_rss_redir_tbl_reg_write(hw, reg_idx, value);
-}
-
-static u32 sxe_hw_rss_redir_tbl_reg_read(struct sxe_hw *hw, u16 reg_idx)
-{
-	return SXE_REG_READ(hw, SXE_RETA(reg_idx >> 2));
-}
-
-u32 sxe_hw_rss_redir_tbl_get_by_idx(struct sxe_hw *hw, u16 reg_idx)
-{
-	return sxe_hw_rss_redir_tbl_reg_read(hw, reg_idx);
-}
-
-void sxe_hw_ptp_time_inc_stop(struct sxe_hw *hw)
-{
-	SXE_REG_WRITE(hw, SXE_TIMINC, 0);
-}
-
-void sxe_hw_dcb_tc_stats_configure(struct sxe_hw *hw, u8 tc_num,
-				   bool vmdq_active)
-{
-	if (tc_num == 8 && !vmdq_active)
-		sxe_hw_dcb_8tc_vmdq_off_stats_configure(hw);
-	else if (tc_num == 4 && !vmdq_active)
-		sxe_hw_dcb_4tc_vmdq_off_stats_configure(hw);
-	else if (tc_num == 4 && vmdq_active)
-		sxe_hw_dcb_4tc_vmdq_on_stats_configure(hw);
-}
-
-void sxe_hw_ptp_timestamp_disable(struct sxe_hw *hw)
-{
-	SXE_REG_WRITE(hw, SXE_TSYNCTXCTL,
-		      (SXE_REG_READ(hw, SXE_TSYNCTXCTL) & ~SXE_TSYNCTXCTL_TEN));
-
-	SXE_REG_WRITE(hw, SXE_TSYNCRXCTL,
-		      (SXE_REG_READ(hw, SXE_TSYNCRXCTL) & ~SXE_TSYNCRXCTL_REN));
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_mac_pool_clear(struct sxe_hw *hw, u8 rar_idx)
-{
-	struct sxe_adapter *adapter = hw->adapter;
-
-	if (rar_idx > SXE_UC_ENTRY_NUM_MAX) {
-		LOG_ERROR_BDF("rar_idx:%d invalid.(err:%d)\n", rar_idx,
-			      SXE_ERR_PARAM);
-		goto l_end;
-	}
-
-	SXE_REG_WRITE(hw, SXE_MPSAR_LOW(rar_idx), 0);
-	SXE_REG_WRITE(hw, SXE_MPSAR_HIGH(rar_idx), 0);
-
-l_end:
-	;
-}
-
-void sxe_hw_vmdq_mq_configure(struct sxe_hw *hw)
-{
-	u32 mrqc;
-
-	mrqc = SXE_MRQC_VMDQEN;
-	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
-}
-
-void sxe_hw_vmdq_default_pool_configure(struct sxe_hw *hw,
-					u8 default_pool_enabled,
-					u8 default_pool_idx)
-{
-	sxe_hw_default_pool_configure(hw, default_pool_enabled,
-				      default_pool_idx);
-}
-
-void sxe_hw_vmdq_vlan_configure(struct sxe_hw *hw, u8 num_pools, u32 rx_mode)
-{
-	u32 vlanctrl;
-	u8 i;
-
-	vlanctrl = SXE_REG_READ(hw, SXE_VLNCTRL);
-	vlanctrl |= SXE_VLNCTRL_VFE;
-	SXE_REG_WRITE(hw, SXE_VLNCTRL, vlanctrl);
-
-	for (i = 0; i < SXE_VFT_TBL_SIZE; i++)
-		SXE_REG_WRITE(hw, SXE_VFTA(i), 0xFFFFFFFF);
-
-	SXE_REG_WRITE(hw, SXE_VFRE(0), 0xFFFFFFFF);
-	if (num_pools == RTE_ETH_64_POOLS)
-		SXE_REG_WRITE(hw, SXE_VFRE(1), 0xFFFFFFFF);
-
-	for (i = 0; i < num_pools; i++)
-		SXE_REG_WRITE(hw, SXE_VMOLR(i), rx_mode);
-
-	SXE_REG_WRITE(hw, SXE_MPSAR_LOW(0), 0xFFFFFFFF);
-	SXE_REG_WRITE(hw, SXE_MPSAR_HIGH(0), 0xFFFFFFFF);
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-u32 sxe_hw_pcie_vt_mode_get(struct sxe_hw *hw)
-{
-	return SXE_REG_READ(hw, SXE_GCR_EXT);
-}
-
-void sxe_rx_fc_threshold_set(struct sxe_hw *hw)
-{
-	u8 i;
-	u32 high;
-
-	for (i = 0; i < SXE_TRAFFIC_CLASS_MAX; i++) {
-		SXE_REG_WRITE(hw, SXE_FCRTL(i), 0);
-		high = SXE_REG_READ(hw, SXE_RXPBSIZE(i)) - 32;
-		SXE_REG_WRITE(hw, SXE_FCRTH(i), high);
-	}
-}
-
-void sxe_hw_vmdq_pool_configure(struct sxe_hw *hw, u8 pool_idx, u16 vlan_id,
-				u64 pools_map)
-{
-	SXE_REG_WRITE(hw, SXE_VLVF(pool_idx),
-		      (SXE_VLVF_VIEN | (vlan_id & SXE_RXD_VLAN_ID_MASK)));
-
-	if (((pools_map >> 32) & 0xFFFFFFFF) == 0)
-		SXE_REG_WRITE(hw, SXE_VLVFB(pool_idx * 2),
-			      (pools_map & 0xFFFFFFFF));
-	else
-		SXE_REG_WRITE(hw, SXE_VLVFB((pool_idx * 2 + 1)),
-			      ((pools_map >> 32) & 0xFFFFFFFF));
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_vmdq_loopback_configure(struct sxe_hw *hw)
-{
-	u8 i;
-
-	SXE_REG_WRITE(hw, SXE_PFDTXGSWC, SXE_PFDTXGSWC_VT_LBEN);
-	for (i = 0; i < SXE_VMTXSW_REGISTER_COUNT; i++)
-		SXE_REG_WRITE(hw, SXE_VMTXSW(i), 0xFFFFFFFF);
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_tx_multi_queue_configure(struct sxe_hw *hw, bool vmdq_enable,
-				     bool sriov_enable, u16 pools_num)
-{
-	u32 mtqc;
-
-	sxe_hw_dcb_arbiter_set(hw, false);
-
-	if (sriov_enable) {
-		switch (pools_num) {
-		case RTE_ETH_64_POOLS:
-			mtqc = SXE_MTQC_VT_ENA | SXE_MTQC_64VF;
-			break;
-		case RTE_ETH_32_POOLS:
-			mtqc = SXE_MTQC_VT_ENA | SXE_MTQC_32VF;
-			break;
-		case RTE_ETH_16_POOLS:
-			mtqc = SXE_MTQC_VT_ENA | SXE_MTQC_RT_ENA |
-			       SXE_MTQC_8TC_8TQ;
-			break;
-		default:
-			mtqc = SXE_MTQC_64Q_1PB;
-		}
-	} else {
-		if (vmdq_enable) {
-			u8 queue_idx;
-
-			SXE_REG_WRITE(hw, SXE_VFTE(0), UINT32_MAX);
-			SXE_REG_WRITE(hw, SXE_VFTE(1), UINT32_MAX);
-
-			for (queue_idx = 0;
-			     queue_idx < SXE_HW_TXRX_RING_NUM_MAX;
-			     queue_idx++) {
-				SXE_REG_WRITE(hw, SXE_QDE,
-					      (SXE_QDE_WRITE | (queue_idx << SXE_QDE_IDX_SHIFT)));
-			}
-
-			mtqc = SXE_MTQC_VT_ENA | SXE_MTQC_64VF;
-		} else {
-			mtqc = SXE_MTQC_64Q_1PB;
-		}
-	}
-
-	SXE_REG_WRITE(hw, SXE_MTQC, mtqc);
-
-	sxe_hw_dcb_arbiter_set(hw, true);
-}
-
-void sxe_hw_vf_queue_drop_enable(struct sxe_hw *hw, u8 vf_idx, u8 ring_per_pool)
-{
-	u32 value;
-	u8 i;
-
-	for (i = (vf_idx * ring_per_pool); i < ((vf_idx + 1) * ring_per_pool);
-	     i++) {
-		value = SXE_QDE_ENABLE | SXE_QDE_WRITE;
-		SXE_WRITE_FLUSH(hw);
-
-		value |= i << SXE_QDE_IDX_SHIFT;
-
-		SXE_REG_WRITE(hw, SXE_QDE, value);
-	}
-}
-
-bool sxe_hw_vt_status(struct sxe_hw *hw)
-{
-	bool ret;
-	u32 vt_ctl = SXE_REG_READ(hw, SXE_VT_CTL);
-
-	if (vt_ctl & SXE_VMD_CTL_POOL_EN)
-		ret = true;
-	else
-		ret = false;
-
-	return ret;
-}
-
-void sxe_hw_mirror_ctl_set(struct sxe_hw *hw, u8 rule_id, u8 mirror_type,
-			   u8 dst_pool, bool on)
-{
-	u32 mr_ctl;
-
-	mr_ctl = SXE_REG_READ(hw, SXE_MRCTL(rule_id));
-
-	if (on) {
-		mr_ctl |= mirror_type;
-		mr_ctl &= SXE_MR_TYPE_MASK;
-		mr_ctl |= dst_pool << SXE_MR_DST_POOL_OFFSET;
-	} else {
-		mr_ctl &= ~(mirror_type & SXE_MR_TYPE_MASK);
-	}
-
-	SXE_REG_WRITE(hw, SXE_MRCTL(rule_id), mr_ctl);
-}
-
-void sxe_hw_mirror_virtual_pool_set(struct sxe_hw *hw, u8 rule_id, u32 lsb,
-				    u32 msb)
-{
-	SXE_REG_WRITE(hw, SXE_VMRVM(rule_id), lsb);
-	SXE_REG_WRITE(hw,
-		      SXE_VMRVM(rule_id + SXE_MR_VIRTUAL_POOL_MSB_REG_OFFSET),
-		      msb);
-}
-
-void sxe_hw_mirror_vlan_set(struct sxe_hw *hw, u8 rule_id, u32 lsb, u32 msb)
-{
-	SXE_REG_WRITE(hw, SXE_VMRVLAN(rule_id), lsb);
-	SXE_REG_WRITE(hw, SXE_VMRVLAN(rule_id + SXE_MR_VLAN_MSB_REG_OFFSET),
-		      msb);
-}
-
-void sxe_hw_mirror_rule_clear(struct sxe_hw *hw, u8 rule_id)
-{
-	SXE_REG_WRITE(hw, SXE_MRCTL(rule_id), 0);
-
-	SXE_REG_WRITE(hw, SXE_VMRVLAN(rule_id), 0);
-	SXE_REG_WRITE(hw, SXE_VMRVLAN(rule_id + SXE_MR_VLAN_MSB_REG_OFFSET), 0);
-
-	SXE_REG_WRITE(hw, SXE_VMRVM(rule_id), 0);
-	SXE_REG_WRITE(hw,
-		      SXE_VMRVM(rule_id + SXE_MR_VIRTUAL_POOL_MSB_REG_OFFSET), 0);
-}
-
-void sxe_hw_mac_reuse_add(struct rte_eth_dev *dev, u8 *mac_addr, u8 rar_idx)
-{
-	struct sxe_adapter *adapter = dev->data->dev_private;
-	struct sxe_uc_addr_table *uc_table =
-		adapter->mac_filter_ctxt.uc_addr_table;
-	struct sxe_hw *hw = &adapter->hw;
-	s32 i;
-	u32 value_low = SXE_REG_READ(hw, SXE_MPSAR_LOW(rar_idx));
-	u32 value_high = SXE_REG_READ(hw, SXE_MPSAR_HIGH(rar_idx));
-
-	for (i = 0; i < SXE_UC_ENTRY_NUM_MAX; i++) {
-		if (memcmp(uc_table[i].addr, mac_addr, SXE_MAC_ADDR_LEN) == 0 &&
-		    uc_table[i].used && i != rar_idx) {
-			value_low |= SXE_REG_READ(hw, SXE_MPSAR_LOW(i));
-			value_high |= SXE_REG_READ(hw, SXE_MPSAR_HIGH(i));
-
-			SXE_REG_WRITE(hw, SXE_MPSAR_LOW(i), value_low);
-			SXE_REG_WRITE(hw, SXE_MPSAR_HIGH(i), value_high);
-		}
-	}
-
-	SXE_REG_WRITE(hw, SXE_MPSAR_LOW(rar_idx), value_low);
-	SXE_REG_WRITE(hw, SXE_MPSAR_HIGH(rar_idx), value_high);
-}
-
-void sxe_hw_mac_reuse_del(struct rte_eth_dev *dev, u8 *mac_addr, u8 pool_idx,
-			  u8 rar_idx)
-{
-	struct sxe_adapter *adapter = dev->data->dev_private;
-	struct sxe_uc_addr_table *uc_table =
-		adapter->mac_filter_ctxt.uc_addr_table;
-	struct sxe_hw *hw = &adapter->hw;
-	u32 value;
-	s32 i;
-
-	for (i = 0; i < SXE_UC_ENTRY_NUM_MAX; i++) {
-		if (memcmp(uc_table[i].addr, mac_addr, SXE_MAC_ADDR_LEN) == 0 &&
-		    uc_table[i].used && i != rar_idx) {
-			if (pool_idx < 32) {
-				value = SXE_REG_READ(hw, SXE_MPSAR_LOW(i));
-				value &= ~(BIT(pool_idx));
-				SXE_REG_WRITE(hw, SXE_MPSAR_LOW(i), value);
-			} else {
-				value = SXE_REG_READ(hw, SXE_MPSAR_HIGH(i));
-				value &= ~(BIT(pool_idx - 32));
-				SXE_REG_WRITE(hw, SXE_MPSAR_HIGH(i), value);
-			}
-		}
-	}
-}
-
-#if defined SXE_DPDK_L4_FEATURES && defined SXE_DPDK_FILTER_CTRL
-void sxe_hw_fivetuple_filter_add(struct rte_eth_dev *dev,
-				 struct sxe_fivetuple_node_info *filter)
-{
-	struct sxe_adapter *adapter = dev->data->dev_private;
-	struct sxe_hw *hw = &adapter->hw;
-	u16 i;
-	u32 ftqf, sdpqf;
-	u32 l34timir = 0;
-	u8 mask = 0xff;
-
-	i = filter->index;
-
-	sdpqf = (u32)(filter->filter_info.dst_port << SXE_SDPQF_DSTPORT_SHIFT);
-	sdpqf = sdpqf | (filter->filter_info.src_port & SXE_SDPQF_SRCPORT);
-
-	ftqf = (u32)(filter->filter_info.protocol & SXE_FTQF_PROTOCOL_MASK);
-	ftqf |= (u32)((filter->filter_info.priority & SXE_FTQF_PRIORITY_MASK)
-		      << SXE_FTQF_PRIORITY_SHIFT);
-
-	if (filter->filter_info.src_ip_mask == 0)
-		mask &= SXE_FTQF_SOURCE_ADDR_MASK;
-
-	if (filter->filter_info.dst_ip_mask == 0)
-		mask &= SXE_FTQF_DEST_ADDR_MASK;
-
-	if (filter->filter_info.src_port_mask == 0)
-		mask &= SXE_FTQF_SOURCE_PORT_MASK;
-
-	if (filter->filter_info.dst_port_mask == 0)
-		mask &= SXE_FTQF_DEST_PORT_MASK;
-
-	if (filter->filter_info.proto_mask == 0)
-		mask &= SXE_FTQF_PROTOCOL_COMP_MASK;
-
-	ftqf |= mask << SXE_FTQF_5TUPLE_MASK_SHIFT;
-	ftqf |= SXE_FTQF_POOL_MASK_EN;
-	ftqf |= SXE_FTQF_QUEUE_ENABLE;
-
-	LOG_DEBUG("add fivetuple filter, index[%u], src_ip[0x%x], dst_ip[0x%x]\n"
-		  "\tsrc_port[%u], dst_port[%u], ftqf[0x%x], queue[%u]",
-		  i, filter->filter_info.src_ip, filter->filter_info.dst_ip,
-		  filter->filter_info.src_port, filter->filter_info.dst_port,
-		  ftqf, filter->queue);
-
-	SXE_REG_WRITE(hw, SXE_DAQF(i), filter->filter_info.dst_ip);
-	SXE_REG_WRITE(hw, SXE_SAQF(i), filter->filter_info.src_ip);
-	SXE_REG_WRITE(hw, SXE_SDPQF(i), sdpqf);
-	SXE_REG_WRITE(hw, SXE_FTQF(i), ftqf);
-
-	l34timir |= SXE_L34T_IMIR_RESERVE;
-	l34timir |= (u32)(filter->queue << SXE_L34T_IMIR_QUEUE_SHIFT);
-	SXE_REG_WRITE(hw, SXE_L34T_IMIR(i), l34timir);
-}
-
-void sxe_hw_fivetuple_filter_del(struct sxe_hw *hw, u16 reg_index)
-{
-	SXE_REG_WRITE(hw, SXE_DAQF(reg_index), 0);
-	SXE_REG_WRITE(hw, SXE_SAQF(reg_index), 0);
-	SXE_REG_WRITE(hw, SXE_SDPQF(reg_index), 0);
-	SXE_REG_WRITE(hw, SXE_FTQF(reg_index), 0);
-	SXE_REG_WRITE(hw, SXE_L34T_IMIR(reg_index), 0);
-}
-
-void sxe_hw_ethertype_filter_add(struct sxe_hw *hw, u8 reg_index, u16 ethertype,
-				 u16 queue)
-{
-	u32 etqf = 0;
-	u32 etqs = 0;
-
-	etqf = SXE_ETQF_FILTER_EN;
-	etqf |= (u32)ethertype;
-	etqs |= (u32)((queue << SXE_ETQS_RX_QUEUE_SHIFT) & SXE_ETQS_RX_QUEUE);
-	etqs |= SXE_ETQS_QUEUE_EN;
-
-	SXE_REG_WRITE(hw, SXE_ETQF(reg_index), etqf);
-	SXE_REG_WRITE(hw, SXE_ETQS(reg_index), etqs);
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_ethertype_filter_del(struct sxe_hw *hw, u8 filter_type)
-{
-	SXE_REG_WRITE(hw, SXE_ETQF(filter_type), 0);
-	SXE_REG_WRITE(hw, SXE_ETQS(filter_type), 0);
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_syn_filter_add(struct sxe_hw *hw, u16 queue, u8 priority)
-{
-	u32 synqf;
-
-	synqf = (u32)(((queue << SXE_SYN_FILTER_QUEUE_SHIFT) &
-		       SXE_SYN_FILTER_QUEUE) |
-		      SXE_SYN_FILTER_ENABLE);
-
-	if (priority)
-		synqf |= SXE_SYN_FILTER_SYNQFP;
-	else
-		synqf &= ~SXE_SYN_FILTER_SYNQFP;
-
-	SXE_REG_WRITE(hw, SXE_SYNQF, synqf);
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_syn_filter_del(struct sxe_hw *hw)
-{
-	u32 synqf;
-
-	synqf = SXE_REG_READ(hw, SXE_SYNQF);
-
-	synqf &= ~(SXE_SYN_FILTER_QUEUE | SXE_SYN_FILTER_ENABLE);
-	SXE_REG_WRITE(hw, SXE_SYNQF, synqf);
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_fnav_rx_pkt_buf_size_reset(struct sxe_hw *hw, u32 pbsize)
-{
-	S32 i;
-
-	SXE_REG_WRITE(hw, SXE_RXPBSIZE(0),
-		      (SXE_REG_READ(hw, SXE_RXPBSIZE(0)) - pbsize));
-	for (i = 1; i < 8; i++)
-		SXE_REG_WRITE(hw, SXE_RXPBSIZE(i), 0);
-}
-
-void sxe_hw_fnav_flex_mask_set(struct sxe_hw *hw, u16 flex_mask)
-{
-	u32 fnavm;
-
-	fnavm = SXE_REG_READ(hw, SXE_FNAVM);
-	if (flex_mask == UINT16_MAX)
-		fnavm &= ~SXE_FNAVM_FLEX;
-
-	SXE_REG_WRITE(hw, SXE_FNAVM, fnavm);
-}
-
-void sxe_hw_fnav_ipv6_mask_set(struct sxe_hw *hw, u16 src_mask, u16 dst_mask)
-{
-	u32 fnavipv6m;
-
-	fnavipv6m = (dst_mask << 16) | src_mask;
-	SXE_REG_WRITE(hw, SXE_FNAVIP6M, ~fnavipv6m);
-}
-
-s32 sxe_hw_fnav_flex_offset_set(struct sxe_hw *hw, u16 offset)
-{
-	u32 fnavctrl;
-	s32 ret;
-
-	fnavctrl = SXE_REG_READ(hw, SXE_FNAVCTRL);
-	fnavctrl &= ~SXE_FNAVCTRL_FLEX_MASK;
-	fnavctrl |= ((offset >> 1) << SXE_FNAVCTRL_FLEX_SHIFT);
-
-	SXE_REG_WRITE(hw, SXE_FNAVCTRL, fnavctrl);
-	SXE_WRITE_FLUSH(hw);
-
-	ret = sxe_hw_fnav_wait_init_done(hw);
-	if (ret)
-		LOG_ERROR("flow director signature poll time exceeded!\n");
-
-	return ret;
-}
-#endif
-
-#if defined SXE_DPDK_L4_FEATURES && defined SXE_DPDK_MACSEC
-static void sxe_macsec_stop_data(struct sxe_hw *hw, bool link)
-{
-	u32 t_rdy, r_rdy;
-	u32 limit;
-	u32 reg;
-
-	reg = SXE_REG_READ(hw, SXE_SECTXCTRL);
-	reg |= SXE_SECTXCTRL_TX_DIS;
-	SXE_REG_WRITE(hw, SXE_SECTXCTRL, reg);
-
-	reg = SXE_REG_READ(hw, SXE_SECRXCTRL);
-	reg |= SXE_SECRXCTRL_RX_DIS;
-	SXE_REG_WRITE(hw, SXE_SECRXCTRL, reg);
-	SXE_WRITE_FLUSH(hw);
-
-	t_rdy = SXE_REG_READ(hw, SXE_SECTXSTAT) & SXE_SECTXSTAT_SECTX_RDY;
-	r_rdy = SXE_REG_READ(hw, SXE_SECRXSTAT) & SXE_SECRXSTAT_SECRX_RDY;
-	if (t_rdy && r_rdy)
-		return;
-
-	if (!link) {
-		SXE_REG_WRITE(hw, SXE_LPBKCTRL, 0x1);
-
-		SXE_WRITE_FLUSH(hw);
-		mdelay(3);
-	}
-
-	limit = 20;
-	do {
-		mdelay(10);
-		t_rdy = SXE_REG_READ(hw, SXE_SECTXSTAT) &
-			SXE_SECTXSTAT_SECTX_RDY;
-		r_rdy = SXE_REG_READ(hw, SXE_SECRXSTAT) &
-			SXE_SECRXSTAT_SECRX_RDY;
-	} while (!(t_rdy && r_rdy) && limit--);
-
-	if (!link) {
-		SXE_REG_WRITE(hw, SXE_LPBKCTRL, 0x0);
-		SXE_WRITE_FLUSH(hw);
-	}
-}
-
-void sxe_hw_rx_queue_mode_set(struct sxe_hw *hw, u32 mrqc)
-{
-	SXE_REG_WRITE(hw, SXE_MRQC, mrqc);
-}
-
-void sxe_hw_macsec_enable(struct sxe_hw *hw, bool is_up, u32 tx_mode,
-			  u32 rx_mode, u32 pn_trh)
-{
-	u32 reg;
-
-	sxe_macsec_stop_data(hw, is_up);
-
-	reg = SXE_REG_READ(hw, SXE_SECTXCTRL);
-	reg &= ~SXE_SECTXCTRL_SECTX_DIS;
-	reg &= ~SXE_SECTXCTRL_STORE_FORWARD;
-	SXE_REG_WRITE(hw, SXE_SECTXCTRL, reg);
-
-	SXE_REG_WRITE(hw, SXE_SECTXBUFFAF, 0x250);
-
-	reg = SXE_REG_READ(hw, SXE_SECTXMINIFG);
-	reg = (reg & 0xfffffff0) | 0x3;
-	SXE_REG_WRITE(hw, SXE_SECTXMINIFG, reg);
-
-	reg = SXE_REG_READ(hw, SXE_SECRXCTRL);
-	reg &= ~SXE_SECRXCTRL_SECRX_DIS;
-	reg |= SXE_SECRXCTRL_RP;
-	SXE_REG_WRITE(hw, SXE_SECRXCTRL, reg);
-
-	reg = tx_mode & SXE_LSECTXCTRL_EN_MASK;
-	reg |= SXE_LSECTXCTRL_AISCI;
-	reg &= ~SXE_LSECTXCTRL_PNTHRSH_MASK;
-	reg |= (pn_trh << SXE_LSECTXCTRL_PNTHRSH_SHIFT);
-	SXE_REG_WRITE(hw, SXE_LSECTXCTRL, reg);
-
-	reg = (rx_mode << SXE_LSECRXCTRL_EN_SHIFT) & SXE_LSECRXCTRL_EN_MASK;
-	reg |= SXE_LSECRXCTRL_RP;
-	reg |= SXE_LSECRXCTRL_DROP_EN;
-	SXE_REG_WRITE(hw, SXE_LSECRXCTRL, reg);
-
-	reg = SXE_REG_READ(hw, SXE_SECTXCTRL);
-	reg &= ~SXE_SECTXCTRL_TX_DIS;
-	SXE_REG_WRITE(hw, SXE_SECTXCTRL, reg);
-
-	reg = SXE_REG_READ(hw, SXE_SECRXCTRL);
-	reg &= ~SXE_SECRXCTRL_RX_DIS;
-	SXE_REG_WRITE(hw, SXE_SECRXCTRL, reg);
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_macsec_disable(struct sxe_hw *hw, bool is_up)
-{
-	u32 reg;
-
-	sxe_macsec_stop_data(hw, is_up);
-
-	reg = SXE_REG_READ(hw, SXE_SECTXCTRL);
-	reg |= SXE_SECTXCTRL_SECTX_DIS;
-	reg &= ~SXE_SECTXCTRL_STORE_FORWARD;
-	SXE_REG_WRITE(hw, SXE_SECTXCTRL, reg);
-
-	reg = SXE_REG_READ(hw, SXE_SECRXCTRL);
-	reg |= SXE_SECRXCTRL_SECRX_DIS;
-	SXE_REG_WRITE(hw, SXE_SECRXCTRL, reg);
-
-	SXE_REG_WRITE(hw, SXE_SECTXBUFFAF, 0x250);
-
-	reg = SXE_REG_READ(hw, SXE_SECTXMINIFG);
-	reg = (reg & 0xfffffff0) | 0x1;
-	SXE_REG_WRITE(hw, SXE_SECTXMINIFG, reg);
-
-	SXE_REG_WRITE(hw, SXE_SECTXCTRL, SXE_SECTXCTRL_SECTX_DIS);
-	SXE_REG_WRITE(hw, SXE_SECRXCTRL, SXE_SECRXCTRL_SECRX_DIS);
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_macsec_txsc_set(struct sxe_hw *hw, u32 scl, u32 sch)
-{
-	SXE_REG_WRITE(hw, SXE_LSECTXSCL, scl);
-	SXE_REG_WRITE(hw, SXE_LSECTXSCH, sch);
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_macsec_rxsc_set(struct sxe_hw *hw, u32 scl, u32 sch, u16 pi)
-{
-	u32 reg = sch;
-
-	SXE_REG_WRITE(hw, SXE_LSECRXSCL, scl);
-
-	reg |= (pi << SXE_LSECRXSCH_PI_SHIFT) & SXE_LSECRXSCH_PI_MASK;
-	SXE_REG_WRITE(hw, SXE_LSECRXSCH, reg);
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_macsec_tx_sa_configure(struct sxe_hw *hw, u8 sa_idx, u8 an, u32 pn,
-				   u32 *keys)
-{
-	u32 reg;
-	u8 i;
-
-	reg = SXE_REG_READ(hw, SXE_LSECTXSA);
-	reg &= ~SXE_LSECTXSA_SELSA;
-	reg |= (sa_idx << SXE_LSECTXSA_SELSA_SHIFT) & SXE_LSECTXSA_SELSA;
-	SXE_REG_WRITE(hw, SXE_LSECTXSA, reg);
-	SXE_WRITE_FLUSH(hw);
-
-	SXE_REG_WRITE(hw, SXE_LSECTXPN(sa_idx), pn);
-	for (i = 0; i < 4; i++)
-		SXE_REG_WRITE(hw, SXE_LSECTXKEY(sa_idx, i), keys[i]);
-
-	SXE_WRITE_FLUSH(hw);
-
-	reg = SXE_REG_READ(hw, SXE_LSECTXSA);
-	if (sa_idx == 0) {
-		reg &= ~SXE_LSECTXSA_AN0_MASK;
-		reg |= (an << SXE_LSECTXSA_AN0_SHIFT) & SXE_LSECTXSA_AN0_MASK;
-		reg &= ~SXE_LSECTXSA_SELSA;
-		SXE_REG_WRITE(hw, SXE_LSECTXSA, reg);
-	} else if (sa_idx == 1) {
-		reg &= ~SXE_LSECTXSA_AN1_MASK;
-		reg |= (an << SXE_LSECTXSA_AN1_SHIFT) & SXE_LSECTXSA_AN1_MASK;
-		reg |= SXE_LSECTXSA_SELSA;
-		SXE_REG_WRITE(hw, SXE_LSECTXSA, reg);
-	}
-
-	SXE_WRITE_FLUSH(hw);
-}
-
-void sxe_hw_macsec_rx_sa_configure(struct sxe_hw *hw, u8 sa_idx, u8 an, u32 pn,
-				   u32 *keys)
-{
-	u32 reg;
-	u8 i;
-
-	reg = SXE_REG_READ(hw, SXE_LSECRXSA(sa_idx));
-	reg &= ~SXE_LSECRXSA_SAV;
-	reg |= (0 << SXE_LSECRXSA_SAV_SHIFT) & SXE_LSECRXSA_SAV;
-
-	SXE_REG_WRITE(hw, SXE_LSECRXSA(sa_idx), reg);
-
-	SXE_WRITE_FLUSH(hw);
-
-	SXE_REG_WRITE(hw, SXE_LSECRXPN(sa_idx), pn);
-
-	for (i = 0; i < 4; i++)
-		SXE_REG_WRITE(hw, SXE_LSECRXKEY(sa_idx, i), keys[i]);
-
-	SXE_WRITE_FLUSH(hw);
-
-	reg = ((an << SXE_LSECRXSA_AN_SHIFT) & SXE_LSECRXSA_AN_MASK) |
-	      SXE_LSECRXSA_SAV;
-	SXE_REG_WRITE(hw, SXE_LSECRXSA(sa_idx), reg);
-	SXE_WRITE_FLUSH(hw);
-}
-
-#endif
-#endif

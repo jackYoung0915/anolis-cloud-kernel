@@ -22,6 +22,7 @@
 #include "sxe_host_hdc.h"
 #include "sxe_phy.h"
 #include "sxe_cli.h"
+#include "sxe_upgrade.h"
 
 enum sxe_diag_test_case {
 	SXE_DIAG_REGS_TEST = 0,
@@ -343,15 +344,15 @@ static void sxe_get_drvinfo(struct net_device *netdev,
 {
 	struct sxe_adapter *adapter = netdev_priv(netdev);
 
-	strscpy(drvinfo->driver, SXE_DRV_NAME, sizeof(drvinfo->driver));
-	strscpy(drvinfo->version, SXE_VERSION, sizeof(drvinfo->version));
+	SXE_STRCPY(drvinfo->driver, SXE_DRV_NAME, sizeof(drvinfo->driver));
+	SXE_STRCPY(drvinfo->version, SXE_VERSION, sizeof(drvinfo->version));
 
 	sxe_fw_version_get(adapter);
-	strscpy(drvinfo->fw_version, (s8 *)adapter->fw_info.fw_version,
-		sizeof(drvinfo->fw_version));
+	SXE_STRCPY(drvinfo->fw_version, (s8 *)adapter->fw_info.fw_version,
+		   sizeof(drvinfo->fw_version));
 
-	strscpy(drvinfo->bus_info, pci_name(adapter->pdev),
-		sizeof(drvinfo->bus_info));
+	SXE_STRCPY(drvinfo->bus_info, pci_name(adapter->pdev),
+		   sizeof(drvinfo->bus_info));
 
 	drvinfo->n_priv_flags = SXE_PRIV_FLAGS_STR_LEN;
 }
@@ -1221,6 +1222,68 @@ static void sxe_rss_redir_tbl_get(struct sxe_adapter *adapter, u32 *indir)
 		indir[i] = adapter->rss_indir_tbl[i] & rss_m;
 }
 
+#ifdef HAVE_ETHTOOL_RXFH_PARAM
+static int sxe_get_rxfh(struct net_device *netdev,
+			struct ethtool_rxfh_param *rxfh)
+{
+	struct sxe_adapter *adapter = netdev_priv(netdev);
+
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
+
+	if (rxfh->indir)
+		sxe_rss_redir_tbl_get(adapter, rxfh->indir);
+
+	if (rxfh->key)
+		memcpy(rxfh->key, adapter->rss_key, sxe_get_rxfh_key_size(netdev));
+
+	return 0;
+}
+
+static int sxe_set_rxfh(struct net_device *netdev,
+			struct ethtool_rxfh_param *rxfh,
+			struct netlink_ext_ack *extack)
+{
+	u16 i, max_queues;
+	struct sxe_adapter *adapter = netdev_priv(netdev);
+	u16 rss = sxe_rss_num_get(adapter);
+	u32 tbl_entries = sxe_rss_redir_tbl_size_get();
+	struct sxe_hw *hw = &adapter->hw;
+
+	LOG_DEBUG_BDF("rss=%u, tbl_entries=%u\n", rss, tbl_entries);
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP) {
+		LOG_ERROR_BDF("sxe unsupport hfunc[%d]\n", rxfh->hfunc);
+		return -EOPNOTSUPP;
+	}
+
+	if (rxfh->indir) {
+		max_queues = min_t(int,	adapter->rx_ring_ctxt.num, rss);
+
+		if ((adapter->cap & SXE_SRIOV_ENABLE) && max_queues < 2)
+			max_queues = 2;
+
+		for (i = 0; i < tbl_entries; i++) {
+			if (rxfh->indir[i] >= max_queues) {
+				LOG_ERROR_BDF("indir[%u]=%u > max_que=%u\n",
+					      i, rxfh->indir[i], max_queues);
+				return -EINVAL;
+			}
+		}
+
+		for (i = 0; i < tbl_entries; i++)
+			adapter->rss_indir_tbl[i] = rxfh->indir[i];
+
+		hw->dbu.ops->rss_redir_tbl_set_all(hw, adapter->rss_indir_tbl);
+	}
+
+	if (rxfh->key) {
+		memcpy(adapter->rss_key, rxfh->key, sxe_get_rxfh_key_size(netdev));
+		hw->dbu.ops->rss_key_set_all(hw, adapter->rss_key);
+	}
+
+	return 0;
+}
+#else
 static int sxe_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 			u8 *hfunc)
 {
@@ -1280,6 +1343,7 @@ static int sxe_set_rxfh(struct net_device *netdev, const u32 *redir,
 
 	return 0;
 }
+#endif
 
 #ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
 static void
@@ -1672,6 +1736,7 @@ sxe_set_link_ksettings_proto(struct net_device *netdev,
 {
 	int ret = 0;
 	u32 advertised, old;
+	unsigned long timeout;
 	u32 supported, advertising;
 	struct sxe_adapter *adapter = netdev_priv(netdev);
 	struct sxe_phy_context *phy_ctxt = &adapter->phy_ctxt;
@@ -1716,15 +1781,18 @@ sxe_set_link_ksettings_proto(struct net_device *netdev,
 			goto l_end;
 		}
 
-		set_bit(SXE_SFP_MULTI_SPEED_SETTING, &adapter->state);
-		adapter->link.sfp_multispeed_time = jiffies;
 		while (test_and_set_bit(SXE_IN_SFP_INIT, &adapter->state)) {
 			usleep_range(SXE_SFP_INIT_WAIT_ITR_MIN,
 				     SXE_SFP_INIT_WAIT_ITR_MAX);
 		}
+		timeout = sxe_los_disable_timeout_get();
+		adapter->link.sfp_los_disable_timeout = jiffies + timeout;
 
 		/* in order to force CPU ordering */
 		smp_wmb();
+
+		set_bit(SXE_SFP_LOS_DISABLED, &adapter->state);
+		clear_bit(SXE_SFP_MULTI_SPEED_QUIRKS, &adapter->state);
 		clear_bit(SXE_LINK_NEED_CONFIG, &adapter->monitor_ctxt.state);
 		set_bit(SXE_LINK_SPEED_CHANGE, &adapter->monitor_ctxt.state);
 		adapter->hw.mac.auto_restart = true;
@@ -2019,7 +2087,7 @@ l_end:
 	return ret;
 }
 
-int sxe_reg_test(struct sxe_adapter *adapter)
+static int sxe_reg_test(struct sxe_adapter *adapter)
 {
 	s32 ret;
 	struct sxe_hw *hw = &adapter->hw;
@@ -2641,7 +2709,7 @@ static s32 sxe_identify_led_ctrl(struct sxe_adapter *adapter, bool is_blink)
 	return ret;
 }
 
-int sxe_phys_id_set(struct net_device *netdev, enum ethtool_phys_id_state state)
+static int sxe_phys_id_set(struct net_device *netdev, enum ethtool_phys_id_state state)
 {
 	int ret = 0;
 	struct sxe_adapter *adapter = netdev_priv(netdev);
@@ -2763,6 +2831,15 @@ static int sxe_set_coalesce(struct net_device *netdev,
 	return sxe_irq_coalesce_set(netdev, ec);
 }
 
+static s32 sxe_flash_device(struct net_device *dev,
+			    struct ethtool_flash *flash)
+{
+	if (flash->region == ETHTOOL_FLASH_ALL_REGIONS)
+		return sxe_flash_package_from_file(dev, flash->data);
+	else
+		return -EPERM;
+}
+
 static const struct ethtool_ops sxe_ethtool_ops = {
 #ifdef ETHTOOL_COALESCE_USECS
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS,
@@ -2802,6 +2879,7 @@ static const struct ethtool_ops sxe_ethtool_ops = {
 	.get_regs = sxe_regs_get,
 	.get_module_info = sxe_get_module_info,
 	.get_module_eeprom = sxe_get_module_eeprom,
+	.flash_device = sxe_flash_device,
 };
 
 void sxe_ethtool_ops_set(struct net_device *netdev)

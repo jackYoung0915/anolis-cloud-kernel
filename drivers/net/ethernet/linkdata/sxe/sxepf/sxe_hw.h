@@ -427,32 +427,6 @@ struct sxe_mac_stats {
 	u64 total_gotc;
 };
 
-#if defined SXE_DPDK_L4_FEATURES && defined SXE_DPDK_FILTER_CTRL
-enum sxe_fivetuple_protocol {
-	SXE_FILTER_PROTOCOL_TCP = 0,
-	SXE_FILTER_PROTOCOL_UDP,
-	SXE_FILTER_PROTOCOL_SCTP,
-	SXE_FILTER_PROTOCOL_NONE,
-};
-
-struct sxe_fivetuple_filter_info {
-	u32 src_ip;
-	u32 dst_ip;
-	u16 src_port;
-	u16 dst_port;
-	enum sxe_fivetuple_protocol protocol;
-	u8 priority;
-	u8 src_ip_mask : 1, dst_ip_mask : 1, src_port_mask : 1,
-		dst_port_mask : 1, proto_mask : 1;
-};
-
-struct sxe_fivetuple_node_info {
-	u16 index;
-	u16 queue;
-	struct sxe_fivetuple_filter_info filter_info;
-};
-#endif
-
 union sxe_fnav_rule_info {
 	struct {
 		u8 vm_pool;
@@ -703,7 +677,7 @@ struct sxe_dbu_operations {
 };
 
 struct sxe_dbu_info {
-	const struct sxe_dbu_operations *ops;
+	const struct sxe_dbu_operations	*ops;
 };
 
 struct sxe_dma_operations {
@@ -721,6 +695,7 @@ struct sxe_dma_operations {
 	void (*rx_dma_lro_ctl_set)(struct sxe_hw *hw);
 	void (*rx_drop_switch)(struct sxe_hw *hw, u8 idx, bool is_enable);
 	void (*rx_tph_update)(struct sxe_hw *hw, u8 ring_idx, u8 cpu);
+	void (*rx_ro_enable)(struct sxe_hw *hw, u8 ring_idx);
 
 	void (*tx_enable)(struct sxe_hw *hw);
 	void (*tx_multi_ring_configure)(struct sxe_hw *hw, u8 tcs,
@@ -744,6 +719,7 @@ struct sxe_dma_operations {
 	void (*tx_vlan_tag_set)(struct sxe_hw *hw, u16 vid, u16 qos, u32 vf);
 	void (*tx_vlan_tag_clear)(struct sxe_hw *hw, u32 vf);
 	void (*tx_tph_update)(struct sxe_hw *hw, u8 ring_idx, u8 cpu);
+	void (*tx_ro_enable)(struct sxe_hw *hw, u8 ring_idx);
 
 	void (*tph_switch)(struct sxe_hw *hw, bool is_enable);
 
@@ -996,37 +972,29 @@ static inline void sxe_hw_reg_handle_init(struct sxe_hw *hw,
 	hw->reg_write = write;
 }
 
-#ifdef SXE_DPDK
+void sxe_hw_fc_requested_mode_set(struct sxe_hw *hw, enum sxe_fc_mode mode);
 
-void sxe_hw_crc_strip_config(struct sxe_hw *hw, bool keep_crc);
+void sxe_hw_vt_pool_loopback_switch(struct sxe_hw *hw, bool is_enable);
 
-void sxe_hw_stats_seq_clean(struct sxe_hw *hw, struct sxe_mac_stats *stats);
+u32 sxe_hw_hdc_fw_status_get(struct sxe_hw *hw);
 
-void sxe_hw_hdc_drv_status_set(struct sxe_hw *hw, u32 value);
+void sxe_hw_no_snoop_disable(struct sxe_hw *hw);
+
+void sxe_hw_uc_addr_pool_del(struct sxe_hw *hw, u32 rar_idx, u32 pool_idx);
+
+s32 sxe_hw_uc_addr_pool_enable(struct sxe_hw *hw, u8 rar_idx, u8 pool_idx);
 
 s32 sxe_hw_nic_reset(struct sxe_hw *hw);
 
-u16 sxe_hw_fc_pause_time_get(struct sxe_hw *hw);
+void sxe_hw_pf_rst_done_set(struct sxe_hw *hw);
 
-void sxe_hw_fc_pause_time_set(struct sxe_hw *hw, u16 pause_time);
+u32 sxe_hw_pending_irq_read_clear(struct sxe_hw *hw);
 
-void sxe_fc_autoneg_localcap_set(struct sxe_hw *hw);
+void sxe_hw_pending_irq_write_clear(struct sxe_hw *hw, u32 value);
 
-u32 sxe_hw_fc_tc_high_water_mark_get(struct sxe_hw *hw, u8 tc_idx);
+void sxe_hw_ring_irq_auto_disable(struct sxe_hw *hw, bool is_msix);
 
-u32 sxe_hw_fc_tc_low_water_mark_get(struct sxe_hw *hw, u8 tc_idx);
-
-u16 sxe_hw_fc_send_xon_get(struct sxe_hw *hw);
-
-void sxe_hw_fc_send_xon_set(struct sxe_hw *hw, u16 send_xon);
-
-u32 sxe_hw_rx_mode_get(struct sxe_hw *hw);
-
-void sxe_hw_rx_mode_set(struct sxe_hw *hw, u32 filter_ctrl);
-
-void sxe_hw_specific_irq_enable(struct sxe_hw *hw, u32 value);
-
-void sxe_hw_specific_irq_disable(struct sxe_hw *hw, u32 value);
+u32 sxe_hw_irq_cause_get(struct sxe_hw *hw);
 
 void sxe_hw_irq_general_reg_set(struct sxe_hw *hw, u32 value);
 
@@ -1041,33 +1009,89 @@ void sxe_hw_ring_irq_interval_set(struct sxe_hw *hw, u16 irq_idx, u32 interval);
 
 void sxe_hw_event_irq_auto_clear_set(struct sxe_hw *hw, u32 value);
 
+void sxe_hw_specific_irq_enable(struct sxe_hw *hw, u32 value);
+
+void sxe_hw_specific_irq_disable(struct sxe_hw *hw, u32 value);
+
+u32 sxe_hw_spp_state_get(struct sxe_hw *hw);
+
+void sxe_hw_rx_los_disable(struct sxe_hw *hw);
+
+void sxe_hw_rx_los_enable(struct sxe_hw *hw);
+
 void sxe_hw_all_irq_disable(struct sxe_hw *hw);
 
-void sxe_hw_ring_irq_auto_disable(struct sxe_hw *hw, bool is_msix);
+void sxe_hw_spp_configure(struct sxe_hw *hw, u32 hw_spp_proc_delay_us);
 
-u32 sxe_hw_irq_cause_get(struct sxe_hw *hw);
+bool sxe_hw_is_link_state_up(struct sxe_hw *hw);
 
-void sxe_hw_pending_irq_write_clear(struct sxe_hw *hw, u32 value);
+u32 sxe_hw_link_speed_get(struct sxe_hw *hw);
 
-u32 sxe_hw_ring_irq_switch_get(struct sxe_hw *hw, u8 idx);
+void sxe_hw_link_speed_set(struct sxe_hw *hw, u32 speed);
 
-void sxe_hw_ring_irq_switch_set(struct sxe_hw *hw, u8 idx, u32 value);
+void sxe_hw_mac_pad_enable(struct sxe_hw *hw);
+
+s32 sxe_hw_fc_enable(struct sxe_hw *hw);
+
+void sxe_fc_autoneg_localcap_set(struct sxe_hw *hw);
+
+s32 sxe_hw_pfc_enable(struct sxe_hw *hw, u8 tc_idx);
+
+void sxe_hw_crc_configure(struct sxe_hw *hw);
+
+void sxe_hw_mac_txrx_enable(struct sxe_hw *hw);
+
+void sxe_hw_mac_max_frame_set(struct sxe_hw *hw, u32 max_frame);
+
+u32 sxe_hw_mac_max_frame_get(struct sxe_hw *hw);
+
+void sxe_hw_fc_tc_high_water_mark_set(struct sxe_hw *hw, u8 tc_idx, u32 mark);
+
+void sxe_hw_fc_tc_low_water_mark_set(struct sxe_hw *hw,	u8 tc_idx, u32 mark);
+
+bool sxe_hw_is_fc_autoneg_disabled(struct sxe_hw *hw);
+
+void sxe_hw_fc_autoneg_disable_set(struct sxe_hw *hw, bool is_disabled);
+
+u32 sxe_hw_rx_mode_get(struct sxe_hw *hw);
+
+void sxe_hw_rx_ro_enable(struct sxe_hw *hw, u8 ring_idx);
+
+void sxe_hw_tx_ro_enable(struct sxe_hw *hw, u8 ring_idx);
+
+void sxe_hw_rx_mode_set(struct sxe_hw *hw, u32 filter_ctrl);
+
+u32 sxe_hw_pool_rx_mode_get(struct sxe_hw *hw, u16 pool_idx);
+
+void sxe_hw_pool_rx_mode_set(struct sxe_hw *hw,	u32 vmolr, u16 pool_idx);
+
+void sxe_hw_rx_lro_enable(struct sxe_hw *hw, bool is_enable);
+
+void sxe_hw_rx_nfs_filter_disable(struct sxe_hw *hw);
+
+void sxe_hw_rx_udp_frag_checksum_disable(struct sxe_hw *hw);
+
+void sxe_hw_fc_mac_addr_set(struct sxe_hw *hw, u8 *mac_addr);
 
 s32 sxe_hw_uc_addr_add(struct sxe_hw *hw, u32 rar_idx, u8 *addr, u32 pool_idx);
 
 s32 sxe_hw_uc_addr_del(struct sxe_hw *hw, u32 index);
 
-void sxe_hw_uc_addr_pool_del(struct sxe_hw *hw, u32 rar_idx, u32 pool_idx);
+void sxe_hw_mta_hash_table_set(struct sxe_hw *hw, u8 index, u32 value);
 
-u32 sxe_hw_uta_hash_table_get(struct sxe_hw *hw, u8 reg_idx);
-
-void sxe_hw_uta_hash_table_set(struct sxe_hw *hw, u8 reg_idx, u32 value);
+void sxe_hw_mta_hash_table_update(struct sxe_hw *hw, u8 reg_idx, u8 bit_idx);
 
 u32 sxe_hw_mc_filter_get(struct sxe_hw *hw);
 
-void sxe_hw_mta_hash_table_set(struct sxe_hw *hw, u8 index, u32 value);
-
 void sxe_hw_mc_filter_enable(struct sxe_hw *hw);
+
+void sxe_hw_uc_addr_clear(struct sxe_hw *hw);
+
+void sxe_hw_vt_ctrl_cfg(struct sxe_hw *hw, u8 num_vfs);
+
+void sxe_hw_vt_disable(struct sxe_hw *hw);
+
+u32 sxe_hw_vlan_pool_filter_read(struct sxe_hw *hw, u16 reg_index);
 
 void sxe_hw_vlan_filter_array_write(struct sxe_hw *hw, u16 reg_index,
 				    u32 value);
@@ -1076,58 +1100,61 @@ u32 sxe_hw_vlan_filter_array_read(struct sxe_hw *hw, u16 reg_index);
 
 void sxe_hw_vlan_filter_switch(struct sxe_hw *hw, bool is_enable);
 
-u32 sxe_hw_vlan_type_get(struct sxe_hw *hw);
+s32 sxe_hw_vlvf_slot_find(struct sxe_hw *hw, u32 vlan, bool vlvf_bypass);
 
-void sxe_hw_vlan_type_set(struct sxe_hw *hw, u32 value);
+s32 sxe_hw_vlan_filter_configure(struct sxe_hw *hw, u32 vid, u32 pool,
+				 bool vlan_on, bool vlvf_bypass);
 
-void sxe_hw_vlan_ext_vet_write(struct sxe_hw *hw, u32 value);
-
-void sxe_hw_vlan_tag_strip_switch(struct sxe_hw *hw, u16 reg_index,
-				  bool is_enable);
-
-void sxe_hw_txctl_vlan_type_set(struct sxe_hw *hw, u32 value);
-
-u32 sxe_hw_txctl_vlan_type_get(struct sxe_hw *hw);
-
-u32 sxe_hw_ext_vlan_get(struct sxe_hw *hw);
-
-void sxe_hw_ext_vlan_set(struct sxe_hw *hw, u32 value);
-
-void sxe_hw_pf_rst_done_set(struct sxe_hw *hw);
-
-u32 sxe_hw_all_regs_group_num_get(void);
-
-void sxe_hw_all_regs_group_read(struct sxe_hw *hw, u32 *data);
-
-s32 sxe_hw_fc_enable(struct sxe_hw *hw);
-
-bool sxe_hw_is_fc_autoneg_disabled(struct sxe_hw *hw);
-
-void sxe_hw_fc_status_get(struct sxe_hw *hw, bool *rx_pause_on,
-			  bool *tx_pause_on);
-
-void sxe_hw_fc_requested_mode_set(struct sxe_hw *hw, enum sxe_fc_mode mode);
-
-void sxe_hw_fc_tc_high_water_mark_set(struct sxe_hw *hw, u8 tc_idx, u32 mark);
-
-void sxe_hw_fc_tc_low_water_mark_set(struct sxe_hw *hw, u8 tc_idx, u32 mark);
-
-void sxe_hw_fc_autoneg_disable_set(struct sxe_hw *hw, bool is_disabled);
+void sxe_hw_vlan_filter_array_clear(struct sxe_hw *hw);
 
 u32 sxe_hw_rx_pkt_buf_size_get(struct sxe_hw *hw, u8 pb);
 
+void sxe_hw_rx_multi_ring_configure(struct sxe_hw *hw, u8 tcs, bool is_4Q,
+				    bool sriov_enable);
+
+void sxe_hw_rss_key_set_all(struct sxe_hw *hw, u32 *rss_key);
+
+void sxe_hw_rss_redir_tbl_reg_write(struct sxe_hw *hw, u16 reg_idx, u32 value);
+
+void sxe_hw_rss_redir_tbl_set_all(struct sxe_hw *hw, u8 *redir_tbl);
+
+void sxe_hw_rx_cap_switch_on(struct sxe_hw *hw);
+
+void sxe_hw_rx_cap_switch_off(struct sxe_hw *hw);
+
+void sxe_hw_tx_pkt_buf_switch(struct sxe_hw *hw, bool is_on);
+
+void sxe_hw_tx_pkt_buf_size_configure(struct sxe_hw *hw, u8 num_pb);
+
+void sxe_hw_rx_lro_ack_switch(struct sxe_hw *hw, bool is_on);
+
+void sxe_hw_fnav_enable(struct sxe_hw *hw, u32 fnavctrl);
+
+u32 sxe_hw_fnav_port_mask_get(__be16 src_port_mask, __be16 dst_port_mask);
+
+s32 sxe_hw_fnav_specific_rule_mask_set(struct sxe_hw *hw,
+				       union sxe_fnav_rule_info *input_mask);
+
+s32 sxe_hw_fnav_specific_rule_add(struct sxe_hw *hw,
+				  union sxe_fnav_rule_info *input,
+				  u16 soft_id, u8 queue);
+
+s32 sxe_hw_fnav_specific_rule_del(struct sxe_hw *hw,
+				  union sxe_fnav_rule_info *input,
+				  u16 soft_id);
+
+void sxe_hw_fnav_sample_rule_configure(struct sxe_hw *hw, u8 flow_type,
+				       u32 hash_value, u8 queue);
+
+s32 sxe_hw_fnav_sample_rules_table_reinit(struct sxe_hw *hw);
+
+u64 sxe_hw_ptp_systime_get(struct sxe_hw *hw);
+
+void sxe_hw_ptp_systime_init(struct sxe_hw *hw);
+
 void sxe_hw_ptp_init(struct sxe_hw *hw);
 
-void sxe_hw_ptp_timestamp_mode_set(struct sxe_hw *hw, bool is_l2, u32 tsctl,
-				   u32 tses);
-
-void sxe_hw_ptp_timestamp_enable(struct sxe_hw *hw);
-
-void sxe_hw_ptp_time_inc_stop(struct sxe_hw *hw);
-
 void sxe_hw_ptp_rx_timestamp_clear(struct sxe_hw *hw);
-
-void sxe_hw_ptp_timestamp_disable(struct sxe_hw *hw);
 
 bool sxe_hw_ptp_is_rx_timestamp_valid(struct sxe_hw *hw);
 
@@ -1135,68 +1162,128 @@ u64 sxe_hw_ptp_rx_timestamp_get(struct sxe_hw *hw);
 
 void sxe_hw_ptp_tx_timestamp_get(struct sxe_hw *hw, u32 *ts_sec, u32 *ts_ns);
 
-u64 sxe_hw_ptp_systime_get(struct sxe_hw *hw);
+void sxe_hw_ptp_timestamp_mode_set(struct sxe_hw *hw, bool is_l2, u32 tsctl,
+				   u32 tses);
 
-void sxe_hw_rss_cap_switch(struct sxe_hw *hw, bool is_on);
-
-void sxe_hw_rss_key_set_all(struct sxe_hw *hw, u32 *rss_key);
-
-void sxe_hw_rss_field_set(struct sxe_hw *hw, u32 rss_field);
-
-void sxe_hw_rss_redir_tbl_set_all(struct sxe_hw *hw, u8 *redir_tbl);
-
-u32 sxe_hw_rss_redir_tbl_get_by_idx(struct sxe_hw *hw, u16 reg_idx);
-
-void sxe_hw_rss_redir_tbl_set_by_idx(struct sxe_hw *hw, u16 reg_idx, u32 value);
+void sxe_hw_ptp_timestamp_enable(struct sxe_hw *hw);
 
 void sxe_hw_rx_dma_ctrl_init(struct sxe_hw *hw);
 
-void sxe_hw_mac_max_frame_set(struct sxe_hw *hw, u32 max_frame);
-
-void sxe_hw_rx_udp_frag_checksum_disable(struct sxe_hw *hw);
-
-void sxe_hw_rx_ip_checksum_offload_switch(struct sxe_hw *hw, bool is_on);
+void sxe_hw_rx_dma_lro_ctrl_set(struct sxe_hw *hw);
 
 void sxe_hw_rx_ring_switch(struct sxe_hw *hw, u8 reg_idx, bool is_on);
 
-void sxe_hw_rx_ring_switch_not_polling(struct sxe_hw *hw, u8 reg_idx,
-				       bool is_on);
+void sxe_hw_rx_desc_thresh_set(struct sxe_hw *hw, u8 reg_idx);
 
-void sxe_hw_rx_ring_desc_configure(struct sxe_hw *hw, u32 desc_mem_len,
-				   u64 desc_dma_addr, u8 reg_idx);
+void sxe_hw_rx_ring_switch_not_polling(struct sxe_hw *hw, u8 reg_idx, bool is_on);
+
+void sxe_hw_rx_queue_desc_reg_configure(struct sxe_hw *hw,
+					u8 reg_idx, u32 rdh_value,
+					u32 rdt_value);
+
+void sxe_hw_rx_ring_desc_configure(struct sxe_hw *hw,
+				   u32 desc_mem_len, u64 desc_dma_addr,
+				   u8 reg_idx);
 
 void sxe_hw_rx_rcv_ctl_configure(struct sxe_hw *hw, u8 reg_idx,
 				 u32 header_buf_len, u32 pkg_buf_len);
 
-void sxe_hw_rx_drop_switch(struct sxe_hw *hw, u8 idx, bool is_enable);
-
-void sxe_hw_rx_desc_thresh_set(struct sxe_hw *hw, u8 reg_idx);
-
-void sxe_hw_rx_lro_ack_switch(struct sxe_hw *hw, bool is_on);
-
-void sxe_hw_rx_dma_lro_ctrl_set(struct sxe_hw *hw);
-
-void sxe_hw_rx_nfs_filter_disable(struct sxe_hw *hw);
-
-void sxe_hw_rx_lro_enable(struct sxe_hw *hw, bool is_enable);
-
 void sxe_hw_rx_lro_ctl_configure(struct sxe_hw *hw, u8 reg_idx, u32 max_desc);
 
-void sxe_hw_loopback_switch(struct sxe_hw *hw, bool is_enable);
+void sxe_hw_tx_ring_head_init(struct sxe_hw *hw, u8 reg_idx);
 
-void sxe_hw_rx_cap_switch_off(struct sxe_hw *hw);
+void sxe_hw_tx_ring_tail_init(struct sxe_hw *hw, u8 reg_idx);
 
-void sxe_hw_tx_ring_info_get(struct sxe_hw *hw, u8 idx, u32 *head, u32 *tail);
+void sxe_hw_tx_ring_desc_configure(struct sxe_hw *hw, u32 desc_mem_len,
+				   u64 desc_dma_addr, u8 reg_idx);
+
+void sxe_hw_tx_desc_thresh_set(struct sxe_hw *hw, u8 reg_idx, u32 wb_thresh,
+			       u32 host_thresh,	u32 prefech_thresh);
+
+void sxe_hw_all_ring_disable(struct sxe_hw *hw, u32 ring_max);
 
 void sxe_hw_tx_ring_switch(struct sxe_hw *hw, u8 reg_idx, bool is_on);
 
-void sxe_hw_tx_ring_switch_not_polling(struct sxe_hw *hw, u8 reg_idx,
-				       bool is_on);
+void sxe_hw_tx_ring_switch_not_polling(struct sxe_hw *hw, u8 reg_idx, bool is_on);
 
-void sxe_hw_rx_queue_desc_reg_configure(struct sxe_hw *hw, u8 reg_idx,
-					u32 rdh_value, u32 rdt_value);
+void sxe_hw_tx_pkt_buf_thresh_configure(struct sxe_hw *hw,
+					u8 num_pb, bool dcb_enable);
 
-u32 sxe_hw_hdc_fw_status_get(struct sxe_hw *hw);
+void sxe_hw_tx_enable(struct sxe_hw *hw);
+
+void sxe_hw_vlan_tag_strip_switch(struct sxe_hw *hw, u16 reg_index,
+				  bool is_enable);
+
+void sxe_hw_tx_vlan_tag_clear(struct sxe_hw *hw, u32 vf);
+
+u32 sxe_hw_tx_vlan_insert_get(struct sxe_hw *hw, u32 vf);
+
+void sxe_hw_tx_ring_info_get(struct sxe_hw *hw,	u8 idx, u32 *head, u32 *tail);
+
+void sxe_hw_dcb_rx_bw_alloc_configure(struct sxe_hw *hw,
+				      u16 *refill,
+				      u16 *max,
+				      u8 *bwg_id,
+				      u8 *prio_type,
+				      u8 *prio_tc,
+				      u8 max_priority);
+
+void sxe_hw_dcb_tx_desc_bw_alloc_configure(struct sxe_hw *hw,
+					   u16 *refill,
+					   u16 *max,
+					   u8 *bwg_id,
+					   u8 *prio_type);
+
+void sxe_hw_dcb_tx_data_bw_alloc_configure(struct sxe_hw *hw,
+					   u16 *refill,
+					   u16 *max,
+					   u8 *bwg_id,
+					   u8 *prio_type,
+					   u8 *prio_tc,
+					   u8 max_priority);
+
+void sxe_hw_dcb_pfc_configure(struct sxe_hw *hw, u8 pfc_en, u8 *prio_tc,
+			      u8 max_priority);
+
+void sxe_hw_loopback_switch(struct sxe_hw *hw, bool is_enable);
+
+void sxe_hw_pool_rx_ring_drop_enable(struct sxe_hw *hw, u8 vf_idx,
+				     u16 pf_vlan, u8 ring_per_pool);
+
+u32 sxe_hw_rx_pool_bitmap_get(struct sxe_hw *hw, u8 reg_idx);
+
+u32 sxe_hw_tx_pool_bitmap_get(struct sxe_hw *hw, u8 reg_idx);
+
+void sxe_hw_tx_pool_bitmap_set(struct sxe_hw *hw, u8 reg_idx, u32 bitmap);
+
+void sxe_hw_rx_pool_bitmap_set(struct sxe_hw *hw, u8 reg_idx, u32 bitmap);
+
+void sxe_hw_dcb_max_mem_window_set(struct sxe_hw *hw, u32 value);
+
+void sxe_hw_dcb_tx_ring_rate_factor_set(struct sxe_hw *hw, u32 ring_idx,
+					u32 rate);
+
+void sxe_hw_spoof_count_enable(struct sxe_hw *hw, u8 reg_idx, u8 bit_index);
+
+void sxe_hw_pool_mac_anti_spoof_set(struct sxe_hw *hw, u8 vf_idx, bool status);
+
+void sxe_hw_rx_drop_switch(struct sxe_hw *hw, u8 idx, bool is_enable);
+
+void sxe_hw_dcb_rate_limiter_clear(struct sxe_hw *hw, u8 ring_max);
+
+void sxe_hw_stats_get(struct sxe_hw *hw, struct sxe_mac_stats *stats);
+
+void sxe_hw_mbx_init(struct sxe_hw *hw);
+
+bool sxe_hw_vf_rst_check(struct sxe_hw *hw, u8 vf_idx);
+
+bool sxe_hw_vf_req_check(struct sxe_hw *hw, u8 vf_idx);
+
+bool sxe_hw_vf_ack_check(struct sxe_hw *hw, u8 vf_idx);
+
+void sxe_hw_mbx_mem_clear(struct sxe_hw *hw, u8 vf_idx);
+
+void sxe_hw_pcie_vt_mode_set(struct sxe_hw *hw, u32 value);
 
 s32 sxe_hw_hdc_lock_get(struct sxe_hw *hw, u32 trylock);
 
@@ -1206,296 +1293,23 @@ bool sxe_hw_hdc_is_fw_over_set(struct sxe_hw *hw);
 
 void sxe_hw_hdc_fw_ov_clear(struct sxe_hw *hw);
 
-u32 sxe_hw_hdc_fw_ack_header_get(struct sxe_hw *hw);
-
 void sxe_hw_hdc_packet_send_done(struct sxe_hw *hw);
 
 void sxe_hw_hdc_packet_header_send(struct sxe_hw *hw, u32 value);
+
+u32 sxe_hw_hdc_fw_ack_header_get(struct sxe_hw *hw);
 
 void sxe_hw_hdc_packet_data_dword_send(struct sxe_hw *hw, u16 dword_index,
 				       u32 value);
 
 u32 sxe_hw_hdc_packet_data_dword_rcv(struct sxe_hw *hw, u16 dword_index);
 
+void sxe_hw_hdc_drv_status_set(struct sxe_hw *hw, u32 value);
+
 u32 sxe_hw_hdc_channel_state_get(struct sxe_hw *hw);
 
-u32 sxe_hw_pending_irq_read_clear(struct sxe_hw *hw);
-
-void sxe_hw_all_ring_disable(struct sxe_hw *hw, u32 ring_max);
-
-void sxe_hw_tx_ring_head_init(struct sxe_hw *hw, u8 reg_idx);
-
-void sxe_hw_tx_ring_tail_init(struct sxe_hw *hw, u8 reg_idx);
-
-void sxe_hw_tx_enable(struct sxe_hw *hw);
-
-void sxe_hw_tx_desc_thresh_set(struct sxe_hw *hw, u8 reg_idx, u32 wb_thresh,
-			       u32 host_thresh, u32 prefech_thresh);
-
-void sxe_hw_tx_pkt_buf_switch(struct sxe_hw *hw, bool is_on);
-
-void sxe_hw_tx_pkt_buf_size_configure(struct sxe_hw *hw, u8 num_pb);
-
-void sxe_hw_tx_pkt_buf_thresh_configure(struct sxe_hw *hw, u8 num_pb,
-					bool dcb_enable);
-
-void sxe_hw_tx_ring_desc_configure(struct sxe_hw *hw, u32 desc_mem_len,
-				   u64 desc_dma_addr, u8 reg_idx);
-
-void sxe_hw_mac_txrx_enable(struct sxe_hw *hw);
-
-void sxe_hw_rx_cap_switch_on(struct sxe_hw *hw);
-
-void sxe_hw_mac_pad_enable(struct sxe_hw *hw);
-
-bool sxe_hw_is_link_state_up(struct sxe_hw *hw);
-
-u32 sxe_hw_link_speed_get(struct sxe_hw *hw);
-
-void sxe_hw_fc_base_init(struct sxe_hw *hw);
-
-void sxe_hw_stats_get(struct sxe_hw *hw, struct sxe_mac_stats *stats);
-
-void sxe_hw_rxq_stat_map_set(struct sxe_hw *hw, u8 idx, u32 value);
-
-void sxe_hw_txq_stat_map_set(struct sxe_hw *hw, u8 idx, u32 value);
-
-void sxe_hw_uc_addr_clear(struct sxe_hw *hw);
-
-void sxe_hw_vt_disable(struct sxe_hw *hw);
+void sxe_hw_stats_seq_clean(struct sxe_hw *hw, struct sxe_mac_stats *stats);
 
 void sxe_hw_stats_regs_clean(struct sxe_hw *hw);
 
-void sxe_hw_vlan_ext_type_set(struct sxe_hw *hw, u32 value);
-
-void sxe_hw_link_speed_set(struct sxe_hw *hw, u32 speed);
-
-void sxe_hw_crc_configure(struct sxe_hw *hw);
-
-void sxe_hw_vlan_filter_array_clear(struct sxe_hw *hw);
-
-void sxe_hw_no_snoop_disable(struct sxe_hw *hw);
-
-void sxe_hw_dcb_rate_limiter_clear(struct sxe_hw *hw, u8 ring_max);
-
-s32 sxe_hw_pfc_enable(struct sxe_hw *hw, u8 tc_idx);
-
-void sxe_hw_dcb_vmdq_mq_configure(struct sxe_hw *hw, u8 num_pools);
-
-void sxe_hw_dcb_vmdq_default_pool_configure(struct sxe_hw *hw,
-					    u8 default_pool_enabled,
-					    u8 default_pool_idx);
-
-void sxe_hw_dcb_vmdq_up_2_tc_configure(struct sxe_hw *hw, u8 *tc_arr);
-
-void sxe_hw_dcb_vmdq_vlan_configure(struct sxe_hw *hw, u8 num_pools);
-
-void sxe_hw_dcb_vmdq_pool_configure(struct sxe_hw *hw, u8 pool_idx, u16 vlan_id,
-				    u64 pools_map);
-
-void sxe_hw_dcb_rx_configure(struct sxe_hw *hw, bool is_vt_on, u8 sriov_active,
-			     u8 pg_tcs);
-
-void sxe_hw_dcb_tx_configure(struct sxe_hw *hw, bool is_vt_on, u8 pg_tcs);
-
-void sxe_hw_pool_xmit_enable(struct sxe_hw *hw, u16 reg_idx, u8 pool_num);
-
-void sxe_hw_rx_pkt_buf_size_set(struct sxe_hw *hw, u8 tc_idx, u16 pbsize);
-
-void sxe_hw_dcb_tc_stats_configure(struct sxe_hw *hw, u8 tc_count,
-				   bool vmdq_active);
-
-void sxe_hw_dcb_rx_bw_alloc_configure(struct sxe_hw *hw, u16 *refill, u16 *max,
-				      u8 *bwg_id, u8 *prio_type, u8 *prio_tc,
-				      u8 max_priority);
-
-void sxe_hw_dcb_tx_desc_bw_alloc_configure(struct sxe_hw *hw, u16 *refill,
-					   u16 *max, u8 *bwg_id, u8 *prio_type);
-
-void sxe_hw_dcb_tx_data_bw_alloc_configure(struct sxe_hw *hw, u16 *refill,
-					   u16 *max, u8 *bwg_id, u8 *prio_type,
-					   u8 *prio_tc, u8 max_priority);
-
-void sxe_hw_dcb_pfc_configure(struct sxe_hw *hw, u8 pfc_en, u8 *prio_tc,
-			      u8 max_priority);
-
-void sxe_hw_vmdq_mq_configure(struct sxe_hw *hw);
-
-void sxe_hw_vmdq_default_pool_configure(struct sxe_hw *hw,
-					u8 default_pool_enabled,
-					u8 default_pool_idx);
-
-void sxe_hw_vmdq_vlan_configure(struct sxe_hw *hw, u8 num_pools, u32 rx_mode);
-
-void sxe_hw_vmdq_pool_configure(struct sxe_hw *hw, u8 pool_idx, u16 vlan_id,
-				u64 pools_map);
-
-void sxe_hw_vmdq_loopback_configure(struct sxe_hw *hw);
-
-void sxe_hw_tx_multi_queue_configure(struct sxe_hw *hw, bool vmdq_enable,
-				     bool sriov_enable, u16 pools_num);
-
-void sxe_hw_dcb_max_mem_window_set(struct sxe_hw *hw, u32 value);
-
-void sxe_hw_dcb_tx_ring_rate_factor_set(struct sxe_hw *hw, u32 ring_idx,
-					u32 rate);
-
-void sxe_hw_mbx_init(struct sxe_hw *hw);
-
-void sxe_hw_vt_ctrl_cfg(struct sxe_hw *hw, u8 num_vfs);
-
-void sxe_hw_tx_pool_bitmap_set(struct sxe_hw *hw, u8 reg_idx, u32 bitmap);
-
-void sxe_hw_rx_pool_bitmap_set(struct sxe_hw *hw, u8 reg_idx, u32 bitmap);
-
-void sxe_hw_vt_pool_loopback_switch(struct sxe_hw *hw, bool is_enable);
-
-void sxe_hw_mac_pool_clear(struct sxe_hw *hw, u8 rar_idx);
-
-s32 sxe_hw_uc_addr_pool_enable(struct sxe_hw *hw, u8 rar_idx, u8 pool_idx);
-
-s32 sxe_hw_uc_addr_single_pool_disable(struct sxe_hw *hw, u8 rar_idx,
-				       u8 pool_idx);
-
-void sxe_hw_pcie_vt_mode_set(struct sxe_hw *hw, u32 value);
-
-u32 sxe_hw_pcie_vt_mode_get(struct sxe_hw *hw);
-
-void sxe_hw_pool_mac_anti_spoof_set(struct sxe_hw *hw, u8 vf_idx, bool status);
-
-void sxe_rx_fc_threshold_set(struct sxe_hw *hw);
-
-void sxe_hw_rx_multi_ring_configure(struct sxe_hw *hw, u8 tcs, bool is_4Q,
-				    bool sriov_enable);
-
-void sxe_hw_rx_queue_mode_set(struct sxe_hw *hw, u32 mrqc);
-
-bool sxe_hw_vf_rst_check(struct sxe_hw *hw, u8 vf_idx);
-
-bool sxe_hw_vf_req_check(struct sxe_hw *hw, u8 vf_idx);
-
-bool sxe_hw_vf_ack_check(struct sxe_hw *hw, u8 vf_idx);
-
-s32 sxe_hw_rcv_msg_from_vf(struct sxe_hw *hw, u32 *msg, u16 msg_len, u16 index);
-
-s32 sxe_hw_send_msg_to_vf(struct sxe_hw *hw, u32 *msg, u16 msg_len, u16 index);
-
-void sxe_hw_mbx_mem_clear(struct sxe_hw *hw, u8 vf_idx);
-
-u32 sxe_hw_pool_rx_mode_get(struct sxe_hw *hw, u16 pool_idx);
-
-void sxe_hw_pool_rx_mode_set(struct sxe_hw *hw, u32 vmolr, u16 pool_idx);
-
-void sxe_hw_tx_vlan_tag_clear(struct sxe_hw *hw, u32 vf);
-
-u32 sxe_hw_rx_pool_bitmap_get(struct sxe_hw *hw, u8 reg_idx);
-
-u32 sxe_hw_tx_pool_bitmap_get(struct sxe_hw *hw, u8 reg_idx);
-
-void sxe_hw_pool_rx_ring_drop_enable(struct sxe_hw *hw, u8 vf_idx, u16 pf_vlan,
-				     u8 ring_per_pool);
-
-void sxe_hw_spoof_count_enable(struct sxe_hw *hw, u8 reg_idx, u8 bit_index);
-
-u32 sxe_hw_tx_vlan_insert_get(struct sxe_hw *hw, u32 vf);
-
-bool sxe_hw_vt_status(struct sxe_hw *hw);
-
-s32 sxe_hw_vlvf_slot_find(struct sxe_hw *hw, u32 vlan, bool vlvf_bypass);
-
-u32 sxe_hw_vlan_pool_filter_read(struct sxe_hw *hw, u16 reg_index);
-
-void sxe_hw_mirror_vlan_set(struct sxe_hw *hw, u8 idx, u32 lsb, u32 msb);
-
-void sxe_hw_mirror_virtual_pool_set(struct sxe_hw *hw, u8 idx, u32 lsb,
-				    u32 msb);
-
-void sxe_hw_mirror_ctl_set(struct sxe_hw *hw, u8 rule_id, u8 mirror_type,
-			   u8 dst_pool, bool on);
-
-void sxe_hw_mirror_rule_clear(struct sxe_hw *hw, u8 rule_id);
-
-void sxe_hw_mac_reuse_add(struct rte_eth_dev *dev, u8 *mac_addr, u8 rar_idx);
-
-void sxe_hw_mac_reuse_del(struct rte_eth_dev *dev, u8 *mac_addr, u8 pool_idx,
-			  u8 rar_idx);
-
-u32 sxe_hw_mac_max_frame_get(struct sxe_hw *hw);
-
-void sxe_hw_mta_hash_table_update(struct sxe_hw *hw, u8 reg_idx, u8 bit_idx);
-
-void sxe_hw_vf_queue_drop_enable(struct sxe_hw *hw, u8 vf_idx,
-				 u8 ring_per_pool);
-void sxe_hw_fc_mac_addr_set(struct sxe_hw *hw, u8 *mac_addr);
-
-void sxe_hw_macsec_enable(struct sxe_hw *hw, bool is_up, u32 tx_mode,
-			  u32 rx_mode, u32 pn_trh);
-
-void sxe_hw_macsec_disable(struct sxe_hw *hw, bool is_up);
-
-void sxe_hw_macsec_txsc_set(struct sxe_hw *hw, u32 scl, u32 sch);
-
-void sxe_hw_macsec_rxsc_set(struct sxe_hw *hw, u32 scl, u32 sch, u16 pi);
-
-void sxe_hw_macsec_tx_sa_configure(struct sxe_hw *hw, u8 sa_idx, u8 an, u32 pn,
-				   u32 *keys);
-
-void sxe_hw_macsec_rx_sa_configure(struct sxe_hw *hw, u8 sa_idx, u8 an, u32 pn,
-				   u32 *keys);
-
-void sxe_hw_vt_pool_loopback_switch(struct sxe_hw *hw, bool is_enable);
-
-#if defined SXE_DPDK_L4_FEATURES && defined SXE_DPDK_FILTER_CTRL
-void sxe_hw_fnav_rx_pkt_buf_size_reset(struct sxe_hw *hw, u32 pbsize);
-
-void sxe_hw_fnav_flex_mask_set(struct sxe_hw *hw, u16 flex_mask);
-
-void sxe_hw_fnav_ipv6_mask_set(struct sxe_hw *hw, u16 src_mask, u16 dst_mask);
-
-s32 sxe_hw_fnav_flex_offset_set(struct sxe_hw *hw, u16 offset);
-
-void sxe_hw_fivetuple_filter_add(struct rte_eth_dev *dev,
-				 struct sxe_fivetuple_node_info *filter);
-
-void sxe_hw_fivetuple_filter_del(struct sxe_hw *hw, u16 reg_index);
-
-void sxe_hw_ethertype_filter_add(struct sxe_hw *hw, u8 reg_index, u16 ethertype,
-				 u16 queue);
-
-void sxe_hw_ethertype_filter_del(struct sxe_hw *hw, u8 filter_type);
-
-void sxe_hw_syn_filter_add(struct sxe_hw *hw, u16 queue, u8 priority);
-
-void sxe_hw_syn_filter_del(struct sxe_hw *hw);
-
-void sxe_hw_rss_key_set_all(struct sxe_hw *hw, u32 *rss_key);
-#endif
-
-void sxe_hw_fnav_enable(struct sxe_hw *hw, u32 fnavctrl);
-
-s32 sxe_hw_fnav_sample_rules_table_reinit(struct sxe_hw *hw);
-
-s32 sxe_hw_fnav_specific_rule_add(struct sxe_hw *hw,
-				  union sxe_fnav_rule_info *input,
-				  u16 soft_id, u8 queue);
-
-s32 sxe_hw_fnav_specific_rule_del(struct sxe_hw *hw,
-				  union sxe_fnav_rule_info *input, u16 soft_id);
-
-void sxe_hw_fnav_sample_rule_configure(struct sxe_hw *hw, u8 flow_type,
-				       u32 hash_value, u8 queue);
-
-void sxe_hw_rss_redir_tbl_reg_write(struct sxe_hw *hw, u16 reg_idx, u32 value);
-
-u32 sxe_hw_fnav_port_mask_get(__be16 src_port_mask, __be16 dst_port_mask);
-
-s32 sxe_hw_fnav_specific_rule_mask_set(struct sxe_hw *hw,
-				       union sxe_fnav_rule_info *input_mask);
-
-s32 sxe_hw_vlan_filter_configure(struct sxe_hw *hw, u32 vid, u32 pool,
-				 bool vlan_on, bool vlvf_bypass);
-
-void sxe_hw_ptp_systime_init(struct sxe_hw *hw);
-
-#endif
 #endif
