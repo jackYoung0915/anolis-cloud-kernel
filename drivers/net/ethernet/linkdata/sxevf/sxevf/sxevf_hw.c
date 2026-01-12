@@ -25,12 +25,8 @@
 #include "sxe_dpdk_version.h"
 #include "sxe_compat_version.h"
 #include "sxevf.h"
+#endif
 #include "sxevf_hw.h"
-#endif
-
-#if defined SXE_DPDK_L4_FEATURES && defined SXE_DPDK_SRIOV
-struct sxevf_adapter;
-#endif
 
 #define SXEVF_REG_READ_CNT 5
 
@@ -43,7 +39,6 @@ struct sxevf_adapter;
 #define SXEVF_REG_WRITE(hw, reg, value) sxevf_reg_write(hw, reg, value)
 #define SXEVF_WRITE_FLUSH(a) sxevf_reg_read(a, SXE_VFSTATUS)
 
-#ifndef SXE_DPDK
 void sxevf_hw_fault_handle(struct sxevf_hw *hw)
 {
 	struct sxevf_adapter *adapter = hw->adapter;
@@ -69,6 +64,9 @@ static void sxevf_hw_fault_check(struct sxevf_hw *hw, u32 reg)
 	struct sxevf_adapter *adapter = hw->adapter;
 	u8 i;
 
+	if (pci_channel_offline(adapter->pdev))
+		return;
+
 	if (reg == SXE_VFSTATUS) {
 		sxevf_hw_fault_handle(hw);
 		return;
@@ -85,7 +83,7 @@ static void sxevf_hw_fault_check(struct sxevf_hw *hw, u32 reg)
 
 	LOG_INFO_BDF("retry done i:%d value:0x%x\n", i, value);
 
-	if (value == SXEVF_REG_READ_FAIL)
+	if (value == SXEVF_REG_READ_FAIL && !pci_channel_offline(adapter->pdev))
 		sxevf_hw_fault_handle(hw);
 }
 
@@ -122,40 +120,6 @@ static void sxevf_reg_write(struct sxevf_hw *hw, u32 reg, u32 value)
 l_ret:
 	;
 }
-
-#else
-
-static u32 sxevf_reg_read(struct sxevf_hw *hw, u32 reg)
-{
-	u32 i, value;
-	u8 __iomem *base_addr = hw->reg_base_addr;
-
-	value = rte_le_to_cpu_32(rte_read32(base_addr + reg));
-	if (unlikely(value == SXEVF_REG_READ_FAIL)) {
-		for (i = 0; i < SXEVF_REG_READ_CNT; i++) {
-			LOG_ERROR("reg[0x%x] read failed, value=%#x\n", reg,
-				  value);
-			value = rte_le_to_cpu_32(rte_read32(base_addr + reg));
-			if (value != SXEVF_REG_READ_FAIL) {
-				LOG_INFO("reg[0x%x] read ok, value=%#x\n", reg,
-					 value);
-				break;
-			}
-
-			mdelay(3);
-		}
-	}
-
-	return value;
-}
-
-static void sxevf_reg_write(struct sxevf_hw *hw, u32 reg, u32 value)
-{
-	u8 __iomem *base_addr = hw->reg_base_addr;
-
-	rte_write32((rte_cpu_to_le_32(value)), (base_addr + reg));
-}
-#endif
 
 void sxevf_hw_stop(struct sxevf_hw *hw)
 {
@@ -673,29 +637,8 @@ static const struct sxevf_dma_operations sxevf_dma_ops = {
 	.rx_rcv_ctl_configure = sxevf_rx_rcv_ctl_configure,
 };
 
-#ifdef SXE_DPDK
-void sxevf_32bit_counter_update(struct sxevf_hw *hw,
-				u32 reg, u64 *last, u64 *cur)
-{
-	u32 latest = SXEVF_REG_READ(hw, reg);
-
-	*cur = (latest - *last) & UINT_MAX;
-	*last = latest;
-}
-
-void sxevf_36bit_counter_update(struct sxevf_hw *hw,
-				u32 lsb, u32 msb, u64 *last, u64 *cur)
-{
-	u64 new_lsb = SXEVF_REG_READ(hw, lsb);
-	u64 new_msb = SXEVF_REG_READ(hw, msb);
-	u64 latest = ((new_msb << 32) | new_lsb);
-
-	*cur += (0x1000000000LL + latest - *last) & 0xFFFFFFFFFLL;
-	*last = latest;
-}
-#else
-void sxevf_32bit_counter_update(struct sxevf_hw *hw,
-				u32 reg, u64 *last, u64 *cur)
+static void sxevf_32bit_counter_update(struct sxevf_hw *hw,
+				       u32 reg, u64 *last, u64 *cur)
 {
 	u32 current_counter = SXEVF_REG_READ(hw, reg);
 
@@ -707,8 +650,8 @@ void sxevf_32bit_counter_update(struct sxevf_hw *hw,
 	*cur |= current_counter;
 }
 
-void sxevf_36bit_counter_update(struct sxevf_hw *hw,
-				u32 lsb, u32 msb, u64 *last, u64 *cur)
+static void sxevf_36bit_counter_update(struct sxevf_hw *hw, u32 lsb,
+				       u32 msb, u64 *last, u64 *cur)
 {
 	u64 current_counter_lsb = SXEVF_REG_READ(hw, lsb);
 	u64 current_counter_msb = SXEVF_REG_READ(hw, msb);
@@ -721,7 +664,6 @@ void sxevf_36bit_counter_update(struct sxevf_hw *hw,
 	*cur &= 0xFFFFFFF000000000LL;
 	*cur |= current_counter;
 }
-#endif
 
 void sxevf_packet_stats_get(struct sxevf_hw *hw, struct sxevf_hw_stats *stats)
 {
@@ -790,184 +732,3 @@ void sxevf_hw_ops_init(struct sxevf_hw *hw)
 	hw->stat.ops = &sxevf_stat_ops;
 	hw->dbu.ops = &sxevf_dbu_ops;
 }
-
-#ifdef SXE_DPDK
-
-#define SXEVF_RSS_FIELD_MASK 0xffff0000
-#define SXEVF_MRQC_RSSEN  0x00000001
-
-#define SXEVF_RSS_KEY_SIZE (40)
-#define SXEVF_MAX_RSS_KEY_ENTRIES (10)
-#define SXEVF_MAX_RETA_ENTRIES (128)
-
-void sxevf_rxtx_reg_init(struct sxevf_hw *hw)
-{
-	int i;
-	u32 vfsrrctl;
-
-	vfsrrctl = 0x100 << SXEVF_SRRCTL_BSIZEHDRSIZE_SHIFT;
-	vfsrrctl |= 0x800 >> SXEVF_SRRCTL_BSIZEPKT_SHIFT;
-
-	SXEVF_REG_WRITE(hw, SXE_VFPSRTYPE, 0);
-
-	for (i = 0; i < 7; i++) {
-		SXEVF_REG_WRITE(hw, SXE_VFRDH(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFRDT(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFRXDCTL(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFSRRCTL(i), vfsrrctl);
-		SXEVF_REG_WRITE(hw, SXE_VFTDH(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFTDT(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFTXDCTL(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFTDWBAH(i), 0);
-		SXEVF_REG_WRITE(hw, SXE_VFTDWBAL(i), 0);
-	}
-
-	SXEVF_WRITE_FLUSH(hw);
-}
-
-u32 sxevf_irq_cause_get(struct sxevf_hw *hw)
-{
-	return SXEVF_REG_READ(hw, SXE_VFEICR);
-}
-
-void sxevf_tx_desc_configure(struct sxevf_hw *hw, u32 desc_mem_len,
-			     u64 desc_dma_addr, u8 reg_idx)
-{
-	SXEVF_REG_WRITE(hw, SXEVF_TDBAL(reg_idx),
-			(desc_dma_addr & DMA_BIT_MASK(32)));
-	SXEVF_REG_WRITE(hw, SXEVF_TDBAH(reg_idx), (desc_dma_addr >> 32));
-	SXEVF_REG_WRITE(hw, SXEVF_TDLEN(reg_idx), desc_mem_len);
-	SXEVF_REG_WRITE(hw, SXEVF_TDH(reg_idx), 0);
-	SXEVF_REG_WRITE(hw, SXEVF_TDT(reg_idx), 0);
-}
-
-void sxevf_rss_bit_num_set(struct sxevf_hw *hw, u32 value)
-{
-	SXEVF_REG_WRITE(hw, SXE_VFPSRTYPE, value);
-}
-
-void sxevf_hw_vlan_tag_strip_switch(struct sxevf_hw *hw, u16 reg_index,
-				    bool is_enable)
-{
-	u32 vlnctrl;
-
-	vlnctrl = SXEVF_REG_READ(hw, SXE_VFRXDCTL(reg_index));
-
-	if (is_enable)
-		vlnctrl |= SXEVF_RXDCTL_VME;
-	else
-		vlnctrl &= ~SXEVF_RXDCTL_VME;
-
-	SXEVF_REG_WRITE(hw, SXE_VFRXDCTL(reg_index), vlnctrl);
-}
-
-void sxevf_tx_queue_thresh_set(struct sxevf_hw *hw, u8 reg_idx,
-			       u32 prefech_thresh, u32 host_thresh, u32 wb_thresh)
-{
-	u32 txdctl = SXEVF_REG_READ(hw, SXEVF_TXDCTL(reg_idx));
-
-	txdctl |= (prefech_thresh & SXEVF_TXDCTL_THRESH_MASK);
-	txdctl |= ((host_thresh & SXEVF_TXDCTL_THRESH_MASK)
-		   << SXEVF_TXDCTL_HTHRESH_SHIFT);
-	txdctl |= ((wb_thresh & SXEVF_TXDCTL_THRESH_MASK)
-		   << SXEVF_TXDCTL_WTHRESH_SHIFT);
-
-	SXEVF_REG_WRITE(hw, SXEVF_TXDCTL(reg_idx), txdctl);
-}
-
-void sxevf_rx_desc_tail_set(struct sxevf_hw *hw, u8 reg_idx, u32 value)
-{
-	SXEVF_REG_WRITE(hw, SXE_VFRDT(reg_idx), value);
-}
-
-u32 sxevf_hw_rss_redir_tbl_get(struct sxevf_hw *hw, u16 reg_idx)
-{
-	return SXEVF_REG_READ(hw, SXE_VFRETA(reg_idx >> 2));
-}
-
-void sxevf_hw_rss_redir_tbl_set(struct sxevf_hw *hw, u16 reg_idx, u32 value)
-{
-	SXEVF_REG_WRITE(hw, SXE_VFRETA(reg_idx >> 2), value);
-}
-
-u32 sxevf_hw_rss_key_get(struct sxevf_hw *hw, u8 reg_idx)
-{
-	u32 rss_key;
-
-	if (reg_idx >= SXEVF_MAX_RSS_KEY_ENTRIES)
-		rss_key = 0;
-	else
-		rss_key = SXEVF_REG_READ(hw, SXE_VFRSSRK(reg_idx));
-
-	return rss_key;
-}
-
-u32 sxevf_hw_rss_field_get(struct sxevf_hw *hw)
-{
-	u32 mrqc = SXEVF_REG_READ(hw, SXE_VFMRQC);
-
-	return (mrqc & SXEVF_RSS_FIELD_MASK);
-}
-
-bool sxevf_hw_is_rss_enabled(struct sxevf_hw *hw)
-{
-	bool rss_enable = false;
-	u32 mrqc = SXEVF_REG_READ(hw, SXE_VFMRQC);
-
-	if (mrqc & SXEVF_MRQC_RSSEN)
-		rss_enable = true;
-
-	return rss_enable;
-}
-
-void sxevf_hw_rss_key_set_all(struct sxevf_hw *hw, u32 *rss_key)
-{
-	u32 i;
-
-	for (i = 0; i < SXEVF_MAX_RSS_KEY_ENTRIES; i++)
-		SXEVF_REG_WRITE(hw, SXE_VFRSSRK(i), rss_key[i]);
-}
-
-void sxevf_hw_rss_cap_switch(struct sxevf_hw *hw, bool is_on)
-{
-	u32 mrqc = SXEVF_REG_READ(hw, SXE_VFMRQC);
-
-	if (is_on)
-		mrqc |= SXEVF_MRQC_RSSEN;
-	else
-		mrqc &= ~SXEVF_MRQC_RSSEN;
-
-	SXEVF_REG_WRITE(hw, SXE_VFMRQC, mrqc);
-}
-
-void sxevf_hw_rss_field_set(struct sxevf_hw *hw, u32 rss_field)
-{
-	u32 mrqc = SXEVF_REG_READ(hw, SXE_VFMRQC);
-
-	mrqc &= ~SXEVF_RSS_FIELD_MASK;
-	mrqc |= rss_field;
-	SXEVF_REG_WRITE(hw, SXE_VFMRQC, mrqc);
-}
-
-u32 sxevf_hw_regs_group_read(struct sxevf_hw *hw,
-			     const struct sxevf_reg_info *regs, u32 *reg_buf)
-{
-	u32 j, i = 0;
-	int count = 0;
-
-	while (regs[i].count) {
-		for (j = 0; j < regs[i].count; j++) {
-			reg_buf[count + j] = SXEVF_REG_READ(hw,
-							    regs[i].addr + j * regs[i].stride);
-			LOG_INFO("regs= %s, regs_addr=%x, regs_value=%04x\n",
-				 regs[i].name, regs[i].addr, reg_buf[count + j]);
-		}
-
-		i++;
-		count += j;
-	}
-
-	return count;
-};
-
-#endif

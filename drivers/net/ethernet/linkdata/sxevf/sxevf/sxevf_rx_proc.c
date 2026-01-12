@@ -359,7 +359,7 @@ l_ret:
 	return ret;
 }
 
-void sxevf_rx_ring_buffers_alloc(struct sxevf_ring *rx_ring, u16 cleaned_count)
+static void sxevf_rx_ring_buffers_alloc(struct sxevf_ring *rx_ring, u16 cleaned_count)
 {
 	union sxevf_rx_data_desc *rx_desc;
 	struct sxevf_rx_buffer *rx_buffer;

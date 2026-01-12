@@ -814,6 +814,10 @@ static void sxe_rx_ring_reg_configure(struct sxe_adapter *adapter,
 	hw->dma.ops->rx_ring_desc_configure(hw, desc_mem_len, desc_dma_addr,
 					    reg_idx);
 
+#ifndef SXE_TPH_CONFIGURE
+	hw->dma.ops->rx_ro_enable(hw, reg_idx);
+#endif
+
 	ring->desc.tail = adapter->hw.reg_base_addr + SXE_RDT(reg_idx);
 
 #ifdef HAVE_AF_XDP_ZERO_COPY
@@ -1428,6 +1432,7 @@ static void sxe_tail_pull(struct sxe_ring *rx_ring, struct sk_buff *skb)
 	skb->tail += pull_len;
 }
 
+static
 bool sxe_headers_cleanup(struct sxe_ring *rx_ring,
 			 union sxe_rx_data_desc *rx_desc, struct sk_buff *skb)
 {
@@ -1440,7 +1445,7 @@ bool sxe_headers_cleanup(struct sxe_ring *rx_ring,
 
 	if (!skb_headlen(skb)) {
 		LOG_DEBUG("ring[%u] place header in linear portion in skb\n",
-			  rx_ring->idx);
+				rx_ring->idx);
 		sxe_tail_pull(rx_ring, skb);
 	}
 
@@ -1566,6 +1571,7 @@ static inline u32 sxe_rx_frame_truesize(struct sxe_ring *rx_ring, u32 size)
 	return truesize;
 }
 
+static
 void sxe_rx_buffer_page_offset_update(struct sxe_ring *rx_ring,
 				      struct sxe_rx_buffer *rx_buffer, u32 size)
 {
@@ -1729,8 +1735,13 @@ u32 sxe_rx_ring_irq_clean(struct sxe_irq_data *irq_data,
 	}
 
 #ifdef HAVE_XDP_SUPPORT
-	if (xdp_xmit & SXE_XDP_REDIR)
+	if (xdp_xmit & SXE_XDP_REDIR) {
+#ifdef HAVE_XDP_DO_FLUSH
+		xdp_do_flush();
+#else
 		xdp_do_flush_map();
+#endif
+	}
 
 	if (xdp_xmit & SXE_XDP_TX) {
 		struct sxe_ring *ring = sxe_xdp_tx_ring_pick(adapter);
