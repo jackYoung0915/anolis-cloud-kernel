@@ -77,7 +77,11 @@ struct sxevf_irq_data {
 	struct napi_struct napi;
 	struct rcu_head rcu;
 	s8 name[IFNAMSIZ + SXEVF_IRQ_NAME_EXT_LEN];
+#ifdef HAVE_REPLACE_ZERO_ARRAY_WITH_FLEXIBLE
+	struct sxevf_ring ring[] ____cacheline_internodealigned_in_smp;
+#else
 	struct sxevf_ring ring[0] ____cacheline_internodealigned_in_smp;
+#endif
 };
 
 struct sxevf_irq_context {

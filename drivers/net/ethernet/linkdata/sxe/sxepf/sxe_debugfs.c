@@ -15,6 +15,7 @@
 #include "sxe_netdev.h"
 #include "sxe_version.h"
 #include "sxe_phy.h"
+#include "sxe_debugfs.h"
 
 #define SXE_HW_STATS_LEN ARRAY_SIZE(hw_stats)
 
@@ -411,7 +412,7 @@ static ssize_t sxe_debugfs_sfp_info_read(struct file *filp, char __user *buffer,
 
 	ret = sxe_sfp_vendor_pn_cmp(sfp_vendor_pn);
 	if (!ret) {
-		LOG_DEV_WARN("an supported SFP module type was detected\n");
+		LOG_DEV_WARN("a supported SFP module type was detected\n");
 		goto l_end;
 	}
 

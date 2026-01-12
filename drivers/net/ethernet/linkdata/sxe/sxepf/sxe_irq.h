@@ -92,7 +92,11 @@ struct sxe_irq_data {
 	s32 numa_node;
 	struct rcu_head rcu;
 	s8 name[IFNAMSIZ + 16];
+#ifdef HAVE_REPLACE_ZERO_ARRAY_WITH_FLEXIBLE
+	struct sxe_ring ring[] ____cacheline_internodealigned_in_smp;
+#else
 	struct sxe_ring ring[0] ____cacheline_internodealigned_in_smp;
+#endif
 };
 
 struct sxe_irq_context {

@@ -85,7 +85,7 @@ void sxevf_tx_ring_buffer_clean(struct sxevf_ring *ring)
 	ring->next_to_clean = 0;
 }
 
-void sxevf_tx_ring_free(struct sxevf_ring *ring)
+static void sxevf_tx_ring_free(struct sxevf_ring *ring)
 {
 	sxevf_tx_ring_buffer_clean(ring);
 
@@ -124,7 +124,7 @@ static inline void sxevf_tx_buffer_init(struct sxevf_ring *ring)
 	       sizeof(struct sxevf_tx_buffer) * ring->depth);
 }
 
-s32 sxevf_tx_ring_alloc(struct sxevf_ring *ring)
+static s32 sxevf_tx_ring_alloc(struct sxevf_ring *ring)
 {
 	s32 ret;
 	u32 size = sizeof(struct sxevf_tx_buffer) * ring->depth;

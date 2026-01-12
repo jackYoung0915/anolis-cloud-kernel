@@ -29,6 +29,10 @@ extern struct workqueue_struct *sxe_fnav_workqueue;
 #define SXE_CHECK_LINK_TIMER_PERIOD (HZ / 10)
 #define SXE_NORMAL_TIMER_PERIOD (HZ * 2)
 
+#define SXE_DELAY_TIME_3 (3)
+#define SXE_DELAY_TIME_6 (6)
+static u8 sxe_delay_time = SXE_DELAY_TIME_3;
+
 #ifdef SXE_SFP_DEBUG
 static unsigned int sw_sfp_multi_gb_ms = SXE_SW_SFP_MULTI_GB_MS;
 #ifndef SXE_TEST
@@ -40,15 +44,24 @@ MODULE_PARM_DESC(sw_sfp_multi_gb_ms,
 
 void sxe_task_timer_trigger(struct sxe_adapter *adapter)
 {
+	u8 wait_time = 0;
+
 	set_bit(SXE_LINK_CHECK_REQUESTED, &adapter->monitor_ctxt.state);
 	LOG_DEBUG_BDF("trigger link_check subtask, state=%lx,\n"
 		      "\tmonitor_state=%lx, is_up=%d\n",
 		      adapter->state, adapter->monitor_ctxt.state,
 		      adapter->link.is_up);
 
-	adapter->link.check_timeout = jiffies;
+	if (adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.los_block_flag &&
+	    adapter->phy_ctxt.sfp_info.slow_skip) {
+		wait_time = sxe_delay_time;
+		sxe_delay_time += SXE_DELAY_TIME_3;
+		if (sxe_delay_time > SXE_DELAY_TIME_6)
+			sxe_delay_time = SXE_DELAY_TIME_3;
+	}
 
-	mod_timer(&adapter->monitor_ctxt.timer, jiffies);
+	adapter->link.check_timeout = jiffies + wait_time * HZ;
+	mod_timer(&adapter->monitor_ctxt.timer, jiffies + wait_time * HZ);
 }
 
 void sxe_sfp_reset_task_submit(struct sxe_adapter *adapter)
@@ -57,7 +70,8 @@ void sxe_sfp_reset_task_submit(struct sxe_adapter *adapter)
 	LOG_INFO("trigger sfp_reset subtask\n");
 	adapter->link.sfp_reset_timeout = 0;
 	adapter->link.last_lkcfg_time = 0;
-	adapter->link.sfp_multispeed_time = 0;
+	adapter->link.sfp_los_disable_timeout = 0;
+	adapter->link.link_quirks_timeout = 0;
 }
 
 void sxe_monitor_work_schedule(struct sxe_adapter *adapter)
@@ -68,6 +82,12 @@ void sxe_monitor_work_schedule(struct sxe_adapter *adapter)
 	    !test_bit(SXE_REMOVING, &adapter->state) &&
 	    !test_and_set_bit(SXE_MONITOR_WORK_SCHED,
 			      &adapter->monitor_ctxt.state)) {
+		if (adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.los_block_flag &&
+		    adapter->phy_ctxt.sfp_info.slow_skip) {
+			clear_bit(SXE_MONITOR_WORK_SCHED, &adapter->monitor_ctxt.state);
+			return;
+		}
+
 		queue_work(wq, &adapter->monitor_ctxt.work);
 	}
 }
@@ -81,13 +101,17 @@ static void sxe_timer_cb(struct timer_list *timer)
 	unsigned long period;
 
 	if (test_bit(SXE_LINK_CHECK_REQUESTED, &adapter->monitor_ctxt.state) ||
-	    test_bit(SXE_SFP_MULTI_SPEED_SETTING, &adapter->state)) {
+		test_bit(SXE_SFP_LOS_DISABLED, &adapter->state)) {
 		period = SXE_CHECK_LINK_TIMER_PERIOD;
 	} else {
 		period = SXE_NORMAL_TIMER_PERIOD;
 	}
 
 	mod_timer(&adapter->monitor_ctxt.timer, period + jiffies);
+
+	if (adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.los_block_flag &&
+	    adapter->phy_ctxt.sfp_info.slow_skip)
+		adapter->phy_ctxt.sfp_info.slow_skip = false;
 
 	sxe_monitor_work_schedule(adapter);
 }
@@ -224,8 +248,12 @@ static void sxe_link_update(struct sxe_adapter *adapter)
 	LOG_DEBUG_BDF("link update, speed=%x, is_up=%d\n", adapter->link.speed,
 		      adapter->link.is_up);
 
-	if (adapter->link.is_up)
+	if (adapter->link.is_up) {
 		sxe_vmac_configure(adapter);
+		clear_bit(SXE_SFP_MULTI_SPEED_QUIRKS, &adapter->state);
+		if (!(adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.disable_los_wait_timeout))
+			clear_bit(SXE_SFP_LOS_DISABLED, &adapter->state);
+	}
 
 	if (adapter->link.is_up ||
 	    time_after(jiffies, (adapter->link.check_timeout +
@@ -487,6 +515,9 @@ static void sxe_sfp_reset_work(struct sxe_adapter *adapter)
 
 	clear_bit(SXE_SFP_NEED_RESET, &monitor->state);
 
+	clear_bit(SXE_SFP_LOS_DISABLED, &adapter->state);
+	clear_bit(SXE_SFP_MULTI_SPEED_QUIRKS, &adapter->state);
+
 	set_bit(SXE_LINK_NEED_CONFIG, &monitor->state);
 	LOG_MSG_INFO(probe, "SFP+ reset done, trigger link_config subtask\n");
 
@@ -506,6 +537,58 @@ l_end:
 	;
 }
 
+static void sxe_sfp_out_work(struct sxe_adapter *adapter)
+{
+	struct sxe_monitor_context *monitor = &adapter->monitor_ctxt;
+	struct net_device *netdev = adapter->netdev;
+
+	if (!test_bit(SXE_SFP_NEED_DOWN, &monitor->state))
+		return;
+
+	adapter->link.is_up = false;
+	adapter->link.speed = 0;
+
+	carrier_lock(adapter);
+	if (test_bit(SXE_DOWN, &adapter->state) ||
+	    test_bit(SXE_REMOVING, &adapter->state) ||
+	    test_bit(SXE_RESETTING, &adapter->state)) {
+		carrier_unlock(adapter);
+		goto l_end;
+	}
+
+	if (netif_carrier_ok(netdev)) {
+		LOG_MSG_WARN(drv, "nic link is down\n");
+		netif_carrier_off(netdev);
+		sxe_link_update_notify_vf_all(adapter);
+	} else {
+		carrier_unlock(adapter);
+		goto l_end;
+	}
+
+	if (sxe_tx_ring_pending(adapter) || sxe_vf_tx_pending(adapter)) {
+		LOG_MSG_WARN(drv, "initiating reset to clear Tx work after link loss\n");
+		set_bit(SXE_RESET_REQUESTED, &adapter->monitor_ctxt.state);
+	}
+	carrier_unlock(adapter);
+
+	LOG_DEBUG("sfp is out, set dev down\n");
+l_end:
+	clear_bit(SXE_SFP_NEED_DOWN, &monitor->state);
+}
+
+unsigned long sxe_los_disable_timeout_get(void)
+{
+	unsigned long timeout;
+
+#ifdef SXE_SFP_DEBUG
+	timeout = ((HZ * sw_sfp_multi_gb_ms) / SXE_HZ_TRANSTO_MS);
+#else
+	timeout = ((HZ * SXE_SW_SFP_MULTI_GB_MS) / SXE_HZ_TRANSTO_MS);
+#endif
+
+	return timeout;
+}
+
 static void sxe_sfp_link_config_work(struct sxe_adapter *adapter)
 {
 	s32 ret;
@@ -513,18 +596,16 @@ static void sxe_sfp_link_config_work(struct sxe_adapter *adapter)
 	bool autoneg;
 	struct sxe_monitor_context *monitor = &adapter->monitor_ctxt;
 
-	if (time_after(jiffies, adapter->link.sfp_multispeed_time +
-#ifdef SXE_SFP_DEBUG
-			       (HZ * sw_sfp_multi_gb_ms) / SXE_HZ_TRANSTO_MS)) {
-#else
-			       (HZ * SXE_SW_SFP_MULTI_GB_MS) /
-				       SXE_HZ_TRANSTO_MS)) {
-#endif
-		clear_bit(SXE_SFP_MULTI_SPEED_SETTING, &adapter->state);
-	}
-
 	if (test_and_set_bit(SXE_IN_SFP_INIT, &adapter->state))
 		goto l_sfp_end;
+
+	if (test_bit(SXE_SFP_MULTI_SPEED_QUIRKS, &adapter->state)) {
+		ret = sxe_link_multispeed_quirks_configure(adapter);
+		if (ret)
+			goto l_sfp_end;
+
+		goto l_quirks_out;
+	}
 
 	if (!test_bit(SXE_LINK_NEED_CONFIG, &monitor->state))
 		goto l_sfp_uninit;
@@ -539,6 +620,7 @@ static void sxe_sfp_link_config_work(struct sxe_adapter *adapter)
 
 	clear_bit(SXE_LINK_NEED_CONFIG, &monitor->state);
 
+l_quirks_out:
 	set_bit(SXE_LINK_CHECK_REQUESTED, &monitor->state);
 	LOG_DEBUG("link_config subtask done, trigger link_check subtask\n");
 	adapter->link.check_timeout = jiffies;
@@ -547,7 +629,8 @@ l_sfp_uninit:
 	clear_bit(SXE_IN_SFP_INIT, &adapter->state);
 
 l_sfp_end:
-	;
+	if (time_after(jiffies, adapter->link.sfp_los_disable_timeout))
+		clear_bit(SXE_SFP_LOS_DISABLED, &adapter->state);
 }
 
 static void sxe_fc_tx_xoff_check(struct sxe_adapter *adapter)
@@ -639,6 +722,7 @@ void sxe_work_cb(struct work_struct *work)
 	sxe_sfp_link_config_work(adapter);
 
 	sxe_detect_link_work(adapter);
+	sxe_sfp_out_work(adapter);
 
 	sxe_stats_update_work(adapter);
 	sxe_tx_xoff_check_work(adapter);
