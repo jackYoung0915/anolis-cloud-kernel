@@ -16,7 +16,7 @@
 #include <linux/types.h>
 #endif
 
-#define HDC_CACHE_TOTAL_LEN (16 * 1024)
+#define HDC_CACHE_TOTAL_LEN (13 * 1024)
 #define ONE_PACKET_LEN_MAX (1024)
 #define DWORD_NUM (256)
 #define HDC_TRANS_RETRY_COUNT (3)
@@ -44,5 +44,4 @@ union hdcheader {
 	} head;
 	u32 dw0;
 };
-
 #endif
