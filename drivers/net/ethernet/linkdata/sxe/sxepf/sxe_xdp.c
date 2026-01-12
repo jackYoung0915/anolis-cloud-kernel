@@ -407,7 +407,7 @@ static void sxe_txrx_ring_disable(struct sxe_adapter *adapter, u32 ring_idx)
 	sxe_rx_ring_stats_reset(rx_ring);
 }
 
-void sxe_txrx_ring_enable(struct sxe_adapter *adapter, u32 ring_idx)
+static void sxe_txrx_ring_enable(struct sxe_adapter *adapter, u32 ring_idx)
 {
 	struct sxe_ring *rx_ring, *tx_ring, *xdp_ring;
 
@@ -869,9 +869,14 @@ static struct sk_buff *sxe_zc_skb_construct(struct sxe_ring *rx_ring,
 	u32 datasize = xdp->data_end - xdp->data;
 	struct sk_buff *skb;
 
+#ifdef NEED_NAPI_SKB_ALLOC
+	skb = napi_alloc_skb(&rx_ring->irq_data->napi,
+			     xdp->data_end - xdp->data_hard_start);
+#else
 	skb = __napi_alloc_skb(&rx_ring->irq_data->napi,
 			       xdp->data_end - xdp->data_hard_start,
 			       GFP_ATOMIC | __GFP_NOWARN);
+#endif
 	if (unlikely(!skb)) {
 		LOG_ERROR("[xdp] zc skb alloc failed\n");
 		goto l_ret;
@@ -1058,7 +1063,11 @@ int sxe_zc_rx_ring_irq_clean(struct sxe_irq_data *irq_data,
 
 	if (xdp_xmit & SXE_XDP_REDIR) {
 		LOG_DEBUG_BDF("ring[%u] do xdp redir\n", rx_ring->idx);
+#ifdef HAVE_XDP_DO_FLUSH
+		xdp_do_flush();
+#else
 		xdp_do_flush_map();
+#endif
 	}
 
 	if (xdp_xmit & SXE_XDP_TX) {
