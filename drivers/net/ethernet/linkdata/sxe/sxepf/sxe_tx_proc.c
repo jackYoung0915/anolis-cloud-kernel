@@ -316,6 +316,10 @@ void sxe_tx_ring_reg_configure(struct sxe_adapter *adapter,
 					    reg_idx);
 	ring->desc.tail = adapter->hw.reg_base_addr + SXE_TDT(reg_idx);
 
+#ifndef SXE_TPH_CONFIGURE
+	hw->dma.ops->tx_ro_enable(hw, reg_idx);
+#endif
+
 	if (!ring->irq_data ||
 	    ring->irq_data->irq_interval < SXE_IRQ_ITR_100K) {
 		if (adapter->irq_ctxt.rx_irq_interval)

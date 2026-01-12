@@ -73,6 +73,7 @@ void sxe_reset(struct sxe_adapter *adapter)
 
 	clear_bit(SXE_SFP_NEED_RESET, &adapter->monitor_ctxt.state);
 	clear_bit(SXE_LINK_NEED_CONFIG, &adapter->monitor_ctxt.state);
+	clear_bit(SXE_SFP_NEED_DOWN, &adapter->monitor_ctxt.state);
 
 	ret = sxe_hw_reset(adapter);
 	if (ret < 0)
@@ -973,6 +974,33 @@ static void sxe_hw_stats_update(struct sxe_adapter *adapter)
 	netdev->stats.rx_missed_errors = total_mpc;
 }
 
+static void sxe_rx_stats_sync_fw(struct sxe_adapter *adapter)
+{
+	s32 ret;
+	struct sxe_port_stats rep;
+	struct sxe_driver_cmd cmd;
+	struct sxe_hw *hw = &adapter->hw;
+	struct net_device *netdev = adapter->netdev;
+
+	rep.rx_packets = netdev->stats.rx_packets;
+	rep.rx_drops = netdev->stats.rx_dropped;
+	rep.rx_errors = netdev->stats.rx_errors;
+	rep.rx_crc_errors = netdev->stats.rx_crc_errors;
+
+	cmd.req = &rep;
+	cmd.req_len = sizeof(rep);
+	cmd.resp = NULL;
+	cmd.resp_len = 0;
+	cmd.trace_id = 0;
+	cmd.opcode = SXE_CMD_PORT_STATS;
+	cmd.is_interruptible = true;
+	ret = sxe_driver_cmd_trans(hw, &cmd);
+	if (ret)
+		LOG_ERROR_BDF("rx stats sync fw failed, ret=%d\n", ret);
+	else
+		LOG_DEBUG_BDF("rx stats sync fw success\n");
+}
+
 void sxe_stats_update(struct sxe_adapter *adapter)
 {
 	if (test_bit(SXE_DOWN, &adapter->state) ||
@@ -984,6 +1012,8 @@ void sxe_stats_update(struct sxe_adapter *adapter)
 	sxe_tx_stats_update(adapter);
 
 	sxe_hw_stats_update(adapter);
+
+	sxe_rx_stats_sync_fw(adapter);
 
 l_end:
 	;
@@ -1909,7 +1939,7 @@ static void sxe_netdev_feature_init(struct net_device *netdev)
 static void sxe_netdev_name_init(struct net_device *netdev,
 				 struct pci_dev *pdev)
 {
-	strscpy(netdev->name, pci_name(pdev), sizeof(netdev->name));
+	SXE_STRCPY(netdev->name, pci_name(pdev), sizeof(netdev->name));
 }
 
 #ifndef NO_NETDEVICE_MIN_MAX_MTU

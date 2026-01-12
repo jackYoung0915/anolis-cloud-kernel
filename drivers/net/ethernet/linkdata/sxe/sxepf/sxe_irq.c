@@ -56,6 +56,9 @@ static inline void netif_napi_add_compat(struct net_device *dev,
 	netif_napi_add(dev, napi, poll);
 }
 
+#ifdef netif_napi_add
+#undef netif_napi_add
+#endif
 #define netif_napi_add(dev, napi, poll, weight)                                \
 	netif_napi_add_compat(dev, napi, poll, weight)
 #endif
@@ -133,7 +136,7 @@ static void sxe_irq_num_reinit(struct sxe_adapter *adapter)
 		 adapter->irq_ctxt.ring_irq_num);
 }
 
-int sxe_msi_irq_init(struct sxe_adapter *adapter)
+static int sxe_msi_irq_init(struct sxe_adapter *adapter)
 {
 	int ret;
 
@@ -179,7 +182,7 @@ l_out:
 	return ret;
 }
 
-void sxe_disable_dcb(struct sxe_adapter *adapter)
+static void sxe_disable_dcb(struct sxe_adapter *adapter)
 {
 	if (sxe_dcb_tc_get(adapter) > 1) {
 		LOG_DEV_WARN("number of DCB TCs exceeds number of available queues.\n"
@@ -209,7 +212,7 @@ static int sxe_disable_sriov(struct sxe_adapter *adapter)
 	return 0;
 }
 
-void sxe_disable_rss(struct sxe_adapter *adapter)
+static void sxe_disable_rss(struct sxe_adapter *adapter)
 {
 	LOG_DEV_WARN("disabling RSS support.\n");
 
@@ -628,6 +631,9 @@ void sxe_irq_release(struct sxe_adapter *adapter)
 	u16 irq_idx;
 	struct sxe_irq_context *irq_ctxt = &adapter->irq_ctxt;
 
+	if (!test_bit(SXE_IRQ_REQUESTED, &adapter->state))
+		return;
+
 	if (!irq_ctxt->ring_irq_num)
 		goto l_out;
 
@@ -656,6 +662,7 @@ void sxe_irq_release(struct sxe_adapter *adapter)
 	free_irq(irq_ctxt->msix_entries[irq_idx].vector, adapter);
 
 l_out:
+	clear_bit(SXE_IRQ_REQUESTED, &adapter->state);
 	LOG_INFO_BDF("adapter cap:0x%x ring_irq_num:%u irq unregister done.",
 		     adapter->cap, irq_ctxt->ring_irq_num);
 }
@@ -726,7 +733,7 @@ static irqreturn_t sxe_msix_ring_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-void sxe_lsc_irq_handler(struct sxe_adapter *adapter)
+static void sxe_lsc_irq_handler(struct sxe_adapter *adapter)
 {
 	struct sxe_hw *hw = &adapter->hw;
 
@@ -742,7 +749,7 @@ void sxe_lsc_irq_handler(struct sxe_adapter *adapter)
 	}
 }
 
-void sxe_mailbox_irq_handler(struct sxe_adapter *adapter)
+static void sxe_mailbox_irq_handler(struct sxe_adapter *adapter)
 {
 	struct sxe_hw *hw = &adapter->hw;
 	unsigned long flags;
@@ -802,28 +809,30 @@ static void sxe_sfp_irq_handler(struct sxe_adapter *adapter, u32 eicr)
 		hw->irq.ops->pending_irq_write_clear(hw, SXE_EICR_GPI_SPP2);
 		if (!test_bit(SXE_DOWN, &adapter->state)) {
 			state = hw->irq.ops->spp_state_get(hw);
-			if (!(state & SXE_SPP2_STATE)) {
+			if (!(state & SXE_SFP_STATE_PRESENT)) {
 				hw->irq.ops->rx_los_disable(hw);
 
 				hw->irq.ops->spp_configure(&adapter->hw, SXE_SPP_PROC_DELAY_US);
 				adapter->phy_ctxt.sfp_info.inserted = false;
+				set_bit(SXE_SFP_NEED_DOWN, &adapter->monitor_ctxt.state);
 				LOG_INFO_BDF("sfp is extracted, disable rxlos,\n"
 					     "\tspp_configure is default 7us\n");
 			} else {
+				clear_bit(SXE_SFP_NEED_DOWN, &adapter->monitor_ctxt.state);
 				set_bit(SXE_SFP_NEED_RESET,
 					&adapter->monitor_ctxt.state);
 				adapter->link.sfp_reset_timeout = 0;
 				LOG_DEV_WARN("sfp is inserted into slot,\n"
 					     "\ttrigger sfp_reset subtask\n");
-				sxe_monitor_work_schedule(adapter);
 			}
+			sxe_monitor_work_schedule(adapter);
 		}
 	}
 
 	if (eicr & SXE_EICR_GPI_SPP1) {
 		hw->irq.ops->pending_irq_write_clear(hw, SXE_EICR_GPI_SPP1);
 		if (!test_bit(SXE_DOWN, &adapter->state) &&
-		    !test_bit(SXE_SFP_MULTI_SPEED_SETTING, &adapter->state)) {
+			!test_bit(SXE_SFP_LOS_DISABLED, &adapter->state)) {
 			if (time_after(jiffies, adapter->link.last_lkcfg_time +
 #ifdef SXE_SFP_DEBUG
 					   (HZ * sw_sfp_los_delay_ms) / SXE_HZ_TRANSTO_MS)) {
@@ -1119,8 +1128,13 @@ void sxe_hw_irq_configure(struct sxe_adapter *adapter)
 	else
 		sxe_configure_non_msix_hw(adapter);
 
-	if (adapter->phy_ctxt.ops->sfp_tx_laser_enable)
-		adapter->phy_ctxt.ops->sfp_tx_laser_enable(adapter);
+	if (adapter->phy_ctxt.ops->sfp_tx_laser_enable) {
+		if (adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.los_block_flag &&
+		    adapter->phy_ctxt.sfp_info.slow_skip)
+			LOG_INFO("The sfp do not need to laser enable\n");
+		else
+			adapter->phy_ctxt.ops->sfp_tx_laser_enable(adapter);
+	}
 
 	/* in order to force CPU ordering */
 	smp_mb__before_atomic();
@@ -1154,6 +1168,8 @@ int sxe_irq_configure(struct sxe_adapter *adapter)
 	}
 
 	sxe_hw_irq_configure(adapter);
+
+	set_bit(SXE_IRQ_REQUESTED, &adapter->state);
 
 l_out:
 	return ret;

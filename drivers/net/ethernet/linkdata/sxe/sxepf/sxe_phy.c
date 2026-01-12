@@ -17,9 +17,17 @@
 #include "sxe_version.h"
 #include "sxe_host_hdc.h"
 #include "sxe_errno.h"
+#include "sxe_phy.h"
+
+#define SXE_10G_WAIT_4_TIME (4)
+#define SXE_10G_WAIT_5_TIME (5)
+#define SXE_1G_WAIT_1_TIME (1)
+#define SXE_SFP_LOS_FILTER_DELAY_1_US (1)
+#define SXE_SINGLE_SFP_WAIT_TIME_DFLT (0)
+#define SXE_SINGLE_SFP_WAIT_TIME_5 (5)
 
 #define SXE_COMPAT_SFP_NUM ARRAY_SIZE(sfp_vendor_pn_list)
-#define SXE_COMPAT_SFP_AOC_NUM ARRAY_SIZE(sfp_aoc_vendor_pn_list)
+#define SXE_COMPAT_SFP_QUIRK_LIST_NUM ARRAY_SIZE(sfp_quirk_info_list)
 
 static u8 sfp_vendor_pn_list[][SXE_SFP_VENDOR_PN_SIZE] = {
 	{0x58, 0x50, 0x2d, 0x33, 0x47, 0x31, 0x30, 0x2d,
@@ -96,14 +104,87 @@ static u8 sfp_vendor_pn_list[][SXE_SFP_VENDOR_PN_SIZE] = {
 
 	{0x47, 0x53, 0x53, 0x2d, 0x4d, 0x44, 0x4f, 0x31,
 		0x30, 0x30, 0x2d, 0x30, 0x30, 0x37, 0x43, 0x20},
+
+	{0x4c, 0x54, 0x46, 0x31, 0x33, 0x30, 0x35, 0x2d,
+		0x42, 0x43, 0x2b, 0x20, 0x20, 0x20, 0x20, 0x20},
 };
 
-static u8 sfp_aoc_vendor_pn_list[][SXE_SFP_VENDOR_PN_SIZE] = {
-	{0x47, 0x53, 0x53, 0x2d, 0x4d, 0x44, 0x4f, 0x31,
-		0x30, 0x30, 0x2d, 0x30, 0x30, 0x37, 0x43, 0x20},
+static struct sxe_sfp_link_cfg sfp_link_cfg_default = {
+	.filter_time = SXE_SPP_PROC_DELAY_US,
+	.waitloop10g_fir = SXE_10G_WAIT_5_TIME,
+	.waitloop10g_sec = SXE_10G_WAIT_5_TIME,
+	.waitloop1g = SXE_1G_WAIT_1_TIME,
+	.waitloop_single_spd = SXE_SINGLE_SFP_WAIT_TIME_DFLT,
+	.los_block_flag = false,
+	.disable_los_wait_timeout = false,
+};
 
-	{0x49, 0x4e, 0x2d, 0x53, 0x50, 0x31, 0x30, 0x31,
-		0x53, 0x52, 0x4c, 0x43, 0x20, 0x20, 0x20, 0x20},
+static struct sxe_sfp_quirk sfp_quirk_info_list[] = {
+	{
+		.vendor_name = {0x46, 0x41, 0x53, 0x54, 0x50, 0x48, 0x4f, 0x54,
+				0x4f, 0x4e, 0x49, 0x43, 0x53, 0x20, 0x20, 0x20},
+		.vendor_pn = {0x53, 0x50, 0x4c, 0x5a, 0x2d, 0x38, 0x35, 0x53,
+				0x52, 0x43, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.filter_time = SXE_SPP_PROC_DELAY_US,
+		.waitloop10g_fir = SXE_10G_WAIT_4_TIME,
+		.waitloop10g_sec = SXE_10G_WAIT_4_TIME,
+		.waitloop1g = SXE_1G_WAIT_1_TIME,
+		.waitloop_single_spd = SXE_SINGLE_SFP_WAIT_TIME_DFLT,
+		.los_block_flag = true,
+		.disable_los_wait_timeout = false,
+	},
+	{
+		.vendor_name = {0x53, 0x4f, 0x4e, 0x54, 0x20, 0x20, 0x20, 0x20,
+				0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.vendor_pn = {0x58, 0x50, 0x2d, 0x38, 0x47, 0x31, 0x30, 0x2d,
+				0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.filter_time = SXE_SFP_LOS_FILTER_DELAY_1_US,
+		.waitloop10g_fir = SXE_10G_WAIT_5_TIME,
+		.waitloop10g_sec = SXE_10G_WAIT_5_TIME,
+		.waitloop1g = SXE_1G_WAIT_1_TIME,
+		.waitloop_single_spd = SXE_SINGLE_SFP_WAIT_TIME_DFLT,
+		.los_block_flag = true,
+		.disable_los_wait_timeout = true,
+	},
+	{
+		.vendor_name = {0x47, 0x69, 0x67, 0x61, 0x6c, 0x69, 0x67, 0x68,
+				0x74, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.vendor_pn = {0x47, 0x53, 0x53, 0x2d, 0x4d, 0x44, 0x4f, 0x31,
+				0x30, 0x30, 0x2d, 0x30, 0x30, 0x37, 0x43, 0x20},
+		.filter_time = SXE_SPP_PROC_DELAY_MS,
+		.waitloop10g_fir = SXE_10G_WAIT_5_TIME,
+		.waitloop10g_sec = SXE_10G_WAIT_5_TIME,
+		.waitloop1g = SXE_1G_WAIT_1_TIME,
+		.waitloop_single_spd = SXE_SINGLE_SFP_WAIT_TIME_DFLT,
+		.los_block_flag = false,
+		.disable_los_wait_timeout = false,
+	},
+	{
+		.vendor_name = {0x49, 0x4e, 0x53, 0x50, 0x55, 0x52, 0x20, 0x20,
+				0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.vendor_pn = {0x49, 0x4e, 0x2d, 0x53, 0x50, 0x31, 0x30, 0x31,
+				0x53, 0x52, 0x4c, 0x43, 0x20, 0x20, 0x20, 0x20},
+		.filter_time = SXE_SPP_PROC_DELAY_MS,
+		.waitloop10g_fir = SXE_10G_WAIT_5_TIME,
+		.waitloop10g_sec = SXE_10G_WAIT_5_TIME,
+		.waitloop1g = SXE_1G_WAIT_1_TIME,
+		.waitloop_single_spd = SXE_SINGLE_SFP_WAIT_TIME_DFLT,
+		.los_block_flag = false,
+		.disable_los_wait_timeout = false,
+	},
+	{
+		.vendor_name = {0x59, 0x69, 0x20, 0x56, 0x61, 0x6c, 0x6c, 0x65,
+				0x79, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.vendor_pn = {0x59, 0x56, 0x30, 0x32, 0x2d, 0x43, 0x30, 0x31,
+				0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20},
+		.filter_time = SXE_SPP_PROC_DELAY_US,
+		.waitloop10g_fir = SXE_10G_WAIT_5_TIME,
+		.waitloop10g_sec = SXE_10G_WAIT_5_TIME,
+		.waitloop1g = SXE_1G_WAIT_1_TIME,
+		.waitloop_single_spd = SXE_SINGLE_SFP_WAIT_TIME_5,
+		.los_block_flag = false,
+		.disable_los_wait_timeout = false,
+	},
 };
 
 #ifdef SXE_PHY_CONFIGURE
@@ -730,46 +811,181 @@ l_end:
 	return ret;
 }
 
-s32 sxe_multispeed_sfp_link_configure(struct sxe_adapter *adapter, u32 speed)
+static s32 sxe_link_multispeed_to_10g(struct sxe_adapter *adapter)
+{
+	s32 ret;
+	u32 max_frame = sxe_sw_mtu_get(adapter);
+
+	ret = sxe_sfp_rate_select(adapter, SXE_SFP_RATE_10G);
+	if (ret) {
+		LOG_ERROR_BDF("set sfp rate failed, ret=%d\n", ret);
+		goto l_end;
+	}
+
+	msleep(SXE_RATE_SEL_WAIT);
+
+	ret = sxe_pcs_sds_init(adapter, SXE_PCS_MODE_10GBASE_KR_WO, max_frame);
+	if (ret)
+		LOG_ERROR_BDF("set pcs sds to 10g failed, ret=%d\n", ret);
+
+l_end:
+	return ret;
+}
+
+static s32 sxe_link_multispeed_to_1g(struct sxe_adapter *adapter)
+{
+	s32 ret;
+	u32 max_frame = sxe_sw_mtu_get(adapter);
+
+	ret = sxe_sfp_rate_select(adapter, SXE_SFP_RATE_1G);
+	if (ret) {
+		LOG_ERROR_BDF("set sfp rate failed, ret=%d\n", ret);
+		goto l_end;
+	}
+
+	msleep(SXE_RATE_SEL_WAIT);
+
+	ret = sxe_pcs_sds_init(adapter, SXE_PCS_MODE_1000BASE_KX_W,
+			       max_frame);
+	if (ret)
+		LOG_ERROR_BDF("set pcs sds to 1g failed, ret=%d\n", ret);
+
+l_end:
+	return ret;
+}
+
+s32 sxe_link_multispeed_quirks_configure(struct sxe_adapter *adapter)
+{
+	s32 ret = 0;
+	bool link_up;
+	u32 link_speed, retry_cnt, i;
+	struct sxe_hw *hw = &adapter->hw;
+	struct sxe_sfp_info *sfp = &adapter->phy_ctxt.sfp_info;
+
+	LOG_WARN_BDF("quirks 10G link check...\n");
+
+	sxe_link_info_get(adapter, &link_speed, &link_up);
+	if (link_up) {
+		LOG_INFO_BDF("link cfg end, link up, speed is 10G\n");
+		goto l_link_up;
+	}
+
+	if (time_after(jiffies, adapter->link.link_quirks_timeout)) {
+		LOG_WARN_BDF("quirks 10G link cfg failed, start 1g cfg\n");
+
+		ret = sxe_link_multispeed_to_1g(adapter);
+		if (ret) {
+			LOG_INFO_BDF("link cfg 1g failed, ret=%d\n", ret);
+			goto l_end;
+		}
+
+		retry_cnt = sfp->sfp_link_cfg_info.waitloop1g;
+		for (i = 0; i < retry_cnt; i++) {
+			msleep(SXE_SFP_RESET_WAIT);
+
+			link_up = hw->mac.ops->link_up_1g_check(hw);
+			if (link_up) {
+				LOG_INFO_BDF("link cfg end, link up, speed is 1G\n");
+				goto l_link_up;
+			}
+		}
+
+		LOG_WARN_BDF("quirks 1G link cfg failed, retry...\n");
+
+		ret = sxe_link_multispeed_to_10g(adapter);
+		if (ret)
+			LOG_INFO_BDF("link cfg 10g failed, ret=%d\n", ret);
+
+		LOG_WARN_BDF("quirks 10G link cfg...\n");
+	} else {
+		goto l_end;
+	}
+
+l_link_up:
+	clear_bit(SXE_SFP_LOS_DISABLED, &adapter->state);
+	clear_bit(SXE_SFP_MULTI_SPEED_QUIRKS, &adapter->state);
+	adapter->phy_ctxt.autoneg_advertised = 0;
+	adapter->phy_ctxt.autoneg_advertised |= SXE_LINK_SPEED_10GB_FULL |
+						SXE_LINK_SPEED_1GB_FULL;
+
+l_end:
+	return ret;
+}
+
+static s32 sxe_link_multispeed_quirks_trigger(struct sxe_adapter *adapter)
+{
+	s32 ret = 0;
+	bool link_up;
+	u32 i, link_speed, retry_cnt;
+	struct sxe_sfp_info *sfp = &adapter->phy_ctxt.sfp_info;
+
+	LOG_INFO_BDF("10G link cfg start\n");
+	ret = sxe_link_multispeed_to_10g(adapter);
+	if (ret) {
+		LOG_ERROR_BDF("link cfg 10g failed, ret=%d\n", ret);
+		goto l_end;
+	}
+
+	retry_cnt = sfp->sfp_link_cfg_info.waitloop10g_sec;
+	for (i = 0; i < retry_cnt; i++) {
+		msleep(SXE_LINK_UP_RETRY_ITR);
+
+		sxe_link_info_get(adapter, &link_speed, &link_up);
+		if (link_up) {
+			LOG_INFO_BDF("link cfg end, link up, speed is 10G\n");
+			goto l_end;
+		}
+	}
+
+	LOG_WARN_BDF("10G link cfg failed, retry...\n");
+
+	if (!adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.los_block_flag)
+		goto l_end;
+
+	LOG_WARN_BDF("mutispeed quirks trigger\n");
+
+	adapter->link.link_quirks_timeout = jiffies +
+				(SXE_MUTISPEED_QUIRKS_TIMEOUT_S * HZ);
+	adapter->link.sfp_los_disable_timeout = jiffies +
+			(SXE_QUIRKS_LOS_BLOCK_TIMEOUT_S * HZ);
+
+	set_bit(SXE_SFP_MULTI_SPEED_QUIRKS, &adapter->state);
+	set_bit(SXE_SFP_LOS_DISABLED, &adapter->state);
+
+l_end:
+	return ret;
+}
+
+static s32 sxe_multispeed_sfp_link_configure(struct sxe_adapter *adapter,
+					     u32 speed)
 {
 	s32 ret = 0;
 	bool autoneg, link_up;
-	u32 i, speed_cap, link_speed, speedcnt = 0;
 	struct sxe_hw *hw = &adapter->hw;
-	u32 highest_link_speed = SXE_LINK_SPEED_UNKNOWN;
-	u32 max_frame = sxe_sw_mtu_get(adapter);
+	u32 i, speed_cap, link_speed, retry_cnt;
+	struct sxe_sfp_info *sfp = &adapter->phy_ctxt.sfp_info;
 
 	sxe_sfp_link_capabilities_get(adapter, &speed_cap, &autoneg);
-
 	speed &= speed_cap;
 
 	sxe_link_info_get(adapter, &link_speed, &link_up);
 	if (link_up && (speed & link_speed)) {
 		LOG_INFO_BDF("link cfg dont changed , dont need cfp pcs,\n"
-			     "\tspeed=%x, mtu=%u\n", speed, max_frame);
+			     "\tspeed=%x\n", speed);
 		goto l_end;
 	}
 
 	if (speed & SXE_LINK_SPEED_10GB_FULL) {
 		LOG_INFO_BDF("10G link cfg start\n");
 
-		speedcnt++;
-		highest_link_speed = SXE_LINK_SPEED_10GB_FULL;
-
-		ret = sxe_sfp_rate_select(adapter, SXE_SFP_RATE_10G);
+		ret = sxe_link_multispeed_to_10g(adapter);
 		if (ret) {
-			LOG_ERROR_BDF("set sfp rate failed, ret=%d\n", ret);
+			LOG_ERROR_BDF("link cfg 10g failed, ret=%d\n", ret);
 			goto l_end;
 		}
 
-		msleep(SXE_RATE_SEL_WAIT);
-
-		ret = sxe_pcs_sds_init(adapter, SXE_PCS_MODE_10GBASE_KR_WO,
-				       max_frame);
-		if (ret)
-			goto l_end;
-
-		for (i = 0; i < SXE_LINK_UP_RETRY_CNT; i++) {
+		retry_cnt = sfp->sfp_link_cfg_info.waitloop10g_fir;
+		for (i = 0; i < retry_cnt; i++) {
 			msleep(SXE_LINK_UP_RETRY_ITR);
 
 			sxe_link_info_get(adapter, &link_speed, &link_up);
@@ -785,40 +1001,31 @@ s32 sxe_multispeed_sfp_link_configure(struct sxe_adapter *adapter, u32 speed)
 	if (speed & SXE_LINK_SPEED_1GB_FULL) {
 		LOG_INFO_BDF("1G link cfg start\n");
 
-		speedcnt++;
-		if (highest_link_speed == SXE_LINK_SPEED_UNKNOWN)
-			highest_link_speed = SXE_LINK_SPEED_1GB_FULL;
-
-		ret = sxe_sfp_rate_select(adapter, SXE_SFP_RATE_1G);
+		ret = sxe_link_multispeed_to_1g(adapter);
 		if (ret) {
-			LOG_ERROR_BDF("set sfp rate failed, ret=%d\n", ret);
+			LOG_ERROR_BDF("link cfg 1g failed, ret=%d\n", ret);
 			goto l_end;
 		}
 
-		msleep(SXE_RATE_SEL_WAIT);
+		retry_cnt = sfp->sfp_link_cfg_info.waitloop1g;
 
-		ret = sxe_pcs_sds_init(adapter, SXE_PCS_MODE_1000BASE_KX_W,
-				       max_frame);
-		if (ret)
-			goto l_end;
+		for (i = 0; i < retry_cnt; i++) {
+			msleep(SXE_SFP_RESET_WAIT);
 
-		msleep(SXE_SFP_RESET_WAIT);
-
-		link_up = hw->mac.ops->link_up_1g_check(hw);
-		if (link_up) {
-			LOG_INFO_BDF("link cfg end, link up, speed is 1G\n");
-			goto l_out;
+			link_up = hw->mac.ops->link_up_1g_check(hw);
+			if (link_up) {
+				LOG_INFO_BDF("link cfg end, link up, speed is 1G\n");
+				goto l_out;
+			}
 		}
 
 		LOG_WARN_BDF("1G link cfg failed, retry...\n");
 	}
 
-	if (speedcnt > 1) {
-		ret = sxe_multispeed_sfp_link_configure(adapter,
-							highest_link_speed);
-	}
-l_out:
+	if (speed == speed_cap)
+		ret = sxe_link_multispeed_quirks_trigger(adapter);
 
+l_out:
 	adapter->phy_ctxt.autoneg_advertised = 0;
 
 	if (speed & SXE_LINK_SPEED_10GB_FULL)
@@ -979,6 +1186,7 @@ static s32 sxe_sfp_link_configure(struct sxe_adapter *adapter, u32 speed)
 	u32 link_speed;
 	u32 pcs_mode = SXE_PCS_MODE_BUTT;
 	u32 max_frame = sxe_sw_mtu_get(adapter);
+	u32 i;
 
 	sxe_sfp_link_capabilities_get(adapter, &speed, &an);
 
@@ -998,13 +1206,24 @@ static s32 sxe_sfp_link_configure(struct sxe_adapter *adapter, u32 speed)
 	}
 
 	ret = sxe_pcs_sds_init(adapter, pcs_mode, max_frame);
-	if (ret)
+	if (ret) {
 		LOG_ERROR_BDF("pcs sds init failed, ret=%d\n", ret);
+		goto l_end;
+	}
 
-	LOG_INFO_BDF("link :cfg speed=%x, pcs_mode=%x, atuoreg=%d, mtu=%u\n",
-		     speed, pcs_mode, an, max_frame);
+	for (i = 0; i < adapter->phy_ctxt.sfp_info.sfp_link_cfg_info.waitloop_single_spd; i++) {
+		msleep(SXE_LINK_UP_RETRY_ITR);
+		sxe_link_info_get(adapter, &link_speed, &link_up);
+		if (link_up) {
+			LOG_INFO_BDF("link cfg end, link up, speed 0x%x\n",
+				     link_speed);
+			break;
+		}
+	}
 
 l_end:
+	LOG_INFO_BDF("link :cfg speed=%x, pcs_mode=%x, atuoreg=%d, mtu=%u\n",
+		     speed, pcs_mode, an, max_frame);
 	return ret;
 }
 
@@ -1036,20 +1255,87 @@ l_end:
 	return ret;
 }
 
-s32 sxe_sfp_aoc_vendor_pn_cmp(u8 *sfp_vendor_pn)
+static struct sxe_sfp_quirk *sxe_sfp_quirk_info_get(u8 *vendor_name, u8 *vendor_pn)
 {
-	s32 ret = -EINVAL;
+	s32 ret_name;
+	s32 ret_pn;
 	u32 i;
+	struct sxe_sfp_quirk *sfp_quirk_info = NULL;
 
-	for (i = 0; i < SXE_COMPAT_SFP_AOC_NUM; i++) {
-		ret = memcmp(sfp_vendor_pn, sfp_aoc_vendor_pn_list[i],
-			     SXE_SFP_VENDOR_PN_SIZE);
-		if (!ret)
-			goto l_end;
+	for (i = 0; i < SXE_COMPAT_SFP_QUIRK_LIST_NUM; i++) {
+		ret_name = memcmp(vendor_name, sfp_quirk_info_list[i].vendor_name,
+				  SXE_SFP_VENDOR_NAME_SIZE);
+		ret_pn = memcmp(vendor_pn, sfp_quirk_info_list[i].vendor_pn,
+				SXE_SFP_VENDOR_PN_SIZE);
+
+		if (!ret_name && !ret_pn) {
+			sfp_quirk_info = &sfp_quirk_info_list[i];
+			break;
+		}
 	}
 
+	LOG_INFO("sfp quirk info list num=%ld, i=%d quirk_info %p",
+		 SXE_COMPAT_SFP_QUIRK_LIST_NUM, i, sfp_quirk_info);
+	return sfp_quirk_info;
+}
+
+static void sxe_sfp_cfg_info_set(struct sxe_adapter *adapter)
+{
+	s32 ret;
+	u8 vendor_name[SXE_SFP_VENDOR_NAME_SIZE];
+	u8 vendor_pn[SXE_SFP_VENDOR_PN_SIZE];
+	struct sxe_sfp_info *sfp = &adapter->phy_ctxt.sfp_info;
+	struct sxe_sfp_quirk *sfp_quirk_info;
+
+	ret = sxe_sfp_eeprom_read(adapter, SXE_SFF_VENDOR_NAME,
+				  SXE_SFP_VENDOR_NAME_SIZE, vendor_name);
+	if (ret) {
+		LOG_ERROR_BDF("get sfp vendor name, ret=%d\n", ret);
+		goto l_default;
+	}
+
+	ret = sxe_sfp_eeprom_read(adapter, SXE_SFF_VENDOR_PN,
+				  SXE_SFP_VENDOR_PN_SIZE, vendor_pn);
+	if (ret) {
+		LOG_ERROR_BDF("get sfp vendor pn, ret=%d\n", ret);
+		goto l_default;
+	}
+
+	sfp_quirk_info = sxe_sfp_quirk_info_get(vendor_name, vendor_pn);
+	if (sfp_quirk_info) {
+		sfp->sfp_link_cfg_info.filter_time =
+			sfp_quirk_info->filter_time;
+		sfp->sfp_link_cfg_info.waitloop10g_fir =
+			sfp_quirk_info->waitloop10g_fir;
+		sfp->sfp_link_cfg_info.waitloop10g_sec =
+			sfp_quirk_info->waitloop10g_sec;
+		sfp->sfp_link_cfg_info.waitloop1g = sfp_quirk_info->waitloop1g;
+		sfp->sfp_link_cfg_info.waitloop_single_spd =
+			sfp_quirk_info->waitloop_single_spd;
+		sfp->sfp_link_cfg_info.los_block_flag =
+			sfp_quirk_info->los_block_flag;
+		sfp->sfp_link_cfg_info.disable_los_wait_timeout =
+			sfp_quirk_info->disable_los_wait_timeout;
+		goto l_end;
+	}
+
+l_default:
+	memcpy(&sfp->sfp_link_cfg_info, &sfp_link_cfg_default,
+	       sizeof(struct sxe_sfp_link_cfg));
+
 l_end:
-	return ret;
+	LOG_INFO_BDF("sfp cfg, filter_time=%d, waitloop10g_fri=%d,\n"
+		     "\twaitloop10g_sec=%d, waitloop1g=%d,\n"
+		     "\twaitloop_single_spd %u, los_block_flag %s,\n"
+		     "\tdisable_los_wait_timeout %s\n",
+		     sfp->sfp_link_cfg_info.filter_time,
+		     sfp->sfp_link_cfg_info.waitloop10g_fir,
+		     sfp->sfp_link_cfg_info.waitloop10g_sec,
+		     sfp->sfp_link_cfg_info.waitloop1g,
+		     sfp->sfp_link_cfg_info.waitloop_single_spd,
+		     sfp->sfp_link_cfg_info.los_block_flag ? "true" : "false",
+		     sfp->sfp_link_cfg_info.disable_los_wait_timeout ?
+		     "true" : "false");
 }
 
 s32 sxe_sfp_identify(struct sxe_adapter *adapter)
@@ -1058,7 +1344,6 @@ s32 sxe_sfp_identify(struct sxe_adapter *adapter)
 	enum sxe_sfp_type sfp_type;
 	u8 sfp_comp_code[SXE_SFP_COMP_CODE_SIZE];
 	struct sxe_sfp_info *sfp = &adapter->phy_ctxt.sfp_info;
-	u8 sfp_vendor_pn[SXE_SFP_VENDOR_PN_SIZE + 1] = { 0 };
 	unsigned long flags;
 
 	LOG_INFO_BDF("sfp identify start\n");
@@ -1118,27 +1403,9 @@ s32 sxe_sfp_identify(struct sxe_adapter *adapter)
 		LOG_INFO_BDF("identify sfp, sfp is multispeed\n");
 	}
 
-	ret = sxe_sfp_eeprom_read(adapter, SXE_SFF_VENDOR_PN,
-				  SXE_SFP_VENDOR_PN_SIZE, sfp_vendor_pn);
-	if (ret) {
-		LOG_DEV_ERR("get sfp vendor pn failed, ret=%d\n", ret);
-		goto l_end;
-	}
 	adapter->phy_ctxt.sfp_info.inserted = true;
-
-	ret = sxe_sfp_aoc_vendor_pn_cmp(sfp_vendor_pn);
-	if (!ret) {
-		adapter->hw.irq.ops->spp_configure(&adapter->hw,
-						   SXE_SPP_PROC_DELAY_MS);
-		LOG_INFO_BDF("an supported AOC SFP module type was detected,\n"
-			     "\tspp_configure is 15ms\n");
-	} else {
-		adapter->hw.irq.ops->spp_configure(&adapter->hw,
-						   SXE_SPP_PROC_DELAY_US);
-		LOG_INFO_BDF("an unsupported AOC SFP module type was detected,\n"
-			     "\tspp_configure is default 7us\n");
-		ret = 0;
-	}
+	sxe_sfp_cfg_info_set(adapter);
+	adapter->hw.irq.ops->spp_configure(&adapter->hw, sfp->sfp_link_cfg_info.filter_time);
 
 	spin_lock_irqsave(&adapter->irq_ctxt.event_irq_lock, flags);
 	adapter->hw.irq.ops->rx_los_enable(&adapter->hw);
