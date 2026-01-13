@@ -4804,6 +4804,23 @@ static int pci_quirk_brcm_acs(struct pci_dev *dev, u16 acs_flags)
 		PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF);
 }
 
+/*
+ * Phytium 5000E SOC have no ACS capability, and on multi-function
+ * devices, peer-to-peer transactions are not be used between the functions.
+ * So add an ACS quirk for below devices to isolate functions.
+ */
+static int  pci_quirk_phytium_pcie_ports_acs(struct pci_dev *dev, u16 acs_flags)
+{
+		switch (dev->device) {
+		case 0x0100:
+			return pci_acs_ctrl_enabled(acs_flags,
+					PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF);
+		}
+
+		return false;
+}
+
+
 static const struct pci_dev_acs_enabled {
 	u16 vendor;
 	u16 device;
@@ -4946,6 +4963,8 @@ static const struct pci_dev_acs_enabled {
 	{ PCI_VENDOR_ID_NXP, 0x8d9b, pci_quirk_nxp_rp_acs },
 	/* Zhaoxin Root/Downstream Ports */
 	{ PCI_VENDOR_ID_ZHAOXIN, PCI_ANY_ID, pci_quirk_zhaoxin_pcie_ports_acs },
+	/* Phytium Socs*/
+	{ PCI_VENDOR_ID_PHYTIUM, PCI_ANY_ID, pci_quirk_phytium_pcie_ports_acs },
 #ifdef CONFIG_ARCH_PHYTIUM
 	/* because PLX switch Vendor id is 0x10b5 on phytium cpu */
 	{ 0x10b5, PCI_ANY_ID, pci_quirk_xgene_acs },
