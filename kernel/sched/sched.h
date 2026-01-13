@@ -591,6 +591,14 @@ struct cfs_bandwidth {
 #endif
 };
 
+#ifdef CONFIG_SCHED_SLI
+/* Maintain various statistics */
+struct cpu_alistats {
+	u64		nr_migrations;
+	u64		steal_high;
+} ____cacheline_aligned;
+#endif
+
 /* Task group related information */
 struct task_group {
 	struct cgroup_subsys_state css;
@@ -659,6 +667,12 @@ struct task_group {
 
 #ifdef CONFIG_SCHED_SLI
 	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
+	struct cpu_alistats __percpu *alistats;
+	struct list_head	sli_list;
+	bool			sli_enabled;
+	u64			next_load_update;
+	unsigned long		avenrun[3];
+	unsigned long		avenrun_r[3];
 #endif
 
 #ifdef CONFIG_GROUP_BALANCER
@@ -4267,7 +4281,7 @@ static inline void balance_callbacks(struct rq *rq, struct balance_callback *hea
 #ifdef CONFIG_SCHED_SLI
 extern u64 get_idle_time(struct kernel_cpustat *kcs, int cpu);
 extern u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu);
-extern void task_ca_increase_nr_migrations(struct task_struct *tsk);
+extern void task_cpu_increase_nr_migrations(struct task_struct *tsk);
 void cpu_update_latency(struct sched_entity *se, u64 delta);
 void task_cpu_update_block(struct task_struct *tsk, u64 runtime);
 void calc_cgroup_load(void);
@@ -4276,8 +4290,19 @@ struct task_group *cgroup_tg(struct cgroup *cgrp);
 int sched_lat_stat_show(struct seq_file *sf, void *v);
 int sched_lat_stat_write(struct cgroup_subsys_state *css,
 				struct cftype *cft, u64 val);
+void __get_cgroup_avenrun(struct task_group *tg, unsigned long *loads,
+		unsigned long offset, int shift, bool running);
+unsigned long tg_running(struct task_group *tg, int cpu);
+unsigned long tg_uninterruptible(struct task_group *tg, int cpu);
+int enable_sli_write(struct cgroup_subsys_state *css,
+		struct cftype *cft, u64 val);
+u64 enable_sli_read(struct cgroup_subsys_state *css, struct cftype *cft);
+void tg_enable_sli(struct task_group *tg, bool val);
+void __cgroup_get_usage_result(struct cgroup_subsys_state *css, int cpu,
+					struct cpuacct_usage_result *res);
+
 #else
-static inline void task_ca_increase_nr_migrations(struct task_struct *tsk) { }
+static inline void task_cpu_increase_nr_migrations(struct task_struct *tsk) { }
 static inline void cpu_update_latency(struct sched_entity *se,
 		u64 delta) { }
 static inline void task_cpu_update_block(struct task_struct *tsk,
@@ -4291,6 +4316,9 @@ static inline bool async_load_calc_enabled(void)
 
 long tg_get_cfs_quota(struct task_group *tg);
 long tg_get_cfs_period(struct task_group *tg);
+
+void __cpuacct_get_usage(struct cgroup_subsys_state *css, int cpu,
+					struct cpuacct_usage_result *res);
 
 #ifdef CONFIG_SCHED_CLASS_EXT
 /*
