@@ -977,6 +977,9 @@ struct task_struct {
 #ifdef CONFIG_IOMMU_SVA
 	unsigned			pasid_activated:1;
 #endif
+#ifdef CONFIG_X86_BUS_LOCK_DETECT
+	unsigned			reported_split_lock:1;
+#endif
 #ifdef CONFIG_PRE_OOM
 	unsigned			reclaim_stall:1;
 #endif

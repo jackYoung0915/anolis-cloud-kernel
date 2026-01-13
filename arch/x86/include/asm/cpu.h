@@ -47,18 +47,17 @@ bool get_builtin_firmware(struct cpio_data *cd, const char *name);
 unsigned int x86_family(unsigned int sig);
 unsigned int x86_model(unsigned int sig);
 unsigned int x86_stepping(unsigned int sig);
-#ifdef CONFIG_CPU_SUP_INTEL
+#ifdef CONFIG_X86_BUS_LOCK_DETECT
 extern void __init sld_setup(struct cpuinfo_x86 *c);
-extern void switch_to_sld(unsigned long tifn);
 extern bool handle_user_split_lock(struct pt_regs *regs, long error_code);
 extern bool handle_guest_split_lock(unsigned long ip);
 extern void handle_bus_lock(struct pt_regs *regs);
-u8 get_this_hybrid_cpu_type(void);
+void split_lock_init(void);
+void bus_lock_init(void);
 extern u64 tsx_ctrl_clear(void);
 extern void tsx_ctrl_restore(u64 tsx_ctrl);
 #else
 static inline void __init sld_setup(struct cpuinfo_x86 *c) {}
-static inline void switch_to_sld(unsigned long tifn) {}
 static inline bool handle_user_split_lock(struct pt_regs *regs, long error_code)
 {
 	return false;
@@ -70,7 +69,13 @@ static inline bool handle_guest_split_lock(unsigned long ip)
 }
 
 static inline void handle_bus_lock(struct pt_regs *regs) {}
+static inline void split_lock_init(void) {}
+static inline void bus_lock_init(void) {}
+#endif
 
+#ifdef CONFIG_CPU_SUP_INTEL
+u8 get_this_hybrid_cpu_type(void);
+#else
 static inline u8 get_this_hybrid_cpu_type(void)
 {
 	return 0;
