@@ -878,6 +878,19 @@ do_cmd_auto:
 		break;
 	}
 
+	/* Enhanced IBRS (eIBRS) is preferred on HYGON processors. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		switch (spectre_v2_enabled) {
+		case SPECTRE_V2_EIBRS:
+		case SPECTRE_V2_EIBRS_RETPOLINE:
+		case SPECTRE_V2_EIBRS_LFENCE:
+			retbleed_mitigation = RETBLEED_MITIGATION_EIBRS;
+			break;
+		default:
+			break;
+		}
+	}
+
 	switch (retbleed_mitigation) {
 	case RETBLEED_MITIGATION_UNRET:
 		setup_force_cpu_cap(X86_FEATURE_RETHUNK);
@@ -1362,6 +1375,9 @@ static void __init spectre_v2_determine_rsb_fill_type_at_vmexit(enum spectre_v2_
 		return;
 
 	case SPECTRE_V2_EIBRS_RETPOLINE:
+		/* Hygon Enhanced IBRS flushes RAS upon privilege level changes from low to high. */
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+			return;
 	case SPECTRE_V2_RETPOLINE:
 	case SPECTRE_V2_LFENCE:
 	case SPECTRE_V2_IBRS:
@@ -1526,7 +1542,21 @@ static void __init spectre_v2_select_mitigation(void)
 	 * FIXME: Is this pointless for retbleed-affected AMD?
 	 */
 	setup_force_cpu_cap(X86_FEATURE_RSB_CTXSW);
-	pr_info("Spectre v2 / SpectreRSB mitigation: Filling RSB on context switch\n");
+
+	/* Hygon Enhanced IBRS flushes RAS upon privilege level changes from low to high. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		switch (spectre_v2_enabled) {
+		case SPECTRE_V2_EIBRS:
+		case SPECTRE_V2_EIBRS_RETPOLINE:
+		case SPECTRE_V2_EIBRS_LFENCE:
+			setup_clear_cpu_cap(X86_FEATURE_RSB_CTXSW);
+			break;
+		default:
+			pr_info("Spectre v2 / SpectreRSB mitigation: Filling RSB on context switch\n");
+			break;
+		}
+	} else
+		pr_info("Spectre v2 / SpectreRSB mitigation: Filling RSB on context switch\n");
 
 	spectre_v2_determine_rsb_fill_type_at_vmexit(mode);
 
@@ -2202,6 +2232,7 @@ enum srso_mitigation {
 	SRSO_MITIGATION_SAFE_RET,
 	SRSO_MITIGATION_IBPB,
 	SRSO_MITIGATION_IBPB_ON_VMEXIT,
+	SRSO_MITIGATION_EIBRS,
 };
 
 enum srso_mitigation_cmd {
@@ -2217,7 +2248,8 @@ static const char * const srso_strings[] = {
 	[SRSO_MITIGATION_MICROCODE]      = "Mitigation: microcode",
 	[SRSO_MITIGATION_SAFE_RET]	 = "Mitigation: safe RET",
 	[SRSO_MITIGATION_IBPB]		 = "Mitigation: IBPB",
-	[SRSO_MITIGATION_IBPB_ON_VMEXIT] = "Mitigation: IBPB on VMEXIT only"
+	[SRSO_MITIGATION_IBPB_ON_VMEXIT] = "Mitigation: IBPB on VMEXIT only",
+	[SRSO_MITIGATION_EIBRS]			= "Mitigation: Enhanced IBRS",
 };
 
 static enum srso_mitigation srso_mitigation __ro_after_init = SRSO_MITIGATION_NONE;
@@ -2311,6 +2343,21 @@ static void __init srso_select_mitigation(void)
 			pr_err("Retbleed IBPB mitigation enabled, using same for SRSO\n");
 			srso_mitigation = SRSO_MITIGATION_IBPB;
 			goto pred_cmd;
+		}
+	}
+
+	/* Enhanced IBRS (eIBRS) is preferred on HYGON processors. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		switch (spectre_v2_enabled) {
+		case SPECTRE_V2_EIBRS:
+		case SPECTRE_V2_EIBRS_RETPOLINE:
+		case SPECTRE_V2_EIBRS_LFENCE:
+			srso_mitigation = SRSO_MITIGATION_EIBRS;
+			pr_info("%s%s\n", srso_strings[srso_mitigation],
+				(has_microcode ? "" : ", no microcode"));
+			goto pred_cmd;
+		default:
+			break;
 		}
 	}
 
@@ -2569,11 +2616,21 @@ static ssize_t retbleed_show_state(char *buf)
 		    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
 			return sysfs_emit(buf, "Vulnerable: untrained return thunk / IBPB on non-AMD based uarch\n");
 
-		return sysfs_emit(buf, "%s; SMT %s\n", retbleed_strings[retbleed_mitigation],
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+			return sysfs_emit(buf, "%s; SMT %s\n",
+				  retbleed_strings[retbleed_mitigation],
 				  !sched_smt_active() ? "disabled" :
+				  spectre_v2_in_eibrs_mode(spectre_v2_enabled) ||
 				  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||
 				  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED ?
 				  "enabled with STIBP protection" : "vulnerable");
+		}
+
+		return sysfs_emit(buf, "%s; SMT %s\n", retbleed_strings[retbleed_mitigation],
+			  !sched_smt_active() ? "disabled" :
+			  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||
+			  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED ?
+			  "enabled with STIBP protection" : "vulnerable");
 	}
 
 	return sysfs_emit(buf, "%s\n", retbleed_strings[retbleed_mitigation]);
