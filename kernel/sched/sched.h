@@ -3783,4 +3783,7 @@ static inline void update_group_balancer_root_cpumask(void) { }
 static inline void gb_load_balance(struct lb_env *env) { }
 #endif
 static inline void task_tick_gb(struct task_struct *p) { }
+#ifdef CONFIG_CFS_BANDWIDTH
+static inline void tg_burst_change(struct task_group *tg, u64 burst) { }
+#endif
 #endif
