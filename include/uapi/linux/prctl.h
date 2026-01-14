@@ -310,4 +310,10 @@ struct prctl_mm_map {
 # define PR_RISCV_V_VSTATE_CTRL_NEXT_MASK	0xc
 # define PR_RISCV_V_VSTATE_CTRL_MASK		0x1f
 
+/* The following ID values are reserved and MUST NOT be used by applications */
+#define PR_RESERVED0			1100
+#define PR_RESERVED1			1101
+#define PR_RESERVED2			1102
+#define PR_RESERVED3			1103
+
 #endif /* _LINUX_PRCTL_H */
