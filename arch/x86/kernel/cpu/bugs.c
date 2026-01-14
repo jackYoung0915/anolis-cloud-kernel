@@ -1108,6 +1108,19 @@ do_cmd_auto:
 		break;
 	}
 
+	/* Enhanced IBRS (eIBRS) is preferred on HYGON processors. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		switch (spectre_v2_enabled) {
+		case SPECTRE_V2_EIBRS:
+		case SPECTRE_V2_EIBRS_RETPOLINE:
+		case SPECTRE_V2_EIBRS_LFENCE:
+			retbleed_mitigation = RETBLEED_MITIGATION_EIBRS;
+			break;
+		default:
+			break;
+		}
+	}
+
 	switch (retbleed_mitigation) {
 	case RETBLEED_MITIGATION_UNRET:
 		setup_force_cpu_cap(X86_FEATURE_RETHUNK);
@@ -2817,6 +2830,8 @@ enum srso_mitigation {
 	SRSO_MITIGATION_SAFE_RET,
 	SRSO_MITIGATION_IBPB,
 	SRSO_MITIGATION_IBPB_ON_VMEXIT,
+	SRSO_MITIGATION_EIBRS,
+	SRSO_MITIGATION_EIBRS_UCODE_NEEDED,
 };
 
 enum srso_mitigation_cmd {
@@ -2834,7 +2849,9 @@ static const char * const srso_strings[] = {
 	[SRSO_MITIGATION_MICROCODE]		= "Vulnerable: Microcode, no safe RET",
 	[SRSO_MITIGATION_SAFE_RET]		= "Mitigation: Safe RET",
 	[SRSO_MITIGATION_IBPB]			= "Mitigation: IBPB",
-	[SRSO_MITIGATION_IBPB_ON_VMEXIT]	= "Mitigation: IBPB on VMEXIT only"
+	[SRSO_MITIGATION_IBPB_ON_VMEXIT]	= "Mitigation: IBPB on VMEXIT only",
+	[SRSO_MITIGATION_EIBRS]			= "Mitigation: Enhanced IBRS",
+	[SRSO_MITIGATION_EIBRS_UCODE_NEEDED]	= "Vulnerable: Enhanced IBRS, no microcode"
 };
 
 static enum srso_mitigation srso_mitigation __ro_after_init = SRSO_MITIGATION_NONE;
@@ -2917,6 +2934,22 @@ static void __init srso_select_mitigation(void)
 
 		/* may be overwritten by SRSO_CMD_SAFE_RET below */
 		srso_mitigation = SRSO_MITIGATION_UCODE_NEEDED;
+	}
+
+	/* Enhanced IBRS (eIBRS) is preferred on HYGON processors. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+		switch (spectre_v2_enabled) {
+		case SPECTRE_V2_EIBRS:
+		case SPECTRE_V2_EIBRS_RETPOLINE:
+		case SPECTRE_V2_EIBRS_LFENCE:
+			if (has_microcode)
+				srso_mitigation = SRSO_MITIGATION_EIBRS;
+			else
+				srso_mitigation = SRSO_MITIGATION_EIBRS_UCODE_NEEDED;
+			goto out;
+		default:
+			break;
+		}
 	}
 
 	switch (srso_cmd) {
@@ -3234,11 +3267,21 @@ static ssize_t retbleed_show_state(char *buf)
 		    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
 			return sysfs_emit(buf, "Vulnerable: untrained return thunk / IBPB on non-AMD based uarch\n");
 
-		return sysfs_emit(buf, "%s; SMT %s\n", retbleed_strings[retbleed_mitigation],
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+			return sysfs_emit(buf, "%s; SMT %s\n",
+				  retbleed_strings[retbleed_mitigation],
 				  !sched_smt_active() ? "disabled" :
+				  spectre_v2_in_eibrs_mode(spectre_v2_enabled) ||
 				  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||
 				  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED ?
 				  "enabled with STIBP protection" : "vulnerable");
+		}
+
+		return sysfs_emit(buf, "%s; SMT %s\n", retbleed_strings[retbleed_mitigation],
+			  !sched_smt_active() ? "disabled" :
+			  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||
+			  spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED ?
+			  "enabled with STIBP protection" : "vulnerable");
 	}
 
 	return sysfs_emit(buf, "%s\n", retbleed_strings[retbleed_mitigation]);
