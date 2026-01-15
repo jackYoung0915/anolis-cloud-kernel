@@ -4992,6 +4992,10 @@ static const unsigned int memcg1_stats[] = {
 	NR_FILE_THPS,
 	NR_SHMEM_THPS,
 #endif
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	MEMCG_ZSWAP_B,
+	MEMCG_ZSWAPPED,
+#endif
 };
 
 static const char *const memcg1_stat_names[] = {
@@ -5015,6 +5019,10 @@ static const char *const memcg1_stat_names[] = {
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	"file_thp",
 	"shmem_thp",
+#endif
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+	"zswap",
+	"zswapped",
 #endif
 };
 
@@ -5041,7 +5049,11 @@ static int memcg_stat_show(struct seq_file *m, void *v)
 		if (memcg1_stats[i] == MEMCG_SWAP && !do_memsw_account())
 			continue;
 		nr = memcg_page_state_local(memcg, memcg1_stats[i]);
-		seq_printf(m, "%s %lu\n", memcg1_stat_names[i], nr * PAGE_SIZE);
+		if (memcg1_stats[i] == MEMCG_ZSWAP_B)
+			seq_printf(m, "%s %lu\n", memcg1_stat_names[i], nr);
+		else
+			seq_printf(m, "%s %lu\n", memcg1_stat_names[i],
+				   nr * PAGE_SIZE);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(memcg1_events); i++)
@@ -10425,9 +10437,6 @@ bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
 	struct mem_cgroup *memcg, *original_memcg;
 	bool ret = true;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return true;
-
 	original_memcg = get_mem_cgroup_from_objcg(objcg);
 	for (memcg = original_memcg; memcg != root_mem_cgroup;
 	     memcg = parent_mem_cgroup(memcg)) {
@@ -10464,9 +10473,6 @@ void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
-
 	VM_WARN_ON_ONCE(!(current->flags & PF_MEMALLOC));
 
 	/* PF_MEMALLOC context, charging must succeed */
@@ -10490,9 +10496,6 @@ void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
-
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
 
 	obj_cgroup_uncharge(objcg, size);
 
@@ -10547,6 +10550,20 @@ static struct cftype zswap_files[] = {
 	},
 	{ }	/* terminate */
 };
+static struct cftype zswap_files_legacy[] = {
+	{
+		.name = "zswap.current",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = zswap_current_read,
+	},
+	{
+		.name = "zswap.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = zswap_max_show,
+		.write = zswap_max_write,
+	},
+	{ }	/* terminate */
+};
 #endif /* CONFIG_MEMCG_KMEM && CONFIG_ZSWAP */
 
 /*
@@ -10569,6 +10586,7 @@ static int __init mem_cgroup_swap_init(void)
 	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, memsw_files));
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 	WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files));
+	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, zswap_files_legacy));
 #endif
 	return 0;
 }
