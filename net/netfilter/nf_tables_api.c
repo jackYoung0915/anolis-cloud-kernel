@@ -9008,6 +9008,9 @@ static void __nft_release_tables(struct net *net)
 		ctx.family = table->family;
 		ctx.table = table;
 		list_for_each_entry(chain, &table->chains, list) {
+			if (nft_chain_binding(chain))
+				continue;
+
 			ctx.chain = chain;
 			list_for_each_entry_safe(rule, nr, &chain->rules, list) {
 				list_del(&rule->list);
