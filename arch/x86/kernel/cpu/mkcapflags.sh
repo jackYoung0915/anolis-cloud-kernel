@@ -68,6 +68,9 @@ trap 'rm "$OUT"' EXIT
 	echo "#include <asm/vmxfeatures.h>"
 	echo "#endif"
 	dump_array "x86_vmx_flags" "NVMXINTS*32" "VMX_FEATURE_" "" $3
+	echo ""
+	dump_array "x86_vmx_zx_tertiary_flags" "NVMX_ZX_TERTIARY_INTS*32" \
+		"VMX_ZX_TERTIARY_FEATURE_" "NVMXINTS*32" $3
 	echo "#endif /* CONFIG_X86_VMX_FEATURE_NAMES */"
 ) > $OUT
 

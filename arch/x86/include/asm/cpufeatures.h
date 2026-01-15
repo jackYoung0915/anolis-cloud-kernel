@@ -158,7 +158,7 @@
 #define X86_FEATURE_PHE_EN		( 5*32+11) /* PHE enabled */
 #define X86_FEATURE_PMM			( 5*32+12) /* PadLock Montgomery Multiplier */
 #define X86_FEATURE_PMM_EN		( 5*32+13) /* PMM enabled */
-#define X86_FEATURE_ZX_FMA		( 5*32+15) /* FMA supported */
+#define X86_FEATURE_PAUSEOPT		(5*32 + 15) /* PAUSEOPT instruction is present*/
 #define X86_FEATURE_PARALLAX		( 5*32+16) /* Adaptive P-state control present */
 #define X86_FEATURE_PARALLAX_EN		( 5*32+17) /* Adaptive P-state control enabled */
 #define X86_FEATURE_OVERSTRESS		( 5*32+18) /* Overstress for auto overclock present */

@@ -25,6 +25,8 @@
 #define TPAUSE_C01_STATE		1
 #define TPAUSE_C02_STATE		0
 
+#define PAUSEOPT_P01_STATE		1
+
 static inline void __monitor(const void *eax, unsigned long ecx,
 			     unsigned long edx)
 {
@@ -135,6 +137,23 @@ static inline void __tpause(u32 ecx, u32 edx, u32 eax)
 		     : "c"(ecx), "d"(edx), "a"(eax));
 	#else
 	asm volatile(".byte 0x66, 0x0f, 0xae, 0xf1\t\n"
+		     :
+		     : "c"(ecx), "d"(edx), "a"(eax));
+	#endif
+}
+
+/*
+ * Caller can specify to enter P0.1 (low latency, less power saving).
+ */
+static inline void __pauseopt(u32 ecx, u32 edx, u32 eax)
+{
+	/* "pauseopt %ecx, %edx, %eax;" */
+	#ifdef CONFIG_AS_PAUSEOPT
+	asm volatile("pauseopt\n"
+		     :
+		     : "c"(ecx), "d"(edx), "a"(eax));
+	#else
+	asm volatile(".byte 0xf2, 0x0f, 0xa6, 0xd0\t\n"
 		     :
 		     : "c"(ecx), "d"(edx), "a"(eax));
 	#endif

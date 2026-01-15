@@ -85,6 +85,13 @@
 #define MSR_IA32_CORE_CAPS_SPLIT_LOCK_DETECT_BIT  5
 #define MSR_IA32_CORE_CAPS_SPLIT_LOCK_DETECT	  BIT(MSR_IA32_CORE_CAPS_SPLIT_LOCK_DETECT_BIT)
 
+#define MSR_PAUSEOPT_CONTROL			0x187f
+/*
+ * The time field is bit[31:2], but representing a 32bit value with
+ * bit[1:0] zero.
+ */
+#define MSR_PAUSEOPT_CONTROL_TIME_MASK	(~0x03U)
+
 #define MSR_PKG_CST_CONFIG_CONTROL	0x000000e2
 #define NHM_C3_AUTO_DEMOTE		(1UL << 25)
 #define NHM_C1_AUTO_DEMOTE		(1UL << 26)
@@ -718,6 +725,13 @@
 #define MSR_VIA_RNG			0x0000110b
 #define MSR_VIA_BCR2			0x00001147
 
+/*
+ * Zhaoxin extend VMCS capabilities:
+ *	bit 0: exec-cntl3 VMCS field.
+ */
+#define MSR_ZX_EXT_VMCS_CAPS			0x1675
+#define MSR_ZX_VMCS_EXEC_CTL3_EN		BIT(0)
+
 /* Transmeta defined MSRs */
 #define MSR_TMTA_LONGRUN_CTRL		0x80868010
 #define MSR_TMTA_LONGRUN_FLAGS		0x80868011
@@ -1068,6 +1082,9 @@
 #define MSR_IA32_VMX_TRUE_ENTRY_CTLS     0x00000490
 #define MSR_IA32_VMX_VMFUNC             0x00000491
 #define MSR_IA32_VMX_PROCBASED_CTLS3    0x00000492
+
+/* Zhaoxin VT MSRs */
+#define MSR_ZX_VMX_PROCBASED_CTLS3	0x12A7
 
 /* VMX_BASIC bits and bitmasks */
 #define VMX_BASIC_VMCS_SIZE_SHIFT	32

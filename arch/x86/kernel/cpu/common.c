@@ -1712,6 +1712,16 @@ static void validate_apic_and_package_id(struct cpuinfo_x86 *c)
 #endif
 }
 
+#ifdef CONFIG_X86_VMX_FEATURE_NAMES
+static void init_extra_cpu_data(u16 cpu_index)
+{
+	struct extra_zx_cpuinfo_x86 *zx = &extra_zx_cpu_data(cpu_index);
+
+	memset(&zx->vmx_tertiary_capability, 0,
+	       sizeof(zx->vmx_tertiary_capability));
+}
+#endif
+
 /*
  * This does the hard work of actually picking apart the CPU stuff...
  */
@@ -1742,6 +1752,7 @@ static void identify_cpu(struct cpuinfo_x86 *c)
 	memset(&c->x86_capability, 0, sizeof(c->x86_capability));
 #ifdef CONFIG_X86_VMX_FEATURE_NAMES
 	memset(&c->vmx_capability, 0, sizeof(c->vmx_capability));
+	init_extra_cpu_data(c->cpu_index);
 #endif
 
 	generic_identify(c);
