@@ -23,14 +23,26 @@
 #define AMD_NODE0_PCI_SLOT	0x18
 
 struct pci_dev *amd_node_get_func(u16 node, u8 func);
-struct pci_dev *amd_node_get_root(u16 node);
 
 static inline u16 amd_num_nodes(void)
 {
 	return topology_amd_nodes_per_pkg() * topology_max_packages();
 }
 
+#ifdef CONFIG_AMD_NODE
 int __must_check amd_smn_read(u16 node, u32 address, u32 *value);
 int __must_check amd_smn_write(u16 node, u32 address, u32 value);
+
+/* Should only be used by the HSMP driver. */
+int __must_check amd_smn_hsmp_rdwr(u16 node, u32 address, u32 *value, bool write);
+#else
+static inline int __must_check amd_smn_read(u16 node, u32 address, u32 *value) { return -ENODEV; }
+static inline int __must_check amd_smn_write(u16 node, u32 address, u32 value) { return -ENODEV; }
+
+static inline int __must_check amd_smn_hsmp_rdwr(u16 node, u32 address, u32 *value, bool write)
+{
+	return -ENODEV;
+}
+#endif /* CONFIG_AMD_NODE */
 
 #endif /*_ASM_X86_AMD_NODE_H_*/
