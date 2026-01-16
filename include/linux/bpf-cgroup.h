@@ -117,9 +117,6 @@ struct bpf_cgroup_storage_info {
 DECLARE_PER_CPU(struct bpf_cgroup_storage_info,
 		bpf_cgroup_storage_info[BPF_CGROUP_STORAGE_NEST_MAX]);
 
-#define for_each_cgroup_storage_type(stype) \
-	for (stype = 0; stype < MAX_BPF_CGROUP_STORAGE_TYPE; stype++)
-
 struct bpf_cgroup_storage_map;
 
 struct bpf_storage_buffer {
@@ -614,8 +611,6 @@ static inline int bpf_percpu_cgroup_storage_update(struct bpf_map *map,
 					    optlen, retval) ({ retval; })
 #define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock, level, optname, optval, optlen, \
 				       kernel_optval) ({ 0; })
-
-#define for_each_cgroup_storage_type(stype) for (; false; )
 
 #endif /* CONFIG_CGROUP_BPF */
 
