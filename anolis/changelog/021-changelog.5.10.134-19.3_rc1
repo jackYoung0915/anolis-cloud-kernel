@@ -1,0 +1,57 @@
+* Fri Jan 16 2026 Xingrui Yi <yixingrui@linux.alibaba.com> [5.10.134-19.3_rc1%%DIST%%]
+- anolis: configs: close hygon lmc by default (Guixin Liu)
+- bpf: Fix oob access in cgroup local storage (Daniel Borkmann) {CVE-2025-38502}
+- bpf: Move cgroup iterator helpers to bpf.h (Daniel Borkmann)
+- bpf: Add cookie object to bpf maps (Daniel Borkmann)
+- netfilter: nf_tables: reject duplicate device on updates (Pablo Neira Ayuso) {CVE-2025-38678}
+- tls: separate no-async decryption request handling from async (Sabrina Dubroca) {CVE-2024-58240}
+- anolis: sched: set rq->gi_enabled correctly (Yi Tao)
+- anolis: sched: fix task_struct leak of ID_PUSH_EXPELLEE (Cruz Zhao)
+- anolis: sched: correct nr_tasks/nr_high_running/nr_under_running (Cruz Zhao)
+- tls: fix race between async notify and socket close (Jakub Kicinski) {CVE-2024-26583}
+- net: tls: explicitly disallow disconnect (Jakub Kicinski) {CVE-2025-37756}
+- sch_hfsc: make hfsc_qlen_notify() idempotent (Cong Wang) {CVE-2025-38177}
+- net: tls: handle backlogging of crypto requests (Jakub Kicinski) {CVE-2024-26584}
+- net: tls: factor out tls_*crypt_async_wait() (Jakub Kicinski) {CVE-2024-26584}
+- tls: rx: simplify async wait (Jakub Kicinski) {CVE-2024-26584}
+- netfilter: nft_set_pipapo: release elements in clone only from destroy path (Pablo Neira Ayuso) {CVE-2024-26809}
+- netfilter: nf_tables: integrate pipapo into commit protocol (Pablo Neira Ayuso) {CVE-2024-26809}
+- netfilter: nf_tables: disallow rule removal from chain binding (Pablo Neira Ayuso) {CVE-2023-5197}
+- netfilter: nf_tables: disallow timeout for anonymous sets (Pablo Neira Ayuso) {CVE-2023-52620}
+- inet: inet_defrag: prevent sk release while still in use (Florian Westphal) {CVE-2024-26921}
+- net: sched: fix ordering of qlen adjustment (Lion Ackermann) {CVE-2024-53164}
+- codel: remove sch->q.qlen check before qdisc_tree_reduce_backlog() (Cong Wang) {CVE-2025-37798}
+- netfilter: ipset: fix region locking in hash types (Jozsef Kadlecsik) {CVE-2025-37997}
+- net_sched: prio: fix a race in prio_tune() (Eric Dumazet) {CVE-2025-38083}
+- net/sched: sch_qfq: Fix race condition on qfq_aggregate (Xiang Mei) {CVE-2025-38477}
+- net/packet: fix a race in packet_set_ring() and packet_notifier() (Quang Le) {CVE-2025-38617}
+- vsock: Do not allow binding to VMADDR_PORT_ANY (Budimir Markovic) {CVE-2025-38618}
+- ipvs: Defer ip_vs_ftp unregister during netns cleanup (Slavin Liu) {CVE-2025-40018}
+- crypto: essiv - Check ssize for decryption and in-place encryption (Herbert Xu) {CVE-2025-40019}
+- netfilter: nft_set_pipapo: do not free live element (Florian Westphal) {CVE-2024-26924}
+- netfilter: nf_set_pipapo: fix initial map fill (Florian Westphal)
+- net_sched: hfsc: Address reentrant enqueue adding class to eltree twice (Pedro Tammela) {CVE-2025-38001}
+- sch_hfsc: Fix qlen accounting bug when using peek in hfsc_enqueue() (Cong Wang) {CVE-2025-38000}
+- crypto: af_alg - Disallow concurrent writes in af_alg_sendmsg (Herbert Xu)
+- xfrm: delete x->tunnel as we delete x (Sabrina Dubroca) {CVE-2025-40215}
+- net_sched: Prevent creation of classes with TC_H_ROOT (Cong Wang)
+- net_sched: hfsc: Fix a UAF vulnerability in class handling (Cong Wang)
+- vsock: Keep the binding until socket destruction (Michal Luczaj) {CVE-2025-21756}
+- anolis: virt: csv-guest: Add support for extended attestation aware request in the CSV3 guest (hanliyang)
+- anolis: virt: csv-guest: Implement CSV RTMR ioctl interfaces (hanliyang)
+- anolis: virt: csv-guest: Introduce CSV RTMR uapi interface (hanliyang)
+- anolis: x86/csv: Introduce RTMR interfaces (hanliyang)
+- anolis: EDAC/amd64: The width of hash value is 2 bits for Hygon family 18h model 6h processors (Wenhui Fan)
+- x86/tsc: Use topology_max_packages() to get package number (Feng Tang)
+- x86/tsc: Extend watchdog check exemption to 4-Sockets platform (Feng Tang)
+- anolis: RAS/AMD/ATL: fix error nodes per socket on for Hygon Dhyana processor (Bo Liu)
+- anolis: EDAC/amd64: Use unicast instead of broadcast to access the cs_config register (Wenhui Fan)
+- anolis: EDAC/amd64: Correct the address translation for hygon family 18h model 4h (Wenhui Fan)
+- anolis: EDAC/amd64: Rename the address translation function for hygon family 18h model 4h (Wenhui Fan)
+- anolis: perf/x86/uncore: Add DF PMU support for Hygon family 18h model 8h (Qi Liu)
+- mm/memremap.c: map FS_DAX device memory as decrypted (Pankaj Gupta)
+- swiotlb: do not zero buffer in set_memory_decrypted() (Kirill A. Shutemov)
+- anolis: support rich container for syscall sysinfo (Yi Tao)
+- anolis: rich container: support mountinfo to modify info of specified mount points (Liu Song)
+- anolis: Revert "io_uring: inform block layer of how many requests we are submitting" (Ferry Meng)
+
