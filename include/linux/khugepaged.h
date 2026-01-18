@@ -18,13 +18,12 @@ extern void khugepaged_enter_vma(struct vm_area_struct *vma,
 extern void khugepaged_min_free_kbytes_update(void);
 extern bool current_is_khugepaged(void);
 #ifdef CONFIG_SHMEM
-extern int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
-				   bool install_pmd);
+void collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
+		bool install_pmd);
 #else
-static inline int collapse_pte_mapped_thp(struct mm_struct *mm,
-					  unsigned long addr, bool install_pmd)
+static inline void collapse_pte_mapped_thp(struct mm_struct *mm,
+		unsigned long addr, bool install_pmd)
 {
-	return 0;
 }
 #endif
 
