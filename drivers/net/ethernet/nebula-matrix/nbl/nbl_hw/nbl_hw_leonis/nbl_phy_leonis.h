@@ -26,7 +26,6 @@
 #define KT_MASK_LEN32_ACTION_INFO		(0x0)
 #define KT_MASK_LEN12_ACTION_INFO		(0xFFFFF000)
 #define NBL_FEM_SEARCH_KEY_LEN			44
-#define NBL_HW_DUMMY_REG			(0x1300904)
 
 #define HT_PORT0_BANK_SEL             (0b01100000)
 #define HT_PORT1_BANK_SEL             (0b00011000)

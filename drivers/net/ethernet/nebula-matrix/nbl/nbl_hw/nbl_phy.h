@@ -14,6 +14,7 @@
 #define NBL_MEMORY_BAR				(0)
 #define NBL_MAILBOX_BAR				(2)
 #define NBL_RDMA_NOTIFY_OFF			(8192)
+#define NBL_HW_DUMMY_REG			(0x1300904)
 
 struct nbl_phy_mgt {
 	struct nbl_common_info *common;
@@ -133,6 +134,11 @@ static __maybe_unused u32 nbl_hw_rd32(struct nbl_phy_mgt *phy_mgt, u64 reg)
 		return U32_MAX;
 
 	return rd32(phy_mgt->hw_addr, reg);
+}
+
+static inline void nbl_flush_writes(struct nbl_phy_mgt *phy_mgt)
+{
+	nbl_hw_rd32(phy_mgt, NBL_HW_DUMMY_REG);
 }
 
 static __maybe_unused void nbl_mbx_wr32(void *priv, u64 reg, u32 value)
