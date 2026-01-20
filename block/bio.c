@@ -1432,8 +1432,7 @@ again:
 	if (!bio_integrity_endio(bio))
 		return;
 
-	if (bio->bi_disk)
-		rq_qos_done_bio(bio->bi_disk->queue, bio);
+	rq_qos_done_bio(bio);
 
 	/*
 	 * Need to have a real endio function for chained bios, otherwise
