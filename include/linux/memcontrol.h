@@ -343,7 +343,7 @@ struct mem_cgroup {
 	/* Range enforcement for interrupt charges */
 	struct work_struct high_work;
 
-#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+#if defined(CONFIG_ZSWAP)
 	unsigned long zswap_max;
 #endif
 
@@ -2089,6 +2089,23 @@ static inline void obj_cgroup_charge_zswap(struct obj_cgroup *objcg,
 }
 static inline void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg,
 					     size_t size)
+{
+}
+#endif
+
+#ifdef CONFIG_ZSWAP
+bool memcg_may_zswap(struct mem_cgroup *memcg);
+void memcg_charge_zswap(struct mem_cgroup *memcg, size_t size);
+void memcg_uncharge_zswap(struct mem_cgroup *memcg, size_t size);
+#else
+static inline bool memcg_may_zswap(struct mem_cgroup *memcg)
+{
+	return true;
+}
+static inline void memcg_charge_zswap(struct mem_cgroup *memcg, size_t size)
+{
+}
+static inline void memcg_uncharge_zswap(struct mem_cgroup *memcg, size_t size)
 {
 }
 #endif

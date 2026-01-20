@@ -169,6 +169,7 @@ struct zswap_entry {
 		unsigned long value;
 	};
 	struct obj_cgroup *objcg;
+	struct mem_cgroup *memcg;
 };
 
 struct zswap_header {
@@ -343,7 +344,13 @@ static void zswap_free_entry(struct zswap_entry *entry)
 	if (entry->objcg) {
 		obj_cgroup_uncharge_zswap(entry->objcg, entry->length);
 		obj_cgroup_put(entry->objcg);
+		entry->objcg = NULL;
+	} else if (entry->memcg) {
+		memcg_uncharge_zswap(entry->memcg, entry->length);
+		mem_cgroup_put(entry->memcg);
+		entry->memcg = NULL;
 	}
+
 	if (!entry->length)
 		atomic_dec(&zswap_same_filled_pages);
 	else {
@@ -1011,6 +1018,7 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 	struct zswap_entry *entry, *dupentry;
 	struct crypto_comp *tfm;
 	struct obj_cgroup *objcg = NULL;
+	struct mem_cgroup *memcg = NULL;
 	struct zswap_pool *pool;
 	int ret;
 	unsigned int hlen, dlen = PAGE_SIZE;
@@ -1036,10 +1044,15 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 	 * cgroup-aware entry LRU, we will push out entries system-wide based on
 	 * local cgroup limits.
 	 */
+	ret = -ENOMEM;
 	objcg = get_obj_cgroup_from_page(page);
 	if (objcg && !obj_cgroup_may_zswap(objcg)) {
-		ret = -ENOMEM;
 		goto reject;
+	} else if (!objcg) {
+		memcg = get_mem_cgroup_from_page(page);
+
+		if (memcg && !memcg_may_zswap(memcg))
+			goto reject;
 	}
 
 	/* reclaim space if needed */
@@ -1065,6 +1078,8 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 		goto reject;
 	}
 
+	entry->objcg = NULL;
+	entry->memcg = NULL;
 	if (zswap_same_filled_pages_enabled) {
 		src = kmap_atomic(page);
 		if (zswap_is_page_same_filled(src, &value)) {
@@ -1123,11 +1138,15 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 	entry->length = dlen;
 
 insert_entry:
-	entry->objcg = objcg;
 	if (objcg) {
+		entry->objcg = objcg;
 		obj_cgroup_charge_zswap(objcg, entry->length);
 		/* Account before objcg ref is moved to tree */
 		count_objcg_event(objcg, ZSWPOUT);
+	} else if (memcg) {
+		entry->memcg = memcg;
+		memcg_charge_zswap(memcg, entry->length);
+		count_memcg_events(memcg, ZSWPOUT, 1);
 	}
 
 	/* map */
@@ -1158,6 +1177,8 @@ freepage:
 reject:
 	if (objcg)
 		obj_cgroup_put(objcg);
+	else if (memcg)
+		mem_cgroup_put(memcg);
 	return ret;
 
 shrink:
@@ -1216,6 +1237,8 @@ stats:
 	count_vm_event(ZSWPIN);
 	if (entry->objcg)
 		count_objcg_event(entry->objcg, ZSWPIN);
+	else if (entry->memcg)
+		count_memcg_events(entry->memcg, ZSWPIN, 1);
 
 	spin_lock(&tree->lock);
 	zswap_entry_put(tree, entry);
