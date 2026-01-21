@@ -7826,6 +7826,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 		/* Default gap is 0.5% max limit */
 		memcg->wmark_scale_factor = parent->wmark_scale_factor ?
 					    : 50;
+		memcg->allow_uncachedio = parent->allow_uncachedio;
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 		memcg->thp_reclaim = parent->thp_reclaim;
 		memcg->tr_ctrl.threshold = parent->tr_ctrl.threshold;
