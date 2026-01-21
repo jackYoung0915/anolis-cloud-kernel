@@ -28,7 +28,6 @@
 #define NBL_FEM_SEARCH_KEY_LEN			44
 #define NBL_DRIVER_STATUS_REG			(0x1300444)
 #define NBL_DRIVER_STATUS_BIT			(16)
-#define NBL_HW_DUMMY_REG			(0x1300904)
 
 #define HT_PORT0_BANK_SEL             (0b01100000)
 #define HT_PORT1_BANK_SEL             (0b00011000)
