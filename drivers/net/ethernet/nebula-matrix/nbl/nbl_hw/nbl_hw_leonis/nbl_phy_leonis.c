@@ -599,9 +599,10 @@ static void nbl_shaping_eth_init(struct nbl_phy_mgt *phy_mgt, u8 eth_id, u8 spee
 
 static int nbl_shaping_init(struct nbl_phy_mgt *phy_mgt, u8 speed)
 {
+#define NBL_SHAPING_FLUSH_INTERVAL 128
 	struct dsch_psha_en psha_en = {0};
 	struct nbl_shaping_net net_shaping = {0};
-
+	int num = NBL_SHAPING_FLUSH_INTERVAL;
 	int i;
 
 	for (i = 0; i < NBL_MAX_ETHERNET; i++)
@@ -610,9 +611,13 @@ static int nbl_shaping_init(struct nbl_phy_mgt *phy_mgt, u8 speed)
 	psha_en.en = 0xF;
 	nbl_hw_write_regs(phy_mgt, NBL_DSCH_PSHA_EN_ADDR, (u8 *)&psha_en, sizeof(psha_en));
 
-	for (i = 0; i < NBL_MAX_FUNC; i++)
+	for (i = 0; i < NBL_MAX_FUNC; i++) {
 		nbl_hw_write_regs(phy_mgt, NBL_SHAPING_NET_REG(i),
 				  (u8 *)&net_shaping, sizeof(net_shaping));
+		if ((i % num) == 0)
+			nbl_flush_writes(phy_mgt);
+	}
+	nbl_flush_writes(phy_mgt);
 	return 0;
 }
 
