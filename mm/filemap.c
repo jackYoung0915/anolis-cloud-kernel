@@ -3528,7 +3528,8 @@ struct page *grab_cache_page_write_begin(struct address_space *mapping,
 		wait_for_stable_page(page);
 
 #ifdef CONFIG_MEMCG
-	if (page->mem_cgroup && page->mem_cgroup->allow_uncachedio & MEMCG_UNCACHEDIO_WRITE)
+	if (page && page->mem_cgroup &&
+		page->mem_cgroup->allow_uncachedio & MEMCG_UNCACHEDIO_WRITE)
 		__SetPageDropbehind(page);
 #endif
 	return page;
