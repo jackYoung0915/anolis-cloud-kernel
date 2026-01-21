@@ -12,13 +12,23 @@ help
 
 if UB_UMMU_CORE
 config UB_UMMU_CORE_DRIVER
-tristate "UMMU Framework Modular API"
-default n
-help
-    The configuration is flexible and depends on how the ummu driver
-    intends to utilize this feature. This configuration option
-    encompasses various features that the driver may use.
-    If the driver wishes to employ the UB feature, this
-    configuration must be enabled.
-    Select 'M' to build these features as a loadable kernel module.
+	tristate "UMMU Framework Modular API"
+	default n
+	help
+	  The configuration is flexible and depends on how the ummu driver
+	  intends to utilize this feature. This configuration option
+	  encompasses various features that the driver may use.
+	  If the driver wishes to employ the UB feature, this
+	  configuration must be enabled.
+	  Select 'M' to build these features as a loadable kernel module.
+
+config UB_UMMU_SVA_SEPARATED_PAGES
+	bool "Support for UMMU SVA to establish separated page tables"
+	default n
+	help
+	  the hardware does not support IOPF capability, using SVA
+	  ared page tables can lead to page faults due to periodic
+	  mory tasks. By separating the process page table from the
+	  MMU page table, the goal of SVA programming is achieved.
+	  using SVA in this scenario say 'Y' here.
 endif
