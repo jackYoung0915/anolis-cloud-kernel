@@ -627,6 +627,11 @@ static inline int file_exec_order(void)
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
+static inline bool is_pmd_order(unsigned int order)
+{
+	return order == HPAGE_PMD_ORDER;
+}
+
 static inline int split_folio_to_list(struct folio *folio,
 		struct list_head *list)
 {
