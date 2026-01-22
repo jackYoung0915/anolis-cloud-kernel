@@ -11169,6 +11169,17 @@ void sched_task_release(struct task_struct *p)
 
 #ifdef CONFIG_SCHED_MM_CID
 
+DEFINE_STATIC_KEY_FALSE(sched_mm_cid_enable);
+
+static int __init sched_mm_cid_setup(char *buf)
+{
+	static_branch_enable(&sched_mm_cid_enable);
+	pr_info("mm cid is enabled now!\n");
+
+	return 0;
+}
+early_param("mm_cid", sched_mm_cid_setup);
+
 /*
  * @cid_lock: Guarantee forward-progress of cid allocation.
  *
@@ -11392,10 +11403,14 @@ void sched_mm_cid_migrate_to(struct rq *dst_rq, struct task_struct *t)
 	int src_cid, dst_cid, src_cpu;
 	struct rq *src_rq;
 
+	if (!mm_cid_enabled())
+		return;
+
 	lockdep_assert_rq_held(dst_rq);
 
 	if (!mm)
 		return;
+
 	src_cpu = t->migrate_from_cpu;
 	if (src_cpu == -1) {
 		t->last_mm_cid = -1;
@@ -11588,6 +11603,9 @@ void init_sched_mm_cid(struct task_struct *t)
 	struct mm_struct *mm = t->mm;
 	int mm_users = 0;
 
+	if (!mm_cid_enabled())
+		return;
+
 	if (mm) {
 		mm_users = atomic_read(&mm->mm_users);
 		if (mm_users == 1)
@@ -11601,6 +11619,9 @@ void task_tick_mm_cid(struct rq *rq, struct task_struct *curr)
 {
 	struct callback_head *work = &curr->cid_work;
 	unsigned long now = jiffies;
+
+	if (!mm_cid_enabled())
+		return;
 
 	if (!curr->mm || (curr->flags & (PF_EXITING | PF_KTHREAD)) ||
 	    work->next != work)
@@ -11616,6 +11637,9 @@ void sched_mm_cid_exit_signals(struct task_struct *t)
 {
 	struct mm_struct *mm = t->mm;
 	struct rq *rq;
+
+	if (!mm_cid_enabled())
+		return;
 
 	if (!mm)
 		return;
@@ -11639,6 +11663,9 @@ void sched_mm_cid_before_execve(struct task_struct *t)
 	struct mm_struct *mm = t->mm;
 	struct rq *rq;
 
+	if (!mm_cid_enabled())
+		return;
+
 	if (!mm)
 		return;
 
@@ -11661,6 +11688,9 @@ void sched_mm_cid_after_execve(struct task_struct *t)
 	struct mm_struct *mm = t->mm;
 	struct rq *rq;
 
+	if (!mm_cid_enabled())
+		return;
+
 	if (!mm)
 		return;
 
@@ -11681,6 +11711,9 @@ void sched_mm_cid_after_execve(struct task_struct *t)
 
 void sched_mm_cid_fork(struct task_struct *t)
 {
+	if (!mm_cid_enabled())
+		return;
+
 	WARN_ON_ONCE(!t->mm || t->mm_cid != -1);
 	t->mm_cid_active = 1;
 }
