@@ -4165,6 +4165,9 @@ static inline void switch_mm_cid(struct rq *rq,
 				 struct task_struct *prev,
 				 struct task_struct *next)
 {
+	if (!mm_cid_enabled())
+		return;
+
 	/*
 	 * Provide a memory barrier between rq->curr store and load of
 	 * {prev,next}->mm->pcpu_cid[cpu] on rq->curr->mm transition.
