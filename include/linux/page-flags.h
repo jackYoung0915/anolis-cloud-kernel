@@ -204,7 +204,7 @@ enum pageflags {
 	PG_dup_slave = PG_dirty,
 #endif
 	/* Only valid for buddy pages. Used to trace page that are initialized */
-	PG_inited = PG_reclaim,
+	PG_inited = PG_owner_priv_1,
 };
 
 #define PAGEFLAGS_MASK		((1UL << NR_PAGEFLAGS) - 1)
