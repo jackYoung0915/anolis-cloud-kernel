@@ -1852,6 +1852,9 @@ static int bprm_execve(struct linux_binprm *bprm,
 	/* execve succeeded */
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
+#ifdef CONFIG_CR_IO_URING
+	current->cr_io_uring_enabled = false;
+#endif
 	rseq_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);

@@ -1522,7 +1522,11 @@ struct task_struct {
 #endif
 	bool				proxy_exec;
 
+#ifdef CONFIG_CR_IO_URING
+	CK_KABI_USE(1, bool cr_io_uring_enabled)
+#else
 	CK_KABI_RESERVE(1)
+#endif
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
