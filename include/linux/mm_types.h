@@ -774,6 +774,14 @@ struct vm_area_struct {
 } __randomize_layout;
 
 #ifdef CONFIG_SCHED_MM_CID
+
+DECLARE_STATIC_KEY_FALSE(sched_mm_cid_enable);
+
+static inline bool mm_cid_enabled(void)
+{
+	return static_branch_unlikely(&sched_mm_cid_enable);
+}
+
 struct mm_cid {
 	u64 time;
 	int cid;
@@ -1205,6 +1213,9 @@ static inline void mm_init_cid(struct mm_struct *mm)
 {
 	int i;
 
+	if (!mm_cid_enabled())
+		return;
+
 	for_each_possible_cpu(i) {
 		struct mm_cid *pcpu_cid = per_cpu_ptr(mm->pcpu_cid, i);
 
@@ -1216,6 +1227,10 @@ static inline void mm_init_cid(struct mm_struct *mm)
 
 static inline int mm_alloc_cid(struct mm_struct *mm)
 {
+
+	if (!mm_cid_enabled())
+		return 0;
+
 	mm->pcpu_cid = alloc_percpu(struct mm_cid);
 	if (!mm->pcpu_cid)
 		return -ENOMEM;
@@ -1225,6 +1240,9 @@ static inline int mm_alloc_cid(struct mm_struct *mm)
 
 static inline void mm_destroy_cid(struct mm_struct *mm)
 {
+	if (!mm_cid_enabled())
+		return;
+
 	free_percpu(mm->pcpu_cid);
 	mm->pcpu_cid = NULL;
 }
