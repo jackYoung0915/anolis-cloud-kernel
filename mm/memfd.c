@@ -420,7 +420,7 @@ err_name:
 	return ERR_PTR(error);
 }
 
-static struct file *alloc_file(const char *name, unsigned int flags)
+struct file *memfd_alloc_file(const char *name, unsigned int flags)
 {
 	unsigned int *file_seals;
 	struct file *file;
@@ -479,7 +479,7 @@ SYSCALL_DEFINE2(memfd_create,
 		goto err_name;
 	}
 
-	file = alloc_file(name, flags);
+	file = memfd_alloc_file(name, flags);
 	if (IS_ERR(file)) {
 		error = PTR_ERR(file);
 		goto err_fd;
