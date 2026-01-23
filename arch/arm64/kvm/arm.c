@@ -1822,6 +1822,7 @@ static void cpu_set_hyp_vector(void)
 static void cpu_hyp_init_context(void)
 {
 	kvm_init_host_cpu_context(&this_cpu_ptr(kvm_host_data)->host_ctxt);
+	kvm_init_host_debug_data();
 }
 #else
 static void __init cpu_prepare_hyp_mode(int cpu, u32 hyp_va_bits)
