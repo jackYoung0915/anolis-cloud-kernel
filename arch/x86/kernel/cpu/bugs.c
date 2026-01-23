@@ -2623,6 +2623,47 @@ int arch_prctl_spec_ctrl_get(struct task_struct *task, unsigned long which)
 	}
 }
 
+/**
+ * enum ibpb_brtype_cmd - IBPB action control flag
+ * @IBPB_FLUSH_IND: IBPB command only flushes indirect branches in branch target buffer
+ * @IBPB_FLUSH_ALL: IBPB command flushes all types of branches in branch target buffer
+ */
+enum ibpb_brtype_cmd {
+	IBPB_FLUSH_IND,
+	IBPB_FLUSH_ALL,
+};
+static enum ibpb_brtype_cmd ibpb_brtype __ro_after_init = IBPB_FLUSH_ALL;
+/**
+ * The kernel parameter ibpb_brtype is used to control
+ * whether IBPB flushes all branches or indirect branches:
+ * ibpb_brtype=     [X86, HYGON only]
+ *                IBPB action control flag
+ *                Format: { ibpb-all | ibpb-ind }
+ *                ibpb-all -- IBPB flushes all types of branches,this is the default value.
+ *                ibpb-ind -- IBPB flushes only indirect branches.
+ */
+static int __init ibpb_brtype_cmdline(char *str)
+{
+	if (!str)
+		return -EINVAL;
+
+	if (!strcmp(str, "ibpb-all")) {
+		ibpb_brtype = IBPB_FLUSH_ALL;
+		pr_info("IBPB flushes all branches.\n");
+	} else if (!strcmp(str, "ibpb-ind")) {
+		ibpb_brtype = IBPB_FLUSH_IND;
+		pr_info("IBPB flushes only indirect branches.\n");
+	} else
+		pr_err("Ignoring unknown ibpb branch type option (%s).\n", str);
+
+	return 0;
+}
+early_param("ibpb_brtype", ibpb_brtype_cmdline);
+
+#define HYGON_FAMILY_24 0x18
+#define HYGON_MODEL_3 3
+#define IBPB_FLUSH_ALL_BIT 55
+
 void x86_spec_ctrl_setup_ap(void)
 {
 	if (boot_cpu_has(X86_FEATURE_MSR_SPEC_CTRL))
@@ -2630,6 +2671,13 @@ void x86_spec_ctrl_setup_ap(void)
 
 	if (ssb_mode == SPEC_STORE_BYPASS_DISABLE)
 		x86_amd_ssb_disable();
+
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) &&
+		(boot_cpu_data.x86 == HYGON_FAMILY_24)) {
+		if ((boot_cpu_data.x86_model > HYGON_MODEL_3) &&
+			(ibpb_brtype == IBPB_FLUSH_ALL))
+			msr_set_bit(MSR_ZEN4_BP_CFG, IBPB_FLUSH_ALL_BIT);
+	}
 }
 
 bool itlb_multihit_kvm_mitigation;
@@ -2815,14 +2863,34 @@ early_param("spec_rstack_overflow", srso_parse_cmdline);
 
 #define SRSO_NOTICE "WARNING: See https://kernel.org/doc/html/latest/admin-guide/hw-vuln/srso.html for mitigation options."
 
+/*
+ * Whether the HYGON IBPB action flushes all types of branches is not controlled by microcode;
+ * Instead, it is controlled by bit 55 of MSR 0xc001102e according to kernel command line.
+ */
+bool ibpb_can_flush_allbranch(void)
+{
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) &&
+	    (boot_cpu_data.x86 == HYGON_FAMILY_24)) {
+		if (boot_cpu_data.x86_model <= HYGON_MODEL_3) {
+			return true;
+		} else if (ibpb_brtype == IBPB_FLUSH_ALL) {
+			msr_set_bit(MSR_ZEN4_BP_CFG, IBPB_FLUSH_ALL_BIT);
+			return true;
+		}
+		return false;
+	}
+
+	return boot_cpu_has(X86_FEATURE_IBPB_BRTYPE);
+}
+
 static void __init srso_select_mitigation(void)
 {
-	bool has_microcode = boot_cpu_has(X86_FEATURE_IBPB_BRTYPE);
+	bool ibpb_allbr_flag = ibpb_can_flush_allbranch();
 
 	if (!boot_cpu_has_bug(X86_BUG_SRSO) || cpu_mitigations_off())
 		goto pred_cmd;
 
-	if (has_microcode) {
+	if (ibpb_allbr_flag) {
 		/*
 		 * Zen1/2 with SMT off aren't vulnerable after the right
 		 * IBPB microcode has been applied.
@@ -2849,7 +2917,7 @@ static void __init srso_select_mitigation(void)
 		goto pred_cmd;
 
 	case SRSO_CMD_MICROCODE:
-		if (has_microcode) {
+		if (ibpb_allbr_flag) {
 			srso_mitigation = SRSO_MITIGATION_MICROCODE;
 			pr_warn(SRSO_NOTICE);
 		}
@@ -2871,7 +2939,7 @@ static void __init srso_select_mitigation(void)
 				setup_force_cpu_cap(X86_FEATURE_SRSO);
 				set_return_thunk(srso_return_thunk);
 			}
-			if (has_microcode)
+			if (ibpb_allbr_flag)
 				srso_mitigation = SRSO_MITIGATION_SAFE_RET;
 			else
 				srso_mitigation = SRSO_MITIGATION_SAFE_RET_UCODE_NEEDED;
@@ -2883,7 +2951,7 @@ static void __init srso_select_mitigation(void)
 
 	case SRSO_CMD_IBPB:
 		if (IS_ENABLED(CONFIG_CPU_IBPB_ENTRY)) {
-			if (has_microcode) {
+			if (ibpb_allbr_flag) {
 				setup_force_cpu_cap(X86_FEATURE_ENTRY_IBPB);
 				setup_force_cpu_cap(X86_FEATURE_IBPB_ON_VMEXIT);
 				srso_mitigation = SRSO_MITIGATION_IBPB;
@@ -2911,7 +2979,7 @@ static void __init srso_select_mitigation(void)
 
 	case SRSO_CMD_IBPB_ON_VMEXIT:
 		if (IS_ENABLED(CONFIG_CPU_IBPB_ENTRY)) {
-			if (has_microcode) {
+			if (ibpb_allbr_flag) {
 				setup_force_cpu_cap(X86_FEATURE_IBPB_ON_VMEXIT);
 				srso_mitigation = SRSO_MITIGATION_IBPB_ON_VMEXIT;
 
