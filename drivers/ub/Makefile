@@ -4,3 +4,4 @@ obj-y += ubus/
 obj-y += ubfi/
 obj-$(CONFIG_UB_CDMA) += cdma/
 obj-$(CONFIG_UB_UBDEVSHM) += ubdevshm/
+obj-$(CONFIG_UB_UBMEMPFD) += ubmempfd/
