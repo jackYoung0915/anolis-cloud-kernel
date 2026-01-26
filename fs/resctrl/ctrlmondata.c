@@ -497,7 +497,7 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 	union mon_data_bits md;
 	struct rdt_domain *d;
 	struct rmid_read rr;
-	int ret = 0, index;
+	int ret = 0;
 
 	rdtgrp = rdtgroup_kn_lock_live(of->kn);
 	if (!rdtgrp) {
@@ -517,24 +517,12 @@ int rdtgroup_mondata_show(struct seq_file *m, void *arg)
 		goto out;
 	}
 
-	if (resctrl_arch_get_abmc_enabled() && evtid != QOS_L3_OCCUP_EVENT_ID) {
-		index = mon_event_config_index_get(evtid);
-		if (index != INVALID_CONFIG_INDEX &&
-		    rdtgrp->mon.cntr_id[index] == MON_CNTR_UNSET) {
-			rr.err = -ENOENT;
-			goto checkresult;
-		}
-	}
-
 	mon_event_read(&rr, r, d, rdtgrp, evtid, false);
 
-checkresult:
 	if (rr.err == -EIO)
 		seq_puts(m, "Error\n");
 	else if (rr.err == -EINVAL)
 		seq_puts(m, "Unavailable\n");
-	else if (rr.err == -ENOENT)
-		seq_puts(m, "Unassigned\n");
 	else
 		seq_printf(m, "%llu\n", rr.val);
 
