@@ -290,52 +290,6 @@ out:
 	return false;
 }
 
-static void mba_enable(enum resctrl_res_level l)
-{
-	struct rdt_hw_resource *r_hw = &rdt_resources_all[l];
-	struct rdt_resource *r = &r_hw->r_resctrl;
-
-	r->alloc_capable = true;
-}
-
-static void mba_disable(enum resctrl_res_level l)
-{
-	struct rdt_hw_resource *r_hw = &rdt_resources_all[l];
-	struct rdt_resource *r = &r_hw->r_resctrl;
-
-	r->alloc_capable = false;
-}
-
-/*
- * Currently memory bandwidth HWDRC feature is enabled or disabled by the user
- * outside of the scope of the resctrl filesystem. When memory bandwidth HWDRC
- * is enabled, it takes over MBA hooks in resctrl for memory bandwidth
- * throttling.
- *
- * Set memory bandwidth HWDRC enabled in resctrl so that the user who enables
- * memory bandwidth HWDRC can make sure that resctrl doesn't provide any hooks
- * to control MBA.
- *
- * Set memory bandwidth HWDRC disabled in resctrl, MBA is enabled by default.
- */
-int resctrl_arch_set_hwdrc_enabled(enum resctrl_res_level l, bool hwdrc_mb)
-{
-	struct rdt_resource *r = &rdt_resources_all[l].r_resctrl;
-
-	if (!resctrl_arch_is_hwdrc_mb_capable() || hwdrc_mb == r->membw.hwdrc_mb)
-		return -EINVAL;
-
-	/* MBA and memory bandwidth HWDRC features are mutually exclusive */
-	if (hwdrc_mb)
-		mba_disable(l);
-	else
-		mba_enable(l);
-
-	r->membw.hwdrc_mb = hwdrc_mb;
-
-	return 0;
-}
-
 static int reset_all_ctrls(struct rdt_resource *r)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
