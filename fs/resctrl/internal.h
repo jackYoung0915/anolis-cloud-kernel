@@ -58,7 +58,6 @@ struct rdt_fs_context {
 	bool				enable_cdpl3;
 	bool				enable_mba_mbps;
 	bool				enable_debug;
-	bool				enable_hwdrc_mb;
 };
 
 static inline struct rdt_fs_context *rdt_fc2context(struct fs_context *fc)
@@ -247,14 +246,6 @@ static inline  bool is_mba_sc(struct rdt_resource *r)
 		return false;
 
 	return r->membw.mba_sc;
-}
-
-static inline bool is_hwdrc_enabled(struct rdt_resource *r)
-{
-	if (!r)
-		r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
-
-	return r->membw.hwdrc_mb;
 }
 
 extern struct mutex rdtgroup_mutex;
