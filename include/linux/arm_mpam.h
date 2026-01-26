@@ -128,16 +128,4 @@ static inline void resctrl_arch_disable_mon(void) { }
 static inline void resctrl_arch_enable_alloc(void) { }
 static inline void resctrl_arch_disable_alloc(void) { }
 
-static inline bool resctrl_arch_get_abmc_enabled(void)
-{
-	return false;
-}
-
-static inline int resctrl_arch_mbm_cntr_assign_enable(void)
-{
-	return -EINVAL;
-}
-
-static inline void resctrl_arch_mbm_cntr_assign_disable(void) { }
-
 #endif /* __LINUX_ARM_MPAM_H */
