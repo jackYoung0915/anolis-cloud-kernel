@@ -274,13 +274,6 @@ struct resctrl_mon_config_info {
 	int                  err;
 };
 
-/*
- * Assignment flags for ABMC feature
- */
-#define ASSIGN_NONE			0
-#define ASSIGN_TOTAL			BIT(QOS_L3_MBM_TOTAL_EVENT_ID)
-#define ASSIGN_LOCAL			BIT(QOS_L3_MBM_LOCAL_EVENT_ID)
-
 /**
  * mon_event_config_index_get - get the hardware index for the
  *                              configurable event
