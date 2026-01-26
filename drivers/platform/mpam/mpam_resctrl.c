@@ -539,16 +539,9 @@ static u32 mbw_max_to_percent(u16 mbw_max, struct mpam_props *cprops)
 
 	for (bit = 15; bit; bit--) {
 		if (mbw_max & BIT(bit))
-			/*
-			 * Left shift by 16 bits to preserve the precision of
-			 * the division operation.
-			 */
-			value += (MAX_MBA_BW << 16) / divisor;
+			value += MAX_MBA_BW / divisor;
 		divisor <<= 1;
 	}
-
-	/* Use the upper bound of the fixed-point fraction. */
-	value = (value + (MAX_MBA_BW << (16 - cprops->bwa_wd))) >> 16;
 
 	return value;
 }
@@ -568,29 +561,23 @@ static u32 percent_to_mbw_pbm(u8 pc, struct mpam_props *cprops)
 static u16 percent_to_mbw_max(u8 pc, struct mpam_props *cprops)
 {
 	u8 bit;
-	u32 pc_ls, divisor = 2, value = 0;
+	u32 divisor = 2, value = 0;
 
 	if (WARN_ON_ONCE(cprops->bwa_wd > 15))
 		return MAX_MBA_BW;
 
-	/*
-	 * Left shift by 16 bits to preserve the precision of the division
-	 * operation.
-	 */
-	pc_ls = (u32) pc << 16;
-
 	for (bit = 15; bit; bit--) {
-		if (pc_ls >= (MAX_MBA_BW << 16) / divisor) {
-			pc_ls -= (MAX_MBA_BW << 16) / divisor;
+		if (pc >= MAX_MBA_BW / divisor) {
+			pc -= MAX_MBA_BW / divisor;
 			value |= BIT(bit);
 		}
 		divisor <<= 1;
 
-		if (!pc_ls || !((MAX_MBA_BW << 16) / divisor))
+		if (!pc || !(MAX_MBA_BW / divisor))
 			break;
 	}
 
-	value &= GENMASK(15, 15 - cprops->bwa_wd + 1);
+	value &= GENMASK(15, 15 - cprops->bwa_wd);
 
 	return value;
 }
