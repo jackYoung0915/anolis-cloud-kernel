@@ -954,12 +954,10 @@ out_unlock:
 	return err;
 }
 
-static void __exit dom_data_exit(struct rdt_resource *r)
+static void __exit dom_data_exit(void)
 {
-	if (!r->mon_capable)
-		return;
-
 	mutex_lock(&rdtgroup_mutex);
+
 	if (IS_ENABLED(CONFIG_RESCTRL_RMID_DEPENDS_ON_CLOSID)) {
 		kfree(closid_num_dirty_rmid);
 		closid_num_dirty_rmid = NULL;
@@ -1076,11 +1074,9 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	return 0;
 }
 
-void __exit resctrl_mon_resource_exit(void)
+void __exit rdt_put_mon_l3_config(void)
 {
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-
-	dom_data_exit(r);
+	dom_data_exit();
 }
 
 void __init intel_rdt_mbm_apply_quirk(void)
