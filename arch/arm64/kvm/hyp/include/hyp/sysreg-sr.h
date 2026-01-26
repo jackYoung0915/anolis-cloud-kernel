@@ -250,8 +250,7 @@ static inline void __sysreg32_restore_state(struct kvm_vcpu *vcpu)
  */
 static inline void __mpam_guest_load(void)
 {
-	if (IS_ENABLED(CONFIG_ARM64_MPAM) && mpam_cpus_have_feature() &&
-	    static_branch_likely(&mpam_enabled))
+	if (IS_ENABLED(CONFIG_ARM64_MPAM) && mpam_cpus_have_feature())
 		write_sysreg_el1(read_sysreg_s(SYS_MPAM0_EL1), SYS_MPAM1);
 }
 
@@ -265,8 +264,7 @@ static inline void __mpam_guest_put(void)
 	u64 val, mask = MPAM_SYSREG_PMG_D | MPAM_SYSREG_PMG_I |
 			MPAM_SYSREG_PARTID_D | MPAM_SYSREG_PARTID_I;
 
-	if (IS_ENABLED(CONFIG_ARM64_MPAM) && mpam_cpus_have_feature() &&
-	    static_branch_likely(&mpam_enabled)) {
+	if (IS_ENABLED(CONFIG_ARM64_MPAM) && mpam_cpus_have_feature()) {
 		val = FIELD_GET(mask, read_sysreg_s(SYS_MPAM2_EL2));
 		write_sysreg_el1(val, SYS_MPAM1);
 	}
