@@ -4,11 +4,7 @@
 #include <asm/mpam.h>
 
 #include <linux/jump_label.h>
-#include <linux/percpu.h>
 
 DEFINE_STATIC_KEY_FALSE(arm64_mpam_has_hcr);
 EXPORT_SYMBOL_FOR_KVM(arm64_mpam_has_hcr);
-DEFINE_STATIC_KEY_FALSE(mpam_enabled);
 EXPORT_SYMBOL_FOR_KVM(mpam_enabled);
-DEFINE_PER_CPU(u64, arm64_mpam_default);
-DEFINE_PER_CPU(u64, arm64_mpam_current);
