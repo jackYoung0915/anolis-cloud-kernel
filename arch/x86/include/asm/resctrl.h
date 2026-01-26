@@ -217,7 +217,6 @@ static inline void resctrl_arch_mon_ctx_free(struct rdt_resource *r, int evtid,
 					     void *ctx) { };
 
 int resctrl_arch_mbm_cntr_assign_enable(void);
-void resctrl_arch_mbm_cntr_assign_configure(void);
 void resctrl_arch_mbm_cntr_assign_disable(void);
 
 void resctrl_arch_event_config_set(void *info);
