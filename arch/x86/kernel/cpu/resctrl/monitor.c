@@ -224,7 +224,6 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	unsigned int mbm_offset = boot_cpu_data.x86_cache_mbm_width_offset;
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 	unsigned int threshold;
-	u32 eax, ebx, ecx, edx;
 
 	resctrl_rmid_realloc_limit = boot_cpu_data.x86_cache_size * 1024;
 	hw_res->mon_scale = boot_cpu_data.x86_cache_occ_scale;
@@ -244,18 +243,6 @@ int __init rdt_get_mon_l3_config(struct rdt_resource *r)
 	 * For a 35MB LLC and 56 RMIDs, this is ~1.8% of the LLC.
 	 */
 	threshold = resctrl_rmid_realloc_limit / r->mon.num_rmid;
-
-	if (rdt_cpu_has(X86_FEATURE_ABMC)) {
-		r->mon.mbm_cntr_assignable = true;
-		/*
-		 * Query CPUID_Fn80000020_EBX_x05 for number of
-		 * ABMC counters.
-		 */
-		cpuid_count(0x80000020, 5, &eax, &ebx, &ecx, &edx);
-		r->mon.num_mbm_cntrs = (ebx & 0xFFFF) + 1;
-		if (WARN_ON(r->mon.num_mbm_cntrs > 64))
-			r->mon.num_mbm_cntrs = 64;
-	}
 
 	/*
 	 * Because num_rmid may not be a power of two, round the value
