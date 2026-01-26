@@ -219,7 +219,6 @@ static inline void resctrl_arch_mon_ctx_free(struct rdt_resource *r, int evtid,
 int resctrl_arch_mbm_cntr_assign_enable(void);
 void resctrl_arch_mbm_cntr_assign_configure(void);
 void resctrl_arch_mbm_cntr_assign_disable(void);
-bool resctrl_arch_get_mbm_cntr_assign_enable(void);
 
 void resctrl_arch_event_config_set(void *info);
 u32 resctrl_arch_event_config_get(void *d, enum resctrl_event_id eventid);
