@@ -855,6 +855,12 @@ static inline bool system_supports_gcs(void)
 		alternative_has_cap_unlikely(ARM64_HAS_GCS);
 }
 
+static inline bool cpus_support_mpam(void)
+{
+	return IS_ENABLED(CONFIG_ARM64_MPAM) &&
+		cpus_have_final_cap(ARM64_MPAM);
+}
+
 int do_emulate_mrs(struct pt_regs *regs, u32 sys_reg, u32 rt);
 bool try_emulate_mrs(struct pt_regs *regs, u32 isn);
 
