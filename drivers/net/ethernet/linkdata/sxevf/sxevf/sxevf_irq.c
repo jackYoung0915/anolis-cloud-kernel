@@ -36,6 +36,9 @@ static inline void netif_napi_add_compat(struct net_device *dev,
 	netif_napi_add(dev, napi, poll);
 }
 
+#ifdef netif_napi_add
+#undef netif_napi_add
+#endif
 #define netif_napi_add(dev, napi, poll, weight)                                \
 	netif_napi_add_compat(dev, napi, poll, weight)
 #endif
@@ -480,6 +483,9 @@ void sxevf_irq_release(struct sxevf_adapter *adapter)
 	u16 irq_idx;
 	struct sxevf_irq_context *irq_ctxt = &adapter->irq_ctxt;
 
+	if (!test_bit(SXEVF_IRQ_REQUESTED, &adapter->state))
+		return;
+
 	if (!irq_ctxt->msix_entries)
 		goto l_out;
 
@@ -497,7 +503,7 @@ void sxevf_irq_release(struct sxevf_adapter *adapter)
 	free_irq(irq_ctxt->msix_entries[irq_idx].vector, adapter);
 
 l_out:
-	;
+	clear_bit(SXEVF_IRQ_REQUESTED, &adapter->state);
 }
 
 s32 sxevf_irq_ctxt_init(struct sxevf_adapter *adapter)
@@ -740,6 +746,8 @@ s32 sxevf_irq_configure(struct sxevf_adapter *adapter)
 	}
 
 	sxevf_hw_irq_configure(adapter);
+
+	set_bit(SXEVF_IRQ_REQUESTED, &adapter->state);
 
 l_out:
 	return ret;

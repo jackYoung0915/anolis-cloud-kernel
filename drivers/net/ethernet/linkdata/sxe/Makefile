@@ -34,7 +34,8 @@ sxe-objs += base/log/sxe_log.o \
         sxepf/sxe_ring.o \
         sxepf/sxe_rx_proc.o \
         sxepf/sxe_sriov.o \
-        sxepf/sxe_tx_proc.o
+        sxepf/sxe_tx_proc.o \
+        sxepf/sxe_upgrade.o
 
 # add compile ccflags and macro
 ccflags-y += -Werror

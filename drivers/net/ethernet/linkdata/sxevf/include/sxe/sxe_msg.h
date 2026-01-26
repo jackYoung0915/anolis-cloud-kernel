@@ -79,6 +79,7 @@ enum sxe_hdc_cmd_opcode {
 	SXE_CMD_AN_CAP_GET,
 	SXE_CMD_GET_SOC_INFO,
 	SXE_CMD_MNG_RST = 15,
+	SXE_CMD_PORT_STATS,
 
 	SXE_CMD_MAX,
 };
@@ -129,6 +130,13 @@ struct sxe_default_mac_addr_resp {
 
 struct sxe_mng_rst {
 	bool enable;
+};
+
+struct sxe_port_stats {
+	u64 rx_packets;
+	u64 rx_drops;
+	u64 rx_errors;
+	u64 rx_crc_errors;
 };
 
 #endif

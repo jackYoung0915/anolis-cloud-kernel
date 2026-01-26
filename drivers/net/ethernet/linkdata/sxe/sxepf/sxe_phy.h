@@ -28,6 +28,7 @@
 #define SXE_SFF_10GBE_COMP_CODES 0x3
 #define SXE_SFF_1GBE_COMP_CODES 0x6
 #define SXE_SFF_CABLE_TECHNOLOGY 0x8
+#define SXE_SFF_VENDOR_NAME	0x14
 #define SXE_SFF_VENDOR_PN 0x28
 #define SXE_SFF_8472_DIAG_MONITOR_TYPE 0x5C
 #define SXE_SFF_8472_COMPLIANCE 0x5E
@@ -46,12 +47,16 @@
 #define SXE_SFF_10GBASELR_CAPABLE 0x20
 
 #define SXE_SFP_COMP_CODE_SIZE 10
+#define SXE_SFP_VENDOR_NAME_SIZE 16
 #define SXE_SFP_VENDOR_PN_SIZE 16
 #define SXE_SFP_EEPROM_SIZE_MAX 512
 
 #define SXE_SW_SFP_LOS_DELAY_MS 200
 
 #define SXE_SW_SFP_MULTI_GB_MS 4000
+
+#define SXE_MUTISPEED_QUIRKS_TIMEOUT_S 5
+#define SXE_QUIRKS_LOS_BLOCK_TIMEOUT_S (SXE_MUTISPEED_QUIRKS_TIMEOUT_S + 2)
 
 #define SXE_PHY_ADDR_MAX 32
 #define SXE_MARVELL_88X3310_PHY_ID 0x2002B
@@ -119,10 +124,35 @@ struct sxe_phy_info {
 };
 #endif
 
+struct sxe_sfp_quirk {
+	u8 vendor_name[SXE_SFP_VENDOR_NAME_SIZE];
+	u8 vendor_pn[SXE_SFP_VENDOR_PN_SIZE];
+	u32 filter_time;
+	u8 waitloop10g_fir;
+	u8 waitloop10g_sec;
+	u8 waitloop1g;
+	u8 waitloop_single_spd;
+	bool los_block_flag;
+	bool disable_los_wait_timeout;
+};
+
+struct sxe_sfp_link_cfg {
+	u32 filter_time;
+	u8 waitloop10g_fir;
+	u8 waitloop10g_sec;
+	u8 waitloop1g;
+	u8 waitloop_single_spd;
+	bool los_block_flag;
+	bool disable_los_wait_timeout;
+};
+
 struct sxe_sfp_info {
 	enum sxe_sfp_type type;
 	bool inserted;
 	bool multispeed_fiber;
+	bool slow_skip;
+	bool slow_wait;
+	struct sxe_sfp_link_cfg sfp_link_cfg_info;
 };
 
 struct sxe_phy_context {
@@ -178,8 +208,6 @@ void sxe_sfp_tx_laser_disable(struct sxe_adapter *adapter);
 
 s32 sxe_sfp_vendor_pn_cmp(u8 *sfp_vendor_pn);
 
-s32 sxe_sfp_aoc_vendor_pn_cmp(u8 *sfp_vendor_pn);
-
 s32 sxe_sfp_identify(struct sxe_adapter *adapter);
 
 s32 sxe_link_configure(struct sxe_adapter *adapter, u32 speed);
@@ -193,5 +221,7 @@ s32 sxe_pcs_sds_init(struct sxe_adapter *adapter, enum sxe_pcs_mode mode,
 		     u32 max_frame);
 
 void sxe_fc_enable(struct sxe_adapter *adapter);
+
+s32 sxe_link_multispeed_quirks_configure(struct sxe_adapter *adapter);
 
 #endif
