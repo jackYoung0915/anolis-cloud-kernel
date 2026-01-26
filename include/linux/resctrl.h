@@ -12,8 +12,6 @@
 #include <asm/resctrl.h>
 #endif
 
-extern struct mutex rdtgroup_mutex;
-
 /* CLOSID, RMID value used by the default control group */
 #define RESCTRL_RESERVED_CLOSID		0
 #define RESCTRL_RESERVED_RMID		0
