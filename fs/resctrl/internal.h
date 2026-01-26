@@ -302,8 +302,6 @@ void cqm_setup_limbo_handler(struct rdt_domain *dom, unsigned long delay_ms,
 void cqm_handle_limbo(struct work_struct *work);
 bool has_busy_rmid(struct rdt_domain *d);
 void __check_limbo(struct rdt_domain *d, bool force_free);
-int mbm_cntr_alloc(struct rdt_resource *r);
-void mbm_cntr_free(u32 cntr_id);
 void rdt_staged_configs_clear(void);
 bool closid_allocated(unsigned int closid);
 int resctrl_find_cleanest_closid(void);
