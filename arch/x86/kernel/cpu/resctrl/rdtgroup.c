@@ -1685,16 +1685,13 @@ void resctrl_arch_mon_event_config_write(void *info)
 	index = mon_event_config_index_get(mon_info->evtid);
 	if (index == INVALID_CONFIG_INDEX) {
 		pr_warn_once("Invalid event id %d\n", mon_info->evtid);
-		mon_info->err = -EINVAL;
 		return;
 	}
 	wrmsr(MSR_IA32_EVT_CFG_BASE + index, mon_info->mon_config, 0);
-
-	mon_info->err = 0;
 }
 
-static int mbm_config_write_domain(struct rdt_resource *r,
-				   struct rdt_domain *d, u32 evtid, u32 val)
+static void mbm_config_write_domain(struct rdt_resource *r,
+				    struct rdt_domain *d, u32 evtid, u32 val)
 {
 	struct resctrl_mon_config_info mon_info = {0};
 
@@ -1707,7 +1704,7 @@ static int mbm_config_write_domain(struct rdt_resource *r,
 	mon_info.evtid = evtid;
 	mondata_config_read(&mon_info);
 	if (mon_info.mon_config == val)
-		return 0;
+		return;
 
 	mon_info.mon_config = val;
 
@@ -1719,10 +1716,6 @@ static int mbm_config_write_domain(struct rdt_resource *r,
 	 */
 	smp_call_function_any(&d->cpu_mask, resctrl_arch_mon_event_config_write,
 			      &mon_info, 1);
-	if (mon_info.err) {
-		rdt_last_cmd_puts("Invalid event configuration\n");
-		return mon_info.err;
-	}
 
 	/*
 	 * When an Event Configuration is changed, the bandwidth counters
@@ -1734,8 +1727,6 @@ static int mbm_config_write_domain(struct rdt_resource *r,
 	 * mbm_local and mbm_total counts for all the RMIDs.
 	 */
 	resctrl_arch_reset_rmid_all(r, d);
-
-	return 0;
 }
 
 static int mon_config_write(struct rdt_resource *r, char *tok, u32 evtid)
@@ -1743,7 +1734,6 @@ static int mon_config_write(struct rdt_resource *r, char *tok, u32 evtid)
 	char *dom_str = NULL, *id_str;
 	unsigned long dom_id, val;
 	struct rdt_domain *d;
-	int err;
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
 	lockdep_assert_cpus_held();
@@ -1775,9 +1765,7 @@ next:
 
 	list_for_each_entry(d, &r->domains, list) {
 		if (d->id == dom_id) {
-			err = mbm_config_write_domain(r, d, evtid, val);
-			if (err)
-				return err;
+			mbm_config_write_domain(r, d, evtid, val);
 			goto next;
 		}
 	}
