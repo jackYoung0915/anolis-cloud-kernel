@@ -1616,11 +1616,17 @@ out:
 	return ret;
 }
 
+static void mondata_config_read(struct resctrl_mon_config_info *mon_info)
+{
+	smp_call_function_any(&mon_info->d->cpu_mask,
+			      resctrl_arch_mon_event_config_read, mon_info, 1);
+}
+
 static int mbm_config_show(struct seq_file *s, struct rdt_resource *r, u32 evtid)
 {
+	struct resctrl_mon_config_info mon_info = {0};
 	struct rdt_domain *dom;
 	bool sep = false;
-	u32 val;
 
 	cpus_read_lock();
 	mutex_lock(&rdtgroup_mutex);
@@ -1629,11 +1635,13 @@ static int mbm_config_show(struct seq_file *s, struct rdt_resource *r, u32 evtid
 		if (sep)
 			seq_puts(s, ";");
 
-		val = resctrl_arch_event_config_get(dom, evtid);
-		if (val == INVALID_CONFIG_VALUE)
-			break;
+		memset(&mon_info, 0, sizeof(struct resctrl_mon_config_info));
+		mon_info.r = r;
+		mon_info.d = dom;
+		mon_info.evtid = evtid;
+		mondata_config_read(&mon_info);
 
-		seq_printf(s, "%d=0x%02x", dom->id, val);
+		seq_printf(s, "%d=0x%02x", dom->id, mon_info.mon_config);
 		sep = true;
 	}
 	seq_puts(s, "\n");
@@ -1668,18 +1676,18 @@ static int mbm_config_write_domain(struct rdt_resource *r,
 				   struct rdt_domain *d, u32 evtid, u32 val)
 {
 	struct resctrl_mon_config_info mon_info = {0};
-	u32 config_val;
 
 	/*
-	 * Check the current config value first. If both are the same then
+	 * Read the current config value first. If both are the same then
 	 * no need to write it again.
 	 */
-	config_val = resctrl_arch_event_config_get(d, evtid);
-	if (config_val == INVALID_CONFIG_VALUE || config_val == val)
-		return 0;
-
+	mon_info.r = r;
 	mon_info.d = d;
 	mon_info.evtid = evtid;
+	mondata_config_read(&mon_info);
+	if (mon_info.mon_config == val)
+		return 0;
+
 	mon_info.mon_config = val;
 
 	/*
@@ -1688,7 +1696,7 @@ static int mbm_config_write_domain(struct rdt_resource *r,
 	 * are scoped at the domain level. Writing any of these MSRs
 	 * on one CPU is observed by all the CPUs in the domain.
 	 */
-	smp_call_function_any(&d->cpu_mask, resctrl_arch_event_config_set,
+	smp_call_function_any(&d->cpu_mask, resctrl_arch_mon_event_config_write,
 			      &mon_info, 1);
 	if (mon_info.err) {
 		rdt_last_cmd_puts("Invalid event configuration\n");
