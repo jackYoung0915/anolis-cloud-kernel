@@ -361,23 +361,6 @@ int resctrl_arch_mbm_cntr_assign_enable(void)
 	return 0;
 }
 
-void resctrl_arch_mbm_cntr_assign_configure(void)
-{
-	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
-	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
-	bool enable = true;
-
-	mutex_lock(&rdtgroup_mutex);
-
-	if (r->mon.mbm_cntr_assignable) {
-		if (!hw_res->mbm_cntr_assign_enabled)
-			hw_res->mbm_cntr_assign_enabled = true;
-		resctrl_abmc_set_one_amd(&enable);
-	}
-
-	mutex_unlock(&rdtgroup_mutex);
-}
-
 void resctrl_arch_mbm_cntr_assign_disable(void)
 {
 	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
