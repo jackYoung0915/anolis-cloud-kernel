@@ -408,7 +408,6 @@ void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d);
 
 extern unsigned int resctrl_rmid_realloc_threshold;
 extern unsigned int resctrl_rmid_realloc_limit;
-void resctrl_file_fflags_init(const char *config, unsigned long fflags);
 
 int resctrl_init(void);
 void resctrl_exit(void);
