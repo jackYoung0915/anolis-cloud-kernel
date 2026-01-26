@@ -1173,11 +1173,7 @@ int acpi_pptt_get_cpumask_from_cache_id_and_level(u32 cache_id, u32 cache_level,
 		return -ENOENT;
 	}
 
-	/*
-	 * FIXME: Since this function does not actually use the cache id in the
-	 * PPTT table, we downgrade the revision requirement.
-	 */
-	if (table->revision < 2) {
+	if (table->revision < 3) {
 		acpi_put_table(table);
 		return -ENOENT;
 	}
