@@ -24,9 +24,11 @@
 #define SXE_VPD_SN_LEN (16)
 #define SXE_SOC_RST_TIME (0x93A80)
 #define SXE_SFP_TEMP_THRESHOLD_INTERVAL (3)
-#define MGC_TERMLOG_INFO_MAX_LEN (12 * 1024)
-#define SXE_REGS_DUMP_MAX_LEN (12 * 1024)
+#define MGC_TERMLOG_INFO_MAX_LEN (9 * 1024)
+#define SXE_REGS_DUMP_MAX_LEN (9 * 1024)
 #define SXE_PRODUCT_NAME_LEN (32)
+#define SXE_USER_SET_QUIRK_COUNT (4)
+#define SXE_DEFAULT_QUIRK_COUNT (12)
 
 enum sxe_led_mode {
 	SXE_IDENTIFY_LED_BLINK_ON   = 0,
@@ -221,4 +223,26 @@ struct sxe_an_cap {
 	struct sxe_phy_an_cap local;
 	struct sxe_phy_an_cap peer;
 };
+
+struct sxecfgquirkinfo {
+	union {
+		u32 index;
+		u32 isvalid;
+	} type;
+	u8 vendor[SXE_MFG_SERIAL_NUMBER_LEN];
+	u8 vendorpn[SXE_MFG_SERIAL_NUMBER_LEN];
+	u8 wait10gfri;
+	u8 wait10gsec;
+	u8 wait1g;
+	u8 losblockflag;
+};
+
+struct sxecfguserquirklist {
+	struct sxecfgquirkinfo list[SXE_USER_SET_QUIRK_COUNT];
+};
+
+struct sxecfgdefquirklist {
+	struct sxecfgquirkinfo list[SXE_DEFAULT_QUIRK_COUNT];
+};
+
 #endif

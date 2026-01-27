@@ -28,6 +28,7 @@ enum sxe_monitor_task_state {
 	SXE_FNAV_REQUIRES_REINIT,
 
 	SXE_SFP_NEED_RESET,
+	SXE_SFP_NEED_DOWN,
 
 	SXE_LINK_NEED_CONFIG,
 
@@ -49,8 +50,11 @@ struct sxe_link_info {
 	unsigned long check_timeout;
 	unsigned long sfp_reset_timeout;
 	unsigned long last_lkcfg_time;
-	unsigned long sfp_multispeed_time;
+	unsigned long sfp_los_disable_timeout;
+	unsigned long link_quirks_timeout;
 };
+
+unsigned long sxe_los_disable_timeout_get(void);
 
 void sxe_monitor_init(struct sxe_adapter *adapter);
 

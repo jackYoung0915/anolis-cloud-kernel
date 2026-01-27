@@ -269,13 +269,7 @@ static inline void sxevf_hw_reg_handle_init(struct sxevf_hw *hw,
 	hw->reg_write = write;
 }
 
-#ifdef SXE_DPDK
-
-void sxevf_irq_disable(struct sxevf_hw *hw);
-
 void sxevf_hw_stop(struct sxevf_hw *hw);
-
-void sxevf_hw_reset(struct sxevf_hw *hw);
 
 void sxevf_msg_write(struct sxevf_hw *hw, u8 index, u32 msg);
 
@@ -289,22 +283,26 @@ void sxevf_pf_req_irq_trigger(struct sxevf_hw *hw);
 
 void sxevf_pf_ack_irq_trigger(struct sxevf_hw *hw);
 
-void sxevf_rxtx_reg_init(struct sxevf_hw *hw);
+void sxevf_event_irq_map(struct sxevf_hw *hw, u16 vector);
+
+void sxevf_specific_irq_enable(struct sxevf_hw *hw, u32 value);
 
 void sxevf_irq_enable(struct sxevf_hw *hw, u32 mask);
 
-u32 sxevf_irq_cause_get(struct sxevf_hw *hw);
-
-void sxevf_event_irq_map(struct sxevf_hw *hw, u16 vector);
+void sxevf_irq_disable(struct sxevf_hw *hw);
 
 void sxevf_hw_ring_irq_map(struct sxevf_hw *hw, bool is_tx, u16 hw_ring_idx,
 			   u16 vector);
 
 void sxevf_ring_irq_interval_set(struct sxevf_hw *hw, u16 irq_idx,
 				 u32 interval);
+void sxevf_hw_reset(struct sxevf_hw *hw);
 
-void sxevf_tx_desc_configure(struct sxevf_hw *hw, u32 desc_mem_len,
-			     u64 desc_dma_addr, u8 reg_idx);
+u32 sxevf_link_state_get(struct sxevf_hw *hw);
+
+void sxevf_tx_ring_switch(struct sxevf_hw *hw, u8 reg_idx, bool is_on);
+
+void sxevf_rx_ring_switch(struct sxevf_hw *hw, u8 reg_idx, bool is_on);
 
 void sxevf_rx_ring_desc_configure(struct sxevf_hw *hw, u32 desc_mem_len,
 				  u64 desc_dma_addr, u8 reg_idx);
@@ -313,48 +311,9 @@ void sxevf_rx_rcv_ctl_configure(struct sxevf_hw *hw, u8 reg_idx,
 				u32 header_buf_len, u32 pkg_buf_len,
 				bool drop_en);
 
-void sxevf_rss_bit_num_set(struct sxevf_hw *hw, u32 value);
-
-void sxevf_hw_vlan_tag_strip_switch(struct sxevf_hw *hw, u16 reg_index,
-				    bool is_enable);
-
-void sxevf_tx_queue_thresh_set(struct sxevf_hw *hw, u8 reg_idx,
-			       u32 prefech_thresh, u32 host_thresh,
-			       u32 wb_thresh);
-
-void sxevf_tx_ring_switch(struct sxevf_hw *hw, u8 reg_idx, bool is_on);
-
-void sxevf_rx_ring_switch(struct sxevf_hw *hw, u8 reg_idx, bool is_on);
-
-void sxevf_rx_desc_tail_set(struct sxevf_hw *hw, u8 reg_idx, u32 value);
-
-void sxevf_specific_irq_enable(struct sxevf_hw *hw, u32 value);
-
 void sxevf_packet_stats_get(struct sxevf_hw *hw, struct sxevf_hw_stats *stats);
 
 void sxevf_stats_init_value_get(struct sxevf_hw *hw,
 				struct sxevf_hw_stats *stats);
 
-u32 sxevf_hw_rss_redir_tbl_get(struct sxevf_hw *hw, u16 reg_idx);
-
-void sxevf_hw_rss_redir_tbl_set(struct sxevf_hw *hw, u16 reg_idx, u32 value);
-
-u32 sxevf_hw_rss_key_get(struct sxevf_hw *hw, u8 reg_idx);
-
-u32 sxevf_hw_rss_field_get(struct sxevf_hw *hw);
-
-void sxevf_hw_rss_field_set(struct sxevf_hw *hw, u32 rss_field);
-
-void sxevf_hw_rss_cap_switch(struct sxevf_hw *hw, bool is_on);
-
-void sxevf_hw_rss_key_set_all(struct sxevf_hw *hw, u32 *rss_key);
-
-bool sxevf_hw_is_rss_enabled(struct sxevf_hw *hw);
-
-u32 sxevf_link_state_get(struct sxevf_hw *hw);
-
-u32 sxevf_hw_regs_group_read(struct sxevf_hw *hw,
-			     const struct sxevf_reg_info *regs, u32 *reg_buf);
-
-#endif
 #endif
