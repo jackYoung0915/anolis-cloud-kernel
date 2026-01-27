@@ -91,8 +91,10 @@ DEFINE_PER_CPU(struct mem_cgroup *, int_active_memcg);
 /* Socket memory accounting disabled? */
 static bool cgroup_memory_nosocket;
 
+#ifdef CONFIG_MEMCG_KMEM
 /* Kernel memory accounting disabled? */
 bool cgroup_memory_nokmem;
+#endif
 unsigned long sysctl_penalty_extra_delay_jiffies;
 
 #ifdef CONFIG_MEMSLI
@@ -287,6 +289,11 @@ struct cgroup_subsys_state *vmpressure_to_css(struct vmpressure *vmpr)
 	return &container_of(vmpr, struct mem_cgroup, vmpressure)->css;
 }
 
+static int swap_high_show(struct seq_file *m, void *v);
+static ssize_t swap_high_write(struct kernfs_open_file *of,
+					char *buf, size_t nbytes, loff_t off);
+static int swap_events_show(struct seq_file *m, void *v);
+
 #ifdef CONFIG_MEMCG_KMEM
 static DEFINE_SPINLOCK(objcg_lock);
 
@@ -396,10 +403,6 @@ int memcg_nr_cache_ids;
 
 /* Protects memcg_nr_cache_ids */
 static DECLARE_RWSEM(memcg_cache_ids_sem);
-static int swap_high_show(struct seq_file *m, void *v);
-static ssize_t swap_high_write(struct kernfs_open_file *of,
-					char *buf, size_t nbytes, loff_t off);
-static int swap_events_show(struct seq_file *m, void *v);
 
 void memcg_get_cache_ids(void)
 {
@@ -9882,8 +9885,10 @@ static int __init cgroup_memory(char *s)
 			continue;
 		if (!strcmp(token, "nosocket"))
 			cgroup_memory_nosocket = true;
+#ifdef CONFIG_MEMCG_KMEM
 		if (!strcmp(token, "nokmem"))
 			cgroup_memory_nokmem = true;
+#endif
 	}
 	return 1;
 }
