@@ -154,12 +154,13 @@ resource_release:
 
 static void ummu_device_hw_probe_iidr(struct ummu_device *ummu)
 {
-	u32 reg = readl_relaxed(ummu->base + UMMU_IIDR);
+	u32 reg;
 
 	/*
 	 * In the 1st generation On the hisi chip, IIDR_PROD_ID is set to 0,
 	 * ummu enables chip_identifier to perform some specialized operations.
 	 */
+	reg = readl_relaxed(ummu->base + UMMU_IIDR);
 	if ((ummu_chip_identifier == HISI_VENDOR_ID) &&
 	    !FIELD_GET(IIDR_PROD_ID, reg)) {
 		ummu->cap.options |= UMMU_OPT_DOUBLE_PLBI;
@@ -180,7 +181,6 @@ static void ummu_device_hw_probe_cap0(struct ummu_device *ummu)
 	u32 reg, pasids, ubrt_pasids, cap_pasids;
 
 	reg = readl_relaxed(ummu->base + UMMU_CAP0);
-
 	/* 2-level tect structures */
 	if (reg & CAP0_TECT_LVL_BIT)
 		ummu->cap.features |= UMMU_FEAT_2_LVL_TECT;
@@ -207,7 +207,7 @@ static void ummu_device_hw_probe_cap0(struct ummu_device *ummu)
 
 static void ummu_device_hw_probe_cap1(struct ummu_device *ummu)
 {
-	u32  reg = readl_relaxed(ummu->base + UMMU_CAP1);
+	u32 reg = readl_relaxed(ummu->base + UMMU_CAP1);
 
 	/* Maximum number of outstanding stalls */
 	ummu->evtq.max_stalls = FIELD_GET(CAP1_STALL_MAX, reg);
@@ -230,7 +230,6 @@ static void ummu_device_hw_probe_cap1(struct ummu_device *ummu)
 		ummu->cap.evtq_log2num = FIELD_GET(CAP1_EVENTQ_LOG2NUM, reg);
 		ummu->cap.evtq_log2size = min(FIELD_GET(CAP1_EVENTQ_LOG2SIZE, reg),
 					      EVTQ_MAX_LOG2SIZE);
-
 	}
 }
 
@@ -317,8 +316,9 @@ static void ummu_device_get_oas(struct ummu_device *ummu, u32 reg)
 static int ummu_device_hw_probe_cap2(struct ummu_device *ummu)
 {
 	u32 reg = readl_relaxed(ummu->base + UMMU_CAP2);
-	int ret = ummu_device_get_ttf(ummu, reg);
+	int ret;
 
+	ret = ummu_device_get_ttf(ummu, reg);
 	if (ret)
 		return ret;
 
@@ -443,8 +443,9 @@ static int ummu_device_hw_probe_cap4(struct ummu_device *ummu)
 
 static void ummu_device_hw_probe_cap5(struct ummu_device *ummu)
 {
-	u32 reg = readl_relaxed(ummu->base + UMMU_CAP5);
+	u32 reg;
 
+	reg = readl_relaxed(ummu->base + UMMU_CAP5);
 	if (reg & CAP5_RANGE_PLBI_BIT)
 		ummu->cap.features |= UMMU_FEAT_RANGE_PLBI;
 
@@ -514,8 +515,9 @@ static int ummu_device_hw_init(struct ummu_device *ummu)
 
 static void ummu_device_sync(struct ummu_device *ummu)
 {
-	u32 reg = readl_relaxed(ummu->base + UMMU_CR0);
+	u32 reg;
 
+	reg = readl_relaxed(ummu->base + UMMU_CR0);
 	if (reg & CR0_UMMU_EN) {
 		dev_warn(ummu->dev, "ummu currently enabled! Resetting...\n");
 		ummu_update_gbpa(ummu, GBPA_ABORT_BIT, 0);
