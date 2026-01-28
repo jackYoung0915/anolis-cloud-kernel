@@ -2686,7 +2686,7 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 		 * given watermark.
 		 */
 		min_cache_kbytes = READ_ONCE(sysctl_min_cache_kbytes);
-		if (min_cache_kbytes) {
+		if (min_cache_kbytes && !sc->file_is_reserved) {
 			sc->file_is_reserved = file <= pgdat->min_cache_pages;
 		}
 	}
