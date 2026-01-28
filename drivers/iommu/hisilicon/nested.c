@@ -247,4 +247,3 @@ out:
 }
 
 
-MODULE_IMPORT_NS(IOMMUFD);
