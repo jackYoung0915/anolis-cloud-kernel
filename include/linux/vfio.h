@@ -72,6 +72,8 @@ struct vfio_device {
 	u8 cdev_opened:1;
 };
 
+struct vfio_device *vfio_device_from_file(struct file *file);
+
 /**
  * struct vfio_device_ops - VFIO bus driver device callbacks
  *
