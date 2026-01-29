@@ -2059,6 +2059,17 @@ config CRYPTO_USER_API_AKCIPHER
 	  is supported by enabling the user space interface of
 	  asymmetric key cryptography algorithm.
 
+config CRYPTO_SM3_CIS_X86_64
+	tristate "Hash functions: SM3 (Hygon CIS)"
+	depends on X86 && 64BIT
+	select CRYPTO_HASH
+	select CRYPTO_SM3
+	help
+	  SM3 secure hash function as defined by OSCCA GM/T 0004-2012 SM3
+
+	  Architecture: x86_64 using:
+	  - CIS (Crypto Instruction Set)
+
 config CRYPTO_SM4_CIS_X86_64
 	tristate "Ciphers: SM4 (Hygon CIS)"
 	depends on X86 && 64BIT
