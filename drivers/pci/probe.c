@@ -1293,6 +1293,34 @@ static bool pci_ea_fixed_busnrs(struct pci_dev *dev, u8 *sec, u8 *sub)
 	return true;
 }
 
+static bool pci_assign_all_busses(void)
+{
+	if (!pcibios_assign_all_busses())
+		return false;
+
+	/*
+	 * During a Live Update, preserved devices are are allowed to continue
+	 * performing memory transactions. Thus the kernel cannot change the
+	 * fabric topology, including changing bus numbers, since that would
+	 * requiring disabling and flushing any memory transactions first.
+	 *
+	 * So if pci=assign-busses is enabled, ignore it during the Live Update
+	 * and inherit all bus numbers assigned by the previous kernel. This
+	 * will not break users that rely on pci=assign-busses for their system
+	 * to function correctly since the system can be assumed to be in a
+	 * functional state already if a Live Update is underway. In other
+	 * words, pci=assign-busses should be used to establish working bus
+	 * numbers during the initial cold boot, and then that topology would
+	 * then remain fixed across any subsequent Live Updates.
+	 */
+	if (pci_liveupdate_incoming_nr_devices()) {
+		pr_info_once("Ignoring pci=assign-busses and inheriting bus numbers during Live Update\n");
+		return false;
+	}
+
+	return true;
+}
+
 /*
  * pci_scan_bridge_extend() - Scan buses behind a bridge
  * @bus: Parent bus the bridge is on
@@ -1320,6 +1348,7 @@ static int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
 				  int max, unsigned int available_buses,
 				  int pass)
 {
+	const bool assign_all_busses = pci_assign_all_busses();
 	struct pci_bus *child;
 	int is_cardbus = (dev->hdr_type == PCI_HEADER_TYPE_CARDBUS);
 	u32 buses, i, j = 0;
@@ -1368,7 +1397,7 @@ static int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
 
 	pci_enable_crs(dev);
 
-	if ((secondary || subordinate) && !pcibios_assign_all_busses() &&
+	if ((secondary || subordinate) && !assign_all_busses &&
 	    !is_cardbus && !broken) {
 		unsigned int cmax, buses;
 
@@ -1411,7 +1440,7 @@ static int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
 		 * do in the second pass.
 		 */
 		if (!pass) {
-			if (pcibios_assign_all_busses() || broken || is_cardbus)
+			if (assign_all_busses || broken || is_cardbus)
 
 				/*
 				 * Temporarily disable forwarding of the
@@ -1486,7 +1515,7 @@ static int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
 							max+i+1))
 					break;
 				while (parent->parent) {
-					if ((!pcibios_assign_all_busses()) &&
+					if (!assign_all_busses &&
 					    (parent->busn_res.end > max) &&
 					    (parent->busn_res.end <= max+i)) {
 						j = 1;
