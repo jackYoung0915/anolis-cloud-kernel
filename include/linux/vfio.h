@@ -74,6 +74,11 @@ struct vfio_device {
 
 struct vfio_device *vfio_device_from_file(struct file *file);
 
+#ifndef device_match_t
+/* Matching function type for drivers/base APIs to find a specific device */
+typedef int (*device_match_t)(struct device *dev, const void *data);
+#endif
+
 /**
  * struct vfio_device_ops - VFIO bus driver device callbacks
  *
@@ -361,5 +366,16 @@ int vfio_virqfd_enable(void *opaque, int (*handler)(void *, void *),
 		       struct virqfd **pvirqfd, int fd);
 void vfio_virqfd_disable(struct virqfd **pvirqfd);
 void vfio_virqfd_flush_thread(struct virqfd **pvirqfd);
+
+#if IS_ENABLED(CONFIG_VFIO_DEVICE_CDEV)
+struct file *vfio_device_liveupdate_cdev_open(struct vfio_device *device);
+#else
+static inline struct file *vfio_device_liveupdate_cdev_open(struct vfio_device *device)
+{
+	return ERR_PTR(-EOPNOTSUPP);
+}
+#endif /* IS_ENABLED(CONFIG_VFIO_DEVICE_CDEV) */
+
+struct vfio_device *vfio_find_device(const void *data, device_match_t match);
 
 #endif /* VFIO_H */
