@@ -1532,7 +1532,7 @@ static inline int test_and_clear_young_ptes(struct vm_area_struct *vma,
 					    unsigned long addr, pte_t *ptep,
 					    unsigned int nr)
 {
-	if (likely(nr == 1 && !pte_cont(__ptep_get(ptep))))
+	if (likely(nr == 1 && !pte_valid_cont(__ptep_get(ptep))))
 		return __ptep_test_and_clear_young(vma, addr, ptep);
 
 	return contpte_test_and_clear_young_ptes(vma, addr, ptep, nr);
@@ -1562,7 +1562,7 @@ static inline int clear_flush_young_ptes(struct vm_area_struct *vma,
 					 unsigned long addr, pte_t *ptep,
 					 unsigned int nr)
 {
-	if (likely(nr == 1 && !pte_cont(__ptep_get(ptep))))
+	if (likely(nr == 1 && !pte_valid_cont(__ptep_get(ptep))))
 		return __ptep_clear_flush_young(vma, addr, ptep);
 
 	return contpte_clear_flush_young_ptes(vma, addr, ptep, nr);
