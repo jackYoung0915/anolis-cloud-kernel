@@ -889,4 +889,18 @@ static inline int pci_msix_write_tph_tag(struct pci_dev *pdev, unsigned int inde
 void pci_seq_tree_add_dev(struct pci_dev *dev);
 void pci_seq_tree_remove_dev(struct pci_dev *dev);
 
+#ifdef CONFIG_PCI_LIVEUPDATE
+void pci_liveupdate_setup_device(struct pci_dev *dev);
+u32 pci_liveupdate_incoming_nr_devices(void);
+#else
+static inline void pci_liveupdate_setup_device(struct pci_dev *dev)
+{
+}
+
+static inline u32 pci_liveupdate_incoming_nr_devices(void)
+{
+	return 0;
+}
+#endif
+
 #endif /* DRIVERS_PCI_H */

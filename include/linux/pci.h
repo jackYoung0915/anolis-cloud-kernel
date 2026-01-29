@@ -40,6 +40,7 @@
 #include <linux/resource_ext.h>
 #include <linux/msi_api.h>
 #include <uapi/linux/pci.h>
+#include <linux/liveupdate.h>
 
 #include <linux/pci_ids.h>
 
@@ -549,7 +550,8 @@ struct pci_dev {
 	u8		tph_req_type;	/* TPH requester type */
 #endif
 
-	CK_KABI_RESERVE(1)
+	CK_KABI_USE_SPLIT(1, unsigned int liveupdate_incoming:1); /* Preserved by previous kernel */
+	CK_KABI_USE_SPLIT(1, unsigned int liveupdate_outgoing:1); /* Preserved for next kernel */
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -2740,5 +2742,41 @@ void pci_ims_free_irq(struct pci_dev *pdev, struct msi_map map);
 #define pci_WARN_ONCE(pdev, condition, fmt, arg...) \
 	WARN_ONCE(condition, "%s %s: " fmt, \
 		  dev_driver_string(&(pdev)->dev), pci_name(pdev), ##arg)
+
+#ifdef CONFIG_PCI_LIVEUPDATE
+int pci_liveupdate_preserve(struct pci_dev *dev);
+void pci_liveupdate_unpreserve(struct pci_dev *dev);
+int pci_liveupdate_retrieve(struct pci_dev *dev);
+void pci_liveupdate_finish(struct pci_dev *dev);
+int pci_liveupdate_register_flb(struct liveupdate_file_handler *fh);
+void pci_liveupdate_unregister_flb(struct liveupdate_file_handler *fh);
+#else
+static inline int pci_liveupdate_preserve(struct pci_dev *dev)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void pci_liveupdate_unpreserve(struct pci_dev *dev)
+{
+}
+
+static inline int pci_liveupdate_retrieve(struct pci_dev *dev)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void pci_liveupdate_finish(struct pci_dev *dev)
+{
+}
+
+static inline int pci_liveupdate_register_flb(struct liveupdate_file_handler *fh)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void pci_liveupdate_unregister_flb(struct liveupdate_file_handler *fh)
+{
+}
+#endif
 
 #endif /* LINUX_PCI_H */
