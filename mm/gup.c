@@ -111,9 +111,8 @@ static inline struct page *try_get_compound_head(struct page *page, int refs)
  * considered failure, and furthermore, a likely bug in the caller, so a warning
  * is also emitted.
  */
-static __maybe_unused struct page *try_grab_compound_head(struct page *page,
-							  int refs,
-							  unsigned int flags)
+static struct page *try_grab_compound_head(struct page *page,
+							  int refs, unsigned int flags)
 {
 	if (flags & FOLL_GET)
 		return try_get_compound_head(page, refs);
@@ -127,6 +126,54 @@ static __maybe_unused struct page *try_grab_compound_head(struct page *page,
 		if (is_zero_page(page))
 			return compound_head(page);
 
+		/*
+		 * CAUTION: Don't use compound_head() on the page before this
+		 * point, the result won't be stable.
+		 */
+		page = try_get_compound_head(page, refs);
+		if (!page)
+			return NULL;
+
+		/*
+		 * When pinning a compound page of order > 1 (which is what
+		 * hpage_pincount_available() checks for), use an exact count to
+		 * track it, via hpage_pincount_add/_sub().
+		 *
+		 * However, be sure to *also* increment the normal page refcount
+		 * field at least once, so that the page really is pinned.
+		 */
+		if (hpage_pincount_available(page))
+			hpage_pincount_add(page, refs);
+		else
+			page_ref_add(page, refs * (GUP_PIN_COUNTING_BIAS - 1));
+
+		mod_node_page_state(page_pgdat(page), NR_FOLL_PIN_ACQUIRED,
+				    orig_refs);
+
+		return page;
+	}
+
+	WARN_ON_ONCE(1);
+	return NULL;
+}
+
+static struct page *try_grab_compound_head_fast(struct page *page,
+							  int refs, unsigned int flags)
+{
+	/* Raise warn if it is not called in fast GUP */
+	VM_WARN_ON_ONCE(!irqs_disabled());
+
+	if (flags & FOLL_GET)
+		return try_get_compound_head(page, refs);
+	else if (flags & FOLL_PIN) {
+		int orig_refs = refs;
+
+		/*
+		* Don't take a pin on the zero page - it's not going anywhere
+		* and it is used in a *lot* of places.
+		*/
+		if (is_zero_page(page))
+			return compound_head(page);
 
 		/*
 		 * Can't do FOLL_LONGTERM + FOLL_PIN with CMA in the gup fast
@@ -166,7 +213,6 @@ static __maybe_unused struct page *try_grab_compound_head(struct page *page,
 	WARN_ON_ONCE(1);
 	return NULL;
 }
-
 static void put_compound_head(struct page *page, int refs, unsigned int flags)
 {
 	if (flags & FOLL_PIN) {
@@ -1191,8 +1237,8 @@ next_page:
 				 * large page, this should never fail.
 				 */
 				head = try_grab_compound_head(page, page_increm - 1,
-									 gup_flags);
-				if (WARN_ON_ONCE(!head)) {
+									gup_flags);
+				if (!head) {
 					/*
 					 * Release the 1st page ref if the
 					 * page is problematic, fail hard.
@@ -2280,7 +2326,7 @@ static int gup_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
 		VM_BUG_ON(!pfn_valid(pte_pfn(pte)));
 		page = pte_page(pte);
 
-		head = try_grab_compound_head(page, 1, flags);
+		head = try_grab_compound_head_fast(page, 1, flags);
 		if (!head)
 			goto pte_unmap;
 
@@ -2471,7 +2517,7 @@ static int gup_hugepte(pte_t *ptep, unsigned long sz, unsigned long addr,
 	page = head + ((addr & (sz-1)) >> PAGE_SHIFT);
 	refs = record_subpages(page, addr, end, pages + *nr);
 
-	head = try_grab_compound_head(head, refs, flags);
+	head = try_grab_compound_head_fast(head, refs, flags);
 	if (!head)
 		return 0;
 
@@ -2531,7 +2577,7 @@ static int gup_huge_pmd(pmd_t orig, pmd_t *pmdp, unsigned long addr,
 	page = pmd_page(orig) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
 	refs = record_subpages(page, addr, end, pages + *nr);
 
-	head = try_grab_compound_head(pmd_page(orig), refs, flags);
+	head = try_grab_compound_head_fast(pmd_page(orig), refs, flags);
 	if (!head)
 		return 0;
 
@@ -2565,7 +2611,7 @@ static int gup_huge_pud(pud_t orig, pud_t *pudp, unsigned long addr,
 	page = pud_page(orig) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
 	refs = record_subpages(page, addr, end, pages + *nr);
 
-	head = try_grab_compound_head(pud_page(orig), refs, flags);
+	head = try_grab_compound_head_fast(pud_page(orig), refs, flags);
 	if (!head)
 		return 0;
 
@@ -2594,7 +2640,7 @@ static int gup_huge_pgd(pgd_t orig, pgd_t *pgdp, unsigned long addr,
 	page = pgd_page(orig) + ((addr & ~PGDIR_MASK) >> PAGE_SHIFT);
 	refs = record_subpages(page, addr, end, pages + *nr);
 
-	head = try_grab_compound_head(pgd_page(orig), refs, flags);
+	head = try_grab_compound_head_fast(pgd_page(orig), refs, flags);
 	if (!head)
 		return 0;
 
