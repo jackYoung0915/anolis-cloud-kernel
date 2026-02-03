@@ -26,6 +26,10 @@ cnt_trace() {
     grep -v '^#' trace | wc -l
 }
 
+cnt_trace_limited() {
+    grep -v '^#' trace | head -n 100 | wc -l
+}
+
 echo '** DISABLE TRACING'
 disable_tracing
 clear_trace
@@ -43,7 +47,7 @@ echo 1 > events/sched/enable
 echo '** ENABLE TRACING'
 enable_tracing
 
-cnt=`cnt_trace`
+cnt=`cnt_trace_limited`
 if [ $cnt -eq 0 ]; then
    fail "Nothing found in trace"
 fi
@@ -124,7 +128,7 @@ if [ $cnt -ne 1 ]; then
     fail "traceon trigger not found"
 fi
 
-cnt=`cnt_trace`
+cnt=`cnt_trace_limited`
 if [ $cnt -eq 0 ]; then
    fail "Tracing did not start"
 fi
