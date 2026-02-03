@@ -1863,7 +1863,9 @@ void __free_pages_core(struct page *page, unsigned int order)
 	 * relevant for memory onlining.
 	 */
 	__free_pages_ok(page, order, FPI_TO_TAIL);
-	__SetPageInited(page);
+
+	for (loop = 0; loop < (1 << order); ++loop)
+		__SetPageInited(page + loop);
 }
 
 #ifdef CONFIG_NEED_MULTIPLE_NODES
@@ -2592,6 +2594,7 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 {
 	WARN_ON_ONCE(page_private(page) & ~PAGE_ZEROED);
 	set_page_refcounted(page);
+	int i;
 
 	arch_alloc_page(page, order);
 	if (debug_pagealloc_enabled_static())
@@ -2600,8 +2603,10 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 	kernel_poison_pages(page, 1 << order, 1);
 	set_page_owner(page, order, gfp_flags);
 
-	if (unlikely(PageInited(page)))
-		__ClearPageInited(page);
+	for (i = 0; i < (1 << order); ++i) {
+		if (unlikely(PageInited(page + i)))
+			__ClearPageInited(page + i);
+	}
 }
 
 static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags,
