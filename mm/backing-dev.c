@@ -504,19 +504,14 @@ void insert_memcg_blkcg_link(struct cgroup_subsys *ss,
 	    (blkcg_css == blkcg_root_css))
 		return;
 
-	rcu_read_lock();
+	spin_lock(&memcg_blkcg_tree_lock);
 	link = radix_tree_lookup(&memcg_blkcg_tree, memcg_css->id);
 	if (link && ((link->blkcg_css == blkcg_css) ||
 		    (link->blkcg_css == blkcg_root_css))) {
-		rcu_read_unlock();
+		spin_unlock(&memcg_blkcg_tree_lock);
 		return;
 	}
-	rcu_read_unlock();
 
-	trace_insert_memcg_blkcg_link(memcg_css, blkcg_css,
-		link ? link->blkcg_css : NULL);
-
-	spin_lock(&memcg_blkcg_tree_lock);
 	if (link) {
 		radix_tree_delete(&memcg_blkcg_tree, memcg_css->id);
 		call_rcu(&link->rcu, link_free);
@@ -532,6 +527,8 @@ void insert_memcg_blkcg_link(struct cgroup_subsys *ss,
 	WARN_ON(err);
 
 	spin_unlock(&memcg_blkcg_tree_lock);
+
+	trace_insert_memcg_blkcg_link(memcg_css, blkcg_css);
 }
 
 void free_memcg_blkcg_links(struct list_head *links_to_free)
