@@ -182,14 +182,10 @@ struct resctrl_membw {
 /**
  * struct resctrl_mon - Monitoring related data
  * @num_rmid:		Number of RMIDs available
- * @num_mbm_cntrs:	Number of monitoring counters
- * @mbm_cntr_assignable:Is system capable of supporting monitor assignment?
  * @evt_list:		List of monitoring events
  */
 struct resctrl_mon {
 	int			num_rmid;
-	int			num_mbm_cntrs;
-	bool			mbm_cntr_assignable;
 	struct list_head	evt_list;
 };
 
