@@ -852,13 +852,11 @@ int resctrl_mon_resource_init(void)
 
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_TOTAL_EVENT_ID)) {
 		mbm_total_event.configurable = true;
-		resctrl_file_fflags_init("mbm_total_bytes_config",
-					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
+		mbm_config_rftype_init("mbm_total_bytes_config");
 	}
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_LOCAL_EVENT_ID)) {
 		mbm_local_event.configurable = true;
-		resctrl_file_fflags_init("mbm_local_bytes_config",
-					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
+		mbm_config_rftype_init("mbm_local_bytes_config");
 	}
 
 	r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
