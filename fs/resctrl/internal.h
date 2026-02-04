@@ -317,8 +317,6 @@ int resctrl_find_cleanest_closid(void);
 unsigned int mon_event_config_index_get(u32 evtid);
 int rdtgroup_assign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid);
 int rdtgroup_alloc_cntr(struct rdtgroup *rdtgrp, int index);
-int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid);
-void rdtgroup_free_cntr(struct rdt_resource *r, struct rdtgroup *rdtgrp, int index);
 
 #ifdef CONFIG_RESCTRL_FS_PSEUDO_LOCK
 int rdtgroup_locksetup_enter(struct rdtgroup *rdtgrp);
