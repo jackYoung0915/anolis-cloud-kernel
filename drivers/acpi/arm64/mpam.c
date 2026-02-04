@@ -194,7 +194,6 @@ static int __init _parse_table(struct acpi_table_header *table)
 	struct resource res[3];
 	char uid[16];
 	u32 acpi_id;
-	int msc_num = 0;
 
 	table_end = (char *)table + table->length;
 
@@ -221,12 +220,7 @@ static int __init _parse_table(struct acpi_table_header *table)
 		memset(res, 0, sizeof(res));
 		memset(props, 0, sizeof(props));
 
-		/*
-		 * Use an extra msc_num instead of msc->identifier, since MSC
-		 * nodes with different types in MPAM ACPI table may have the
-		 * same id value.
-		 */
-		pdev = platform_device_alloc("mpam_msc", msc_num++);
+		pdev = platform_device_alloc("mpam_msc", tbl_msc->identifier);
 		if (IS_ERR(pdev)) {
 			err = PTR_ERR(pdev);
 			break;
