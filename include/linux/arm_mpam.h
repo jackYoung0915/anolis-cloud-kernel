@@ -143,11 +143,4 @@ static inline void resctrl_arch_mbm_cntr_assign_disable(void) { }
 void resctrl_arch_event_config_set(void *info);
 u32 resctrl_arch_event_config_get(void *dom,
 						enum resctrl_event_id eventid);
-
-static inline int resctrl_arch_assign_cntr(void *dom, enum resctrl_event_id evtid,
-			     u32 rmid, u32 cntr_id, u32 closid, bool assign)
-{
-	return -EINVAL;
-}
-
 #endif /* __LINUX_ARM_MPAM_H */
