@@ -1210,8 +1210,6 @@ long vfio_pci_core_ioctl(struct vfio_device *core_vdev, unsigned int cmd,
 		}
 		}
 
-		info.flags = VFIO_IRQ_INFO_EVENTFD;
-
 		info.count = vfio_pci_get_irq_count(vdev, info.index);
 
 		if (caps.size) {
