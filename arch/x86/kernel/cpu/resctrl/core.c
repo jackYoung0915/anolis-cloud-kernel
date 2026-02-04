@@ -530,8 +530,6 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 		return;
 	}
 
-	resctrl_mbm_evt_config_init(hw_dom);
-
 	if (r->mon_capable && arch_domain_mbm_alloc(r->mon.num_rmid, hw_dom)) {
 		domain_free(hw_dom);
 		return;
