@@ -433,11 +433,8 @@ static void inode_lru_list_add(struct inode *inode)
 	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_inc(nr_unused);
 	else {
-		inode->i_state |= I_REFERENCED;
-#ifdef CONFIG_KIDLED
 		/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
-		inode->i_state |= I_KIDLED_YOUNG;
-#endif
+		inode->i_state |= (I_REFERENCED | I_KIDLED_YOUNG);
 	}
 }
 
@@ -797,7 +794,7 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	 * through the LRU as we canot reclaim them now.
 	 */
 	if (atomic_read(&inode->i_count) ||
-	    (inode->i_state & ~I_REFERENCED)) {
+	    (inode->i_state & ~(I_REFERENCED | I_KIDLED_YOUNG))) {
 		list_lru_isolate(lru, &inode->i_lru);
 		spin_unlock(&inode->i_lock);
 		this_cpu_dec(nr_unused);
@@ -805,8 +802,8 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	}
 
 	/* recently referenced inodes get one more pass */
-	if (inode->i_state & I_REFERENCED) {
-		inode->i_state &= ~I_REFERENCED;
+	if (inode->i_state & (I_REFERENCED | I_KIDLED_YOUNG)) {
+		inode->i_state &= ~(I_REFERENCED | I_KIDLED_YOUNG);
 		spin_unlock(&inode->i_lock);
 		return LRU_ROTATE;
 	}
