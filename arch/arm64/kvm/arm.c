@@ -435,6 +435,16 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	last_ran = this_cpu_ptr(mmu->last_vcpu_ran);
 
 	/*
+	 * Ensure a VMID is allocated for the MMU before programming VTTBR_EL2,
+	 * which happens eagerly in VHE.
+	 *
+	 * Also, the VMID allocator only preserves VMIDs that are active at the
+	 * time of rollover, so KVM might need to grab a new VMID for the MMU if
+	 * this is called from kvm_sched_in().
+	 */
+	kvm_arm_vmid_update(&mmu->vmid);
+
+	/*
 	 * We guarantee that both TLBs and I-cache are private to each
 	 * vcpu. If detecting that a vcpu from the same VM has
 	 * previously run on the same physical CPU, call into the
@@ -453,7 +463,7 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	kvm_vgic_load(vcpu);
 	kvm_timer_vcpu_load(vcpu);
 	if (has_vhe())
-		kvm_vcpu_load_sysregs_vhe(vcpu);
+		kvm_vcpu_load_vhe(vcpu);
 	kvm_arch_vcpu_load_fp(vcpu);
 	kvm_vcpu_pmu_restore_guest(vcpu);
 	if (kvm_arm_is_pvtime_enabled(&vcpu->arch))
@@ -478,7 +488,7 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 {
 	kvm_arch_vcpu_put_fp(vcpu);
 	if (has_vhe())
-		kvm_vcpu_put_sysregs_vhe(vcpu);
+		kvm_vcpu_put_vhe(vcpu);
 	kvm_timer_vcpu_put(vcpu);
 	kvm_vgic_put(vcpu);
 	kvm_vcpu_pmu_restore_host(vcpu);
@@ -952,15 +962,6 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * non-preemptible context.
 		 */
 		preempt_disable();
-
-		/*
-		 * The VMID allocator only tracks active VMIDs per
-		 * physical CPU, and therefore the VMID allocated may not be
-		 * preserved on VMID roll-over if the task was preempted,
-		 * making a thread's VMID inactive. So we need to call
-		 * kvm_arm_vmid_update() in non-premptible context.
-		 */
-		kvm_arm_vmid_update(&vcpu->arch.hw_mmu->vmid);
 
 		kvm_pmu_flush_hwstate(vcpu);
 
