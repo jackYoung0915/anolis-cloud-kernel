@@ -238,10 +238,12 @@ static void kvm_host_get_page(void *addr)
 	get_page(virt_to_page(addr));
 }
 
+#ifndef MODULE
 static void kvm_host_put_page(void *addr)
 {
 	put_page(virt_to_page(addr));
 }
+#endif
 
 static void kvm_s2_put_page(void *addr)
 {
