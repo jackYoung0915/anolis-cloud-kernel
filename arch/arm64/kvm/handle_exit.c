@@ -62,6 +62,7 @@ static int handle_smc(struct kvm_vcpu *vcpu)
 	 */
 	vcpu_set_reg(vcpu, 0, ~0UL);
 	kvm_skip_instr(vcpu, kvm_vcpu_trap_il_is32bit(vcpu));
+	vcpu->stat.smc_exit_stat++;
 	return 1;
 }
 
@@ -152,6 +153,7 @@ static int kvm_handle_guest_debug(struct kvm_vcpu *vcpu)
 
 	run->exit_reason = KVM_EXIT_DEBUG;
 	run->debug.arch.hsr = esr;
+	vcpu->stat.debug_exit_stat++;
 
 	switch (ESR_ELx_EC(esr)) {
 	case ESR_ELx_EC_WATCHPT_LOW:
@@ -180,6 +182,7 @@ static int kvm_handle_unknown_ec(struct kvm_vcpu *vcpu)
 		      esr, esr_get_class_string(esr));
 
 	kvm_inject_undefined(vcpu);
+	vcpu->stat.unknown_ec_exit_stat++;
 	return 1;
 }
 
@@ -187,6 +190,7 @@ static int handle_sve(struct kvm_vcpu *vcpu)
 {
 	/* Until SVE is supported for guests: */
 	kvm_inject_undefined(vcpu);
+	vcpu->stat.sve_exit_stat++;
 	return 1;
 }
 
@@ -290,6 +294,7 @@ int handle_exit(struct kvm_vcpu *vcpu, int exception_index)
 
 	switch (exception_index) {
 	case ARM_EXCEPTION_IRQ:
+		vcpu->stat.irq_exit_stat++;
 		return 1;
 	case ARM_EXCEPTION_EL1_SERROR:
 		return 1;
@@ -301,6 +306,7 @@ int handle_exit(struct kvm_vcpu *vcpu, int exception_index)
 		 * is pre-empted by kvm_reboot()'s shutdown call.
 		 */
 		run->exit_reason = KVM_EXIT_FAIL_ENTRY;
+		vcpu->stat.fail_entry_exit_stat++;
 		return 0;
 	case ARM_EXCEPTION_IL:
 		/*
@@ -308,11 +314,13 @@ int handle_exit(struct kvm_vcpu *vcpu, int exception_index)
 		 * have been corrupted somehow.  Give up.
 		 */
 		run->exit_reason = KVM_EXIT_FAIL_ENTRY;
+		vcpu->stat.fail_entry_exit_stat++;
 		return -EINVAL;
 	default:
 		kvm_pr_unimpl("Unsupported exception type: %d",
 			      exception_index);
 		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+		vcpu->stat.internal_error_exit_stat++;
 		return 0;
 	}
 }
