@@ -49,7 +49,7 @@
 #define LOONGSON_PWM_CTRL_REG_DZONE	BIT(10) /* Anti-dead Zone Enable Bit */
 
 /* default input clk frequency for the ACPI case */
-#define LOONGSON_PWM_FREQ_DEFAULT	50000 /* Hz */
+#define LOONGSON_PWM_FREQ_DEFAULT	50000000 /* Hz */
 
 struct pwm_loongson_ddata {
 	struct pwm_chip	chip;
@@ -119,7 +119,7 @@ static int pwm_loongson_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 static int pwm_loongson_config(struct pwm_chip *chip, struct pwm_device *pwm,
 			       u64 duty_ns, u64 period_ns)
 {
-	u32 duty, period;
+	u64 duty, period;
 	struct pwm_loongson_ddata *ddata = to_pwm_loongson_ddata(chip);
 
 	/* duty = duty_ns * ddata->clk_rate / NSEC_PER_SEC */
@@ -206,7 +206,7 @@ static int pwm_loongson_probe(struct platform_device *pdev)
 	if (!has_acpi_companion(dev)) {
 		ddata->clk = devm_clk_get_enabled(dev, NULL);
 		if (IS_ERR(ddata->clk))
-			return dev_err_probe(dev, PTR_ERR(ddata->clk),
+			return dev_err_probe(dev, ret,
 					     "failed to get pwm clock\n");
 		ddata->clk_rate = clk_get_rate(ddata->clk);
 	} else {
