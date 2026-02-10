@@ -7,9 +7,7 @@
  * This file provides a device implementation for HSMP interface
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
-#include <asm/amd_hsmp.h>
+#include <asm/amd/hsmp.h>
 
 #include <linux/acpi.h>
 #include <linux/delay.h>
@@ -24,6 +22,8 @@
 #define HSMP_STATUS_OK		0x01
 #define HSMP_ERR_INVALID_MSG	0xFE
 #define HSMP_ERR_INVALID_INPUT	0xFF
+#define HSMP_ERR_PREREQ_NOT_SATISFIED	0xFD
+#define HSMP_ERR_SMU_BUSY		0xFC
 
 /* Timeout in millsec */
 #define HSMP_MSG_TIMEOUT	100
@@ -32,7 +32,11 @@
 #define HSMP_WR			true
 #define HSMP_RD			false
 
-#define DRIVER_VERSION		"2.3"
+/*
+ * When same message numbers are used for both GET and SET operation,
+ * bit:31 indicates whether its SET or GET operation.
+ */
+#define CHECK_GET_BIT		BIT(31)
 
 static struct hsmp_plat_device hsmp_pdev;
 
@@ -60,7 +64,7 @@ static int __hsmp_send_message(struct hsmp_socket *sock, struct hsmp_message *ms
 	mbox_status = HSMP_STATUS_NOT_READY;
 	ret = sock->amd_hsmp_rdwr(sock, mbinfo->msg_resp_off, &mbox_status, HSMP_WR);
 	if (ret) {
-		pr_err("Error %d clearing mailbox status register\n", ret);
+		dev_err(sock->dev, "Error %d clearing mailbox status register\n", ret);
 		return ret;
 	}
 
@@ -70,7 +74,7 @@ static int __hsmp_send_message(struct hsmp_socket *sock, struct hsmp_message *ms
 		ret = sock->amd_hsmp_rdwr(sock, mbinfo->msg_arg_off + (index << 2),
 					  &msg->args[index], HSMP_WR);
 		if (ret) {
-			pr_err("Error %d writing message argument %d\n", ret, index);
+			dev_err(sock->dev, "Error %d writing message argument %d\n", ret, index);
 			return ret;
 		}
 		index++;
@@ -79,7 +83,7 @@ static int __hsmp_send_message(struct hsmp_socket *sock, struct hsmp_message *ms
 	/* Write the message ID which starts the operation */
 	ret = sock->amd_hsmp_rdwr(sock, mbinfo->msg_id_off, &msg->msg_id, HSMP_WR);
 	if (ret) {
-		pr_err("Error %d writing message ID %u\n", ret, msg->msg_id);
+		dev_err(sock->dev, "Error %d writing message ID %u\n", ret, msg->msg_id);
 		return ret;
 	}
 
@@ -96,7 +100,7 @@ static int __hsmp_send_message(struct hsmp_socket *sock, struct hsmp_message *ms
 	while (time_before(jiffies, timeout)) {
 		ret = sock->amd_hsmp_rdwr(sock, mbinfo->msg_resp_off, &mbox_status, HSMP_RD);
 		if (ret) {
-			pr_err("Error %d reading mailbox status\n", ret);
+			dev_err(sock->dev, "Error %d reading mailbox status\n", ret);
 			return ret;
 		}
 
@@ -109,14 +113,28 @@ static int __hsmp_send_message(struct hsmp_socket *sock, struct hsmp_message *ms
 	}
 
 	if (unlikely(mbox_status == HSMP_STATUS_NOT_READY)) {
+		dev_err(sock->dev, "Message ID 0x%X failure : SMU tmeout (status = 0x%X)\n",
+			msg->msg_id, mbox_status);
 		return -ETIMEDOUT;
 	} else if (unlikely(mbox_status == HSMP_ERR_INVALID_MSG)) {
+		dev_err(sock->dev, "Message ID 0x%X failure : Invalid message (status = 0x%X)\n",
+			msg->msg_id, mbox_status);
 		return -ENOMSG;
 	} else if (unlikely(mbox_status == HSMP_ERR_INVALID_INPUT)) {
+		dev_err(sock->dev, "Message ID 0x%X failure : Invalid arguments (status = 0x%X)\n",
+			msg->msg_id, mbox_status);
 		return -EINVAL;
+	} else if (unlikely(mbox_status == HSMP_ERR_PREREQ_NOT_SATISFIED)) {
+		dev_err(sock->dev, "Message ID 0x%X failure : Prerequisite not satisfied (status = 0x%X)\n",
+			msg->msg_id, mbox_status);
+		return -EREMOTEIO;
+	} else if (unlikely(mbox_status == HSMP_ERR_SMU_BUSY)) {
+		dev_err(sock->dev, "Message ID 0x%X failure : SMU BUSY (status = 0x%X)\n",
+			msg->msg_id, mbox_status);
+		return -EBUSY;
 	} else if (unlikely(mbox_status != HSMP_STATUS_OK)) {
-		pr_err("Message ID %u unknown failure (status = 0x%X)\n",
-		       msg->msg_id, mbox_status);
+		dev_err(sock->dev, "Message ID 0x%X unknown failure (status = 0x%X)\n",
+			msg->msg_id, mbox_status);
 		return -EIO;
 	}
 
@@ -132,8 +150,8 @@ static int __hsmp_send_message(struct hsmp_socket *sock, struct hsmp_message *ms
 		ret = sock->amd_hsmp_rdwr(sock, mbinfo->msg_arg_off + (index << 2),
 					  &msg->args[index], HSMP_RD);
 		if (ret) {
-			pr_err("Error %d reading response %u for message ID:%u\n",
-			       ret, index, msg->msg_id);
+			dev_err(sock->dev, "Error %d reading response %u for message ID:%u\n",
+				ret, index, msg->msg_id);
 			break;
 		}
 		index++;
@@ -152,11 +170,28 @@ static int validate_message(struct hsmp_message *msg)
 	if (hsmp_msg_desc_table[msg->msg_id].type == HSMP_RSVD)
 		return -ENOMSG;
 
-	/* num_args and response_sz against the HSMP spec */
-	if (msg->num_args != hsmp_msg_desc_table[msg->msg_id].num_args ||
-	    msg->response_sz != hsmp_msg_desc_table[msg->msg_id].response_sz)
+	/*
+	 * num_args passed by user should match the num_args specified in
+	 * message description table.
+	 */
+	if (msg->num_args != hsmp_msg_desc_table[msg->msg_id].num_args)
 		return -EINVAL;
 
+	/*
+	 * Some older HSMP SET messages are updated to add GET in the same message.
+	 * In these messages, GET returns the current value and SET also returns
+	 * the successfully set value. To support this GET and SET in same message
+	 * while maintaining backward compatibility for the HSMP users,
+	 * hsmp_msg_desc_table[] indicates only maximum allowed response_sz.
+	 */
+	if (hsmp_msg_desc_table[msg->msg_id].type == HSMP_SET_GET) {
+		if (msg->response_sz > hsmp_msg_desc_table[msg->msg_id].response_sz)
+			return -EINVAL;
+	} else {
+		/* only HSMP_SET or HSMP_GET messages go through this strict check */
+		if (msg->response_sz != hsmp_msg_desc_table[msg->msg_id].response_sz)
+			return -EINVAL;
+	}
 	return 0;
 }
 
@@ -193,6 +228,29 @@ int hsmp_send_message(struct hsmp_message *msg)
 }
 EXPORT_SYMBOL_NS_GPL(hsmp_send_message, AMD_HSMP);
 
+int hsmp_msg_get_nargs(u16 sock_ind, u32 msg_id, u32 *data, u8 num_args)
+{
+	struct hsmp_message msg = {};
+	unsigned int i;
+	int ret;
+
+	if (!data)
+		return -EINVAL;
+	msg.msg_id = msg_id;
+	msg.sock_ind = sock_ind;
+	msg.response_sz = num_args;
+
+	ret = hsmp_send_message(&msg);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < num_args; i++)
+		data[i] = msg.args[i];
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(hsmp_msg_get_nargs, AMD_HSMP);
+
 int hsmp_test(u16 sock_ind, u32 value)
 {
 	struct hsmp_message msg = { 0 };
@@ -224,6 +282,18 @@ int hsmp_test(u16 sock_ind, u32 value)
 }
 EXPORT_SYMBOL_NS_GPL(hsmp_test, AMD_HSMP);
 
+static bool is_get_msg(struct hsmp_message *msg)
+{
+	if (hsmp_msg_desc_table[msg->msg_id].type == HSMP_GET)
+		return true;
+
+	if (hsmp_msg_desc_table[msg->msg_id].type == HSMP_SET_GET &&
+	    (msg->args[0] & CHECK_GET_BIT))
+		return true;
+
+	return false;
+}
+
 long hsmp_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
 	int __user *arguser = (int  __user *)arg;
@@ -246,16 +316,16 @@ long hsmp_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		 * Device is opened in O_WRONLY mode
 		 * Execute only set/configure commands
 		 */
-		if (hsmp_msg_desc_table[msg.msg_id].type != HSMP_SET)
-			return -EINVAL;
+		if (is_get_msg(&msg))
+			return -EPERM;
 		break;
 	case FMODE_READ:
 		/*
 		 * Device is opened in O_RDONLY mode
 		 * Execute only get/monitor commands
 		 */
-		if (hsmp_msg_desc_table[msg.msg_id].type != HSMP_GET)
-			return -EINVAL;
+		if (!is_get_msg(&msg))
+			return -EPERM;
 		break;
 	case FMODE_READ | FMODE_WRITE:
 		/*
@@ -264,7 +334,7 @@ long hsmp_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		 */
 		break;
 	default:
-		return -EINVAL;
+		return -EPERM;
 	}
 
 	ret = hsmp_send_message(&msg);

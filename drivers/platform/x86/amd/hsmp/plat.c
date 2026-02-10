@@ -9,8 +9,9 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <asm/amd_hsmp.h>
+#include <asm/amd/hsmp.h>
 
+#include <linux/acpi.h>
 #include <linux/build_bug.h>
 #include <linux/device.h>
 #include <linux/module.h>
@@ -23,7 +24,6 @@
 #include "hsmp.h"
 
 #define DRIVER_NAME		"amd_hsmp"
-#define DRIVER_VERSION		"2.3"
 
 /*
  * To access specific HSMP mailbox register, s/w writes the SMN address of HSMP mailbox
@@ -45,7 +45,7 @@ static int amd_hsmp_pci_rdwr(struct hsmp_socket *sock, u32 offset,
 }
 
 static ssize_t hsmp_metric_tbl_plat_read(struct file *filp, struct kobject *kobj,
-					 struct bin_attribute *bin_attr, char *buf,
+					 const struct bin_attribute *bin_attr, char *buf,
 					 loff_t off, size_t count)
 {
 	struct hsmp_socket *sock;
@@ -88,13 +88,13 @@ static umode_t hsmp_is_sock_attr_visible(struct kobject *kobj,
 static_assert(MAX_AMD_NUM_NODES == 8);
 
 #define HSMP_BIN_ATTR(index, _list)					\
-static struct bin_attribute attr##index = {				\
+static const struct bin_attribute attr##index = {			\
 	.attr = { .name = HSMP_METRICS_TABLE_NAME, .mode = 0444},	\
 	.private = (void *)index,					\
-	.read = hsmp_metric_tbl_plat_read,					\
+	.read_new = hsmp_metric_tbl_plat_read,				\
 	.size = sizeof(struct hsmp_metric_table),			\
 };									\
-static struct bin_attribute _list[] = {					\
+static const struct bin_attribute _list[] = {				\
 	&attr##index,							\
 	NULL								\
 }
@@ -109,8 +109,8 @@ HSMP_BIN_ATTR(6, *sock6_attr_list);
 HSMP_BIN_ATTR(7, *sock7_attr_list);
 
 #define HSMP_BIN_ATTR_GRP(index, _list, _name)			\
-static struct attribute_group sock##index##_attr_grp = {	\
-	.bin_attrs = _list,					\
+static const struct attribute_group sock##index##_attr_grp = {	\
+	.bin_attrs_new = _list,					\
 	.is_bin_visible = hsmp_is_sock_attr_visible,		\
 	.name = #_name,						\
 }
@@ -189,6 +189,11 @@ static int init_platform_device(struct device *dev)
 			if (ret)
 				dev_err(dev, "Failed to init metric table\n");
 		}
+
+		/* Register with hwmon interface for reporting power */
+		ret = hsmp_create_sensor(dev, i);
+		if (ret)
+			dev_err(dev, "Failed to register HSMP sensors with hwmon\n");
 	}
 
 	return 0;
@@ -266,7 +271,7 @@ static bool legacy_hsmp_support(void)
 		}
 	case 0x1A:
 		switch (boot_cpu_data.x86_model) {
-		case 0x00 ... 0x1F:
+		case 0x00 ... 0x0F:
 			return true;
 		default:
 			return false;
@@ -287,6 +292,9 @@ static int __init hsmp_plt_init(void)
 			boot_cpu_data.x86, boot_cpu_data.x86_model);
 		return ret;
 	}
+
+	if (acpi_dev_present(ACPI_HSMP_DEVICE_HID, NULL, -1))
+		return -ENODEV;
 
 	hsmp_pdev = get_hsmp_pdev();
 	if (!hsmp_pdev)
