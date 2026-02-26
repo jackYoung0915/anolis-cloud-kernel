@@ -231,7 +231,6 @@ int overcommit_policy_handler(struct ctl_table *, int, void *, size_t *,
 /* test whether an address (unsigned long or pointer) is aligned to PAGE_SIZE */
 #define PAGE_ALIGNED(addr)	IS_ALIGNED((unsigned long)(addr), PAGE_SIZE)
 
-#define lru_to_page(head) (list_entry((head)->prev, struct page, lru))
 static inline struct folio *lru_to_folio(struct list_head *head)
 {
 	return list_entry((head)->prev, struct folio, lru);
@@ -1450,26 +1449,21 @@ vm_fault_t finish_fault(struct vm_fault *vmf);
 #if defined(CONFIG_ZONE_DEVICE) && defined(CONFIG_FS_DAX)
 DECLARE_STATIC_KEY_FALSE(devmap_managed_key);
 
-bool __put_devmap_managed_page_refs(struct page *page, int refs);
-static inline bool put_devmap_managed_page_refs(struct page *page, int refs)
+bool __put_devmap_managed_folio_refs(struct folio *folio, int refs);
+static inline bool put_devmap_managed_folio_refs(struct folio *folio, int refs)
 {
 	if (!static_branch_unlikely(&devmap_managed_key))
 		return false;
-	if (!is_zone_device_page(page))
+	if (!folio_is_zone_device(folio))
 		return false;
-	return __put_devmap_managed_page_refs(page, refs);
+	return __put_devmap_managed_folio_refs(folio, refs);
 }
 #else /* CONFIG_ZONE_DEVICE && CONFIG_FS_DAX */
-static inline bool put_devmap_managed_page_refs(struct page *page, int refs)
+static inline bool put_devmap_managed_folio_refs(struct folio *folio, int refs)
 {
 	return false;
 }
 #endif /* CONFIG_ZONE_DEVICE && CONFIG_FS_DAX */
-
-static inline bool put_devmap_managed_page(struct page *page)
-{
-	return put_devmap_managed_page_refs(page, 1);
-}
 
 /* 127: arbitrary random number, small enough to assemble well */
 #define folio_ref_zero_or_close_to_overflow(folio) \
@@ -1589,7 +1583,7 @@ static inline void put_page(struct page *page)
 	 * For some devmap managed pages we need to catch refcount transition
 	 * from 2 to 1:
 	 */
-	if (put_devmap_managed_page(&folio->page))
+	if (put_devmap_managed_folio_refs(folio, 1))
 		return;
 	folio_put(folio);
 }

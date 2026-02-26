@@ -96,7 +96,7 @@ retry:
 	 * belongs to this folio.
 	 */
 	if (unlikely(page_folio(page) != folio)) {
-		if (!put_devmap_managed_page_refs(&folio->page, refs))
+		if (!put_devmap_managed_folio_refs(folio, refs))
 			folio_put_refs(folio, refs);
 		goto retry;
 	}
@@ -116,7 +116,7 @@ static void gup_put_folio(struct folio *folio, int refs, unsigned int flags)
 			refs *= GUP_PIN_COUNTING_BIAS;
 	}
 
-	if (!put_devmap_managed_page_refs(&folio->page, refs))
+	if (!put_devmap_managed_folio_refs(folio, refs))
 		folio_put_refs(folio, refs);
 }
 
@@ -2607,13 +2607,10 @@ static void __maybe_unused undo_dev_pagemap(int *nr, int nr_start,
 					    struct page **pages)
 {
 	while ((*nr) - nr_start) {
-		struct page *page = pages[--(*nr)];
+		struct folio *folio = page_folio(pages[--(*nr)]);
 
-		ClearPageReferenced(page);
-		if (flags & FOLL_PIN)
-			unpin_user_page(page);
-		else
-			put_page(page);
+		folio_clear_referenced(folio);
+		gup_put_folio(folio, 1, flags);
 	}
 }
 
@@ -2683,7 +2680,7 @@ static struct folio *try_grab_folio_fast(struct page *page, int refs,
 	 */
 	if (unlikely((flags & FOLL_LONGTERM) &&
 		     !folio_is_longterm_pinnable(folio))) {
-		if (!put_devmap_managed_page_refs(&folio->page, refs))
+		if (!put_devmap_managed_folio_refs(folio, refs))
 			folio_put_refs(folio, refs);
 		return NULL;
 	}
@@ -2859,6 +2856,7 @@ static int __gup_device_huge(unsigned long pfn, unsigned long addr,
 	struct dev_pagemap *pgmap = NULL;
 
 	do {
+		struct folio *folio;
 		struct page *page = pfn_to_page(pfn);
 
 		pgmap = get_dev_pagemap(pfn, pgmap);
@@ -2872,12 +2870,13 @@ static int __gup_device_huge(unsigned long pfn, unsigned long addr,
 			break;
 		}
 
-		SetPageReferenced(page);
-		pages[*nr] = page;
-		if (unlikely(try_grab_folio(page_folio(page), 1, flags))) {
+		folio = try_grab_folio_fast(page, 1, flags);
+		if (!folio) {
 			undo_dev_pagemap(nr, nr_start, flags, pages);
 			break;
 		}
+		folio_set_referenced(folio);
+		pages[*nr] = page;
 		(*nr)++;
 		pfn++;
 	} while (addr += PAGE_SIZE, addr != end);
