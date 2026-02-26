@@ -255,6 +255,8 @@ struct kvm_hyperv_exit {
 #define KVM_EXIT_LOONGARCH_IOCSR  36
 #define KVM_EXIT_NOTIFY           37
 
+#define KVM_EXIT_CSV3_SECURE_CALL 200
+
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
 #define KVM_INTERNAL_ERROR_EMULATION	1
@@ -446,6 +448,20 @@ struct kvm_run {
 #define KVM_NOTIFY_CONTEXT_INVALID	(1 << 0)
 			__u32 flags;
 		} notify;
+		/* KVM_EXIT_CSV3_SECURE_CALL */
+		struct {
+#define KVM_CSV3_SECURE_CALL_PG_ENC	1
+#define KVM_CSV3_SECURE_CALL_PG_DEC	2
+			__u32 type;
+			union {
+				struct {
+					__u64 gpa;
+					__u64 size;
+					__u32 smr_size;
+					__u32 enc;
+				} enc_dec_info;
+			};
+		} secure_call;
 		/* Fix the size of the union. */
 		char padding[256];
 	};
@@ -1110,6 +1126,12 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_HYGON_COCO_EXT_CSV3_LFINISH_EX    (1 << 3)
 /* support userspace to request management of CSV3 shared pages */
 #define KVM_CAP_HYGON_COCO_EXT_CSV3_SP_MGR        (1 << 4)
+/* support update NPT by CSV3 NPT_EX */
+#define KVM_CAP_HYGON_COCO_EXT_CSV3_NPT_EX        (1 << 5)
+#define KVM_CAP_EXIT_CSV3_SECURE_CALL 502
+#define KVM_CSV3_SECURE_CALL_PG_ENC_DEC      0
+#define KVM_CSV3_SECURE_CALL_PG_ENC_DEC_MASK (1UL << KVM_CSV3_SECURE_CALL_PG_ENC_DEC)
+#define KVM_EXIT_CSV3_SECURE_CALL_VALID_MASK KVM_CSV3_SECURE_CALL_PG_ENC_DEC_MASK
 
 #define KVM_CAP_ARM_CPU_FEATURE 555
 
