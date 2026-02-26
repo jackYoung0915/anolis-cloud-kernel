@@ -633,11 +633,9 @@ static int amd_uncore_df_event_init(struct perf_event *event)
 		if (boot_cpu_data.x86_model == 0x4 ||
 			boot_cpu_data.x86_model == 0x5)
 		event_mask = HYGON_F18H_M4H_RAW_EVENT_MASK_NB;
-		if (boot_cpu_data.x86_model == 0x6 ||
-		    boot_cpu_data.x86_model == 0x7 ||
-		    boot_cpu_data.x86_model == 0x8 ||
-		    boot_cpu_data.x86_model == 0x10)
-		event_mask = HYGON_F18H_M6H_RAW_EVENT_MASK_NB;
+		if (boot_cpu_data.x86_model >= 0x6 &&
+		    boot_cpu_data.x86_model <= 0x18)
+			event_mask = HYGON_F18H_M6H_RAW_EVENT_MASK_NB;
 	}
 
 	hwc->config = event->attr.config & event_mask;
@@ -737,10 +735,8 @@ int amd_uncore_df_ctx_init(struct amd_uncore *uncore, unsigned int cpu)
 		if (boot_cpu_data.x86_model == 0x4 ||
 			boot_cpu_data.x86_model == 0x5)
 		*df_attr++ = &format_attr_umask10f18h.attr;
-		else if (boot_cpu_data.x86_model == 0x6 ||
-			boot_cpu_data.x86_model == 0x7 ||
-			boot_cpu_data.x86_model == 0x8 ||
-			boot_cpu_data.x86_model == 0x10)
+		else if (boot_cpu_data.x86_model >= 0x6 &&
+			 boot_cpu_data.x86_model <= 0x18)
 			*df_attr++ = &format_attr_umask12f18h.attr;
 	}
 
