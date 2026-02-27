@@ -1,0 +1,16 @@
+* Fri Feb 27 2026 Weilin Tong <tongweilin@linux.alibaba.com> [6.6.102-5.3_rc1%%DIST%%]
+- tls: make sure to abort the stream if headers are bogus (Jakub Kicinski) {CVE-2025-39946}
+- tls: handle data disappearing from under the TLS ULP (Jakub Kicinski)
+- net: bridge: fix use-after-free due to MST port state bypass (Nikolay Aleksandrov) {CVE-2025-40297}
+- af_unix: Initialise scc_index in unix_add_edge(). (Kuniyuki Iwashima) {CVE-2025-40214}
+- tls: fix handling of zero-length records on the rx_list (Jakub Kicinski) {CVE-2025-39682}
+- netfilter: nf_tables: reject duplicate device on updates (Pablo Neira Ayuso) {CVE-2025-38678}
+- ipvs: Defer ip_vs_ftp unregister during netns cleanup (Slavin Liu) {CVE-2025-40018}
+- crypto: essiv - Check ssize for decryption and in-place encryption (Herbert Xu) {CVE-2025-40019}
+- bridge: mcast: Fix use-after-free during router port configuration (Ido Schimmel) {CVE-2025-38248}
+- crypto: af_alg - Disallow concurrent writes in af_alg_sendmsg (Herbert Xu) {CVE-2025-39964}
+- xfrm: delete x->tunnel as we delete x (Sabrina Dubroca)
+- sched/fair: Ratelimit update to tg->load_avg (Aaron Lu)
+- anolis: sched: Add cmdline control for SCHED_MM_CID feature (Yinan Liu)
+- anolis: kernel-spec: default arm64_64k rpms build to disabled (Qinyun Tan)
+
