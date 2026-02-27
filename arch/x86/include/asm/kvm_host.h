@@ -1386,6 +1386,7 @@ struct kvm_x86_ops {
 	int (*control_post_system_reset)(struct kvm *kvm);
 	int (*get_hygon_coco_extension)(struct kvm *kvm);
 	int (*enable_hygon_coco_extension)(struct kvm *kvm, u32 arg);
+	int (*enable_exit_csv3_secure_call)(struct kvm *kvm, u64 arg);
 };
 
 struct kvm_x86_nested_ops {

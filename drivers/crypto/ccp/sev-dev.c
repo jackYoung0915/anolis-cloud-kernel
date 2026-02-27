@@ -150,11 +150,14 @@ static int sev_cmd_buffer_len(int cmd)
 			return sizeof(struct csv_data_launch_encrypt_vmcb);
 		case CSV_CMD_UPDATE_NPT:
 			return sizeof(struct csv_data_update_npt);
+		case CSV3_CMD_UPDATE_NPT_EX:
+			return sizeof(struct csv3_data_update_npt_ex);
 		case CSV_CMD_SET_SMR:
 			return sizeof(struct csv_data_set_smr);
 		case CSV_CMD_SET_SMCR:
 			return sizeof(struct csv_data_set_smcr);
 		case CSV3_CMD_SET_GUEST_PRIVATE_MEMORY:
+		case CSV3_CMD_SET_GUEST_PRIVATE_MEMORY_EX:
 			return sizeof(struct csv3_data_set_guest_private_memory);
 		case CSV_CMD_DBG_READ_VMSA:
 			return sizeof(struct csv_data_dbg_read_vmsa);
