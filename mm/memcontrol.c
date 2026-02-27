@@ -6605,7 +6605,7 @@ static int mem_cgroup_min_cache_write(struct cgroup_subsys_state *css,
 	u64 max = READ_ONCE(memcg->memory.max);
 	u64 min_cache_pages = val >> (PAGE_SHIFT - 10);
 
-	if ((val << 10) > max / 2)
+	if (max && (min_cache_pages > max / 2))
 		return -EINVAL;
 
 	memcg->min_cache_pages = min_cache_pages;
