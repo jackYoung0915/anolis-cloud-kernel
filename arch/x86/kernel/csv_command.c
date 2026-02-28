@@ -104,6 +104,12 @@ bool noinstr csv_active(void)
 }
 EXPORT_SYMBOL_GPL(csv_active);
 
+bool cc_platform_has_csv3(void)
+{
+	return csv_active();
+}
+EXPORT_SYMBOL_GPL(cc_platform_has_csv3);
+
 void __init csv_early_reset_memory(struct boot_params *bp)
 {
 	if (!csv_active())

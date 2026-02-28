@@ -293,6 +293,14 @@ swiotlb_init(int verbose)
 {
 	size_t bytes = PAGE_ALIGN(default_nslabs << IO_TLB_SHIFT);
 	void *tlb;
+	phys_addr_t align = PAGE_SIZE;
+
+	if (cc_platform_has_csv3()) {
+		if (memblock_phys_mem_size() > SZ_1G)
+			align = SZ_128M;
+		else
+			align = SZ_16M;
+	}
 
 	/*
 	 * For TDX, SEV or CSV without tee-io, all dma have to use
@@ -301,10 +309,10 @@ swiotlb_init(int verbose)
 	 * Remove the limitation here. (XEN can also get benefit)
 	 */
 	if (swiotlb_any || bytes >= SZ_2G)
-		tlb = memblock_alloc(bytes, PAGE_SIZE);
+		tlb = memblock_alloc(bytes, align);
 	else
 		/* Get IO TLB memory from the low pages */
-		tlb = memblock_alloc_low(bytes, PAGE_SIZE);
+		tlb = memblock_alloc_low(bytes, align);
 	if (!tlb)
 		goto fail;
 	if (swiotlb_init_with_tbl(tlb, default_nslabs, verbose))
