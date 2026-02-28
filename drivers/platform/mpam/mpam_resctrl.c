@@ -786,7 +786,7 @@ static int mpam_resctrl_resource_init(struct mpam_resctrl_res *res)
 	    res->resctrl_res.rid == RDT_RESOURCE_L3) {
 		bool has_csu = cache_has_usable_csu(class);
 
-		r->cache_level = class->level;
+		r->scope = class->level;
 
 		/* TODO: Scaling is not yet supported */
 		r->cache.cbm_len = class->props.cpbm_wd;
