@@ -9323,8 +9323,9 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 static void cpu_cgroup_css_offline(struct cgroup_subsys_state *css)
 {
 	struct task_group *tg = css_tg(css);
-
+#ifdef CONFIG_SCHED_SLI
 	tg_enable_sli(tg, false);
+#endif
 	scx_tg_offline(tg);
 }
 
