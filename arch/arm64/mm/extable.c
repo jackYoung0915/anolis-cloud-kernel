@@ -29,6 +29,19 @@ static bool ex_handler_fixup_err_zero(const struct exception_table_entry *ex,
 	return true;
 }
 
+static bool ex_handler_uaccess_err_zero(const struct exception_table_entry *ex,
+					struct pt_regs *regs)
+{
+	int reg_err = FIELD_GET(EX_DATA_REG_ERR, ex->data);
+	int reg_zero = FIELD_GET(EX_DATA_REG_ZERO, ex->data);
+
+	pt_regs_write_reg(regs, reg_err, -EFAULT);
+	pt_regs_write_reg(regs, reg_zero, 0);
+
+	regs->pc = get_ex_fixup(ex);
+	return true;
+}
+
 static bool
 ex_handler_load_unaligned_zeropad(const struct exception_table_entry *ex,
 				  struct pt_regs *regs)
@@ -75,6 +88,26 @@ bool fixup_exception(struct pt_regs *regs)
 	}
 
 	BUG();
+}
+
+bool fixup_exception_me(struct pt_regs *regs)
+{
+	const struct exception_table_entry *ex;
+
+	ex = search_exception_tables(instruction_pointer(regs));
+	if (!ex) {
+		pr_warn_ratelimited("fixup search failed\n");
+		return false;
+	}
+
+	switch (ex->type) {
+	case EX_TYPE_UACCESS_ERR_ZERO:
+	case EX_TYPE_KACCESS_ERR_ZERO_ME_SAFE:
+		return ex_handler_uaccess_err_zero(ex, regs);
+	}
+
+	pr_warn_ratelimited("fixup type: %d invalid\n", ex->type);
+	return false;
 }
 
 bool fixup_exception_mc(struct pt_regs *regs)

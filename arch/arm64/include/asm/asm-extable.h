@@ -11,6 +11,8 @@
 #define EX_TYPE_KACCESS_ERR_ZERO	3
 #define EX_TYPE_LOAD_UNALIGNED_ZEROPAD	4
 #define EX_TYPE_COPY_MC_PAGE_ERR_ZERO	5
+/* kernel access memory error safe */
+#define EX_TYPE_KACCESS_ERR_ZERO_ME_SAFE	5
 
 /* Data fields for EX_TYPE_UACCESS_ERR_ZERO */
 #define EX_DATA_REG_ERR_SHIFT	0
@@ -55,6 +57,14 @@
 #define _ASM_EXTABLE_COPY_MC_PAGE_ERR_ZERO(insn, fixup, err, zero)	\
 	__ASM_EXTABLE_RAW(insn, fixup, 					\
 			  EX_TYPE_COPY_MC_PAGE_ERR_ZERO,		\
+			  (						\
+			    EX_DATA_REG(ERR, err) |			\
+			    EX_DATA_REG(ZERO, zero)			\
+			  ))
+
+#define _ASM_EXTABLE_KACCESS_ERR_ZERO_ME_SAFE(insn, fixup, err, zero)	\
+	__ASM_EXTABLE_RAW(insn, fixup, 					\
+			  EX_TYPE_KACCESS_ERR_ZERO_ME_SAFE,		\
 			  (						\
 			    EX_DATA_REG(ERR, err) |			\
 			    EX_DATA_REG(ZERO, zero)			\
