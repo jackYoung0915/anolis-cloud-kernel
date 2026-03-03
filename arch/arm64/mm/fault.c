@@ -814,15 +814,6 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	unsigned long siaddr;
 
 	inf = esr_to_fault_info(esr);
-
-	if (user_mode(regs) && apei_claim_sea(regs) == 0) {
-		/*
-		 * APEI claimed this as a firmware-first notification.
-		 * Some processing deferred to task_work before ret_to_user().
-		 */
-		return 0;
-	}
-
 	if (esr & ESR_ELx_FnV) {
 		siaddr = 0;
 	} else {
@@ -839,8 +830,7 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	if (do_apei_claim_sea(esr, regs, siaddr, inf->sig, inf->code))
 		return 0;
 
-	if (!arm64_do_kernel_sea(siaddr, esr, regs, inf->sig, inf->code))
-		arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
+	arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
 
 	return 0;
 }
