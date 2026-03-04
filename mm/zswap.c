@@ -38,9 +38,9 @@
 * statistics
 **********************************/
 /* Total bytes used by the compressed storage */
-static u64 zswap_pool_total_size;
+u64 zswap_pool_total_size;
 /* The number of compressed pages currently stored in zswap */
-static atomic_t zswap_stored_pages = ATOMIC_INIT(0);
+atomic_t zswap_stored_pages = ATOMIC_INIT(0);
 /* The number of same-value filled pages currently stored in zswap */
 static atomic_t zswap_same_filled_pages = ATOMIC_INIT(0);
 
@@ -168,6 +168,8 @@ struct zswap_entry {
 		unsigned long handle;
 		unsigned long value;
 	};
+	struct obj_cgroup *objcg;
+	struct mem_cgroup *memcg;
 };
 
 struct zswap_header {
@@ -339,6 +341,16 @@ static void zswap_rb_erase(struct rb_root *root, struct zswap_entry *entry)
  */
 static void zswap_free_entry(struct zswap_entry *entry)
 {
+	if (entry->objcg) {
+		obj_cgroup_uncharge_zswap(entry->objcg, entry->length);
+		obj_cgroup_put(entry->objcg);
+		entry->objcg = NULL;
+	} else if (entry->memcg) {
+		memcg_uncharge_zswap(entry->memcg, entry->length);
+		mem_cgroup_put(entry->memcg);
+		entry->memcg = NULL;
+	}
+
 	if (!entry->length)
 		atomic_dec(&zswap_same_filled_pages);
 	else {
@@ -1005,6 +1017,9 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 	struct zswap_tree *tree = zswap_trees[type];
 	struct zswap_entry *entry, *dupentry;
 	struct crypto_comp *tfm;
+	struct obj_cgroup *objcg = NULL;
+	struct mem_cgroup *memcg = NULL;
+	struct zswap_pool *pool;
 	int ret;
 	unsigned int hlen, dlen = PAGE_SIZE;
 	unsigned long handle, value;
@@ -1024,17 +1039,27 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 		goto reject;
 	}
 
+	/*
+	 * XXX: zswap reclaim does not work with cgroups yet. Without a
+	 * cgroup-aware entry LRU, we will push out entries system-wide based on
+	 * local cgroup limits.
+	 */
+	ret = -ENOMEM;
+	objcg = get_obj_cgroup_from_page(page);
+	if (objcg && !obj_cgroup_may_zswap(objcg)) {
+		goto reject;
+	} else if (!objcg) {
+		memcg = get_mem_cgroup_from_page(page);
+
+		if (memcg && !memcg_may_zswap(memcg))
+			goto reject;
+	}
+
 	/* reclaim space if needed */
 	if (zswap_is_full()) {
-		struct zswap_pool *pool;
-
 		zswap_pool_limit_hit++;
 		zswap_pool_reached_full = true;
-		pool = zswap_pool_last_get();
-		if (pool)
-			queue_work(shrink_wq, &pool->shrink_work);
-		ret = -ENOMEM;
-		goto reject;
+		goto shrink;
 	}
 
 	if (zswap_pool_reached_full) {
@@ -1053,6 +1078,8 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 		goto reject;
 	}
 
+	entry->objcg = NULL;
+	entry->memcg = NULL;
 	if (zswap_same_filled_pages_enabled) {
 		src = kmap_atomic(page);
 		if (zswap_is_page_same_filled(src, &value)) {
@@ -1111,6 +1138,17 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 	entry->length = dlen;
 
 insert_entry:
+	if (objcg) {
+		entry->objcg = objcg;
+		obj_cgroup_charge_zswap(objcg, entry->length);
+		/* Account before objcg ref is moved to tree */
+		count_objcg_event(objcg, ZSWPOUT);
+	} else if (memcg) {
+		entry->memcg = memcg;
+		memcg_charge_zswap(memcg, entry->length);
+		count_memcg_events(memcg, ZSWPOUT, 1);
+	}
+
 	/* map */
 	spin_lock(&tree->lock);
 	do {
@@ -1127,6 +1165,7 @@ insert_entry:
 	/* update stats */
 	atomic_inc(&zswap_stored_pages);
 	zswap_update_total_size();
+	count_vm_event(ZSWPOUT);
 
 	return 0;
 
@@ -1136,7 +1175,18 @@ put_dstmem:
 freepage:
 	zswap_entry_cache_free(entry);
 reject:
+	if (objcg)
+		obj_cgroup_put(objcg);
+	else if (memcg)
+		mem_cgroup_put(memcg);
 	return ret;
+
+shrink:
+	pool = zswap_pool_last_get();
+	if (pool)
+		queue_work(shrink_wq, &pool->shrink_work);
+	ret = -ENOMEM;
+	goto reject;
 }
 
 /*
@@ -1167,7 +1217,7 @@ static int zswap_frontswap_load(unsigned type, pgoff_t offset,
 		dst = kmap_atomic(page);
 		zswap_fill_page(dst, entry->value);
 		kunmap_atomic(dst);
-		goto freeentry;
+		goto stats;
 	}
 
 	/* decompress */
@@ -1183,7 +1233,13 @@ static int zswap_frontswap_load(unsigned type, pgoff_t offset,
 	zpool_unmap_handle(entry->pool->zpool, entry->handle);
 	BUG_ON(ret);
 
-freeentry:
+stats:
+	count_vm_event(ZSWPIN);
+	if (entry->objcg)
+		count_objcg_event(entry->objcg, ZSWPIN);
+	else if (entry->memcg)
+		count_memcg_events(entry->memcg, ZSWPIN, 1);
+
 	spin_lock(&tree->lock);
 	zswap_entry_put(tree, entry);
 	spin_unlock(&tree->lock);

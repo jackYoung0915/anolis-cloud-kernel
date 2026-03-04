@@ -91,8 +91,10 @@ DEFINE_PER_CPU(struct mem_cgroup *, int_active_memcg);
 /* Socket memory accounting disabled? */
 static bool cgroup_memory_nosocket;
 
+#ifdef CONFIG_MEMCG_KMEM
 /* Kernel memory accounting disabled? */
 bool cgroup_memory_nokmem;
+#endif
 unsigned long sysctl_penalty_extra_delay_jiffies;
 
 #ifdef CONFIG_MEMSLI
@@ -287,6 +289,11 @@ struct cgroup_subsys_state *vmpressure_to_css(struct vmpressure *vmpr)
 	return &container_of(vmpr, struct mem_cgroup, vmpressure)->css;
 }
 
+static int swap_high_show(struct seq_file *m, void *v);
+static ssize_t swap_high_write(struct kernfs_open_file *of,
+					char *buf, size_t nbytes, loff_t off);
+static int swap_events_show(struct seq_file *m, void *v);
+
 #ifdef CONFIG_MEMCG_KMEM
 static DEFINE_SPINLOCK(objcg_lock);
 
@@ -396,10 +403,6 @@ int memcg_nr_cache_ids;
 
 /* Protects memcg_nr_cache_ids */
 static DECLARE_RWSEM(memcg_cache_ids_sem);
-static int swap_high_show(struct seq_file *m, void *v);
-static ssize_t swap_high_write(struct kernfs_open_file *of,
-					char *buf, size_t nbytes, loff_t off);
-static int swap_events_show(struct seq_file *m, void *v);
 
 void memcg_get_cache_ids(void)
 {
@@ -1805,6 +1808,10 @@ static const struct memory_stat memory_stats[] = {
 	{ "percpu",			MEMCG_PERCPU_B               },
 	{ "sock",			MEMCG_SOCK                   },
 	{ "shmem",			NR_SHMEM                     },
+#if defined(CONFIG_ZSWAP)
+	{ "zswap",			MEMCG_ZSWAP_B                },
+	{ "zswapped",			MEMCG_ZSWAPPED               },
+#endif
 	{ "file_mapped",		NR_FILE_MAPPED	             },
 	{ "file_dirty",			NR_FILE_DIRTY                },
 	{ "file_writeback",		NR_WRITEBACK                 },
@@ -1836,6 +1843,7 @@ static int memcg_page_state_unit(int item)
 {
 	switch (item) {
 	case MEMCG_PERCPU_B:
+	case MEMCG_ZSWAP_B:
 	case NR_SLAB_RECLAIMABLE_B:
 	case NR_SLAB_UNRECLAIMABLE_B:
 	case WORKINGSET_REFAULT_ANON:
@@ -1914,6 +1922,13 @@ static char *memory_stat_format(struct mem_cgroup *memcg)
 		       memcg_events(memcg, PGLAZYFREE));
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PGLAZYFREED),
 		       memcg_events(memcg, PGLAZYFREED));
+
+#if defined(CONFIG_ZSWAP)
+	seq_buf_printf(&s, "%s %lu\n", vm_event_name(ZSWPIN),
+		       memcg_events(memcg, ZSWPIN));
+	seq_buf_printf(&s, "%s %lu\n", vm_event_name(ZSWPOUT),
+		       memcg_events(memcg, ZSWPOUT));
+#endif
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(THP_FAULT_ALLOC),
@@ -3434,6 +3449,19 @@ struct mem_cgroup *mem_cgroup_from_obj(void *p)
 	return page->mem_cgroup;
 }
 
+static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
+{
+	struct obj_cgroup *objcg = NULL;
+
+	for (; memcg != root_mem_cgroup; memcg = parent_mem_cgroup(memcg)) {
+		objcg = rcu_dereference(memcg->objcg);
+		if (objcg && obj_cgroup_tryget(objcg))
+			break;
+		objcg = NULL;
+	}
+	return objcg;
+}
+
 __always_inline struct obj_cgroup *get_obj_cgroup_from_current(void)
 {
 	struct obj_cgroup *objcg = NULL;
@@ -3447,14 +3475,39 @@ __always_inline struct obj_cgroup *get_obj_cgroup_from_current(void)
 		memcg = active_memcg();
 	else
 		memcg = mem_cgroup_from_task(current);
-
-	for (; memcg != root_mem_cgroup; memcg = parent_mem_cgroup(memcg)) {
-		objcg = rcu_dereference(memcg->objcg);
-		if (objcg && obj_cgroup_tryget(objcg))
-			break;
-		objcg = NULL;
-	}
+	objcg = __get_obj_cgroup_from_memcg(memcg);
 	rcu_read_unlock();
+	return objcg;
+}
+
+struct obj_cgroup *get_obj_cgroup_from_page(struct page *page)
+{
+	struct obj_cgroup *objcg;
+	struct page *head = compound_head(page);
+
+	if (!memcg_kmem_enabled())
+		return NULL;
+
+	if (page_has_obj_cgroups(head) && PageSlab(head)) {
+			unsigned long off;
+
+			off = obj_to_index(page->slab_cache, head,
+					   page_address(page));
+
+			objcg = page_obj_cgroups(head)[off];
+			if (objcg)
+				obj_cgroup_get(objcg);
+	} else {
+		struct mem_cgroup *memcg;
+
+		rcu_read_lock();
+		memcg = page_memcg(head);
+		if (memcg)
+			objcg = __get_obj_cgroup_from_memcg(memcg);
+		else
+			objcg = NULL;
+		rcu_read_unlock();
+	}
 
 	return objcg;
 }
@@ -4939,6 +4992,10 @@ static const unsigned int memcg1_stats[] = {
 	NR_FILE_THPS,
 	NR_SHMEM_THPS,
 #endif
+#if defined(CONFIG_ZSWAP)
+	MEMCG_ZSWAP_B,
+	MEMCG_ZSWAPPED,
+#endif
 };
 
 static const char *const memcg1_stat_names[] = {
@@ -4962,6 +5019,10 @@ static const char *const memcg1_stat_names[] = {
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	"file_thp",
 	"shmem_thp",
+#endif
+#if defined(CONFIG_ZSWAP)
+	"zswap",
+	"zswapped",
 #endif
 };
 
@@ -4988,7 +5049,11 @@ static int memcg_stat_show(struct seq_file *m, void *v)
 		if (memcg1_stats[i] == MEMCG_SWAP && !do_memsw_account())
 			continue;
 		nr = memcg_page_state_local(memcg, memcg1_stats[i]);
-		seq_printf(m, "%s %lu\n", memcg1_stat_names[i], nr * PAGE_SIZE);
+		if (memcg1_stats[i] == MEMCG_ZSWAP_B)
+			seq_printf(m, "%s %lu\n", memcg1_stat_names[i], nr);
+		else
+			seq_printf(m, "%s %lu\n", memcg1_stat_names[i],
+				   nr * PAGE_SIZE);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(memcg1_events); i++)
@@ -7841,6 +7906,9 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 
 	page_counter_set_high(&memcg->memory, PAGE_COUNTER_MAX);
 	memcg->soft_limit = PAGE_COUNTER_MAX;
+#if defined(CONFIG_ZSWAP)
+	memcg->zswap_max = PAGE_COUNTER_MAX;
+#endif
 	page_counter_set_high(&memcg->swap, PAGE_COUNTER_MAX);
 	page_counter_set_high(&memcg->memsw, PAGE_COUNTER_MAX);
 #ifdef CONFIG_TEXT_UNEVICTABLE
@@ -9882,8 +9950,10 @@ static int __init cgroup_memory(char *s)
 			continue;
 		if (!strcmp(token, "nosocket"))
 			cgroup_memory_nosocket = true;
+#ifdef CONFIG_MEMCG_KMEM
 		if (!strcmp(token, "nokmem"))
 			cgroup_memory_nokmem = true;
+#endif
 	}
 	return 1;
 }
@@ -10370,6 +10440,194 @@ static struct cftype memsw_files[] = {
 	{ },	/* terminate */
 };
 
+static bool __memcg_may_zswap(struct mem_cgroup *memcg)
+{
+	struct mem_cgroup *temp_memcg;
+	bool ret = true;
+
+	for (temp_memcg = memcg; temp_memcg != root_mem_cgroup;
+	     temp_memcg = parent_mem_cgroup(temp_memcg)) {
+		unsigned long max = READ_ONCE(temp_memcg->zswap_max);
+		unsigned long pages;
+
+		if (max == PAGE_COUNTER_MAX)
+			continue;
+		if (max == 0) {
+			ret = false;
+			break;
+		}
+		cgroup_rstat_flush(temp_memcg->css.cgroup);
+		pages = memcg_page_state(temp_memcg, MEMCG_ZSWAP_B) / PAGE_SIZE;
+		if (pages < max)
+			continue;
+		ret = false;
+		break;
+	}
+	return ret;
+}
+
+#if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
+static inline struct mem_cgroup *get_mem_cgroup_from_objcg(struct obj_cgroup *objcg)
+{
+	struct mem_cgroup *memcg;
+
+	rcu_read_lock();
+retry:
+	memcg = obj_cgroup_memcg(objcg);
+	if (unlikely(!css_tryget(&memcg->css)))
+		goto retry;
+	rcu_read_unlock();
+
+	return memcg;
+}
+/**
+ * obj_cgroup_may_zswap - check if this cgroup can zswap
+ * @objcg: the object cgroup
+ *
+ * Check if the hierarchical zswap limit has been reached.
+ *
+ * This doesn't check for specific headroom, and it is not atomic
+ * either. But with zswap, the size of the allocation is only known
+ * once compression has occured, and this optimistic pre-check avoids
+ * spending cycles on compression when there is already no room left
+ * or zswap is disabled altogether somewhere in the hierarchy.
+ */
+bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
+{
+	struct mem_cgroup *memcg;
+	bool ret;
+
+	memcg = get_mem_cgroup_from_objcg(objcg);
+	ret = __memcg_may_zswap(memcg);
+	mem_cgroup_put(memcg);
+
+	return ret;
+}
+
+/**
+ * obj_cgroup_charge_zswap - charge compression backend memory
+ * @objcg: the object cgroup
+ * @size: size of compressed object
+ *
+ * This forces the charge after obj_cgroup_may_swap() allowed
+ * compression and storage in zwap for this cgroup to go ahead.
+ */
+void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
+{
+	struct mem_cgroup *memcg;
+
+	VM_WARN_ON_ONCE(!(current->flags & PF_MEMALLOC));
+
+	/* PF_MEMALLOC context, charging must succeed */
+	if (obj_cgroup_charge(objcg, GFP_KERNEL, size))
+		VM_WARN_ON_ONCE(1);
+
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(objcg);
+	mod_memcg_state(memcg, MEMCG_ZSWAP_B, size);
+	mod_memcg_state(memcg, MEMCG_ZSWAPPED, 1);
+	rcu_read_unlock();
+}
+
+/**
+ * obj_cgroup_uncharge_zswap - uncharge compression backend memory
+ * @objcg: the object cgroup
+ * @size: size of compressed object
+ *
+ * Uncharges zswap memory on page in.
+ */
+void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size)
+{
+	struct mem_cgroup *memcg;
+
+	obj_cgroup_uncharge(objcg, size);
+
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(objcg);
+	mod_memcg_state(memcg, MEMCG_ZSWAP_B, -size);
+	mod_memcg_state(memcg, MEMCG_ZSWAPPED, -1);
+	rcu_read_unlock();
+}
+#endif /* CONFIG_MEMCG_KMEM && CONFIG_ZSWAP */
+
+#ifdef CONFIG_ZSWAP
+bool memcg_may_zswap(struct mem_cgroup *memcg)
+{
+	return __memcg_may_zswap(memcg);
+}
+
+void memcg_charge_zswap(struct mem_cgroup *memcg, size_t size)
+{
+	mod_memcg_state(memcg, MEMCG_ZSWAP_B, size);
+	mod_memcg_state(memcg, MEMCG_ZSWAPPED, 1);
+}
+
+void memcg_uncharge_zswap(struct mem_cgroup *memcg, size_t size)
+{
+	mod_memcg_state(memcg, MEMCG_ZSWAP_B, -size);
+	mod_memcg_state(memcg, MEMCG_ZSWAPPED, -1);
+}
+
+static u64 zswap_current_read(struct cgroup_subsys_state *css,
+			      struct cftype *cft)
+{
+	cgroup_rstat_flush(css->cgroup);
+	return memcg_page_state(mem_cgroup_from_css(css), MEMCG_ZSWAP_B);
+}
+
+static int zswap_max_show(struct seq_file *m, void *v)
+{
+	return seq_puts_memcg_tunable(m,
+		READ_ONCE(mem_cgroup_from_seq(m)->zswap_max));
+}
+
+static ssize_t zswap_max_write(struct kernfs_open_file *of,
+			       char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned long max;
+	int err;
+
+	buf = strstrip(buf);
+	err = page_counter_memparse(buf, "max", &max);
+	if (err)
+		return err;
+
+	xchg(&memcg->zswap_max, max);
+
+	return nbytes;
+}
+
+static struct cftype zswap_files[] = {
+	{
+		.name = "zswap.current",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = zswap_current_read,
+	},
+	{
+		.name = "zswap.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = zswap_max_show,
+		.write = zswap_max_write,
+	},
+	{ }	/* terminate */
+};
+static struct cftype zswap_files_legacy[] = {
+	{
+		.name = "zswap.current",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = zswap_current_read,
+	},
+	{
+		.name = "zswap.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = zswap_max_show,
+		.write = zswap_max_write,
+	},
+	{ }	/* terminate */
+};
+#endif
+
 /*
  * If mem_cgroup_swap_init() is implemented as a subsys_initcall()
  * instead of a core_initcall(), this could mean cgroup_memory_noswap still
@@ -10388,7 +10646,10 @@ static int __init mem_cgroup_swap_init(void)
 
 	WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, swap_files));
 	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, memsw_files));
-
+#if defined(CONFIG_ZSWAP)
+	WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files));
+	WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, zswap_files_legacy));
+#endif
 	return 0;
 }
 core_initcall(mem_cgroup_swap_init);
