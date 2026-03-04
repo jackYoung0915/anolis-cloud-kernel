@@ -570,6 +570,7 @@ void nested_map_memslot(struct vmx_pages *vmx, struct kvm_vm *vm,
 void nested_identity_map_1g(struct vmx_pages *vmx, struct kvm_vm *vm,
 			    uint64_t addr, uint64_t size);
 bool kvm_cpu_has_ept(void);
+bool kvm_cpu_has_vmx_apic_access_virt(void);
 void prepare_eptp(struct vmx_pages *vmx, struct kvm_vm *vm,
 		  uint32_t eptp_memslot);
 void prepare_virtualize_apic_accesses(struct vmx_pages *vmx, struct kvm_vm *vm);
