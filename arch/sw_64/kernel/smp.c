@@ -840,6 +840,20 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 }
 EXPORT_SYMBOL(flush_tlb_kernel_range);
 
+void arch_tlbbatch_add_mm(struct arch_tlbflush_unmap_batch *batch,
+					struct mm_struct *mm)
+{
+	cpumask_or(&batch->cpumask, &batch->cpumask, mm_cpumask(mm));
+}
+
+void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
+{
+	if (!cpumask_empty(&batch->cpumask)) {
+		on_each_cpu_mask(&batch->cpumask, ipi_flush_tlb_all, NULL, 1);
+		cpumask_clear(&batch->cpumask);
+	}
+}
+
 #ifdef CONFIG_HOTPLUG_CPU
 extern int can_unplug_cpu(void);
 int __cpu_disable(void)
