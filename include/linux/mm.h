@@ -4500,6 +4500,9 @@ static inline void accept_memory(phys_addr_t start, phys_addr_t end)
 
 #endif
 
+/* added to mm.h to avoid every caller adding new header file */
+#include <linux/mem_reliable.h>
+
 struct fast_reflink_work {
 	struct work_struct work;
 	struct address_space *mapping;
