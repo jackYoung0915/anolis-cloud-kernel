@@ -131,8 +131,7 @@ static void smc_close_cancel_work(struct smc_sock *smc)
 	struct sock *sk = &smc->sk;
 
 	release_sock(sk);
-	if (cancel_work_sync(&smc->conn.close_work))
-		sock_put(sk);
+	cancel_work_sync(&smc->conn.close_work);
 	cancel_delayed_work_sync(&smc->conn.tx_work);
 	lock_sock(sk);
 }
@@ -164,7 +163,6 @@ void smc_close_active_abort(struct smc_sock *smc)
 		if (smc_sk_state(sk) != SMC_PEERABORTWAIT)
 			break;
 		smc_sk_set_state(sk, SMC_CLOSED);
-		smc_conn_free(&smc->conn);
 		sock_put(sk); /* (postponed) passive closing */
 		break;
 	case SMC_PEERCLOSEWAIT1:
@@ -320,7 +318,6 @@ again:
 		break;
 	case SMC_PEERABORTWAIT:
 		smc_sk_set_state(sk, SMC_CLOSED);
-		sock_put(sk); /* (postponed) passive closing */
 		break;
 	case SMC_CLOSED:
 		/* nothing to do, add tracing in future patch */
@@ -365,7 +362,6 @@ static void smc_close_passive_abort_received(struct smc_sock *smc)
 		break;
 	case SMC_PEERABORTWAIT:
 		smc_sk_set_state(sk, SMC_CLOSED);
-		sock_put(sk); /* passive closing */
 		break;
 	case SMC_PROCESSABORT:
 	/* nothing to do, add tracing in future patch */
