@@ -25,6 +25,7 @@
 #include <linux/delay.h>
 #include <linux/vmalloc.h>
 #include "../../iommu/hisilicon/ummu_cfg_v1.h"
+#include <linux/hisi_ummu.h>
 #include <uapi/ub/ubmempfd/ubmempfd.h>
 
 #define UBMEMPFD_MISC_NAME "ubmempfd"
