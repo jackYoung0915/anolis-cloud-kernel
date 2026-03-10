@@ -1,1 +1,1 @@
-# CONFIG_UACCE is not set
+CONFIG_UACCE=m
