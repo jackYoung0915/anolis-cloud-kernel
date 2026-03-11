@@ -499,23 +499,35 @@ static ssize_t loaded_backend_show(struct kobject *k,
 {
 	struct pstore_info_list *entry;
 	char *old, *loaded_backend = NULL;
+	ssize_t ret;
 
 	if (!psback)
 		return sprintf(buf, "null\n");
 
 	mutex_lock(&psback_lock);
-	list_for_each_entry(entry, &psback->list_entry, list)
-		if (!loaded_backend)
+	list_for_each_entry(entry, &psback->list_entry, list) {
+		if (!loaded_backend) {
 			loaded_backend = kstrdup(entry->psi->name, GFP_KERNEL);
-		else {
+			if (!loaded_backend) {
+				mutex_unlock(&psback_lock);
+				return -ENOMEM;
+			}
+		} else {
 			old = loaded_backend;
 			loaded_backend = kasprintf(GFP_KERNEL, "%s,%s",
 						   old, entry->psi->name);
 			kfree(old);
+			if (!loaded_backend) {
+				mutex_unlock(&psback_lock);
+				return -ENOMEM;
+			}
 		}
+	}
 	mutex_unlock(&psback_lock);
 
-	return sprintf(buf, "%s\n", loaded_backend);
+	ret = sprintf(buf, "%s\n", loaded_backend);
+	kfree(loaded_backend);
+	return ret;
 }
 
 static struct kobj_attribute backend_attribute =
