@@ -9,6 +9,7 @@
 #include <linux/percpu.h>
 
 DEFINE_STATIC_KEY_FALSE(mpam_enabled);
+EXPORT_SYMBOL_FOR_KVM(mpam_enabled);
 DEFINE_PER_CPU(u64, arm64_mpam_default);
 DEFINE_PER_CPU(u64, arm64_mpam_current);
 
