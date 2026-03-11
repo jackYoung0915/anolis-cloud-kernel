@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Lua based LSM
  *
@@ -25,7 +25,6 @@
 #include "lsm.h"
 #include "lua_object.h"
 #include "lsm_defs.h"
-
 
 #ifdef DEBUG
 
@@ -100,7 +99,7 @@ static void lvm_stats_vmfree(void)
 }
 
 static void lvm_stats_memalloc(struct lvm_state *lvm, void *ptr,
-		size_t osize, size_t nsize)
+			       size_t osize, size_t nsize)
 {
 	lua_State *L = lvm->L;
 	int minimum, maximum, nbytes;
@@ -121,7 +120,7 @@ static void lvm_stats_memalloc(struct lvm_state *lvm, void *ptr,
 		atomic_add(nsize - osize, &mem_total);
 	}
 
-	if (L == NULL)
+	if (!L)
 		return;
 
 	minimum = atomic_read(&mem_minimum);
@@ -161,16 +160,17 @@ int lsm_funcs_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "stats for lua-lsm (ns)\n");
 	seq_printf(m, "%3s %-28s %4s %12s %15s %10s %12s\n",
-		"num", "name", "nlsm", "count", "total", "average", "maxtime");
+		   "num", "name", "nlsm", "count", "total", "average", "maxtime");
 	seq_printf(m, "%s\n", TABLINE);
 
 	for (stat = lua_lsm_hook_stats; stat->name; stat++) {
 		int n = atomic_read(&stat->count);
 		s64 total = atomic64_read(&stat->time);
 		s64 maxtime = atomic64_read(&stat->maxtime);
+
 		seq_printf(m, "%3d %-28s %4d %12d %15llu %10llu %12llu\n",
-			i++, stat->name, atomic_read(&stat->nhooks),
-			n, total, n ? total / n : 0, maxtime);
+			   i++, stat->name, atomic_read(&stat->nhooks),
+			   n, total, n ? total / n : 0, maxtime);
 	}
 	return 0;
 }
@@ -188,7 +188,7 @@ static inline void lvm_stats_vmfree(void)
 }
 
 static inline void lvm_stats_memalloc(struct lvm_state *lvm, void *ptr,
-		size_t osize, size_t nsize)
+				      size_t osize, size_t nsize)
 {
 }
 
@@ -333,13 +333,14 @@ lvm_get_from_task(const struct task_struct *task, bool exclusive)
 	struct lua_lsm_task *llt = lua_lsm_task(task);
 	struct lvm_state *lvm = llt->lvm;
 	int n = refcount_acquire(&lvm->refcount);
+
 	if (exclusive && n != 1) {
 		refcount_release(&lvm->refcount);
 		return NULL;
 	}
 	WARN_ON(n != 1);
 	KASSERT(n == 1, ("<%s> Lua VM is reused, refcount = %d\n",
-		task->comm, n));
+			 task->comm, n));
 	return lvm->L;
 }
 
@@ -348,9 +349,10 @@ static void lvm_put_to_task(const struct task_struct *task, lua_State *L)
 	struct lua_lsm_task *llt = lua_lsm_task(task);
 	struct lvm_state *lvm = llt->lvm;
 	int n = refcount_release(&lvm->refcount);
+
 	KASSERT(n == 0, ("<%s> Lua VM is reused, refcount = %d\n",
-		task->comm, n));
-	WARN_ON(L != lvm->L);
+			 task->comm, n));
+	WARN_ON(lvm->L != L);
 }
 
 lua_State *lvm_get(void)
@@ -381,7 +383,8 @@ static int lua_shared_index(lua_State *L)
 	int found = 0;
 
 	__log_info_ratelimited("READ shared table, [%s] %s\n",
-		luaL_typename(L, 2), lua_tostring(L, 2) ?: "(null)");
+			       luaL_typename(L, 2),
+			       lua_tostring(L, 2) ?: "(null)");
 
 	lua_pushlightuserdata(L, MODULE_KEY);
 	lua_gettable(L, LUA_ENVIRONINDEX);	/* env.MODULE_KEY */
@@ -403,9 +406,10 @@ static int lua_shared_index(lua_State *L)
 	if (!found) {
 		unsigned long flags;
 		size_t l = strlen(name);
+
 		shdict = kmalloc(struct_size(shdict, name, l + 1),
-				lua_lsm_gfp());
-		if (shdict == NULL) {
+				 lua_lsm_gfp());
+		if (!shdict) {
 			__log_err("No memory\n");
 			return 0;
 		}
@@ -447,8 +451,8 @@ static int lua_shared_index(lua_State *L)
 static int lua_shared_newindex(lua_State *L)
 {
 	__log_err("Invalid operation: WRITE shared table, [%s] %s - [%s] %s\n",
-		luaL_typename(L, 2), lua_tostring(L, 2) ?: "(null)",
-		luaL_typename(L, 3), lua_tostring(L, 3) ?: "(null)");
+		  luaL_typename(L, 2), lua_tostring(L, 2) ?: "(null)",
+		  luaL_typename(L, 3), lua_tostring(L, 3) ?: "(null)");
 	return 0;
 }
 
@@ -456,8 +460,8 @@ static int lua_module_fenv_newindex(lua_State *L)
 {
 	/* args: t, k, v */
 	__log_warn("Warning: set global variable, [%s] %s - [%s] %s\n",
-		luaL_typename(L, 2), lua_tostring(L, 2) ?: "(null)",
-		luaL_typename(L, 3), lua_tostring(L, 3) ?: "(null)");
+		   luaL_typename(L, 2), lua_tostring(L, 2) ?: "(null)",
+		   luaL_typename(L, 3), lua_tostring(L, 3) ?: "(null)");
 
 	/* XXX: t[k] = v, Warning it, but still perform assignment */
 	lua_rawset(L, 1);
@@ -498,7 +502,7 @@ static int module_load(lua_State *L, struct lua_lsm_module *module)
 
 	lua_pushcfunction(L, lua_traceback);
 	err = luaL_loadbuffer_wrap(L, module->chunk,
-			module->chunk_len, module->name);
+				   module->chunk_len, module->name);
 	if (err) {
 		lua_pop(L, 2);
 		return err;
@@ -517,7 +521,7 @@ static int module_load(lua_State *L, struct lua_lsm_module *module)
 	/* stack: [env, traceback, _M] */
 	if (!lua_istable(L, -1)) {
 		__log_err("module <%s> is not a table: top = %d [%s]\n",
-			module->name, lua_gettop(L), luaL_typename(L, -1));
+			  module->name, lua_gettop(L), luaL_typename(L, -1));
 		lua_pop(L, 3);
 		return -EBADF;
 	}
@@ -536,14 +540,14 @@ static int lua_modules_index(lua_State *L)
 
 	/* module queries are always run with a read lock */
 	list_for_each_entry_srcu(module, &lsm_modules, list,
-				srcu_read_lock_held(&modules_ss)) {
+				 srcu_read_lock_held(&modules_ss)) {
 		if (strcmp(module->name, key) != 0)
 			continue;
 
 		err = module_load(L, module);
 		if (err) {
 			__log_err("load: %s, err = %d, top = %d\n",
-				key, err, lua_gettop(L));
+				  key, err, lua_gettop(L));
 			return 0;
 		}
 
@@ -574,15 +578,14 @@ static void lua_modules_free(struct task_struct *task, lua_State *L)
 		return;
 	}
 
-	list_for_each_entry_srcu(module, &lsm_modules, list,
-				srcu_read_lock_held(&modules_ss)) {
+	list_for_each_entry_srcu(module, &lsm_modules, list, srcu_read_lock_held(&modules_ss)) {
 		lua_pushstring(L, module->name);
 		lua_rawget(L, -2);
 		if (lua_istable(L, -1)) {
 			atomic_dec(&module->nloaded);
 			__log_info("<%s>: %d-%d freed module <%s>, nloaded = %d\n",
-					task->comm, task_tgid_nr(task), task_pid_nr(task),
-					module->name, atomic_read(&module->nloaded));
+				   task->comm, task_tgid_nr(task), task_pid_nr(task),
+				   module->name, atomic_read(&module->nloaded));
 		}
 		lua_pop(L, 1);
 	}
@@ -615,6 +618,7 @@ static void lualibs_openall(lua_State *L)
 static int ll_require(lua_State *L)
 {
 	const char *modname = luaL_checkstring(L, 1);
+
 	luaL_findtable(L, LUA_REGISTRYINDEX, "_LOADED", 1);
 	lua_getfield(L, -1, modname);		/* _LOADED[modname] */
 	return 1;
@@ -635,8 +639,9 @@ static void *lvm_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 static int lvm_panic(lua_State *L)
 {
 	(void)L;	/* to avoid warnings */
+
 	pr_err("PANIC: unprotected error in call to Lua API (%s), top = %d\n",
-		lua_tostring(L, -1), lua_gettop(L));
+	       lua_tostring(L, -1), lua_gettop(L));
 	return 0;
 }
 
@@ -679,7 +684,7 @@ static int lua_state_alloc(struct lvm_state *lvm)
 	int status;
 
 	L = lua_newstate(lvm_alloc, lvm);
-	if (L == NULL)
+	if (!L)
 		return -ENOMEM;
 
 	lvm->L = L;
@@ -690,11 +695,11 @@ static int lua_state_alloc(struct lvm_state *lvm)
 	status = lua_pcall(L, 0, 1, 0);
 	if (status != 0) {
 		__log_err("pcall: status = %d, top = %d, %s\n",
-			status, lua_gettop(L), lua_tostring(L, -1));
+			  status, lua_gettop(L), lua_tostring(L, -1));
 		status = -ENOEXEC;
 	} else if (!lua_toboolean(L, -1) && lua_gettop(L) != 1) {
 		__log_err("lvm_pmain: top = %d, stack[top] = [%s]\n",
-			lua_gettop(L), luaL_typename(L, -1));
+			  lua_gettop(L), luaL_typename(L, -1));
 		status = -EFAULT;
 	} else {
 		lua_pop(L, 1);		/* pop boolean result */
@@ -770,7 +775,7 @@ int lua_lsm_module_register(const char *code, size_t len)
 		goto err_free_lua;
 	if (!lua_istable(L, -1)) {
 		__log_err("pcall: top = %d [%s]\n",
-			lua_gettop(L), luaL_typename(L, -1));
+			  lua_gettop(L), luaL_typename(L, -1));
 		err = -EBADF;
 		goto err_free_lua;
 	}
@@ -778,7 +783,7 @@ int lua_lsm_module_register(const char *code, size_t len)
 
 	err = -ENOMEM;
 	module = kzalloc(sizeof(*module), GFP_KERNEL);
-	if (module == NULL)
+	if (!module)
 		goto err_free_lua;
 
 	module->state = LMS_STATE_COMING;
@@ -792,11 +797,16 @@ int lua_lsm_module_register(const char *code, size_t len)
 			int type;
 			int offset;
 		} fields[] = {
-			{ "name",		LUA_TSTRING,	offsetof(struct lua_lsm_module,	name)		},
-			{ "author",		LUA_TSTRING,	offsetof(struct lua_lsm_module,	author)		},
-			{ "description",	LUA_TSTRING,	offsetof(struct lua_lsm_module,	description)	},
-			{ "license",		LUA_TSTRING,	offsetof(struct lua_lsm_module,	license)	},
-			{ "version",		LUA_TNUMBER,	offsetof(struct lua_lsm_module,	version)	},
+			{ "name", LUA_TSTRING,
+			  offsetof(struct lua_lsm_module, name) },
+			{ "author", LUA_TSTRING,
+			  offsetof(struct lua_lsm_module, author) },
+			{ "description", LUA_TSTRING,
+			  offsetof(struct lua_lsm_module, description) },
+			{ "license", LUA_TSTRING,
+			  offsetof(struct lua_lsm_module, license) },
+			{ "version", LUA_TNUMBER,
+			  offsetof(struct lua_lsm_module, version) },
 			{ NULL }
 		};
 		const char *key, *s;
@@ -816,7 +826,7 @@ int lua_lsm_module_register(const char *code, size_t len)
 
 			if (lua_type(L, -1) != fields[i].type) {
 				__log_err("field '%s' must be a %s\n",
-					key, lua_typename(L, fields[i].type));
+					  key, lua_typename(L, fields[i].type));
 				break;
 			}
 
@@ -833,7 +843,7 @@ int lua_lsm_module_register(const char *code, size_t len)
 			break;
 		}
 
-		if (fields[i].field == NULL) {
+		if (!fields[i].field) {
 			for (i = 0; lua_lsm_hook_stats[i].name; i++) {
 				if (strcmp(lua_lsm_hook_stats[i].name, key) != 0)
 					continue;
@@ -850,7 +860,7 @@ int lua_lsm_module_register(const char *code, size_t len)
 				break;
 			}
 
-			if (lua_lsm_hook_stats[i].name == NULL)
+			if (!lua_lsm_hook_stats[i].name)
 				__log_warn("field '%s' is unknown\n", key);
 		}
 
@@ -859,7 +869,7 @@ int lua_lsm_module_register(const char *code, size_t len)
 	}
 
 	err = -ENOMEM;
-	if (module->name == NULL)
+	if (!module->name)
 		goto err_free_module;
 
 	/* Recompile with the new name */
@@ -880,10 +890,10 @@ int lua_lsm_module_register(const char *code, size_t len)
 	/* stack: [traceback, _M, func, chunk] */
 	chunk = lua_tolstring(L, -1, &chunk_len);
 	__log_info("[%s] compiled, source_len = %d, chunk_len = %d\n",
-		module->name, (int)len, (int)chunk_len);
+		   module->name, (int)len, (int)chunk_len);
 
 	module->chunk = kmalloc(chunk_len, GFP_KERNEL);
-	if (module->chunk == NULL)
+	if (!module->chunk)
 		goto err_free_module;
 	memcpy(module->chunk, chunk, chunk_len);
 	module->chunk_len = chunk_len;
@@ -970,7 +980,7 @@ static int task_remove_module(struct task_struct *task, void *arg)
 		return -EBUSY;
 
 	L = lvm_get_from_task(task, true);
-	if (L == NULL)
+	if (!L)
 		return -EAGAIN;
 
 	err = lvm_remove_module(L, module);
@@ -996,16 +1006,17 @@ static int tasks_lvm_remove_module(struct lua_lsm_module *module, int *nbusy)
 		if (!err) {
 			count++;
 			__log_info("<%s>: err = [ OK ] \t<%s>: %d-%d\n", module->name,
-				task->comm, task_tgid_nr(task), task_pid_nr(task));
+				   task->comm, task_tgid_nr(task), task_pid_nr(task));
 		} else if (err == -EBUSY || err == -EAGAIN) {
 			*nbusy += 1;
 			__log_info("<%s>: err = %s \t<%s>: %d-%d\n",
-				module->name, err == -EBUSY ? "EBUSY" : "EAGAIN",
-				task->comm, task_tgid_nr(task), task_pid_nr(task));
+				   module->name, err == -EBUSY ? "EBUSY" : "EAGAIN",
+				   task->comm, task_tgid_nr(task), task_pid_nr(task));
 		} else {
 			__log_info_ratelimited("<%s>: err = %s \t<%s>: %d-%d\n",
-				module->name, err == -ENOENT ? "[ENOENT]" : "unknown",
-				task->comm, task_tgid_nr(task), task_pid_nr(task));
+					       module->name,
+					       err == -ENOENT ? "[ENOENT]" : "unknown",
+					       task->comm, task_tgid_nr(task), task_pid_nr(task));
 		}
 	}
 	read_unlock(&tasklist_lock);
@@ -1025,7 +1036,7 @@ static void softirq_lvm_remove_module(struct work_struct *work)
 	int cpu = smp_processor_id();
 	int err;
 
-	WARN_ON(work_ctx_remove_module == NULL);
+	WARN_ON(!work_ctx_remove_module);
 	/*
 	 * Disable softirq to prevent triggered softirq or RCU from
 	 * changing the Lua VM environment.
@@ -1035,7 +1046,7 @@ static void softirq_lvm_remove_module(struct work_struct *work)
 	if (!err) {
 		atomic_inc(&work_ctx_remove_count);
 		__log_info("<%s>: err = [ OK ] \t<softirq-%d>, count = %d\n",
-			module->name, cpu, atomic_read(&work_ctx_remove_count));
+			   module->name, cpu, atomic_read(&work_ctx_remove_count));
 	}
 	local_bh_enable();
 }
@@ -1090,7 +1101,7 @@ int lua_lsm_module_unregister(const char *name)
 		count += tasks_lvm_remove_module(module, &nbusy);
 
 		__log_info("Unregister module <%s> from task, freed = %d/%d, nbusy = %d\n",
-			name, count, nloaded, nbusy);
+			   name, count, nloaded, nbusy);
 	}
 
 	/*
@@ -1111,7 +1122,7 @@ int lua_lsm_module_unregister(const char *name)
 		count += atomic_read(&work_ctx_remove_count);
 
 		__log_info("Unregister module <%s> from pcpu, freed = %d/%d\n",
-			name, count, nloaded);
+			   name, count, nloaded);
 	}
 
 	nloaded = atomic_read(&module->nloaded);
@@ -1127,7 +1138,7 @@ int lua_lsm_module_unregister(const char *name)
 		cpus_read_unlock();
 
 		__log_info("Unregister module <%s> from swapper, freed = %d/%d\n",
-			name, count, atomic_read(&module->nloaded));
+			   name, count, atomic_read(&module->nloaded));
 	}
 
 	nloaded = atomic_read(&module->nloaded);
@@ -1174,20 +1185,136 @@ int modules_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "modules for lua-lsm\n");
 	seq_printf(m, "%-20s %-10s %6s %4s %5s %6s %6s %-34s\n",
-		"name", "license", "size", "nlsm",
-		"nload", "shdict", "kvnode", "author");
+		   "name", "license", "size", "nlsm",
+		   "nload", "shdict", "kvnode", "author");
 	seq_printf(m, "%s\n", TABLINE);
 
 	idx = srcu_read_lock(&modules_ss);
-	list_for_each_entry_srcu(module, &lsm_modules, list,
-				srcu_read_lock_held(&modules_ss)) {
+	list_for_each_entry_srcu(module, &lsm_modules, list, srcu_read_lock_held(&modules_ss)) {
 		seq_printf(m, "%-20s %-10s %6zu %4d %5d %6d %6d %-34s\n",
-			module->name, module->license, module->chunk_len,
-			module->nhooks, atomic_read(&module->nloaded),
-			atomic_read(&module->shdict_count),
-			atomic_read(&module->kvnodes_count), module->author);
+			   module->name, module->license, module->chunk_len,
+			   module->nhooks, atomic_read(&module->nloaded),
+			   atomic_read(&module->shdict_count),
+			   atomic_read(&module->kvnodes_count), module->author);
 	}
 	srcu_read_unlock(&modules_ss, idx);
 	return 0;
 }
 
+/*********************************** main ***********************************/
+
+int task_blob_init(struct task_struct *task)
+{
+	struct lua_lsm_task *llt = lua_lsm_task(task);
+	struct lvm_state *lvm;
+	int err;
+
+	kvcache_dict_init(&llt->dict);
+
+	lvm = lvm_pool_get();
+	if (!lvm) {
+		lvm = kzalloc(sizeof(*lvm), GFP_KERNEL);
+		if (!lvm)
+			return -ENOMEM;
+		err = lua_state_alloc(lvm);
+		if (err) {
+			kfree(lvm);
+			return err;
+		}
+	}
+
+	refcount_init(&lvm->refcount, 0);
+#ifdef CONFIG_SECURITY_LUA_LSM_STATS
+	atomic64_set(&lvm->nalloc, 0);
+	atomic64_set(&lvm->nrealloc, 0);
+	atomic64_set(&lvm->nfree, 0);
+#endif
+	llt->lvm = lvm;
+
+	return 0;
+}
+
+void task_blob_free(struct task_struct *task)
+{
+	struct lua_lsm_task *llt = lua_lsm_task(task);
+	struct lvm_state *lvm = llt->lvm;
+
+	if (lvm) {
+		lua_modules_free(task, lvm->L);
+		lvm_vm_reset(lvm);
+		refcount_init(&lvm->refcount, 0);
+		lvm_pool_put(lvm);
+		llt->lvm = NULL;
+	}
+	kvcache_dict_free(&llt->dict);
+}
+
+/*
+ * TODO: Currently, the key, perf_event, tun_dev, and ib objects do not
+ * have corresponding free LSM callback functions, which prevents object
+ * properties from being released. Therefore, setting properties for these
+ * four objects is not supported at this time, as this requires support at
+ * the security subsystem architecture.
+ */
+struct lsm_blob_sizes lua_lsm_blob_sizes __ro_after_init = {
+	.lbs_task = sizeof(struct lua_lsm_task),
+	.lbs_cred = sizeof(struct lua_lsm_object),
+	.lbs_file = sizeof(struct lua_lsm_object),
+	.lbs_inode = sizeof(struct lua_lsm_object),
+	.lbs_superblock = sizeof(struct lua_lsm_object),
+	.lbs_ipc = sizeof(struct lua_lsm_object),
+	.lbs_msg_msg = sizeof(struct lua_lsm_object),
+	/* TODO: number of xattr slots in new_xattrs array */
+	.lbs_xattr_count = 10,
+};
+
+static struct security_hook_list lua_lsm_hooks[] __ro_after_init = {
+	#define LSM_HOOK(RET, DEFAULT, NAME, ...)			\
+		LSM_HOOK_INIT(NAME, lua_lsm_ ## NAME),
+
+	#include <linux/lsm_hook_defs.h>
+	#undef LSM_HOOK
+};
+
+int lua_lsm_enabled __ro_after_init = 1;
+
+static int __init lua_lsm_init(void)
+{
+	struct lvm_state *lvm;
+	int cpu;
+	int err;
+
+	for_each_possible_cpu(cpu)
+		lvm_pool_init_cpu(cpu);
+
+	err = task_blob_init(current);
+	if (err)
+		return err;
+
+	for_each_possible_cpu(cpu) {
+		lvm = kzalloc(sizeof(struct lvm_state), GFP_KERNEL);
+		if (!lvm)
+			return -ENOMEM;
+
+		err = lua_state_alloc(lvm);
+		if (err)
+			return err;
+
+		per_cpu(irq_lvms, cpu) = lvm;
+	}
+
+	security_add_hooks(lua_lsm_hooks, ARRAY_SIZE(lua_lsm_hooks), "lua");
+
+	/* Report that Lua-LSM successfully initialized */
+	lua_lsm_initialized = 1;
+
+	pr_info("Lua based LSM initialized\n");
+	return 0;
+}
+
+DEFINE_LSM(lua) = {
+	.name = "lua",
+	.enabled = &lua_lsm_enabled,
+	.blobs = &lua_lsm_blob_sizes,
+	.init = lua_lsm_init,
+};
