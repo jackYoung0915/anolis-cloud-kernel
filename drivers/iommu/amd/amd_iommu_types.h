@@ -790,6 +790,8 @@ struct amd_iommu {
 #ifdef CONFIG_AMD_IOMMU_DEBUGFS
 	/* DebugFS Info */
 	struct dentry *debugfs;
+	int dbg_mmio_offset;
+	int dbg_cap_offset;
 #endif
 
 	/* IOPF support */
@@ -888,6 +890,13 @@ struct dev_table_entry {
 		u64 data[4];
 		u128 data128[2];
 	};
+};
+
+/*
+ * Structure defining one entry in the command buffer
+ */
+struct iommu_cmd {
+	u32 data[4];
 };
 
 /*
