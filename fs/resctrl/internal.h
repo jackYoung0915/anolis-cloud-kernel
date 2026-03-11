@@ -320,11 +320,6 @@ int rdtgroup_alloc_cntr(struct rdtgroup *rdtgrp, int index);
 int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid);
 void rdtgroup_free_cntr(struct rdt_resource *r, struct rdtgroup *rdtgrp, int index);
 
-#ifdef CONFIG_X86
-int resctrl_io_alloc_show(struct kernfs_open_file *of, struct seq_file *seq, void *v);
-
-#endif
-
 #ifdef CONFIG_RESCTRL_FS_PSEUDO_LOCK
 int rdtgroup_locksetup_enter(struct rdtgroup *rdtgrp);
 int rdtgroup_locksetup_exit(struct rdtgroup *rdtgrp);

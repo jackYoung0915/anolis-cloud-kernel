@@ -542,26 +542,3 @@ out:
 	rdtgroup_kn_unlock(of->kn);
 	return ret;
 }
-
-#ifdef CONFIG_X86
-int resctrl_io_alloc_show(struct kernfs_open_file *of, struct seq_file *seq, void *v)
-{
-	struct resctrl_schema *s = of->kn->parent->priv;
-	struct rdt_resource *r = s->res;
-
-	mutex_lock(&rdtgroup_mutex);
-
-	if (r->cache.io_alloc_capable) {
-		if (resctrl_arch_get_io_alloc_enabled(r))
-			seq_puts(seq, "enabled\n");
-		else
-			seq_puts(seq, "disabled\n");
-	} else {
-		seq_puts(seq, "not supported\n");
-	}
-
-	mutex_unlock(&rdtgroup_mutex);
-
-	return 0;
-}
-#endif
