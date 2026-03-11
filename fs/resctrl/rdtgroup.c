@@ -2468,12 +2468,6 @@ static struct rftype res_common_files[] = {
 		.seq_show	= resctrl_io_alloc_show,
 		.write          = resctrl_io_alloc_write,
 	},
-	{
-		.name		= "io_alloc_cbm",
-		.mode		= 0444,
-		.kf_ops		= &rdtgroup_kf_single_ops,
-		.seq_show	= resctrl_io_alloc_cbm_show,
-	},
 #endif
 	{
 		.name		= "max_threshold_occupancy",
@@ -2647,12 +2641,9 @@ static void io_alloc_init(void)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 
-	if (r->cache.io_alloc_capable) {
+	if (r->cache.io_alloc_capable)
 		resctrl_file_fflags_init("io_alloc", RFTYPE_CTRL_INFO |
 					 RFTYPE_RES_CACHE);
-		resctrl_file_fflags_init("io_alloc_cbm",
-					 RFTYPE_CTRL_INFO | RFTYPE_RES_CACHE);
-	}
 }
 #endif
 
