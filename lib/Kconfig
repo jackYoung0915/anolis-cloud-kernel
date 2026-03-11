@@ -749,6 +749,18 @@ config GENERIC_LIB_UCMPDI2
 config GENERIC_LIB_DEVMEM_IS_ALLOWED
 	bool
 
+config ARCH_HAS_SETJMP
+	bool
+
+config SETJMP_ARCH
+	tristate
+	depends on ARCH_HAS_SETJMP
+
+config LUA
+	tristate
+	default n
+	select SETJMP_ARCH
+
 config PLDMFW
 	bool
 	select CRC32
