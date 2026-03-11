@@ -1,1 +1,1 @@
-CONFIG_LSM="lockdown,yama,integrity,selinux,smack,tomoyo,bpf"
+CONFIG_LSM="lockdown,yama,lua,integrity,selinux,smack,tomoyo,bpf"
