@@ -238,11 +238,6 @@ void mbm_cntr_free(u32 cntr_id)
 	__set_bit(cntr_id, mbm_cntrs_free_map);
 }
 
-bool closid_alloc_fixed(u32 closid)
-{
-	return __test_and_clear_bit(closid, closid_free_map);
-}
-
 /**
  * rdtgroup_mode_by_closid - Return mode of resource group with closid
  * @closid: closid if the resource group
@@ -1712,7 +1707,7 @@ static int rdtgroup_mode_show(struct kernfs_open_file *of,
 	return 0;
 }
 
-enum resctrl_conf_type resctrl_peer_type(enum resctrl_conf_type my_type)
+static enum resctrl_conf_type resctrl_peer_type(enum resctrl_conf_type my_type)
 {
 	switch (my_type) {
 	case CDP_CODE:
@@ -2358,18 +2353,6 @@ int rdtgroup_unassign_cntr(struct rdtgroup *rdtgrp, enum resctrl_event_id evtid)
 	return 0;
 }
 
-const char *rdtgroup_name_by_closid(u32 closid)
-{
-	struct rdtgroup *rdtgrp;
-
-	list_for_each_entry(rdtgrp, &rdt_all_groups, rdtgroup_list) {
-		if (rdtgrp->closid == closid)
-			return rdtgrp->kn->name;
-	}
-
-	return NULL;
-}
-
 /* rdtgroup information files for one cache resource. */
 static struct rftype res_common_files[] = {
 	{
@@ -2463,10 +2446,9 @@ static struct rftype res_common_files[] = {
 #ifdef CONFIG_X86
 	{
 		.name		= "io_alloc",
-		.mode		= 0644,
+		.mode		= 0444,
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.seq_show	= resctrl_io_alloc_show,
-		.write          = resctrl_io_alloc_write,
 	},
 #endif
 	{
@@ -3852,7 +3834,7 @@ static int __init_one_rdt_domain(struct rdt_domain *d, struct resctrl_schema *s,
  * If there are no more shareable bits available on any domain then
  * the entire allocation will fail.
  */
-int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
+static int rdtgroup_init_cat(struct resctrl_schema *s, u32 closid)
 {
 	struct rdt_domain *d;
 	int ret;
