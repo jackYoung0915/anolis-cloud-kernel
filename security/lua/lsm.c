@@ -720,3 +720,474 @@ static void lua_state_free(struct lvm_state *lvm)
 	}
 }
 
+/********************************** module **********************************/
+
+static int lvm_writer(lua_State *L, const void *b, size_t size, void *B)
+{
+	(void)L;
+	luaL_addlstring((luaL_Buffer *)B, (const char *)b, size);
+	return 0;
+}
+
+static void lua_lsm_module_free(struct lua_lsm_module *module)
+{
+	kfree(module->chunk);
+	kfree(module->name);
+	kfree(module->author);
+	kfree(module->description);
+	kfree(module->license);
+	kfree(module);
+}
+
+int lua_lsm_module_register(const char *code, size_t len)
+{
+	struct lua_lsm_module *module, *m;
+	struct lvm_state lvm;
+	lua_State *L;
+	luaL_Buffer B;
+	const char *chunk;
+	size_t chunk_len;
+	int found = 0;
+	int i;
+	int status;
+	int err;
+
+	memset(&lvm, 0, sizeof(struct lvm_state));
+	err = lua_state_alloc(&lvm);
+	if (err)
+		return err;
+
+	L = lvm.L;
+	lua_pushcfunction(L, lua_traceback);
+	err = luaL_loadbuffer_wrap(L, code, len, "<lua-lsm:loader>");
+	if (err)
+		goto err_free_lua;
+
+	/* TODO: run in sandbox, record the `require` lua modules */
+	/* stack: [traceback, func] */
+	err = lua_pcall_wrap(L, 0, 1, -2);
+	if (err)
+		goto err_free_lua;
+	if (!lua_istable(L, -1)) {
+		__log_err("pcall: top = %d [%s]\n",
+			lua_gettop(L), luaL_typename(L, -1));
+		err = -EBADF;
+		goto err_free_lua;
+	}
+	__log_info("lua module loaded, top = %d\n", lua_gettop(L));
+
+	err = -ENOMEM;
+	module = kzalloc(sizeof(*module), GFP_KERNEL);
+	if (module == NULL)
+		goto err_free_lua;
+
+	module->state = LMS_STATE_COMING;
+	__BITMAP_ZERO(&module->hookfuncs);
+
+	/* traversal the result table */
+	lua_pushnil(L);
+	while (lua_next(L, -2) != 0) {
+		static const struct {
+			const char *field;
+			int type;
+			int offset;
+		} fields[] = {
+			{ "name",		LUA_TSTRING,	offsetof(struct lua_lsm_module,	name)		},
+			{ "author",		LUA_TSTRING,	offsetof(struct lua_lsm_module,	author)		},
+			{ "description",	LUA_TSTRING,	offsetof(struct lua_lsm_module,	description)	},
+			{ "license",		LUA_TSTRING,	offsetof(struct lua_lsm_module,	license)	},
+			{ "version",		LUA_TNUMBER,	offsetof(struct lua_lsm_module,	version)	},
+			{ NULL }
+		};
+		const char *key, *s;
+		char *p;
+
+		if (!lua_isstring(L, -2)) {
+			__log_err("module table index must be a string\n");
+			lua_pop(L, 1);
+			continue;
+		}
+
+		key = lua_tostring(L, -2);
+
+		for (i = 0; fields[i].field; i++) {
+			if (strcmp(key, fields[i].field) != 0)
+				continue;
+
+			if (lua_type(L, -1) != fields[i].type) {
+				__log_err("field '%s' must be a %s\n",
+					key, lua_typename(L, fields[i].type));
+				break;
+			}
+
+			p = (char *)module + fields[i].offset;
+			switch (lua_type(L, -1)) {
+			case LUA_TSTRING:
+				s = lua_tostring(L, -1);
+				*(const char **)p = kstrdup(s, GFP_KERNEL);
+				break;
+			case LUA_TNUMBER:
+				*(int *)p = (int)lua_tointeger(L, -1);
+				break;
+			}
+			break;
+		}
+
+		if (fields[i].field == NULL) {
+			for (i = 0; lua_lsm_hook_stats[i].name; i++) {
+				if (strcmp(lua_lsm_hook_stats[i].name, key) != 0)
+					continue;
+
+				if (!lua_isfunction(L, -1)) {
+					__log_err("field '%s' must be a function\n", key);
+					break;
+				}
+
+				module->nhooks += 1;
+				__BITMAP_SET(i, &module->hookfuncs);
+
+				__log_info("hookfunc = %s\n", key);
+				break;
+			}
+
+			if (lua_lsm_hook_stats[i].name == NULL)
+				__log_warn("field '%s' is unknown\n", key);
+		}
+
+		/* removes 'value'; keeps 'key' for next iteration */
+		lua_pop(L, 1);
+	}
+
+	err = -ENOMEM;
+	if (module->name == NULL)
+		goto err_free_module;
+
+	/* Recompile with the new name */
+	err = luaL_loadbuffer_wrap(L, code, len, module->name);
+	if (err)
+		goto err_free_module;
+
+	/* dump function */
+	luaL_checktype(L, -1, LUA_TFUNCTION);
+	luaL_buffinit(L, &B);
+	status = lua_dump(L, lvm_writer, &B);
+	if (status != 0) {
+		__log_err("dump: unable to dump the function\n");
+		err = -EFAULT;
+		goto err_free_module;
+	}
+	luaL_pushresult(&B);
+	/* stack: [traceback, _M, func, chunk] */
+	chunk = lua_tolstring(L, -1, &chunk_len);
+	__log_info("[%s] compiled, source_len = %d, chunk_len = %d\n",
+		module->name, (int)len, (int)chunk_len);
+
+	module->chunk = kmalloc(chunk_len, GFP_KERNEL);
+	if (module->chunk == NULL)
+		goto err_free_module;
+	memcpy(module->chunk, chunk, chunk_len);
+	module->chunk_len = chunk_len;
+
+	INIT_LIST_HEAD(&module->shdicts);
+	spin_lock_init(&module->shdict_lock);
+	atomic_set(&module->shdict_count, 0);
+
+	INIT_LIST_HEAD(&module->kvnodes);
+	spin_lock_init(&module->kvnodes_lock);
+	atomic_set(&module->kvnodes_count, 0);
+
+	mutex_lock(&modules_mutex);
+	list_for_each_entry(m, &lsm_modules, list) {
+		if (strcmp(module->name, m->name) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found) {
+		for (i = 0; lua_lsm_hook_stats[i].name; i++) {
+			if (__BITMAP_ISSET(i, &module->hookfuncs))
+				atomic_inc(&lua_lsm_hook_stats[i].nhooks);
+		}
+
+		module->state = LMS_STATE_LIVE;
+		list_add_tail_rcu(&module->list, &lsm_modules);
+	}
+	mutex_unlock(&modules_mutex);
+
+	err = -EEXIST;
+	if (found) {
+		__log_err("module <%s> registered already\n", module->name);
+		goto err_free_module;
+	}
+
+	pr_info("module <%s> registered with %d filters\n",
+		module->name, module->nhooks);
+
+	lua_state_free(&lvm);
+	return 0;
+
+err_free_module:
+	lua_lsm_module_free(module);
+err_free_lua:
+	lua_state_free(&lvm);
+
+	return err;
+}
+
+static int lvm_remove_module(lua_State *L, struct lua_lsm_module *module)
+{
+	int err = -ENOENT;
+	/* registry._MODULES[modname] = nil */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_MODULES");
+	if (lua_istable(L, -1)) {
+		lua_pushstring(L, module->name);
+		lua_rawget(L, -2);
+		if (lua_istable(L, -1)) {
+			lua_pop(L, 1);
+
+			lua_pushstring(L, module->name);
+			lua_pushnil(L);
+			lua_rawset(L, -3);
+
+			/* performs a full garbage-collection cycle. */
+			lua_gc(L, LUA_GCCOLLECT, 0);
+			err = 0;
+		} else {
+			lua_pop(L, 1);
+		}
+	}
+	lua_pop(L, 1);
+	return err;
+}
+
+static int task_remove_module(struct task_struct *task, void *arg)
+{
+	struct lua_lsm_module *module = arg;
+	lua_State *L;
+	int err;
+
+	if (task_curr(task) && task != current)
+		return -EBUSY;
+
+	L = lvm_get_from_task(task, true);
+	if (L == NULL)
+		return -EAGAIN;
+
+	err = lvm_remove_module(L, module);
+	lvm_put_to_task(task, L);
+	return err;
+}
+
+static int tasks_lvm_remove_module(struct lua_lsm_module *module, int *nbusy)
+{
+	struct task_struct *g, *task;
+	int count = 0;
+	int err;
+
+	*nbusy = 0;
+	/* remove loaded module from every Lua VM */
+	read_lock(&tasklist_lock);
+	for_each_process_thread(g, task) {
+		if (task == current)
+			err = task_remove_module(task, module);
+		else
+			err = task_call_func(task, task_remove_module, module);
+
+		if (!err) {
+			count++;
+			__log_info("<%s>: err = [ OK ] \t<%s>: %d-%d\n", module->name,
+				task->comm, task_tgid_nr(task), task_pid_nr(task));
+		} else if (err == -EBUSY || err == -EAGAIN) {
+			*nbusy += 1;
+			__log_info("<%s>: err = %s \t<%s>: %d-%d\n",
+				module->name, err == -EBUSY ? "EBUSY" : "EAGAIN",
+				task->comm, task_tgid_nr(task), task_pid_nr(task));
+		} else {
+			__log_info_ratelimited("<%s>: err = %s \t<%s>: %d-%d\n",
+				module->name, err == -ENOENT ? "[ENOENT]" : "unknown",
+				task->comm, task_tgid_nr(task), task_pid_nr(task));
+		}
+	}
+	read_unlock(&tasklist_lock);
+	return count;
+}
+
+/*
+ * Due to the limitations of schedule_on_each_cpu(), global variables
+ * are used to pass parameters to the callback function.
+ */
+static struct lua_lsm_module *work_ctx_remove_module;
+static atomic_t work_ctx_remove_count;
+
+static void softirq_lvm_remove_module(struct work_struct *work)
+{
+	struct lua_lsm_module *module = work_ctx_remove_module;
+	int cpu = smp_processor_id();
+	int err;
+
+	WARN_ON(work_ctx_remove_module == NULL);
+	/*
+	 * Disable softirq to prevent triggered softirq or RCU from
+	 * changing the Lua VM environment.
+	 */
+	local_bh_disable();
+	err = lvm_remove_module(per_cpu(irq_lvms, cpu)->L, module);
+	if (!err) {
+		atomic_inc(&work_ctx_remove_count);
+		__log_info("<%s>: err = [ OK ] \t<softirq-%d>, count = %d\n",
+			module->name, cpu, atomic_read(&work_ctx_remove_count));
+	}
+	local_bh_enable();
+}
+
+int lua_lsm_module_unregister(const char *name)
+{
+	struct lua_lsm_module *module;
+	struct lua_lsm_module_shdict *shdict, *tmp;
+	int count = 0, nloaded, nbusy;
+	unsigned int cpu;
+	int found = 0;
+	int err;
+	int i;
+
+	mutex_lock(&modules_mutex);
+	list_for_each_entry(module, &lsm_modules, list) {
+		if (strcmp(module->name, name) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	if (found && module->state == LMS_STATE_LIVE) {
+		module->state = LMS_STATE_GOING;
+
+		for (i = 0; lua_lsm_hook_stats[i].name; i++) {
+			if (__BITMAP_ISSET(i, &module->hookfuncs))
+				atomic_dec(&lua_lsm_hook_stats[i].nhooks);
+		}
+	}
+
+	if (!found) {
+		mutex_unlock(&modules_mutex);
+		return -ENOENT;
+	}
+
+	pr_info("Prepare to unregister module <%s> ...\n", name);
+
+	synchronize_srcu(&modules_ss);
+
+	list_for_each_entry_safe(shdict, tmp, &module->shdicts, list) {
+		list_del(&shdict->list);
+		kvcache_dict_free(&shdict->dict);
+		kfree(shdict);
+		atomic_dec(&module->shdict_count);
+	}
+
+	kvcache_module_nodes_gc(module);
+
+	nloaded = atomic_read(&module->nloaded);
+	/* remove loaded module from every Lua VM */
+	if (nloaded > 0) {
+		count += tasks_lvm_remove_module(module, &nbusy);
+
+		__log_info("Unregister module <%s> from task, freed = %d/%d, nbusy = %d\n",
+			name, count, nloaded, nbusy);
+	}
+
+	/*
+	 * At this time, LuaVM may still be released asynchronously,
+	 * so the nloaded will be updated in the air.
+	 */
+	nloaded = atomic_read(&module->nloaded);
+	if (count < nloaded) {
+		/*
+		 * Since global variables are used, locking ensures that only
+		 * one instance of the softirq LuaVM offload is executed.
+		 */
+		work_ctx_remove_module = module;
+		atomic_set(&work_ctx_remove_count, 0);
+
+		err = schedule_on_each_cpu(softirq_lvm_remove_module);
+		WARN_ON(err);
+		count += atomic_read(&work_ctx_remove_count);
+
+		__log_info("Unregister module <%s> from pcpu, freed = %d/%d\n",
+			name, count, nloaded);
+	}
+
+	nloaded = atomic_read(&module->nloaded);
+	if (count < nloaded) {
+		/* ditto for the idle 'swapper' tasks */
+		cpus_read_lock();
+		for_each_possible_cpu(cpu) {
+			/* TODO: remove 'swapper' tasks Lua VM */
+			err = task_call_func(idle_task(cpu), task_remove_module, module);
+			if (!err)
+				count++;
+		}
+		cpus_read_unlock();
+
+		__log_info("Unregister module <%s> from swapper, freed = %d/%d\n",
+			name, count, atomic_read(&module->nloaded));
+	}
+
+	nloaded = atomic_read(&module->nloaded);
+	if (count < nloaded && nbusy > 0) {
+		for (i = 1; i <= 5; i++) {
+			count += tasks_lvm_remove_module(module, &nbusy);
+			WARN_ON(count > nloaded);
+
+			__log_info("Unregister module <%s> from task, freed = %d/%d, nbusy = %d, loop = %d\n",
+				name, count, nloaded, nbusy, i);
+
+			nloaded = atomic_read(&module->nloaded);
+			if (count == nloaded || nbusy == 0)
+				break;
+
+			msleep(500 * i);
+
+			nloaded = atomic_read(&module->nloaded);
+			if (count == nloaded)
+				break;
+		}
+	}
+
+	if (atomic_sub_return(count, &module->nloaded) == 0) {
+		list_del_rcu(&module->list);
+		lua_lsm_module_free(module);
+		err = 0;
+	} else {
+		module->state = LMS_STATE_ZOMBIE;
+		err = -EBUSY;
+	}
+	mutex_unlock(&modules_mutex);
+
+	pr_info("Unregistered module <%s> from %d/%d Lua VMs, vm_nusage = %d\n",
+		name, count, nloaded, atomic_read(&vm_nusage));
+
+	return err;
+}
+
+int modules_show(struct seq_file *m, void *v)
+{
+	struct lua_lsm_module *module;
+	int idx;
+
+	seq_printf(m, "modules for lua-lsm\n");
+	seq_printf(m, "%-20s %-10s %6s %4s %5s %6s %6s %-34s\n",
+		"name", "license", "size", "nlsm",
+		"nload", "shdict", "kvnode", "author");
+	seq_printf(m, "%s\n", TABLINE);
+
+	idx = srcu_read_lock(&modules_ss);
+	list_for_each_entry_srcu(module, &lsm_modules, list,
+				srcu_read_lock_held(&modules_ss)) {
+		seq_printf(m, "%-20s %-10s %6zu %4d %5d %6d %6d %-34s\n",
+			module->name, module->license, module->chunk_len,
+			module->nhooks, atomic_read(&module->nloaded),
+			atomic_read(&module->shdict_count),
+			atomic_read(&module->kvnodes_count), module->author);
+	}
+	srcu_read_unlock(&modules_ss, idx);
+	return 0;
+}
+
