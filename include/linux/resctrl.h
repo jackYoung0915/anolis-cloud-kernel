@@ -440,27 +440,6 @@ void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
  */
 void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d);
 
-/**
- * resctrl_arch_io_alloc_enable() - Enable/disable io_alloc feature.
- * @r:		The resctrl resource.
- * @enable:	Enable (true) or disable (false) io_alloc on resource @r.
- *
- * This can be called from any CPU.
- *
- * Return:
- * 0 on success, <0 on error.
- */
-int resctrl_arch_io_alloc_enable(struct rdt_resource *r, bool enable);
-
-/**
- * resctrl_arch_get_io_alloc_enabled() - Get io_alloc feature state.
- * @r:		The resctrl resource.
- *
- * Return:
- * true if io_alloc is enabled or false if disabled.
- */
-bool resctrl_arch_get_io_alloc_enabled(struct rdt_resource *r);
-
 extern unsigned int resctrl_rmid_realloc_threshold;
 extern unsigned int resctrl_rmid_realloc_limit;
 void resctrl_file_fflags_init(const char *config, unsigned long fflags);
