@@ -2443,14 +2443,6 @@ static struct rftype res_common_files[] = {
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.seq_show	= rdt_thread_throttle_mode_show,
 	},
-#ifdef CONFIG_X86
-	{
-		.name		= "io_alloc",
-		.mode		= 0444,
-		.kf_ops		= &rdtgroup_kf_single_ops,
-		.seq_show	= resctrl_io_alloc_show,
-	},
-#endif
 	{
 		.name		= "max_threshold_occupancy",
 		.mode		= 0644,
@@ -2612,22 +2604,6 @@ static struct rftype *rdtgroup_get_rftype_by_name(const char *name)
 
 	return NULL;
 }
-
-#ifdef CONFIG_X86
-/*
- * The resctrl file "io_alloc" is added using L3 resource. However, it results
- * in this file being visible for *all* cache resources (eg. L2 cache),
- * whether it supports "io_alloc" or not.
- */
-static void io_alloc_init(void)
-{
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-
-	if (r->cache.io_alloc_capable)
-		resctrl_file_fflags_init("io_alloc", RFTYPE_CTRL_INFO |
-					 RFTYPE_RES_CACHE);
-}
-#endif
 
 void resctrl_file_fflags_init(const char *config, unsigned long fflags)
 {
@@ -4702,9 +4678,6 @@ int resctrl_init(void)
 
 	resctrl_file_fflags_init("thread_throttle_mode",
 				 RFTYPE_CTRL_INFO | RFTYPE_RES_MB);
-#ifdef CONFIG_X86
-	io_alloc_init();
-#endif
 
 	ret = resctrl_mon_resource_init();
 	if (ret)
