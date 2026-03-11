@@ -4416,7 +4416,8 @@ int smc_inet_release(struct socket *sock)
 	if (!smc->use_fallback) {
 		/* ret of smc_close_active do not need return to userspace */
 		smc_close_active(smc);
-		do_free = true;
+		if (smc_sk_state(sk) == SMC_CLOSED)
+			do_free = true;
 	} else {
 		if (smc_sk_state(sk) == SMC_ACTIVE)
 			sock_put(sk);	 /* sock put for passive closing */
@@ -4431,8 +4432,7 @@ out:
 
 	if (do_free) {
 		lock_sock(sk);
-		if (smc_sk_state(sk) == SMC_CLOSED)
-			smc_conn_free(&smc->conn);
+		smc_conn_free(&smc->conn);
 		release_sock(sk);
 	}
 	sock_put(sk);	/* sock hold above */
