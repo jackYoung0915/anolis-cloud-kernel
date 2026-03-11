@@ -753,7 +753,7 @@ config ARCH_HAS_SETJMP
 	bool
 
 config SETJMP_ARCH
-	tristate
+	bool
 	depends on ARCH_HAS_SETJMP
 
 config LUA
