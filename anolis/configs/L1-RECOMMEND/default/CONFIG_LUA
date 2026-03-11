@@ -1,1 +1,1 @@
-# CONFIG_LUA is not set
+CONFIG_LUA=y
