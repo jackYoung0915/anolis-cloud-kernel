@@ -2470,10 +2470,9 @@ static struct rftype res_common_files[] = {
 	},
 	{
 		.name		= "io_alloc_cbm",
-		.mode		= 0644,
+		.mode		= 0444,
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.seq_show	= resctrl_io_alloc_cbm_show,
-		.write		= resctrl_io_alloc_cbm_write,
 	},
 #endif
 	{

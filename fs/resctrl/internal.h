@@ -336,8 +336,6 @@ ssize_t resctrl_io_alloc_write(struct kernfs_open_file *of, char *buf,
 const char *rdtgroup_name_by_closid(u32 closid);
 int resctrl_io_alloc_cbm_show(struct kernfs_open_file *of, struct seq_file *seq,
 			      void *v);
-ssize_t resctrl_io_alloc_cbm_write(struct kernfs_open_file *of, char *buf,
-				   size_t nbytes, loff_t off);
 #endif
 
 #ifdef CONFIG_RESCTRL_FS_PSEUDO_LOCK
