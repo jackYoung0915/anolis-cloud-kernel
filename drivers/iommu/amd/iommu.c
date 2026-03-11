@@ -2423,6 +2423,13 @@ static struct iommu_device *amd_iommu_probe_device(struct device *dev)
 					     pci_max_pasids(to_pci_dev(dev)));
 	}
 
+	if (amd_iommu_pgtable == PD_MODE_NONE) {
+		pr_warn_once("%s: DMA translation not supported by iommu.\n",
+			     __func__);
+		iommu_dev = ERR_PTR(-ENODEV);
+		goto out_err;
+	}
+
 out_err:
 
 	iommu_completion_wait(iommu);
@@ -2507,33 +2514,34 @@ struct protection_domain *protection_domain_alloc(int nid)
 	return domain;
 }
 
-static int pdom_setup_pgtable(struct protection_domain *domain, int pgtable)
+static int pdom_setup_pgtable(struct protection_domain *domain)
 {
 	struct io_pgtable_ops *pgtbl_ops;
+	enum io_pgtable_fmt fmt;
 
-	switch (pgtable) {
-	case AMD_IOMMU_V1:
-		domain->pd_mode = PD_MODE_V1;
+	switch (domain->pd_mode) {
+	case PD_MODE_V1:
+		fmt = AMD_IOMMU_V1;
 		break;
-	case AMD_IOMMU_V2:
-		domain->pd_mode = PD_MODE_V2;
+	case PD_MODE_V2:
+		fmt = AMD_IOMMU_V2;
 		break;
-	default:
-		return -EINVAL;
+	case PD_MODE_NONE:
+		WARN_ON_ONCE(1);
+		return -EPERM;
 	}
 
-	pgtbl_ops =
-		alloc_io_pgtable_ops(pgtable, &domain->iop.pgtbl.cfg, domain);
+	pgtbl_ops = alloc_io_pgtable_ops(fmt, &domain->iop.pgtbl.cfg, domain);
 	if (!pgtbl_ops)
 		return -ENOMEM;
 
 	return 0;
 }
 
-static inline u64 dma_max_address(int pgtable)
+static inline u64 dma_max_address(enum protection_domain_mode pgtable)
 {
-	if (pgtable == AMD_IOMMU_V1)
-		return ~0ULL;
+	if (pgtable == PD_MODE_V1)
+		return PM_LEVEL_SIZE(amd_iommu_hpt_level);
 
 	/*
 	 * V2 with 4/5 level page table. Note that "2.2.6.5 AMD64 4-Kbyte Page
@@ -2554,11 +2562,15 @@ static inline u64 dma_max_address(int pgtable)
 
 static bool amd_iommu_hd_support(struct amd_iommu *iommu)
 {
+	if (amd_iommu_hatdis)
+		return false;
+
 	return iommu && (iommu->features & FEATURE_HDSUP);
 }
 
-static struct iommu_domain *do_iommu_domain_alloc(struct device *dev, u32 flags,
-						  int pgtable)
+static struct iommu_domain *
+do_iommu_domain_alloc(struct device *dev, u32 flags,
+		      enum protection_domain_mode pgtable)
 {
 	bool dirty_tracking = flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING;
 	struct amd_iommu *iommu = get_amd_iommu_from_dev(dev);
@@ -2569,7 +2581,8 @@ static struct iommu_domain *do_iommu_domain_alloc(struct device *dev, u32 flags,
 	if (!domain)
 		return ERR_PTR(-ENOMEM);
 
-	ret = pdom_setup_pgtable(domain, pgtable);
+	domain->pd_mode = pgtable;
+	ret = pdom_setup_pgtable(domain);
 	if (ret) {
 		pdom_id_free(domain->id);
 		kfree(domain);
@@ -2607,13 +2620,13 @@ amd_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags,
 		if (!amd_iommu_pasid_supported())
 			return ERR_PTR(-EOPNOTSUPP);
 
-		return do_iommu_domain_alloc(dev, flags, AMD_IOMMU_V2);
+		return do_iommu_domain_alloc(dev, flags, PD_MODE_V2);
 	}
 
 	/* Allocate domain with v1 page table for dirty tracking */
 	if (flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING) {
 		if (amd_iommu_hd_support(iommu))
-			return do_iommu_domain_alloc(dev, flags, AMD_IOMMU_V1);
+			return do_iommu_domain_alloc(dev, flags, PD_MODE_V1);
 
 		return ERR_PTR(-EOPNOTSUPP);
 	}
