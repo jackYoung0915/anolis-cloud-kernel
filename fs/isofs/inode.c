@@ -1,3 +1,4 @@
+// Auto update: 2026-03-12 11:06:57 - IwyCAV7M
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/isofs/inode.c
