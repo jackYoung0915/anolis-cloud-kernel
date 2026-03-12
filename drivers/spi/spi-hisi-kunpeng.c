@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
+#include <linux/dev_printk.h>
 
 /* Register offsets */
 #define HISI_SPI_CSCR		0x00	/* cs control register */
@@ -164,7 +165,7 @@ static int hisi_spi_debugfs_init(struct hisi_spi *hs)
 
 	struct spi_controller *host;
 
-	host = container_of(hs->dev, struct spi_controller, dev);
+	host = hs->dev->driver_data;
 	snprintf(name, 32, "hisi_spi%d", host->bus_num);
 	hs->debugfs = debugfs_create_dir(name, NULL);
 	if (IS_ERR(hs->debugfs))
@@ -510,10 +511,8 @@ static int hisi_spi_probe(struct platform_device *pdev)
 	}
 
 	ret = spi_register_controller(host);
-	if (ret) {
-		dev_err(dev, "failed to register spi host, ret=%d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register spi host\n");
 
 	if (hisi_spi_debugfs_init(hs))
 		dev_info(dev, "failed to create debugfs dir\n");
