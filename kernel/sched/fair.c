@@ -978,8 +978,10 @@ static inline struct rb_node *skip_idle_se(struct cfs_rq *cfs_rq)
 
 		left = rb_next(&se->run_node);
 
-		__dequeue_entity(cfs_rq, se);
-		list_add_tail(&se->expel_node, &cfs_rq->expel_list);
+		if (!se->sched_delayed) {
+			__dequeue_entity(cfs_rq, se);
+			list_add_tail(&se->expel_node, &cfs_rq->expel_list);
+		}
 	}
 
 	return left;
