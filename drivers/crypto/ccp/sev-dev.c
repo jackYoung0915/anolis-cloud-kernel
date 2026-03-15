@@ -27,6 +27,7 @@
 #include <asm/csv.h>
 #endif
 #include <asm/smp.h>
+#include <asm/cacheflush.h>
 
 #include "psp-dev.h"
 #include "sev-dev.h"
@@ -1773,6 +1774,7 @@ static int csv_platform_cmd_set_secure_memory_region(int *error)
 		for (i = 0; i < csv_smcr_num; i++) {
 			smr_regions[i].base_address = csv_smcr[i].start;
 			smr_regions[i].size = csv_smcr[i].size;
+			clflush_cache_range(__va(csv_smcr[i].start), csv_smcr[i].size);
 		}
 		cmd_set_smr->smcr_flag = 0; /* 0 as SMCR memory flag */
 		cmd_set_smr->regions_paddr = __psp_pa(smr_regions);
