@@ -68,7 +68,6 @@
 #include <net/ip.h>
 #include "slab.h"
 #include <linux/proc_fs.h>
-#include <linux/pre_oom.h>
 
 #include <linux/uaccess.h>
 #ifdef CONFIG_TEXT_UNEVICTABLE
@@ -2771,13 +2770,11 @@ static void reclaim_wmark(struct mem_cgroup *memcg)
 	 * simply record the whole duration of reclaim_wmark work for the
 	 * overhead-accuracy trade-off.
 	 */
-	pre_oom_enter();
 	start = ktime_get_ns();
 	psi_memstall_enter(&pflags);
 	try_to_free_mem_cgroup_pages(memcg, nr_pages, GFP_KERNEL, true);
 	psi_memstall_leave(&pflags);
 	duration = ktime_get_ns() - start;
-	pre_oom_leave();
 
 	if (!css_tryget_online(&memcg->css))
 		return;
@@ -2813,12 +2810,10 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 
 		memcg_memory_event(memcg, MEMCG_HIGH);
 
-		pre_oom_enter();
 		psi_memstall_enter(&pflags);
 		nr_reclaimed += try_to_free_mem_cgroup_pages(memcg, nr_pages,
 							     gfp_mask, true);
 		psi_memstall_leave(&pflags);
-		pre_oom_leave();
 	} while ((memcg = parent_mem_cgroup(memcg)) &&
 		 !mem_cgroup_is_root(memcg));
 
@@ -3145,14 +3140,12 @@ retry:
 
 	memcg_memory_event(mem_over_limit, MEMCG_MAX);
 
-	pre_oom_enter();
 	memcg_lat_stat_start(&start);
 	psi_memstall_enter(&pflags);
 	nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages,
 						    gfp_mask, may_swap);
 	psi_memstall_leave(&pflags);
 	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
-	pre_oom_leave();
 
 	if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
 		goto retry;

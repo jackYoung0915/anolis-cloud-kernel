@@ -61,7 +61,6 @@
 #include <linux/shmem_fs.h>
 #include <linux/ctype.h>
 #include <linux/debugfs.h>
-#include <linux/pre_oom.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -7020,7 +7019,6 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
 	};
 
 	set_task_reclaim_state(current, &sc.reclaim_state);
-	pre_oom_enter();
 	psi_memstall_enter(&pflags);
 	__fs_reclaim_acquire();
 
@@ -7216,7 +7214,6 @@ out:
 	snapshot_refaults(NULL, pgdat);
 	__fs_reclaim_release();
 	psi_memstall_leave(&pflags);
-	pre_oom_leave();
 	set_task_reclaim_state(current, NULL);
 
 	/*
