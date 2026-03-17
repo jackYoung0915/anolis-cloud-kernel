@@ -1079,6 +1079,34 @@ unlock:
 	msi_unlock_descs(dev);
 }
 
+int msi_domain_update_hwsize(struct device *dev, unsigned int domid,
+			unsigned int hwsize_new)
+{
+	struct msi_domain_info *info;
+	struct irq_domain *domain;
+	int ret = 0;
+
+	if (hwsize_new > MSI_XA_DOMAIN_SIZE)
+		return -EINVAL;
+	if (!hwsize_new)
+		hwsize_new = MSI_XA_DOMAIN_SIZE;
+
+	msi_lock_descs(dev);
+
+	domain = msi_get_device_domain(dev, domid);
+	if (!domain) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	info = domain->host_data;
+	if (hwsize_new != info->hwsize)
+		info->hwsize = hwsize_new;
+out:
+	msi_unlock_descs(dev);
+	return ret;
+}
+
 /**
  * msi_match_device_irq_domain - Match a device irq domain against a bus token
  * @dev:	Pointer to the device
