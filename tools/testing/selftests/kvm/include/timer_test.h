@@ -23,9 +23,8 @@ struct test_args {
 	uint32_t timer_period_ms;
 	uint32_t migration_freq_ms;
 	uint32_t timer_err_margin_us;
-	/* Members of struct kvm_arm_counter_offset */
-	uint64_t counter_offset;
-	uint64_t reserved;
+	/* TODO: Change arm specific type to a common one */
+	struct kvm_arm_counter_offset offset;
 };
 
 /* Shared variables between host and guest */
