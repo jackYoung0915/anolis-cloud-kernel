@@ -111,6 +111,7 @@ static const struct cpuid_reg reverse_cpuid[] = {
 	[CPUID_8000_0021_EAX] = {0x80000021, 0, CPUID_EAX},
 	[CPUID_12_EAX]        = {0x00000012, 0, CPUID_EAX},
 	[CPUID_8000_001F_EAX] = {0x8000001f, 0, CPUID_EAX},
+	[CPUID_8C86_0000_EDX] = {0x8c860000, 0, CPUID_EDX},
 	[CPUID_C000_0006_EAX] = {0xc0000006, 0, CPUID_EAX},
 };
 
