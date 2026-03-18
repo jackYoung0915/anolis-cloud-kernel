@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * arch_timer.c - Tests the aarch64 timer IRQ functionality
+ *
  * The test validates both the virtual and physical timer IRQs using
  * CVAL and TVAL registers. This consitutes the four stages in the test.
  * The guest's main thread configures the timer interrupt for a stage
@@ -19,11 +21,18 @@
  */
 #define _GNU_SOURCE
 
-#include "arch_timer.h"
-#include "delay.h"
-#include "gic.h"
+#include <stdlib.h>
+#include <pthread.h>
+#include <linux/kvm.h>
+#include <linux/sizes.h>
+#include <linux/bitmap.h>
+#include <sys/sysinfo.h>
+
+#include "kvm_util.h"
 #include "processor.h"
-#include "timer_test.h"
+#include "delay.h"
+#include "arch_timer.h"
+#include "gic.h"
 #include "vgic.h"
 
 #define NR_VCPUS_DEF			4
@@ -73,6 +82,9 @@ static pthread_t pt_vcpu_run[KVM_MAX_VCPUS];
 static struct test_vcpu_shared_data vcpu_shared_data[KVM_MAX_VCPUS];
 
 static int vtimer_irq, ptimer_irq;
+
+static unsigned long *vcpu_done_map;
+static pthread_mutex_t vcpu_done_map_lock;
 
 static void
 guest_configure_timer_action(struct test_vcpu_shared_data *shared_data)
@@ -357,7 +369,7 @@ static void test_init_timer_irq(struct kvm_vm *vm)
 
 static int gic_fd;
 
-struct kvm_vm *test_vm_create(void)
+static struct kvm_vm *test_vm_create(void)
 {
 	struct kvm_vm *vm;
 	unsigned int i;
@@ -388,7 +400,7 @@ struct kvm_vm *test_vm_create(void)
 	return vm;
 }
 
-void test_vm_cleanup(struct kvm_vm *vm)
+static void test_vm_cleanup(struct kvm_vm *vm)
 {
 	close(gic_fd);
 	kvm_vm_free(vm);
