@@ -1012,6 +1012,24 @@ config FAIR_GROUP_SCHED
 	select GROUP_SCHED_WEIGHT
 	default CGROUP_SCHED
 
+config GROUP_IDENTITY
+	bool "Group identity for SCHED_OTHER"
+	depends on FAIR_GROUP_SCHED && 64BIT && SMP && SYSFS
+	default FAIR_GROUP_SCHED
+	help
+	  Enable per-cgroup identity based preemption semantics for CFS.
+	  This uses cpu.cgroup 'cpu.priority' as a strict 3-state class knob:
+	    1: high class
+	       Can preempt normal/low on wakeup and tick.
+	    0: normal class
+	       Uses the default fair-class behavior.
+	   -1: low class
+	       Yields to high/normal on wakeup and tick.
+
+	  Values other than -1, 0 and 1 are rejected. This interface is
+	  intentionally modeled as a 3-class collocation control, not a
+	  continuous priority scale.
+
 config CFS_BANDWIDTH
 	bool "CPU bandwidth provisioning for FAIR_GROUP_SCHED"
 	depends on FAIR_GROUP_SCHED

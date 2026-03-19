@@ -4465,6 +4465,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
 	p->se.vlag			= 0;
+#ifdef CONFIG_GROUP_IDENTITY
+	p->se.priority			= 0;
+#endif
 	INIT_LIST_HEAD(&p->se.group_node);
 
 	/* A delayed task cannot be in clone(). */
@@ -8499,6 +8502,9 @@ struct task_group root_task_group = {
 	.lat_stat_cpu	= &root_lat_stat_cpu,
 	.alistats	= &root_alistats,
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
+	.priority	= 0,
+#endif
 };
 LIST_HEAD(task_groups);
 
@@ -10042,12 +10048,34 @@ static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 				struct cftype *cft, s64 idle)
 {
 	int ret;
+	struct task_group *tg = css_tg(css);
 
-	ret = sched_group_set_idle(css_tg(css), idle);
+	ret = sched_group_set_idle(tg, idle);
 	if (!ret)
-		scx_group_set_idle(css_tg(css), idle);
+		scx_group_set_idle(tg, READ_ONCE(tg->idle));
 	return ret;
 }
+
+#ifdef CONFIG_GROUP_IDENTITY
+static s64 cpu_priority_read_s64(struct cgroup_subsys_state *css,
+				 struct cftype *cft)
+{
+	return css_tg(css)->priority;
+}
+
+static int cpu_priority_write_s64(struct cgroup_subsys_state *css,
+				 struct cftype *cft, s64 priority)
+{
+	int ret;
+	struct task_group *tg = css_tg(css);
+
+	ret = sched_group_set_priority(tg, priority);
+	if (!ret)
+		scx_group_set_idle(tg, READ_ONCE(tg->idle));
+
+	return ret;
+}
+#endif
 #endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -10252,6 +10280,13 @@ static struct cftype cpu_legacy_files[] = {
 		.read_s64 = cpu_idle_read_s64,
 		.write_s64 = cpu_idle_write_s64,
 	},
+#ifdef CONFIG_GROUP_IDENTITY
+	{
+		.name = "priority",
+		.read_s64 = cpu_priority_read_s64,
+		.write_s64 = cpu_priority_write_s64,
+	},
+#endif
 	{
 		.name = "slice_us",
 		.flags = CFTYPE_NOT_ON_ROOT,
@@ -10966,6 +11001,14 @@ static struct cftype cpu_files[] = {
 		.read_s64 = cpu_idle_read_s64,
 		.write_s64 = cpu_idle_write_s64,
 	},
+#ifdef CONFIG_GROUP_IDENTITY
+	{
+		.name = "priority",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_priority_read_s64,
+		.write_s64 = cpu_priority_write_s64,
+	},
+#endif
 	{
 		.name = "slice",
 		.flags = CFTYPE_NOT_ON_ROOT,
