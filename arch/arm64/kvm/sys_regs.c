@@ -418,31 +418,6 @@ static bool trap_oslar_el1(struct kvm_vcpu *vcpu,
 	return true;
 }
 
-static bool trap_mpam(struct kvm_vcpu *vcpu,
-		      struct sys_reg_params *p,
-		      const struct sys_reg_desc *r)
-{
-	u64 aa64pfr0_el1 = IDREG(vcpu->kvm, SYS_ID_AA64PFR0_EL1);
-
-	/*
-	 * What did we expose to the guest?
-	 * Earlier guests may have seen the ID bits, which can't be removed
-	 * without breaking migration, but MPAMIDR_EL1 can advertise all-zeroes,
-	 * indicating there are zero PARTID/PMG supported by the CPU, allowing
-	 * the other two trapped registers (MPAM1_EL1 and MPAM0_EL1) to be
-	 * treated as RAZ/WI.
-	 * Emulating MPAM1_EL1 as RAZ/WI means the guest sees the MPAMEN bit
-	 * as clear, and realises MPAM isn't usable on this CPU.
-	 */
-	if (FIELD_GET(ID_AA64PFR0_EL1_MPAM_MASK, aa64pfr0_el1)) {
-		p->regval = 0;
-		return true;
-	}
-
-	kvm_inject_undefined(vcpu);
-	return false;
-}
-
 static bool trap_oslsr_el1(struct kvm_vcpu *vcpu,
 			   struct sys_reg_params *p,
 			   const struct sys_reg_desc *r)
@@ -1341,36 +1316,6 @@ static s64 kvm_arm64_ftr_safe_value(u32 id, const struct arm64_ftr_bits *ftrp,
 	return arm64_ftr_safe_value(&kvm_ftr, new, cur);
 }
 
-static u64 kvm_arm64_ftr_max(struct kvm_vcpu *vcpu,
-			     const struct sys_reg_desc *rd)
-{
-	u64 pfr0, val = rd->reset(vcpu, rd);
-	u32 field, id = reg_to_encoding(rd);
-
-	/*
-	 * Some values may reset to a lower value than can be supported,
-	 * get the maximum feature value.
-	 */
-	switch (id) {
-	case SYS_ID_AA64PFR0_EL1:
-		pfr0 = read_sanitised_ftr_reg(SYS_ID_AA64PFR0_EL1);
-
-		/*
-		 * MPAM resets to 0, but migration of MPAM=1 guests is needed.
-		 * See trap_mpam() for more.
-		 */
-		field = cpuid_feature_extract_unsigned_field(pfr0, ID_AA64PFR0_EL1_MPAM_SHIFT);
-		if (field == ID_AA64PFR0_EL1_MPAM_1) {
-			val &= ~ID_AA64PFR0_EL1_MPAM_MASK;
-			val |= FIELD_PREP(ID_AA64PFR0_EL1_MPAM_MASK, ID_AA64PFR0_EL1_MPAM_1);
-		}
-
-		break;
-	}
-
-	return val;
-}
-
 /**
  * arm64_check_features() - Check if a feature register value constitutes
  * a subset of features indicated by the idreg's KVM sanitised limit.
@@ -1406,7 +1351,6 @@ static int arm64_check_features(struct kvm_vcpu *vcpu,
 	if (!ftr_reg)
 		return -EINVAL;
 
-	limit = kvm_arm64_ftr_max(vcpu, rd);
 	ftrp = ftr_reg->ftr_bits;
 
 	for (; ftrp && ftrp->width; ftrp++) {
@@ -1453,6 +1397,9 @@ static u8 pmuver_to_perfmon(u8 pmuver)
 	}
 }
 
+static u64 sanitise_id_aa64pfr0_el1(const struct kvm_vcpu *vcpu, u64 val);
+static u64 sanitise_id_aa64dfr0_el1(const struct kvm_vcpu *vcpu, u64 val);
+
 /* Read a sanitised cpufeature ID register by sys_reg_desc */
 static u64 __kvm_read_sanitised_id_reg(const struct kvm_vcpu *vcpu,
 				       const struct sys_reg_desc *r)
@@ -1466,11 +1413,25 @@ static u64 __kvm_read_sanitised_id_reg(const struct kvm_vcpu *vcpu,
 	val = read_sanitised_ftr_reg(id);
 
 	switch (id) {
+	case SYS_ID_AA64DFR0_EL1:
+		val = sanitise_id_aa64dfr0_el1(vcpu, val);
+		break;
+	case SYS_ID_AA64PFR0_EL1:
+		val = sanitise_id_aa64pfr0_el1(vcpu, val);
+		break;
 	case SYS_ID_AA64PFR1_EL1:
 		if (!kvm_has_mte(vcpu->kvm))
 			val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_MTE);
 
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_SME);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_RNDR_trap);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_NMI);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_MTE_frac);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_GCS);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_THE);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_MTEX);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_DF2);
+		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_PFAR);
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_MPAM_frac);
 		break;
 	case SYS_ID_AA64ISAR1_EL1:
@@ -1589,11 +1550,8 @@ static unsigned int sve_visibility(const struct kvm_vcpu *vcpu,
 	return REG_HIDDEN;
 }
 
-static u64 read_sanitised_id_aa64pfr0_el1(struct kvm_vcpu *vcpu,
-					  const struct sys_reg_desc *rd)
+static u64 sanitise_id_aa64pfr0_el1(const struct kvm_vcpu *vcpu, u64 val)
 {
-	u64 val = read_sanitised_ftr_reg(SYS_ID_AA64PFR0_EL1);
-
 	if (!vcpu_has_sve(vcpu))
 		val &= ~ID_AA64PFR0_EL1_SVE_MASK;
 
@@ -1624,8 +1582,7 @@ static u64 read_sanitised_id_aa64pfr0_el1(struct kvm_vcpu *vcpu,
 	/*
 	 * MPAM is disabled by default as KVM also needs a set of PARTID to
 	 * program the MPAMVPMx_EL2 PARTID remapping registers with. But some
-	 * older kernels let the guest see the ID bit. Turning it on causes
-	 * the registers to be emulated as RAZ/WI. See trap_mpam() for more.
+	 * older kernels let the guest see the ID bit.
 	 */
 	val &= ~ID_AA64PFR0_EL1_MPAM_MASK;
 
@@ -1641,11 +1598,8 @@ static u64 read_sanitised_id_aa64pfr0_el1(struct kvm_vcpu *vcpu,
 	(val);								       \
 })
 
-static u64 read_sanitised_id_aa64dfr0_el1(struct kvm_vcpu *vcpu,
-					  const struct sys_reg_desc *rd)
+static u64 sanitise_id_aa64dfr0_el1(const struct kvm_vcpu *vcpu, u64 val)
 {
-	u64 val = read_sanitised_ftr_reg(SYS_ID_AA64DFR0_EL1);
-
 	val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64DFR0_EL1, DebugVer, V8P8);
 
 	/*
@@ -2069,6 +2023,15 @@ static unsigned int elx2_visibility(const struct kvm_vcpu *vcpu,
 	.val = mask,				\
 }
 
+/* sys_reg_desc initialiser for cpufeature ID registers that need filtering */
+#define ID_FILTERED(sysreg, name, mask) {	\
+	ID_DESC(sysreg),				\
+	.set_user = set_##name,				\
+	.visibility = id_visibility,			\
+	.reset = kvm_read_sanitised_id_reg,		\
+	.val = (mask),					\
+}
+
 /*
  * sys_reg_desc initialiser for architecturally unallocated cpufeature ID
  * register with encoding Op0=3, Op1=0, CRn=0, CRm=crm, Op2=op2
@@ -2238,23 +2201,28 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 
 	/* AArch64 ID registers */
 	/* CRm=4 */
-	{ SYS_DESC(SYS_ID_AA64PFR0_EL1),
-	  .access = access_id_reg,
-	  .get_user = get_id_reg,
-	  .set_user = set_id_aa64pfr0_el1,
-	  .reset = read_sanitised_id_aa64pfr0_el1,
-	  .val = ~(ID_AA64PFR0_EL1_AMU |
-		   ID_AA64PFR0_EL1_MPAM |
-		   ID_AA64PFR0_EL1_SVE |
-		   ID_AA64PFR0_EL1_RAS |
-		   ID_AA64PFR0_EL1_GIC |
-		   ID_AA64PFR0_EL1_AdvSIMD |
-		   ID_AA64PFR0_EL1_FP), },
-	{ SYS_DESC(SYS_ID_AA64PFR1_EL1),
-	  .access = access_id_reg,
-	  .get_user = get_id_reg,
-	  .set_user = set_id_aa64pfr1_el1,
-	  .reset = kvm_read_sanitised_id_reg, },
+	ID_FILTERED(ID_AA64PFR0_EL1, id_aa64pfr0_el1,
+		    ~(ID_AA64PFR0_EL1_AMU |
+		      ID_AA64PFR0_EL1_MPAM |
+		      ID_AA64PFR0_EL1_SVE |
+		      ID_AA64PFR0_EL1_GIC |
+		      ID_AA64PFR0_EL1_RAS |
+		      ID_AA64PFR0_EL1_AdvSIMD |
+		      ID_AA64PFR0_EL1_FP)),
+	ID_FILTERED(ID_AA64PFR1_EL1, id_aa64pfr1_el1,
+				     ~(ID_AA64PFR1_EL1_PFAR |
+				       ID_AA64PFR1_EL1_DF2 |
+				       ID_AA64PFR1_EL1_MTEX |
+				       ID_AA64PFR1_EL1_THE |
+				       ID_AA64PFR1_EL1_GCS |
+				       ID_AA64PFR1_EL1_MTE_frac |
+				       ID_AA64PFR1_EL1_NMI |
+				       ID_AA64PFR1_EL1_RNDR_trap |
+				       ID_AA64PFR1_EL1_SME |
+				       ID_AA64PFR1_EL1_RES0 |
+				       ID_AA64PFR1_EL1_MPAM_frac |
+				       ID_AA64PFR1_EL1_RAS_frac |
+				       ID_AA64PFR1_EL1_MTE)),
 	ID_UNALLOCATED(4,2),
 	ID_UNALLOCATED(4,3),
 	ID_WRITABLE(ID_AA64ZFR0_EL1, ~ID_AA64ZFR0_EL1_RES0),
@@ -2263,13 +2231,11 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	ID_UNALLOCATED(4,7),
 
 	/* CRm=5 */
-	{ SYS_DESC(SYS_ID_AA64DFR0_EL1),
-	  .access = access_id_reg,
-	  .get_user = get_id_reg,
-	  .set_user = set_id_aa64dfr0_el1,
-	  .reset = read_sanitised_id_aa64dfr0_el1,
-	  .val = ID_AA64DFR0_EL1_PMUVer_MASK |
-		 ID_AA64DFR0_EL1_DebugVer_MASK, },
+	ID_FILTERED(ID_AA64DFR0_EL1, id_aa64dfr0_el1,
+		    ID_AA64DFR0_EL1_DoubleLock_MASK |
+		    ID_AA64DFR0_EL1_WRPs_MASK |
+		    ID_AA64DFR0_EL1_PMUVer_MASK |
+		    ID_AA64DFR0_EL1_DebugVer_MASK),
 	ID_SANITISED(ID_AA64DFR1_EL1),
 	ID_UNALLOCATED(5,2),
 	ID_UNALLOCATED(5,3),
@@ -2393,11 +2359,13 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	{ SYS_DESC(SYS_LOREA_EL1), trap_loregion },
 	{ SYS_DESC(SYS_LORN_EL1), trap_loregion },
 	{ SYS_DESC(SYS_LORC_EL1), trap_loregion },
-	{ SYS_DESC(SYS_MPAMIDR_EL1), trap_mpam },
+	{ SYS_DESC(SYS_MPAMIDR_EL1), undef_access },
 	{ SYS_DESC(SYS_LORID_EL1), trap_loregion },
 
-	{ SYS_DESC(SYS_MPAM1_EL1), trap_mpam },
-	{ SYS_DESC(SYS_MPAM0_EL1), trap_mpam },
+	{ SYS_DESC(SYS_MPAM1_EL1), undef_access },
+	{ SYS_DESC(SYS_MPAM0_EL1), undef_access },
+	{ SYS_DESC(SYS_MPAMSM_EL1), undef_access },
+
 	{ SYS_DESC(SYS_VBAR_EL1), access_rw, reset_val, VBAR_EL1, 0 },
 	{ SYS_DESC(SYS_DISR_EL1), NULL, reset_val, DISR_EL1, 0 },
 
@@ -2668,6 +2636,17 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 
 	EL2_REG(MAIR_EL2, access_rw, reset_val, 0),
 	EL2_REG(AMAIR_EL2, access_rw, reset_val, 0),
+	{ SYS_DESC(SYS_MPAMHCR_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPMV_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAM2_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM0_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM1_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM2_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM3_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM4_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM5_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM6_EL2), undef_access },
+	{ SYS_DESC(SYS_MPAMVPM7_EL2), undef_access },
 
 	EL2_REG(VBAR_EL2, access_rw, reset_val, 0),
 	EL2_REG(RVBAR_EL2, access_rw, reset_val, 0),

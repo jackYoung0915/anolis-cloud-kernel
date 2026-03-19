@@ -564,14 +564,13 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 {
 	struct thread_struct *prev = &prev_p->thread;
 	struct thread_struct *next = &next_p->thread;
-	struct fpu *prev_fpu = &prev->fpu;
 	int cpu = smp_processor_id();
 
 	WARN_ON_ONCE(IS_ENABLED(CONFIG_DEBUG_ENTRY) &&
 		     this_cpu_read(pcpu_hot.hardirq_stack_inuse));
 
-	if (!test_thread_flag(TIF_NEED_FPU_LOAD))
-		switch_fpu_prepare(prev_fpu, cpu);
+	if (!test_tsk_thread_flag(prev_p, TIF_NEED_FPU_LOAD))
+		switch_fpu_prepare(prev_p, cpu);
 
 	if (static_branch_unlikely(&hygon_lmc_key))
 		switch_kernel_fpu_prepare(prev_p, cpu);
@@ -628,7 +627,7 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	raw_cpu_write(pcpu_hot.current_task, next_p);
 	raw_cpu_write(pcpu_hot.top_of_stack, task_top_of_stack(next_p));
 
-	switch_fpu_finish();
+	switch_fpu_finish(next_p);
 
 	if (static_branch_unlikely(&hygon_lmc_key))
 		switch_kernel_fpu_finish(next_p);

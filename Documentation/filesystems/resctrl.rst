@@ -1,9 +1,9 @@
 .. SPDX-License-Identifier: GPL-2.0
 .. include:: <isonum.txt>
 
-===========================================
-User Interface for Resource Control feature
-===========================================
+=====================================================
+User Interface for Resource Control feature (resctrl)
+=====================================================
 
 :Copyright: |copy| 2016 Intel Corporation
 :Authors: - Fenghua Yu <fenghua.yu@intel.com>
@@ -96,12 +96,19 @@ related to allocation:
 		must be set when writing a mask.
 
 "shareable_bits":
-		Bitmask of shareable resource with other executing
-		entities (e.g. I/O). User can use this when
-		setting up exclusive cache partitions. Note that
-		some platforms support devices that have their
-		own settings for cache use which can over-ride
-		these bits.
+		Bitmask of shareable resource with other executing entities
+		(e.g. I/O). Applies to all instances of this resource. User
+		can use this when setting up exclusive cache partitions.
+		Note that some platforms support devices that have their
+		own settings for cache use which can over-ride these bits.
+
+		When "io_alloc" is enabled, a portion of each cache instance can
+		be configured for shared use between hardware and software.
+		"bit_usage" should be used to see which portions of each cache
+		instance is configured for hardware use via "io_alloc" feature
+		because every cache instance can have its "io_alloc" bitmask
+		configured independently via "io_alloc_cbm".
+
 "bit_usage":
 		Annotated capacity bitmasks showing how all
 		instances of the resource are used. The legend is:
@@ -115,16 +122,16 @@ related to allocation:
 			"H":
 			      Corresponding region is used by hardware only
 			      but available for software use. If a resource
-			      has bits set in "shareable_bits" but not all
-			      of these bits appear in the resource groups'
-			      schematas then the bits appearing in
-			      "shareable_bits" but no resource group will
-			      be marked as "H".
+			      has bits set in "shareable_bits" or "io_alloc_cbm"
+			      but not all of these bits appear in the resource
+			      groups' schemata then the bits appearing in
+			      "shareable_bits" or "io_alloc_cbm" but no
+			      resource group will be marked as "H".
 			"X":
 			      Corresponding region is available for sharing and
-			      used by hardware and software. These are the
-			      bits that appear in "shareable_bits" as
-			      well as a resource group's allocation.
+			      used by hardware and software. These are the bits
+			      that appear in "shareable_bits" or "io_alloc_cbm"
+			      as well as a resource group's allocation.
 			"S":
 			      Corresponding region is used by software
 			      and available for sharing.
@@ -334,204 +341,143 @@ with the following files:
 	    # cat /sys/fs/resctrl/info/L3_MON/mbm_local_bytes_config
 	    0=0x30;1=0x30;3=0x15;4=0x15
 
-"mbm_mode":
-	Reports the list of assignable monitoring features supported. The
-	enclosed brackets indicate which feature is enabled.
+"mbm_assign_mode":
+	The supported counter assignment modes. The enclosed brackets indicate which mode
+	is enabled. The MBM events associated with counters may reset when "mbm_assign_mode"
+	is changed.
 	::
 
-	  cat /sys/fs/resctrl/info/L3_MON/mbm_mode
-	  [mbm_cntr_assign]
-	  legacy
+	  # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
+	  [mbm_event]
+	  default
 
-	"mbm_cntr_assign":
-		AMD's ABMC feature is one of the mbm_cntr_assign mode supported.
-		The bandwidth monitoring feature on AMD system only guarantees
-		that RMIDs currently assigned to a processor will be tracked by
-		hardware. The counters of any other RMIDs which are no longer
-		being tracked will be reset to zero. The MBM event counters
-		return "Unavailable" for the RMIDs that are not tracked by
-		hardware. So, there can be only limited number of groups that can
-		give guaranteed monitoring numbers. With ever changing configurations
-		there is no way to definitely know which of these groups are being
-		tracked for certain point of time. Users do not have the option to
-		monitor a group or set of groups for certain period of time without
-		worrying about RMID being reset in between.
+	"mbm_event":
 
-		The ABMC feature provides an option to the user to assign a hardware
-		counter to an RMID and monitor the bandwidth as long as it is assigned.
-		The assigned RMID will be tracked by the hardware until the user
-		unassigns it manually. There is no need to worry about counters being
-		reset during this period.
+	mbm_event mode allows users to assign a hardware counter to an RMID, event
+	pair and monitor the bandwidth usage as long as it is assigned. The hardware
+	continues to track the assigned counter until it is explicitly unassigned by
+	the user. Each event within a resctrl group can be assigned independently.
 
-	"Legacy":
-		Legacy mode works without the assignment option. The monitoring works
-		as long as there are enough RMID counters available to support number
-		of monitoring groups.
+	In this mode, a monitoring event can only accumulate data while it is backed
+	by a hardware counter. Use "mbm_L3_assignments" found in each CTRL_MON and MON
+	group to specify which of the events should have a counter assigned. The number
+	of counters available is described in the "num_mbm_cntrs" file. Changing the
+	mode may cause all counters on the resource to reset.
 
-	* To enable ABMC feature:
+	Moving to mbm_event counter assignment mode requires users to assign the counters
+	to the events. Otherwise, the MBM event counters will return 'Unassigned' when read.
+
+	The mode is beneficial for AMD platforms that support more CTRL_MON
+	and MON groups than available hardware counters. By default, this
+	feature is enabled on AMD platforms with the ABMC (Assignable Bandwidth
+	Monitoring Counters) capability, ensuring counters remain assigned even
+	when the corresponding RMID is not actively used by any processor.
+
+	"default":
+
+	In default mode, resctrl assumes there is a hardware counter for each
+	event within every CTRL_MON and MON group. On AMD platforms, it is
+	recommended to use the mbm_event mode, if supported, to prevent reset of MBM
+	events between reads resulting from hardware re-allocating counters. This can
+	result in misleading values or display "Unavailable" if no counter is assigned
+	to the event.
+
+	* To enable "mbm_event" counter assignment mode:
 	  ::
 
-	    # echo  "mbm_cntr_assign" > /sys/fs/resctrl/info/L3_MON/mbm_mode
+	    # echo "mbm_event" > /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
 
-	* To enable the legacy monitoring feature:
+	* To enable "default" monitoring mode:
 	  ::
 
-	    # echo  "legacy" > /sys/fs/resctrl/info/L3_MON/mbm_mode
-
-	The MBM event counters will reset when mbm_mode is changed. Moving to
-	mbm_cntr_assign will require users to assign the counters to the events to
-	read the events. Otherwise, the MBM event counters will return "Unassigned"
-	when read.
+	    # echo "default" > /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
 
 "num_mbm_cntrs":
-	The number of monitoring counters available for assignment.
+	The maximum number of counters (total of available and assigned counters) in
+	each domain when the system supports mbm_event mode.
 
-	Resctrl subsystem provides the interface to count maximum of two
-	MBM events per group, from a combination of total and local events.
-	Keeping the current interface, users can assign a maximum of two
-	monitoring counters per group. User will also have the option to
-	enable only one counter to the group.
-
-	With limited number of counters, system can run out of assignable counters.
-	In mbm_cntr_assign mode, the MBM event counters will return "Unassigned" if
-	the counter is not assigned to the event when read. Users need to assign a
-	counter manually to read the events.
-
-"mbm_control":
-	Reports the resctrl group and monitor status of each group.
-
-	List follows the following format:
-		"<CTRL_MON group>/<MON group>/<domain_id>=<flags>"
-
-	Format for specific type of groups:
-
-	* Default CTRL_MON group:
-		"//<domain_id>=<flags>"
-
-	* Non-default CTRL_MON group:
-		"<CTRL_MON group>//<domain_id>=<flags>"
-
-	* Child MON group of default CTRL_MON group:
-		"/<MON group>/<domain_id>=<flags>"
-
-	* Child MON group of non-default CTRL_MON group:
-		"<CTRL_MON group>/<MON group>/<domain_id>=<flags>"
-
-	Flags can be one of the following:
+	For example, on a system with maximum of 32 memory bandwidth monitoring
+	counters in each of its L3 domains:
 	::
 
-	 t  MBM total event is enabled.
-	 l  MBM local event is enabled.
-	 tl Both total and local MBM events are enabled.
-	 _  None of the MBM events are enabled. Only works with opcode '=' for write.
+	  # cat /sys/fs/resctrl/info/L3_MON/num_mbm_cntrs
+	  0=32;1=32
 
-	Examples:
+"available_mbm_cntrs":
+	The number of counters available for assignment in each domain when mbm_event
+	mode is enabled on the system.
+
+	For example, on a system with 30 available [hardware] assignable counters
+	in each of its L3 domains:
 	::
 
-	 # mkdir /sys/fs/resctrl/mon_groups/child_default_mon_grp
-	 # mkdir /sys/fs/resctrl/non_default_ctrl_mon_grp
-	 # mkdir /sys/fs/resctrl/non_default_ctrl_mon_grp/mon_groups/child_non_default_mon_grp
+	  # cat /sys/fs/resctrl/info/L3_MON/available_mbm_cntrs
+	  0=30;1=30
 
-	 # cat /sys/fs/resctrl/info/L3_MON/mbm_control
-	 non_default_ctrl_mon_grp//0=tl;1=tl;
-	 non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
-	 //0=tl;1=tl;
-	 /child_default_mon_grp/0=tl;1=tl;
+"event_configs":
+	Directory that exists when "mbm_event" counter assignment mode is supported.
+	Contains a sub-directory for each MBM event that can be assigned to a counter.
 
-	 There are four resctrl groups. All the groups have total and local MBM events
-	 enabled on domain 0 and 1.
+	Two MBM events are supported by default: mbm_local_bytes and mbm_total_bytes.
+	Each MBM event's sub-directory contains a file named "event_filter" that is
+	used to view and modify which memory transactions the MBM event is configured
+	with. The file is accessible only when "mbm_event" counter assignment mode is
+	enabled.
 
-	Assignment state can be updated by writing to the interface.
+	List of memory transaction types supported:
 
-	Format is similar to the list format with addition of opcode for the
-	assignment operation.
+	==========================  ========================================================
+	Name			    Description
+	==========================  ========================================================
+	dirty_victim_writes_all     Dirty Victims from the QOS domain to all types of memory
+	remote_reads_slow_memory    Reads to slow memory in the non-local NUMA domain
+	local_reads_slow_memory     Reads to slow memory in the local NUMA domain
+	remote_non_temporal_writes  Non-temporal writes to non-local NUMA domain
+	local_non_temporal_writes   Non-temporal writes to local NUMA domain
+	remote_reads                Reads to memory in the non-local NUMA domain
+	local_reads                 Reads to memory in the local NUMA domain
+	==========================  ========================================================
 
-		"<CTRL_MON group>/<MON group>/<domain_id><opcode><flags>"
+	For example::
 
-	Format for each type of groups:
+	  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_total_bytes/event_filter
+	  local_reads,remote_reads,local_non_temporal_writes,remote_non_temporal_writes,
+	  local_reads_slow_memory,remote_reads_slow_memory,dirty_victim_writes_all
 
-        * Default CTRL_MON group:
-                "//<domain_id><opcode><flags>"
+	  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_local_bytes/event_filter
+	  local_reads,local_non_temporal_writes,local_reads_slow_memory
 
-        * Non-default CTRL_MON group:
-                "<CTRL_MON group>//<domain_id><opcode><flags>"
+	Modify the event configuration by writing to the "event_filter" file within
+	the "event_configs" directory. The read/write "event_filter" file contains the
+	configuration of the event that reflects which memory transactions are counted by it.
 
-        * Child MON group of default CTRL_MON group:
-                "/<MON group>/<domain_id><opcode><flags>"
+	For example::
 
-        * Child MON group of non-default CTRL_MON group:
-                "<CTRL_MON group>/<MON group>/<domain_id><opcode><flags>"
+	  # echo "local_reads, local_non_temporal_writes" >
+	    /sys/fs/resctrl/info/L3_MON/event_configs/mbm_total_bytes/event_filter
 
-	Domain_id '*' wil apply the flags on all the domains.
+	  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_total_bytes/event_filter
+	   local_reads,local_non_temporal_writes
 
-	Opcode can be one of the following:
-	::
+"mbm_assign_on_mkdir":
+	Exists when "mbm_event" counter assignment mode is supported. Accessible
+	only when "mbm_event" counter assignment mode is enabled.
 
-	 = Update the assignment to match the MBM event.
-	 + Assign a MBM event.
-	 - Unassign a MBM event.
+	Determines if a counter will automatically be assigned to an RMID, MBM event
+	pair when its associated monitor group is created via mkdir. Enabled by default
+	on boot, also when switched from "default" mode to "mbm_event" counter assignment
+	mode. Users can disable this capability by writing to the interface.
 
-	Examples:
-	::
+	"0":
+		Auto assignment is disabled.
+	"1":
+		Auto assignment is enabled.
 
-	  Initial group status:
-	  # cat /sys/fs/resctrl/info/L3_MON/mbm_control
-	  non_default_ctrl_mon_grp//0=tl;1=tl;
-	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
-	  //0=tl;1=tl;
-	  /child_default_mon_grp/0=tl;1=tl;
+	Example::
 
-	  To update the default group to assign only total MBM event on domain 0:
-	  # echo "//0=t" > /sys/fs/resctrl/info/L3_MON/mbm_control
-
-	  Assignment status after the update:
-	  # cat /sys/fs/resctrl/info/L3_MON/mbm_control
-	  non_default_ctrl_mon_grp//0=tl;1=tl;
-	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
-	  //0=t;1=tl;
-	  /child_default_mon_grp/0=tl;1=tl;
-
-	  To update the MON group child_default_mon_grp to remove total MBM event on domain 1:
-	  # echo "/child_default_mon_grp/1-t" > /sys/fs/resctrl/info/L3_MON/mbm_control
-
-	  Assignment status after the update:
-	  $ cat /sys/fs/resctrl/info/L3_MON/mbm_control
-	  non_default_ctrl_mon_grp//0=tl;1=tl;
-	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=tl;
-	  //0=t;1=tl;
-	  /child_default_mon_grp/0=tl;1=l;
-
-	  To update the MON group non_default_ctrl_mon_grp/child_non_default_mon_grp to
-	  unassign both local and total MBM events on domain 1:
-	  # echo "non_default_ctrl_mon_grp/child_non_default_mon_grp/1=_" >
-			/sys/fs/resctrl/info/L3_MON/mbm_control
-
-	  Assignment status after the update:
-	  non_default_ctrl_mon_grp//0=tl;1=tl;
-	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=_;
-	  //0=t;1=tl;
-	  /child_default_mon_grp/0=tl;1=l;
-
-	  To update the default group to add a local MBM event domain 0.
-	  # echo "//0+l" > /sys/fs/resctrl/info/L3_MON/mbm_control
-
-	  Assignment status after the update:
-	  # cat /sys/fs/resctrl/info/L3_MON/mbm_control
-	  non_default_ctrl_mon_grp//0=tl;1=tl;
-	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=_;
-	  //0=tl;1=tl;
-	  /child_default_mon_grp/0=tl;1=l;
-
-	  To update the non default CTRL_MON group non_default_ctrl_mon_grp to unassign all
-	  the MBM events on all the domains.
-	  # echo "non_default_ctrl_mon_grp//*=_" > /sys/fs/resctrl/info/L3_MON/mbm_control
-
-	  Assignment status after the update:
-	  #cat /sys/fs/resctrl/info/L3_MON/mbm_control
-	  non_default_ctrl_mon_grp//0=_;1=_;
-	  non_default_ctrl_mon_grp/child_non_default_mon_grp/0=tl;1=_;
-	  //0=tl;1=tl;
-	  /child_default_mon_grp/0=tl;1=l;
+	  # echo 0 > /sys/fs/resctrl/info/L3_MON/mbm_assign_on_mkdir
+	  # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_on_mkdir
+	  0
 
 "max_threshold_occupancy":
 		Read/write file provides the largest value (in
@@ -652,10 +598,91 @@ When monitoring is enabled all MON groups will also contain:
 	all tasks in the group. In CTRL_MON groups these files provide
 	the sum for all tasks in the CTRL_MON group and all tasks in
 	MON groups. Please see example section for more details on usage.
+	On systems with Sub-NUMA Cluster (SNC) enabled there are extra
+	directories for each node (located within the "mon_L3_XX" directory
+	for the L3 cache they occupy). These are named "mon_sub_L3_YY"
+	where "YY" is the node number.
+
+	When the 'mbm_event' counter assignment mode is enabled, reading
+	an MBM event of a MON group returns 'Unassigned' if no hardware
+	counter is assigned to it. For CTRL_MON groups, 'Unassigned' is
+	returned if the MBM event does not have an assigned counter in the
+	CTRL_MON group nor in any of its associated MON groups.
 
 "mon_hw_id":
 	Available only with debug option. The identifier used by hardware
 	for the monitor group. On x86 this is the RMID.
+
+When monitoring is enabled all MON groups may also contain:
+
+"mbm_L3_assignments":
+	Exists when "mbm_event" counter assignment mode is supported and lists the
+	counter assignment states of the group.
+
+	The assignment list is displayed in the following format:
+
+	<Event>:<Domain ID>=<Assignment state>;<Domain ID>=<Assignment state>
+
+	Event: A valid MBM event in the
+	       /sys/fs/resctrl/info/L3_MON/event_configs directory.
+
+	Domain ID: A valid domain ID. When writing, '*' applies the changes
+		   to all the domains.
+
+	Assignment states:
+
+	_ : No counter assigned.
+
+	e : Counter assigned exclusively.
+
+	Example:
+
+	To display the counter assignment states for the default group.
+	::
+
+	 # cd /sys/fs/resctrl
+	 # cat /sys/fs/resctrl/mbm_L3_assignments
+	   mbm_total_bytes:0=e;1=e
+	   mbm_local_bytes:0=e;1=e
+
+	Assignments can be modified by writing to the interface.
+
+	Examples:
+
+	To unassign the counter associated with the mbm_total_bytes event on domain 0:
+	::
+
+	 # echo "mbm_total_bytes:0=_" > /sys/fs/resctrl/mbm_L3_assignments
+	 # cat /sys/fs/resctrl/mbm_L3_assignments
+	   mbm_total_bytes:0=_;1=e
+	   mbm_local_bytes:0=e;1=e
+
+	To unassign the counter associated with the mbm_total_bytes event on all the domains:
+	::
+
+	 # echo "mbm_total_bytes:*=_" > /sys/fs/resctrl/mbm_L3_assignments
+	 # cat /sys/fs/resctrl/mbm_L3_assignments
+	   mbm_total_bytes:0=_;1=_
+	   mbm_local_bytes:0=e;1=e
+
+	To assign a counter associated with the mbm_total_bytes event on all domains in
+	exclusive mode:
+	::
+
+	 # echo "mbm_total_bytes:*=e" > /sys/fs/resctrl/mbm_L3_assignments
+	 # cat /sys/fs/resctrl/mbm_L3_assignments
+	   mbm_total_bytes:0=e;1=e
+	   mbm_local_bytes:0=e;1=e
+
+When the "mba_MBps" mount option is used all CTRL_MON groups will also contain:
+
+"mba_MBps_event":
+	Reading this file shows which memory bandwidth event is used
+	as input to the software feedback loop that keeps memory bandwidth
+	below the value specified in the schemata file. Writing the
+	name of one of the supported memory bandwidth events found in
+	/sys/fs/resctrl/info/L3_MON/mon_features changes the input
+	event.
 
 Resource allocation rules
 -------------------------
@@ -723,6 +750,12 @@ during mkdir.
 max_threshold_occupancy is a user configurable value to determine the
 occupancy at which an RMID can be freed.
 
+The mon_llc_occupancy_limbo tracepoint gives the precise occupancy in bytes
+for a subset of RMID that are not immediately available for allocation.
+This can't be relied on to produce output every second, it may be necessary
+to attempt to create an empty monitor group to force an update. Output may
+only be produced if creation of a control or monitor group fails.
+
 Schemata files - general concepts
 ---------------------------------
 Each line in the file describes one resource. The line starts with
@@ -754,6 +787,29 @@ and 0xA are not. Check /sys/fs/resctrl/info/{resource}/sparse_masks
 if non-contiguous 1s value is supported. On a system with a 20-bit mask
 each bit represents 5% of the capacity of the cache. You could partition
 the cache into four equal parts with masks: 0x1f, 0x3e0, 0x7c00, 0xf8000.
+
+Notes on Sub-NUMA Cluster mode
+==============================
+When SNC mode is enabled, Linux may load balance tasks between Sub-NUMA
+nodes much more readily than between regular NUMA nodes since the CPUs
+on Sub-NUMA nodes share the same L3 cache and the system may report
+the NUMA distance between Sub-NUMA nodes with a lower value than used
+for regular NUMA nodes.
+
+The top-level monitoring files in each "mon_L3_XX" directory provide
+the sum of data across all SNC nodes sharing an L3 cache instance.
+Users who bind tasks to the CPUs of a specific Sub-NUMA node can read
+the "llc_occupancy", "mbm_total_bytes", and "mbm_local_bytes" in the
+"mon_sub_L3_YY" directories to get node local data.
+
+Memory bandwidth allocation is still performed at the L3 cache
+level. I.e. throttling controls are applied to all SNC nodes.
+
+L3 cache allocation bitmaps also apply to all SNC nodes. But note that
+the amount of L3 cache represented by each bit is divided by the number
+of SNC nodes per L3 cache. E.g. with a 100MB cache on a system with 10-bit
+allocation masks each bit normally represents 10MB. With SNC mode enabled
+with two SNC nodes per L3 cache, each bit only represents 5MB.
 
 Memory bandwidth Allocation and monitoring
 ==========================================
@@ -1662,6 +1718,125 @@ View the llc occupancy snapshot::
 
   # cat /sys/fs/resctrl/p1/mon_data/mon_L3_00/llc_occupancy
   11234000
+
+
+Examples on working with mbm_assign_mode
+========================================
+
+a. Check if MBM counter assignment mode is supported.
+::
+
+  # mount -t resctrl resctrl /sys/fs/resctrl/
+
+  # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
+  [mbm_event]
+  default
+
+The "mbm_event" mode is detected and enabled.
+
+b. Check how many assignable counters are supported.
+::
+
+  # cat /sys/fs/resctrl/info/L3_MON/num_mbm_cntrs
+  0=32;1=32
+
+c. Check how many assignable counters are available for assignment in each domain.
+::
+
+  # cat /sys/fs/resctrl/info/L3_MON/available_mbm_cntrs
+  0=30;1=30
+
+d. To list the default group's assign states.
+::
+
+  # cat /sys/fs/resctrl/mbm_L3_assignments
+  mbm_total_bytes:0=e;1=e
+  mbm_local_bytes:0=e;1=e
+
+e.  To unassign the counter associated with the mbm_total_bytes event on domain 0.
+::
+
+  # echo "mbm_total_bytes:0=_" > /sys/fs/resctrl/mbm_L3_assignments
+  # cat /sys/fs/resctrl/mbm_L3_assignments
+  mbm_total_bytes:0=_;1=e
+  mbm_local_bytes:0=e;1=e
+
+f. To unassign the counter associated with the mbm_total_bytes event on all domains.
+::
+
+  # echo "mbm_total_bytes:*=_" > /sys/fs/resctrl/mbm_L3_assignments
+  # cat /sys/fs/resctrl/mbm_L3_assignment
+  mbm_total_bytes:0=_;1=_
+  mbm_local_bytes:0=e;1=e
+
+g. To assign a counter associated with the mbm_total_bytes event on all domains in
+exclusive mode.
+::
+
+  # echo "mbm_total_bytes:*=e" > /sys/fs/resctrl/mbm_L3_assignments
+  # cat /sys/fs/resctrl/mbm_L3_assignments
+  mbm_total_bytes:0=e;1=e
+  mbm_local_bytes:0=e;1=e
+
+h. Read the events mbm_total_bytes and mbm_local_bytes of the default group. There is
+no change in reading the events with the assignment.
+::
+
+  # cat /sys/fs/resctrl/mon_data/mon_L3_00/mbm_total_bytes
+  779247936
+  # cat /sys/fs/resctrl/mon_data/mon_L3_01/mbm_total_bytes
+  562324232
+  # cat /sys/fs/resctrl/mon_data/mon_L3_00/mbm_local_bytes
+  212122123
+  # cat /sys/fs/resctrl/mon_data/mon_L3_01/mbm_local_bytes
+  121212144
+
+i. Check the event configurations.
+::
+
+  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_total_bytes/event_filter
+  local_reads,remote_reads,local_non_temporal_writes,remote_non_temporal_writes,
+  local_reads_slow_memory,remote_reads_slow_memory,dirty_victim_writes_all
+
+  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_local_bytes/event_filter
+  local_reads,local_non_temporal_writes,local_reads_slow_memory
+
+j. Change the event configuration for mbm_local_bytes.
+::
+
+  # echo "local_reads, local_non_temporal_writes, local_reads_slow_memory, remote_reads" >
+  /sys/fs/resctrl/info/L3_MON/event_configs/mbm_local_bytes/event_filter
+
+  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_local_bytes/event_filter
+  local_reads,local_non_temporal_writes,local_reads_slow_memory,remote_reads
+
+k. Now read the local events again. The first read may come back with "Unavailable"
+status. The subsequent read of mbm_local_bytes will display the current value.
+::
+
+  # cat /sys/fs/resctrl/mon_data/mon_L3_00/mbm_local_bytes
+  Unavailable
+  # cat /sys/fs/resctrl/mon_data/mon_L3_00/mbm_local_bytes
+  2252323
+  # cat /sys/fs/resctrl/mon_data/mon_L3_01/mbm_local_bytes
+  Unavailable
+  # cat /sys/fs/resctrl/mon_data/mon_L3_01/mbm_local_bytes
+  1566565
+
+l. Users have the option to go back to 'default' mbm_assign_mode if required. This can be
+done using the following command. Note that switching the mbm_assign_mode may reset all
+the MBM counters (and thus all MBM events) of all the resctrl groups.
+::
+
+  # echo "default" > /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
+  # cat /sys/fs/resctrl/info/L3_MON/mbm_assign_mode
+  mbm_event
+  [default]
+
+m. Unmount the resctrl filesystem.
+::
+
+  # umount /sys/fs/resctrl/
 
 Intel RDT Errata
 ================

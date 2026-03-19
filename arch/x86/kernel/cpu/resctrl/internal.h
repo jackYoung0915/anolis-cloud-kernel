@@ -3,27 +3,14 @@
 #define _ASM_X86_RESCTRL_INTERNAL_H
 
 #include <linux/resctrl.h>
-#include <linux/sched.h>
-#include <linux/kernfs.h>
-#include <linux/fs_context.h>
-#include <linux/jump_label.h>
-#include <linux/tick.h>
-
-#include <asm/resctrl.h>
-#include <asm/intel-family.h>
-
-/* Memory bandwidth HWDRC */
-#define HWDRC_MSR_OS_MAILBOX_INTERFACE	0xb0
-#define HWDRC_MSR_OS_MAILBOX_DATA	0xb1
-#define HWDRC_MSR_OS_MAILBOX_BUSY_BIT	BIT_ULL(31)
-#define HWDRC_COMMAND_MEM_CLOS_EN	0xd0
-#define HWDRC_SUB_COMMAND_MEM_CLOS_EN	0x54
-#define HWDRC_MEMCLOS_AVAILABLE		BIT_ULL(0)
-#define HWDRC_OS_MAILBOX_RETRY_COUNT	30
 
 #define L3_QOS_CDP_ENABLE		0x01ULL
 
 #define L2_QOS_CDP_ENABLE		0x01ULL
+
+#define MBM_CNTR_WIDTH_BASE		24
+
+#define MBA_IS_LINEAR			0x4
 
 #define MBM_CNTR_WIDTH_OFFSET_AMD	20
 
@@ -31,6 +18,7 @@
 #define MBM_CNTR_WIDTH_OFFSET_HYGON	8
 
 #define RMID_VAL_ERROR			BIT_ULL(63)
+
 #define RMID_VAL_UNAVAIL		BIT_ULL(62)
 
 /*
@@ -39,9 +27,6 @@
  * as an offset from MBM_CNTR_WIDTH_BASE.
  */
 #define MBM_CNTR_WIDTH_OFFSET_MAX (62 - MBM_CNTR_WIDTH_BASE)
-
-/* Setting bit 0 in L3_QOS_EXT_CFG enables the ABMC feature. */
-#define ABMC_ENABLE_BIT			0
 
 /**
  * struct arch_mbm_state - values used to compute resctrl_arch_rmid_read()s
@@ -55,43 +40,66 @@ struct arch_mbm_state {
 	u64	prev_msr;
 };
 
+/* Setting bit 0 in L3_QOS_EXT_CFG enables the ABMC feature. */
+#define ABMC_ENABLE_BIT			0
+
+/*
+ * Qos Event Identifiers.
+ */
+#define ABMC_EXTENDED_EVT_ID		BIT(31)
+#define ABMC_EVT_ID			BIT(0)
+
 /* Setting bit 1 in MSR_IA32_L3_QOS_EXT_CFG enables the SDCIAE feature. */
 #define SDCIAE_ENABLE_BIT		1
 
 /**
- * struct rdt_hw_domain - Arch private attributes of a set of CPUs that share
- *			  a resource
+ * struct rdt_hw_ctrl_domain - Arch private attributes of a set of CPUs that share
+ *			       a resource for a control function
  * @d_resctrl:	Properties exposed to the resctrl file system
  * @ctrl_val:	array of cache or mem ctrl values (indexed by CLOSID)
- * @arch_mbm_total:	arch private state for MBM total bandwidth
- * @arch_mbm_local:	arch private state for MBM local bandwidth
- * @mbm_total_cfg:	MBM total bandwidth configuration
- * @mbm_local_cfg:	MBM local bandwidth configuration
  *
  * Members of this structure are accessed via helpers that provide abstraction.
  */
-struct rdt_hw_domain {
-	struct rdt_domain		d_resctrl;
+struct rdt_hw_ctrl_domain {
+	struct rdt_ctrl_domain		d_resctrl;
 	u32				*ctrl_val;
-	struct arch_mbm_state		*arch_mbm_total;
-	struct arch_mbm_state		*arch_mbm_local;
-	u32				mbm_total_cfg;
-	u32				mbm_local_cfg;
 };
 
-static inline struct rdt_hw_domain *resctrl_to_arch_dom(struct rdt_domain *r)
+/**
+ * struct rdt_hw_mon_domain - Arch private attributes of a set of CPUs that share
+ *			      a resource for a monitor function
+ * @d_resctrl:	Properties exposed to the resctrl file system
+ * @arch_mbm_states:	Per-event pointer to the MBM event's saved state.
+ *			An MBM event's state is an array of struct arch_mbm_state
+ *			indexed by RMID on x86.
+ *
+ * Members of this structure are accessed via helpers that provide abstraction.
+ */
+struct rdt_hw_mon_domain {
+	struct rdt_mon_domain		d_resctrl;
+	struct arch_mbm_state		*arch_mbm_states[QOS_NUM_L3_MBM_EVENTS];
+};
+
+static inline struct rdt_hw_ctrl_domain *resctrl_to_arch_ctrl_dom(struct rdt_ctrl_domain *r)
 {
-	return container_of(r, struct rdt_hw_domain, d_resctrl);
+	return container_of(r, struct rdt_hw_ctrl_domain, d_resctrl);
+}
+
+static inline struct rdt_hw_mon_domain *resctrl_to_arch_mon_dom(struct rdt_mon_domain *r)
+{
+	return container_of(r, struct rdt_hw_mon_domain, d_resctrl);
 }
 
 /**
  * struct msr_param - set a range of MSRs from a domain
  * @res:       The resource to use
+ * @dom:       The domain to update
  * @low:       Beginning index from base MSR
  * @high:      End index
  */
 struct msr_param {
 	struct rdt_resource	*res;
+	struct rdt_ctrl_domain	*dom;
 	u32			low;
 	u32			high;
 };
@@ -120,8 +128,7 @@ struct rdt_hw_resource {
 	struct rdt_resource	r_resctrl;
 	u32			num_closid;
 	unsigned int		msr_base;
-	void (*msr_update)	(struct rdt_domain *d, struct msr_param *m,
-				 struct rdt_resource *r);
+	void			(*msr_update)(struct msr_param *m);
 	unsigned int		mon_scale;
 	unsigned int		mbm_width;
 	bool			cdp_enabled;
@@ -136,34 +143,7 @@ static inline struct rdt_hw_resource *resctrl_to_arch_res(struct rdt_resource *r
 
 extern struct rdt_hw_resource rdt_resources_all[];
 
-static inline struct rdt_resource *resctrl_inc(struct rdt_resource *res)
-{
-	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(res);
-
-	hw_res++;
-	return &hw_res->r_resctrl;
-}
-
-/*
- * To return the common struct rdt_resource, which is contained in struct
- * rdt_hw_resource, walk the resctrl member of struct rdt_hw_resource.
- */
-#define for_each_rdt_resource(r)					      \
-	for (r = &rdt_resources_all[0].r_resctrl;			      \
-	     r <= &rdt_resources_all[RDT_NUM_RESOURCES - 1].r_resctrl;	      \
-	     r = resctrl_inc(r))
-
-#define for_each_capable_rdt_resource(r)				      \
-	for_each_rdt_resource(r)					      \
-		if (r->alloc_capable || r->mon_capable)
-
-#define for_each_alloc_capable_rdt_resource(r)				      \
-	for_each_rdt_resource(r)					      \
-		if (r->alloc_capable)
-
-#define for_each_mon_capable_rdt_resource(r)				      \
-	for_each_rdt_resource(r)					      \
-		if (r->mon_capable)
+void arch_mon_domain_online(struct rdt_resource *r, struct rdt_mon_domain *d);
 
 /* CPUID.(EAX=10H, ECX=ResID=1).EAX */
 union cpuid_0x10_1_eax {
@@ -199,35 +179,50 @@ union cpuid_0x10_x_edx {
 };
 
 /*
- * ABMC counters can be configured by writing to L3_QOS_ABMC_CFG.
- * @bw_type		: Bandwidth configuration(supported by BMEC)
- *			  tracked by the @cntr_id.
+ * ABMC counters are configured by writing to MSR_IA32_L3_QOS_ABMC_CFG.
+ *
+ * @bw_type		: Event configuration that represents the memory
+ *			  transactions being tracked by the @cntr_id.
  * @bw_src		: Bandwidth source (RMID or CLOSID).
  * @reserved1		: Reserved.
  * @is_clos		: @bw_src field is a CLOSID (not an RMID).
  * @cntr_id		: Counter identifier.
  * @reserved		: Reserved.
- * @cntr_en		: Tracking enable bit.
+ * @cntr_en		: Counting enable bit.
  * @cfg_en		: Configuration enable bit.
+ *
+ * Configuration and counting:
+ * Counter can be configured across multiple writes to MSR. Configuration
+ * is applied only when @cfg_en = 1. Counter @cntr_id is reset when the
+ * configuration is applied.
+ * @cfg_en = 1, @cntr_en = 0 : Apply @cntr_id configuration but do not
+ *                             count events.
+ * @cfg_en = 1, @cntr_en = 1 : Apply @cntr_id configuration and start
+ *                             counting events.
  */
 union l3_qos_abmc_cfg {
 	struct {
-		unsigned long	bw_type	:32,
-				bw_src	:12,
-				reserved1: 3,
-				is_clos	: 1,
-				cntr_id	: 5,
-				reserved : 9,
-				cntr_en	: 1,
-				cfg_en	: 1;
+		unsigned long bw_type  :32,
+			      bw_src   :12,
+			      reserved1: 3,
+			      is_clos  : 1,
+			      cntr_id  : 5,
+			      reserved : 9,
+			      cntr_en  : 1,
+			      cfg_en   : 1;
 	} split;
 	unsigned long full;
 };
 
 void rdt_ctrl_update(void *arg);
+
 int rdt_get_mon_l3_config(struct rdt_resource *r);
+
 bool rdt_cpu_has(int flag);
+
 void __init intel_rdt_mbm_apply_quirk(void);
+
 void rdt_domain_reconfigure_cdp(struct rdt_resource *r);
-void resctrl_mbm_evt_config_init(struct rdt_hw_domain *hw_dom);
+void resctrl_arch_mbm_cntr_assign_set_one(struct rdt_resource *r);
+
 #endif /* _ASM_X86_RESCTRL_INTERNAL_H */

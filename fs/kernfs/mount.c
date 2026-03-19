@@ -147,8 +147,10 @@ static struct dentry *kernfs_fh_to_parent(struct super_block *sb,
 static struct dentry *kernfs_get_parent_dentry(struct dentry *child)
 {
 	struct kernfs_node *kn = kernfs_dentry_node(child);
+	struct kernfs_root *root = kernfs_root(kn);
 
-	return d_obtain_alias(kernfs_get_inode(child->d_sb, kn->parent));
+	guard(rwsem_read)(&root->kernfs_rwsem);
+	return d_obtain_alias(kernfs_get_inode(child->d_sb, kernfs_parent(kn)));
 }
 
 static const struct export_operations kernfs_export_ops = {
@@ -188,10 +190,10 @@ static struct kernfs_node *find_next_ancestor(struct kernfs_node *child,
 		return NULL;
 	}
 
-	while (child->parent != parent) {
-		if (!child->parent)
+	while (kernfs_parent(child) != parent) {
+		child = kernfs_parent(child);
+		if (!child)
 			return NULL;
-		child = child->parent;
 	}
 
 	return child;
@@ -209,14 +211,18 @@ struct dentry *kernfs_node_dentry(struct kernfs_node *kn,
 {
 	struct dentry *dentry;
 	struct kernfs_node *knparent = NULL;
+	struct kernfs_root *root;
 
 	BUG_ON(sb->s_op != &kernfs_sops);
 
 	dentry = dget(sb->s_root);
 
 	/* Check if this is the root kernfs_node */
-	if (!kn->parent)
+	if (!rcu_access_pointer(kn->__parent))
 		return dentry;
+
+	root = kernfs_root(kn);
+	guard(rwsem_read)(&root->kernfs_rwsem);
 
 	knparent = find_next_ancestor(kn, NULL);
 	if (WARN_ON(!knparent)) {
@@ -227,6 +233,7 @@ struct dentry *kernfs_node_dentry(struct kernfs_node *kn,
 	do {
 		struct dentry *dtmp;
 		struct kernfs_node *kntmp;
+		const char *name;
 
 		if (kn == knparent)
 			return dentry;
@@ -235,8 +242,8 @@ struct dentry *kernfs_node_dentry(struct kernfs_node *kn,
 			dput(dentry);
 			return ERR_PTR(-EINVAL);
 		}
-		dtmp = lookup_positive_unlocked(kntmp->name, dentry,
-					       strlen(kntmp->name));
+		name = rcu_dereference(kntmp->name);
+		dtmp = lookup_positive_unlocked(name, dentry, strlen(name));
 		dput(dentry);
 		if (IS_ERR(dtmp))
 			return dtmp;

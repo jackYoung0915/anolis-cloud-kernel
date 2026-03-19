@@ -855,6 +855,16 @@ static inline bool system_supports_gcs(void)
 		alternative_has_cap_unlikely(ARM64_HAS_GCS);
 }
 
+static __always_inline bool system_supports_mpam(void)
+{
+	return alternative_has_cap_unlikely(ARM64_MPAM);
+}
+
+static __always_inline bool system_supports_mpam_hcr(void)
+{
+	return alternative_has_cap_unlikely(ARM64_MPAM_HCR);
+}
+
 int do_emulate_mrs(struct pt_regs *regs, u32 sys_reg, u32 rt);
 bool try_emulate_mrs(struct pt_regs *regs, u32 isn);
 
