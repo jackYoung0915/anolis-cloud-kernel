@@ -2,6 +2,7 @@
 // Copyright(c) 2021 Intel Corporation. All rights reserved.
 
 #include <linux/platform_device.h>
+#include <linux/memory_hotplug.h>
 #include <linux/genalloc.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -14,6 +15,8 @@
 #include "mock.h"
 
 static int interleave_arithmetic;
+
+#define FAKE_QTG_ID	42
 
 #define NR_CXL_HOST_BRIDGES 2
 #define NR_CXL_SINGLE_HOST 1
@@ -209,7 +212,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-			.qtg_id = 0,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 4UL,
 		},
 		.target = { 0 },
@@ -224,7 +227,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-			.qtg_id = 1,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, 1, },
@@ -239,7 +242,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 2,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 4UL,
 		},
 		.target = { 0 },
@@ -254,7 +257,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 3,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, 1, },
@@ -269,7 +272,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 4,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 4UL,
 		},
 		.target = { 2 },
@@ -284,7 +287,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-			.qtg_id = 5,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M,
 		},
 		.target = { 3 },
@@ -301,7 +304,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 0,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, },
@@ -317,7 +320,7 @@ static struct {
 			.granularity = 0,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 1,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, 1, },
@@ -333,7 +336,7 @@ static struct {
 			.granularity = 0,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 0,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 16UL,
 		},
 		.target = { 0, 1, 0, 1, },
@@ -976,6 +979,48 @@ static int mock_cxl_port_enumerate_dports(struct cxl_port *port)
 	return 0;
 }
 
+/*
+ * Faking the cxl_dpa_perf for the memdev when appropriate.
+ */
+static void dpa_perf_setup(struct cxl_port *endpoint, struct range *range,
+			   struct cxl_dpa_perf *dpa_perf)
+{
+	dpa_perf->qos_class = FAKE_QTG_ID;
+	dpa_perf->dpa_range = *range;
+	dpa_perf->coord.read_latency = 500;
+	dpa_perf->coord.write_latency = 500;
+	dpa_perf->coord.read_bandwidth = 1000;
+	dpa_perf->coord.write_bandwidth = 1000;
+}
+
+static void mock_cxl_endpoint_parse_cdat(struct cxl_port *port)
+{
+	struct cxl_root *cxl_root __free(put_cxl_root) =
+		find_cxl_root(port);
+	struct cxl_memdev *cxlmd = to_cxl_memdev(port->uport_dev);
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+	struct range pmem_range = {
+		.start = cxlds->pmem_res.start,
+		.end = cxlds->pmem_res.end,
+	};
+	struct range ram_range = {
+		.start = cxlds->ram_res.start,
+		.end = cxlds->ram_res.end,
+	};
+
+	if (!cxl_root)
+		return;
+
+	if (range_len(&ram_range))
+		dpa_perf_setup(port, &ram_range, &mds->ram_perf);
+
+	if (range_len(&pmem_range))
+		dpa_perf_setup(port, &pmem_range, &mds->pmem_perf);
+
+	cxl_memdev_update_perf(cxlmd);
+}
+
 static struct cxl_mock_ops cxl_mock_ops = {
 	.is_mock_adev = is_mock_adev,
 	.is_mock_bridge = is_mock_bridge,
@@ -989,6 +1034,7 @@ static struct cxl_mock_ops cxl_mock_ops = {
 	.devm_cxl_setup_hdm = mock_cxl_setup_hdm,
 	.devm_cxl_add_passthrough_decoder = mock_cxl_add_passthrough_decoder,
 	.devm_cxl_enumerate_decoders = mock_cxl_enumerate_decoders,
+	.cxl_endpoint_parse_cdat = mock_cxl_endpoint_parse_cdat,
 	.list = LIST_HEAD_INIT(cxl_mock_ops.list),
 };
 
@@ -1240,6 +1286,7 @@ static void cxl_single_exit(void)
 static __init int cxl_test_init(void)
 {
 	int rc, i;
+	struct range mappable;
 
 	cxl_acpi_test();
 	cxl_core_test();
@@ -1254,8 +1301,11 @@ static __init int cxl_test_init(void)
 		rc = -ENOMEM;
 		goto err_gen_pool_create;
 	}
+	mappable = mhp_get_pluggable_range(true);
 
-	rc = gen_pool_add(cxl_mock_pool, iomem_resource.end + 1 - SZ_64G,
+	rc = gen_pool_add(cxl_mock_pool,
+			  min(iomem_resource.end + 1 - SZ_64G,
+			      mappable.end + 1 - SZ_64G),
 			  SZ_64G, NUMA_NO_NODE);
 	if (rc)
 		goto err_gen_pool_add;
