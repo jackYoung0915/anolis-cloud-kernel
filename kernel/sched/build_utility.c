@@ -73,6 +73,10 @@
 # include "debug.c"
 #endif
 
+#ifdef CONFIG_GROUP_IDENTITY
+# include "group_identity.c"
+#endif
+
 #ifdef CONFIG_SCHEDSTATS
 # include "stats.c"
 #endif
