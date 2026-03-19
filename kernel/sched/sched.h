@@ -690,6 +690,9 @@ struct task_group {
 	raw_spinlock_t		gb_lock;
 #endif
 
+#ifdef CONFIG_GROUP_IDENTITY
+	long			priority;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -772,6 +775,15 @@ extern void sched_move_task(struct task_struct *tsk, bool for_autogroup);
 extern int sched_group_set_shares(struct task_group *tg, unsigned long shares);
 
 extern int sched_group_set_idle(struct task_group *tg, long idle);
+
+#ifdef CONFIG_GROUP_IDENTITY
+extern int sched_group_set_priority(struct task_group *tg, s64 priority);
+#else
+static inline int sched_group_set_priority(struct task_group *tg, s64 priority)
+{
+	return 0;
+}
+#endif
 
 extern int sched_group_set_slice(struct task_group *tg, u64 slice_us);
 

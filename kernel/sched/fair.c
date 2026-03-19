@@ -1344,6 +1344,150 @@ static inline bool do_preempt_short(struct cfs_rq *cfs_rq,
 	return false;
 }
 
+#ifdef CONFIG_GROUP_IDENTITY
+/*
+ * cpu.priority is intentionally a strict 3-state class selector:
+ *   1  => high
+ *   0  => normal
+ *  -1  => low
+ *
+ * sched_group_set_priority() rejects every other value, so the helper
+ * predicates below can test these exact class values directly while leaving
+ * the wakeup/tick policy unchanged.
+ */
+
+static inline bool is_highclass(const struct sched_entity *se)
+{
+	return READ_ONCE(se->priority) == 1;
+}
+
+static inline bool is_underclass(const struct sched_entity *se)
+{
+	return READ_ONCE(se->priority) == -1;
+}
+
+static inline bool is_normalclass(const struct sched_entity *se)
+{
+	return READ_ONCE(se->priority) == 0;
+}
+
+static inline struct sched_entity *pick_eevdf_ignore_slice(struct cfs_rq *cfs_rq)
+{
+	struct sched_entity *curr = cfs_rq->curr;
+	struct sched_entity *best;
+	s64 vlag;
+
+	if (!curr || !protect_slice(curr))
+		return pick_eevdf(cfs_rq);
+
+	vlag = curr->vlag;
+	cancel_protect_slice(curr);
+	best = pick_eevdf(cfs_rq);
+	curr->vlag = vlag;
+
+	return best;
+}
+
+/*
+ * Identity wakeup policy:
+ *  - {high, normal} waking against low forces a reschedule. The final winner
+ *    still comes from the normal post-resched pick path.
+ *  - high waking against normal only removes current's slice protection, then
+ *    lets the regular EEVDF pick path decide whether the wakee wins.
+ *  - lower classes never wakeup-preempt higher classes.
+ *
+ * Returns:
+ *   2: force reschedule
+ *   1: drop current's slice protection and defer to EEVDF
+ *   0: keep the default same-class EEVDF wakeup-preemption
+ *  -1: block wakeup-preemption
+ */
+static inline int id_wakeup_preempt_action(struct sched_entity *curr,
+					   struct sched_entity *se)
+{
+	long curr_prio = READ_ONCE(curr->priority);
+	long se_prio = READ_ONCE(se->priority);
+	bool under_curr = curr_prio == -1;
+	bool under_se = se_prio == -1;
+	bool high_curr = curr_prio == 1;
+
+	if (!sched_feat(GROUP_IDENTITY_PREEMPT))
+		return 0;
+
+	/* same class: use default EEVDF */
+	if (curr_prio == se_prio)
+		return 0;
+
+	/* underclass never wakeup-preempts {high, normal} */
+	if (under_se)
+		return -1;
+
+	/* {high, normal} waking against underclass triggers an immediate resched */
+	if (under_curr)
+		return 2;
+
+	/* NORMAL should not wakeup-preempt HIGH */
+	if (high_curr)
+		return -1;
+
+	/*
+	 * HIGH waking against NORMAL current:
+	 * drop RUN_TO_PARITY protection first, then let pick_eevdf() determine
+	 * whether the wakee really wins the post-resched competition.
+	 */
+	return 1;
+}
+
+static inline bool id_tick_preempt_class(const struct sched_entity *curr,
+					 const struct sched_entity *se)
+{
+	if (is_highclass(se))
+		return !is_highclass(curr);
+
+	return is_normalclass(se) && is_underclass(curr);
+}
+
+/*
+ * Tick-side identity preemption ignores current's slice protection, looks at
+ * the resulting EEVDF winner, and only reschedules when that winner is a
+ * higher class.
+ */
+static inline bool id_tick_preempt_needed(struct cfs_rq *cfs_rq,
+					  struct sched_entity *curr)
+{
+	struct sched_entity *se;
+
+	if (!sched_feat(GROUP_IDENTITY_PREEMPT))
+		return false;
+
+	/* highclass can't be preempted by higher class */
+	if (is_highclass(curr))
+		return false;
+
+	se = pick_eevdf_ignore_slice(cfs_rq);
+	if (!se || se == curr)
+		return false;
+
+	if (!id_tick_preempt_class(curr, se))
+		return false;
+
+	cancel_protect_slice(curr);
+	return true;
+}
+#else
+static inline int id_wakeup_preempt_action(struct sched_entity *curr,
+					   struct sched_entity *se)
+{
+	return 0;
+}
+
+static inline bool id_tick_preempt_needed(struct cfs_rq *cfs_rq,
+					  struct sched_entity *curr)
+{
+	return false;
+}
+#endif
+
 /*
  * Used by other classes to account runtime.
  */
@@ -4260,6 +4404,7 @@ static inline u64 cfs_rq_last_update_time(struct cfs_rq *cfs_rq)
 	return u64_u32_load_copy(cfs_rq->avg.last_update_time,
 				 cfs_rq->last_update_time_copy);
 }
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 DEFINE_PER_CPU(struct cpumask, cpus_allowed_alt);
 /* Decide which node for @tg to run on*/
@@ -5842,6 +5987,9 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 		return;
 	}
 #endif
+
+	if (cfs_rq->nr_queued > 1 && id_tick_preempt_needed(cfs_rq, curr))
+		resched_curr(rq_of(cfs_rq));
 }
 
 
@@ -8957,8 +9105,11 @@ static void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int 
 {
 	struct task_struct *curr = rq->curr;
 	struct sched_entity *se = &curr->se, *pse = &p->se;
+	struct sched_entity *pse_task = pse;
 	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
 	int cse_is_idle, pse_is_idle;
+	int prio_preempt;
+	bool next_buddy_marked = false;
 
 	if (unlikely(se == pse))
 		return;
@@ -8972,8 +9123,11 @@ static void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int 
 	if (unlikely(throttled_hierarchy(cfs_rq_of(pse))))
 		return;
 
-	if (sched_feat(NEXT_BUDDY) && !(wake_flags & WF_FORK) && !pse->sched_delayed) {
-		set_next_buddy(pse);
+	if (sched_feat(NEXT_BUDDY) &&
+	    !(wake_flags & WF_FORK) &&
+	    !pse_task->sched_delayed) {
+		set_next_buddy(pse_task);
+		next_buddy_marked = true;
 	}
 
 	/*
@@ -9022,6 +9176,17 @@ static void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int 
 
 	cfs_rq = cfs_rq_of(se);
 	update_curr(cfs_rq);
+
+	prio_preempt = id_wakeup_preempt_action(se, pse);
+	if (prio_preempt == 2) {
+		if (!next_buddy_marked && !pse_task->sched_delayed)
+			set_next_buddy(pse_task);
+		goto preempt;
+	}
+
+	if (prio_preempt == -1)
+		return;
+
 	/*
 	 * If @p has a shorter slice than current and @p is eligible, override
 	 * current's slice protection in order to allow preemption.
@@ -9029,7 +9194,7 @@ static void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int 
 	 * Note that even if @p does not turn out to be the most eligible
 	 * task at this moment, current's slice protection will be lost.
 	 */
-	if (do_preempt_short(cfs_rq, pse, se))
+	if (do_preempt_short(cfs_rq, pse, se) || prio_preempt == 1)
 		cancel_protect_slice(se);
 
 	/*
@@ -13841,7 +14006,6 @@ static void task_change_group_fair(struct task_struct *p)
 		update_nr_iowait_fair(p, -1);
 
 	detach_task_cfs_rq(p);
-
 #ifdef CONFIG_SMP
 	/* Tell se's cfs_rq has been changed -- migrated */
 	p->se.avg.last_update_time = 0;
@@ -13910,6 +14074,9 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 
 	tg->shares = NICE_0_LOAD;
 
+#ifdef CONFIG_GROUP_IDENTITY
+	WRITE_ONCE(tg->priority, READ_ONCE(parent->priority));
+#endif
 	init_cfs_bandwidth(tg_cfs_bandwidth(tg), tg_cfs_bandwidth(parent));
 	tg_set_specs_ratio(tg);
 
@@ -14039,6 +14206,9 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	seqcount_init(&se->idle_seqcount);
 	spin_lock_init(&se->iowait_lock);
 	se->cg_idle_start = se->cg_init_time = cpu_clock(cpu);
+#ifdef CONFIG_GROUP_IDENTITY
+	WRITE_ONCE(se->priority, READ_ONCE(tg->priority));
+#endif
 	INIT_LIST_HEAD(&se->expel_node);
 }
 
@@ -14094,9 +14264,11 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 	return ret;
 }
 
-int sched_group_set_idle(struct task_group *tg, long idle)
+static int __sched_group_set_idle_locked(struct task_group *tg, long idle)
 {
 	int i;
+
+	lockdep_assert_held(&shares_mutex);
 
 	if (tg == &root_task_group)
 		return -EINVAL;
@@ -14104,12 +14276,14 @@ int sched_group_set_idle(struct task_group *tg, long idle)
 	if (idle < 0 || idle > 1)
 		return -EINVAL;
 
-	mutex_lock(&shares_mutex);
+#ifdef CONFIG_GROUP_IDENTITY
+	if ((!idle && READ_ONCE(tg->priority) == -1) ||
+	    (idle && READ_ONCE(tg->priority) == 1))
+		return -EINVAL;
+#endif
 
-	if (tg->idle == idle) {
-		mutex_unlock(&shares_mutex);
+	if (tg->idle == idle)
 		return 0;
-	}
 
 	tg->idle = idle;
 
@@ -14155,9 +14329,63 @@ next_cpu:
 	else
 		__sched_group_set_shares(tg, NICE_0_LOAD);
 
-	mutex_unlock(&shares_mutex);
 	return 0;
 }
+
+int sched_group_set_idle(struct task_group *tg, long idle)
+{
+	int ret;
+
+	mutex_lock(&shares_mutex);
+	ret = __sched_group_set_idle_locked(tg, idle);
+	mutex_unlock(&shares_mutex);
+
+	return ret;
+}
+
+#ifdef CONFIG_GROUP_IDENTITY
+/*
+ * cpu.priority is a 3-class identity control, not a continuous priority
+ * scale. Low class reuses idle-group semantics while it is active; writing a
+ * non-low class through cpu.priority clears any existing idle-group state.
+ */
+int sched_group_set_priority(struct task_group *tg, s64 priority)
+{
+	int i;
+	long old_priority;
+	int ret;
+
+	if (priority != -1 && priority != 0 && priority != 1)
+		return -EINVAL;
+
+	if (tg == &root_task_group)
+		return -EINVAL;
+
+	mutex_lock(&shares_mutex);
+
+	old_priority = READ_ONCE(tg->priority);
+	if (old_priority != priority) {
+		WRITE_ONCE(tg->priority, priority);
+		for_each_possible_cpu(i) {
+			struct sched_entity *se = tg->se[i];
+
+			if (!se)
+				continue;
+			WRITE_ONCE(se->priority, priority);
+		}
+	}
+
+	if (priority == -1)
+		ret = __sched_group_set_idle_locked(tg, 1);
+	else if (tg->idle)
+		ret = __sched_group_set_idle_locked(tg, 0);
+	else
+		ret = 0;
+
+	mutex_unlock(&shares_mutex);
+	return ret;
+}
+#endif
 
 int sched_group_set_slice(struct task_group *tg, u64 slice_us)
 {
