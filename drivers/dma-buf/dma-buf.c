@@ -35,23 +35,46 @@
 
 static inline int is_dma_buf_file(struct file *);
 
-struct dma_buf_list {
-	struct list_head head;
-	struct mutex lock;
-};
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+static DEFINE_MUTEX(debugfs_list_mutex);
+static LIST_HEAD(debugfs_list);
 
-static struct dma_buf_list db_list;
+static void __dma_buf_debugfs_list_add(struct dma_buf *dmabuf)
+{
+	mutex_lock(&debugfs_list_mutex);
+	list_add(&dmabuf->list_node, &debugfs_list);
+	mutex_unlock(&debugfs_list_mutex);
+}
+
+static void __dma_buf_debugfs_list_del(struct dma_buf *dmabuf)
+{
+	if (!dmabuf)
+		return;
+
+	mutex_lock(&debugfs_list_mutex);
+	list_del(&dmabuf->list_node);
+	mutex_unlock(&debugfs_list_mutex);
+}
+#else
+static void __dma_buf_debugfs_list_add(struct dma_buf *dmabuf)
+{
+}
+
+static void __dma_buf_debugfs_list_del(struct dma_buf *dmabuf)
+{
+}
+#endif
 
 static char *dmabuffs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
 	struct dma_buf *dmabuf;
 	char name[DMA_BUF_NAME_LEN];
-	size_t ret = 0;
+	ssize_t ret = 0;
 
 	dmabuf = dentry->d_fsdata;
 	spin_lock(&dmabuf->name_lock);
 	if (dmabuf->name)
-		ret = strlcpy(name, dmabuf->name, DMA_BUF_NAME_LEN);
+		ret = strscpy(name, dmabuf->name, sizeof(name));
 	spin_unlock(&dmabuf->name_lock);
 
 	return dynamic_dname(buffer, buflen, "/%s:%s",
@@ -89,17 +112,10 @@ static void dma_buf_release(struct dentry *dentry)
 
 static int dma_buf_file_release(struct inode *inode, struct file *file)
 {
-	struct dma_buf *dmabuf;
-
 	if (!is_dma_buf_file(file))
 		return -EINVAL;
 
-	dmabuf = file->private_data;
-	if (dmabuf) {
-		mutex_lock(&db_list.lock);
-		list_del(&dmabuf->list_node);
-		mutex_unlock(&db_list.lock);
-	}
+	__dma_buf_debugfs_list_del(file->private_data);
 
 	return 0;
 }
@@ -160,8 +176,9 @@ static loff_t dma_buf_llseek(struct file *file, loff_t offset, int whence)
 	dmabuf = file->private_data;
 
 	/* only support discovering the end of the buffer,
-	   but also allow SEEK_SET to maintain the idiomatic
-	   SEEK_END(0), SEEK_CUR(0) pattern */
+	 * but also allow SEEK_SET to maintain the idiomatic
+	 * SEEK_END(0), SEEK_CUR(0) pattern.
+	 */
 	if (whence == SEEK_END)
 		base = dmabuf->size;
 	else if (whence == SEEK_SET)
@@ -542,7 +559,7 @@ static struct file *dma_buf_getfile(size_t size, int flags)
 	 * Override ->i_ino with the unique and dmabuffs specific
 	 * value.
 	 */
-	inode->i_ino = atomic64_add_return(1, &dmabuf_inode);
+	inode->i_ino = atomic64_inc_return(&dmabuf_inode);
 	flags &= O_ACCMODE | O_NONBLOCK;
 	file = alloc_file_pseudo(inode, dma_buf_mnt, "dmabuf",
 				 flags, &dma_buf_fops);
@@ -619,10 +636,6 @@ struct dma_buf *dma_buf_export(const struct dma_buf_export_info *exp_info)
 		    || !exp_info->ops->release))
 		return ERR_PTR(-EINVAL);
 
-	if (WARN_ON(exp_info->ops->cache_sgt_mapping &&
-		    (exp_info->ops->pin || exp_info->ops->unpin)))
-		return ERR_PTR(-EINVAL);
-
 	if (WARN_ON(!exp_info->ops->pin != !exp_info->ops->unpin))
 		return ERR_PTR(-EINVAL);
 
@@ -672,9 +685,7 @@ struct dma_buf *dma_buf_export(const struct dma_buf_export_info *exp_info)
 	file->f_path.dentry->d_fsdata = dmabuf;
 	dmabuf->file = file;
 
-	mutex_lock(&db_list.lock);
-	list_add(&dmabuf->list_node, &db_list.head);
-	mutex_unlock(&db_list.lock);
+	__dma_buf_debugfs_list_add(dmabuf);
 
 	return dmabuf;
 
@@ -767,36 +778,27 @@ static void mangle_sg_table(struct sg_table *sg_table)
 
 	/* To catch abuse of the underlying struct page by importers mix
 	 * up the bits, but take care to preserve the low SG_ bits to
-	 * not corrupt the sgt. The mixing is undone in __unmap_dma_buf
-	 * before passing the sgt back to the exporter. */
+	 * not corrupt the sgt. The mixing is undone on unmap
+	 * before passing the sgt back to the exporter.
+	 */
 	for_each_sgtable_sg(sg_table, sg, i)
 		sg->page_link ^= ~0xffUL;
 #endif
 
 }
-static struct sg_table * __map_dma_buf(struct dma_buf_attachment *attach,
-				       enum dma_data_direction direction)
+
+static inline bool
+dma_buf_attachment_is_dynamic(struct dma_buf_attachment *attach)
 {
-	struct sg_table *sg_table;
-	signed long ret;
+	return !!attach->importer_ops;
+}
 
-	sg_table = attach->dmabuf->ops->map_dma_buf(attach, direction);
-	if (IS_ERR_OR_NULL(sg_table))
-		return sg_table;
-
-	if (!dma_buf_attachment_is_dynamic(attach)) {
-		ret = dma_resv_wait_timeout(attach->dmabuf->resv,
-					    DMA_RESV_USAGE_KERNEL, true,
-					    MAX_SCHEDULE_TIMEOUT);
-		if (ret < 0) {
-			attach->dmabuf->ops->unmap_dma_buf(attach, sg_table,
-							   direction);
-			return ERR_PTR(ret);
-		}
-	}
-
-	mangle_sg_table(sg_table);
-	return sg_table;
+static bool
+dma_buf_pin_on_map(struct dma_buf_attachment *attach)
+{
+	return attach->dmabuf->ops->pin &&
+		(!dma_buf_attachment_is_dynamic(attach) ||
+		 !IS_ENABLED(CONFIG_DMABUF_MOVE_NOTIFY));
 }
 
 /**
@@ -919,47 +921,10 @@ dma_buf_dynamic_attach(struct dma_buf *dmabuf, struct device *dev,
 	list_add(&attach->node, &dmabuf->attachments);
 	dma_resv_unlock(dmabuf->resv);
 
-	/* When either the importer or the exporter can't handle dynamic
-	 * mappings we cache the mapping here to avoid issues with the
-	 * reservation object lock.
-	 */
-	if (dma_buf_attachment_is_dynamic(attach) !=
-	    dma_buf_is_dynamic(dmabuf)) {
-		struct sg_table *sgt;
-
-		dma_resv_lock(attach->dmabuf->resv, NULL);
-		if (dma_buf_is_dynamic(attach->dmabuf)) {
-			ret = dmabuf->ops->pin(attach);
-			if (ret)
-				goto err_unlock;
-		}
-
-		sgt = __map_dma_buf(attach, DMA_BIDIRECTIONAL);
-		if (!sgt)
-			sgt = ERR_PTR(-ENOMEM);
-		if (IS_ERR(sgt)) {
-			ret = PTR_ERR(sgt);
-			goto err_unpin;
-		}
-		dma_resv_unlock(attach->dmabuf->resv);
-		attach->sgt = sgt;
-		attach->dir = DMA_BIDIRECTIONAL;
-	}
-
 	return attach;
 
 err_attach:
 	kfree(attach);
-	return ERR_PTR(ret);
-
-err_unpin:
-	if (dma_buf_is_dynamic(attach->dmabuf))
-		dmabuf->ops->unpin(attach);
-
-err_unlock:
-	dma_resv_unlock(attach->dmabuf->resv);
-
-	dma_buf_detach(dmabuf, attach);
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_dynamic_attach, DMA_BUF);
@@ -979,16 +944,6 @@ struct dma_buf_attachment *dma_buf_attach(struct dma_buf *dmabuf,
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_attach, DMA_BUF);
 
-static void __unmap_dma_buf(struct dma_buf_attachment *attach,
-			    struct sg_table *sg_table,
-			    enum dma_data_direction direction)
-{
-	/* uses XOR, hence this unmangles */
-	mangle_sg_table(sg_table);
-
-	attach->dmabuf->ops->unmap_dma_buf(attach, sg_table, direction);
-}
-
 /**
  * dma_buf_detach - Remove the given attachment from dmabuf's attachments list
  * @dmabuf:	[in]	buffer to detach from.
@@ -1004,16 +959,7 @@ void dma_buf_detach(struct dma_buf *dmabuf, struct dma_buf_attachment *attach)
 		return;
 
 	dma_resv_lock(dmabuf->resv, NULL);
-
-	if (attach->sgt) {
-
-		__unmap_dma_buf(attach, attach->sgt, attach->dir);
-
-		if (dma_buf_is_dynamic(attach->dmabuf))
-			dmabuf->ops->unpin(attach);
-	}
 	list_del(&attach->node);
-
 	dma_resv_unlock(dmabuf->resv);
 
 	if (dmabuf->ops->detach)
@@ -1042,7 +988,7 @@ int dma_buf_pin(struct dma_buf_attachment *attach)
 	struct dma_buf *dmabuf = attach->dmabuf;
 	int ret = 0;
 
-	WARN_ON(!dma_buf_attachment_is_dynamic(attach));
+	WARN_ON(!attach->importer_ops);
 
 	dma_resv_assert_held(dmabuf->resv);
 
@@ -1065,7 +1011,7 @@ void dma_buf_unpin(struct dma_buf_attachment *attach)
 {
 	struct dma_buf *dmabuf = attach->dmabuf;
 
-	WARN_ON(!dma_buf_attachment_is_dynamic(attach));
+	WARN_ON(!attach->importer_ops);
 
 	dma_resv_assert_held(dmabuf->resv);
 
@@ -1099,7 +1045,7 @@ struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *attach,
 					enum dma_data_direction direction)
 {
 	struct sg_table *sg_table;
-	int r;
+	signed long ret;
 
 	might_sleep();
 
@@ -1108,41 +1054,37 @@ struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *attach,
 
 	dma_resv_assert_held(attach->dmabuf->resv);
 
-	if (attach->sgt) {
+	if (dma_buf_pin_on_map(attach)) {
+		ret = attach->dmabuf->ops->pin(attach);
 		/*
-		 * Two mappings with different directions for the same
-		 * attachment are not allowed.
+		 * Catch exporters making buffers inaccessible even when
+		 * attachments preventing that exist.
 		 */
-		if (attach->dir != direction &&
-		    attach->dir != DMA_BIDIRECTIONAL)
-			return ERR_PTR(-EBUSY);
-
-		return attach->sgt;
+		WARN_ON_ONCE(ret == EBUSY);
+		if (ret)
+			return ERR_PTR(ret);
 	}
 
-	if (dma_buf_is_dynamic(attach->dmabuf)) {
-		if (!IS_ENABLED(CONFIG_DMABUF_MOVE_NOTIFY)) {
-			r = attach->dmabuf->ops->pin(attach);
-			if (r)
-				return ERR_PTR(r);
-		}
-	}
-
-	sg_table = __map_dma_buf(attach, direction);
+	sg_table = attach->dmabuf->ops->map_dma_buf(attach, direction);
 	if (!sg_table)
 		sg_table = ERR_PTR(-ENOMEM);
+	if (IS_ERR(sg_table))
+		goto error_unpin;
 
-	if (IS_ERR(sg_table) && dma_buf_is_dynamic(attach->dmabuf) &&
-	     !IS_ENABLED(CONFIG_DMABUF_MOVE_NOTIFY))
-		attach->dmabuf->ops->unpin(attach);
-
-	if (!IS_ERR(sg_table) && attach->dmabuf->ops->cache_sgt_mapping) {
-		attach->sgt = sg_table;
-		attach->dir = direction;
+	/*
+	 * Importers with static attachments don't wait for fences.
+	 */
+	if (!dma_buf_attachment_is_dynamic(attach)) {
+		ret = dma_resv_wait_timeout(attach->dmabuf->resv,
+					    DMA_RESV_USAGE_KERNEL, true,
+					    MAX_SCHEDULE_TIMEOUT);
+		if (ret < 0)
+			goto error_unmap;
 	}
+	mangle_sg_table(sg_table);
 
 #ifdef CONFIG_DMA_API_DEBUG
-	if (!IS_ERR(sg_table)) {
+	{
 		struct scatterlist *sg;
 		u64 addr;
 		int len;
@@ -1158,6 +1100,16 @@ struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *attach,
 		}
 	}
 #endif /* CONFIG_DMA_API_DEBUG */
+	return sg_table;
+
+error_unmap:
+	attach->dmabuf->ops->unmap_dma_buf(attach, sg_table, direction);
+	sg_table = ERR_PTR(ret);
+
+error_unpin:
+	if (dma_buf_pin_on_map(attach))
+		attach->dmabuf->ops->unpin(attach);
+
 	return sg_table;
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_map_attachment, DMA_BUF);
@@ -1211,14 +1163,11 @@ void dma_buf_unmap_attachment(struct dma_buf_attachment *attach,
 
 	dma_resv_assert_held(attach->dmabuf->resv);
 
-	if (attach->sgt == sg_table)
-		return;
+	mangle_sg_table(sg_table);
+	attach->dmabuf->ops->unmap_dma_buf(attach, sg_table, direction);
 
-	__unmap_dma_buf(attach, sg_table, direction);
-
-	if (dma_buf_is_dynamic(attach->dmabuf) &&
-	    !IS_ENABLED(CONFIG_DMABUF_MOVE_NOTIFY))
-		dma_buf_unpin(attach);
+	if (dma_buf_pin_on_map(attach))
+		attach->dmabuf->ops->unpin(attach);
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_unmap_attachment, DMA_BUF);
 
@@ -1282,10 +1231,12 @@ EXPORT_SYMBOL_NS_GPL(dma_buf_move_notify, DMA_BUF);
  *   vmap interface is introduced. Note that on very old 32-bit architectures
  *   vmalloc space might be limited and result in vmap calls failing.
  *
- *   Interfaces::
+ *   Interfaces:
  *
- *      void \*dma_buf_vmap(struct dma_buf \*dmabuf, struct iosys_map \*map)
- *      void dma_buf_vunmap(struct dma_buf \*dmabuf, struct iosys_map \*map)
+ *   .. code-block:: c
+ *
+ *     void *dma_buf_vmap(struct dma_buf *dmabuf, struct iosys_map *map)
+ *     void dma_buf_vunmap(struct dma_buf *dmabuf, struct iosys_map *map)
  *
  *   The vmap call can fail if there is no vmap support in the exporter, or if
  *   it runs out of vmalloc space. Note that the dma-buf layer keeps a reference
@@ -1342,10 +1293,11 @@ EXPORT_SYMBOL_NS_GPL(dma_buf_move_notify, DMA_BUF);
  *   enough, since adding interfaces to intercept pagefaults and allow pte
  *   shootdowns would increase the complexity quite a bit.
  *
- *   Interface::
+ *   Interface:
  *
- *      int dma_buf_mmap(struct dma_buf \*, struct vm_area_struct \*,
- *		       unsigned long);
+ *   .. code-block:: c
+ *
+ *     int dma_buf_mmap(struct dma_buf *, struct vm_area_struct *, unsigned long);
  *
  *   If the importing subsystem simply provides a special-purpose mmap call to
  *   set up a mapping in userspace, calling do_mmap with &dma_buf.file will
@@ -1611,7 +1563,7 @@ static int dma_buf_debug_show(struct seq_file *s, void *unused)
 	size_t size = 0;
 	int ret;
 
-	ret = mutex_lock_interruptible(&db_list.lock);
+	ret = mutex_lock_interruptible(&debugfs_list_mutex);
 
 	if (ret)
 		return ret;
@@ -1620,7 +1572,7 @@ static int dma_buf_debug_show(struct seq_file *s, void *unused)
 	seq_printf(s, "%-8s\t%-8s\t%-8s\t%-8s\texp_name\t%-8s\tname\n",
 		   "size", "flags", "mode", "count", "ino");
 
-	list_for_each_entry(buf_obj, &db_list.head, list_node) {
+	list_for_each_entry(buf_obj, &debugfs_list, list_node) {
 
 		ret = dma_resv_lock_interruptible(buf_obj->resv, NULL);
 		if (ret)
@@ -1657,11 +1609,11 @@ static int dma_buf_debug_show(struct seq_file *s, void *unused)
 
 	seq_printf(s, "\nTotal %d objects, %zu bytes\n", count, size);
 
-	mutex_unlock(&db_list.lock);
+	mutex_unlock(&debugfs_list_mutex);
 	return 0;
 
 error_unlock:
-	mutex_unlock(&db_list.lock);
+	mutex_unlock(&debugfs_list_mutex);
 	return ret;
 }
 
@@ -1680,7 +1632,7 @@ static int dma_buf_init_debugfs(void)
 
 	dma_buf_debugfs_dir = d;
 
-	d = debugfs_create_file("bufinfo", S_IRUGO, dma_buf_debugfs_dir,
+	d = debugfs_create_file("bufinfo", 0444, dma_buf_debugfs_dir,
 				NULL, &dma_buf_debug_fops);
 	if (IS_ERR(d)) {
 		pr_debug("dma_buf: debugfs: failed to create node bufinfo\n");
@@ -1718,8 +1670,6 @@ static int __init dma_buf_init(void)
 	if (IS_ERR(dma_buf_mnt))
 		return PTR_ERR(dma_buf_mnt);
 
-	mutex_init(&db_list.lock);
-	INIT_LIST_HEAD(&db_list.head);
 	dma_buf_init_debugfs();
 	return 0;
 }

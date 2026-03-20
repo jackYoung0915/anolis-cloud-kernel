@@ -555,6 +555,10 @@ u64 dma_get_required_mask(struct device *dev)
 
 	if (dma_alloc_direct(dev, ops))
 		return dma_direct_get_required_mask(dev);
+
+	if (use_dma_iommu(dev))
+		return DMA_BIT_MASK(32);
+
 	if (ops->get_required_mask)
 		return ops->get_required_mask(dev);
 
@@ -802,17 +806,23 @@ static int dma_supported(struct device *dev, u64 mask)
 {
 	const struct dma_map_ops *ops = get_dma_ops(dev);
 
-	if (WARN_ON(ops && use_dma_iommu(dev)))
-		return false;
+	if (use_dma_iommu(dev)) {
+		if (WARN_ON(ops))
+			return false;
+		return true;
+	}
+
 	/*
-	 * ->dma_supported sets the bypass flag, so we must always call
-	 * into the method here unless the device is truly direct mapped.
+	 * ->dma_supported sets and clears the bypass flag, so ignore it here
+	 * and always call into the method if there is one.
 	 */
-	if (!ops)
-		return dma_direct_supported(dev, mask);
-	if (!ops->dma_supported)
-		return 1;
-	return ops->dma_supported(dev, mask);
+	if (ops) {
+		if (!ops->dma_supported)
+			return true;
+		return ops->dma_supported(dev, mask);
+	}
+
+	return dma_direct_supported(dev, mask);
 }
 
 bool dma_pci_p2pdma_supported(struct device *dev)
@@ -864,6 +874,37 @@ int dma_set_coherent_mask(struct device *dev, u64 mask)
 	return 0;
 }
 EXPORT_SYMBOL(dma_set_coherent_mask);
+
+static bool __dma_addressing_limited(struct device *dev)
+{
+	const struct dma_map_ops *ops = get_dma_ops(dev);
+
+	if (min_not_zero(dma_get_mask(dev), dev->bus_dma_limit) <
+			 dma_get_required_mask(dev))
+		return true;
+
+	if (unlikely(ops) || use_dma_iommu(dev))
+		return false;
+	return !dma_direct_all_ram_mapped(dev);
+}
+
+/**
+ * dma_addressing_limited - return if the device is addressing limited
+ * @dev:	device to check
+ *
+ * Return %true if the devices DMA mask is too small to address all memory in
+ * the system, else %false.  Lack of addressing bits is the prime reason for
+ * bounce buffering, but might not be the only one.
+ */
+bool dma_addressing_limited(struct device *dev)
+{
+	if (!__dma_addressing_limited(dev))
+		return false;
+
+	dev_dbg(dev, "device is DMA addressing limited\n");
+	return true;
+}
+EXPORT_SYMBOL_GPL(dma_addressing_limited);
 
 size_t dma_max_mapping_size(struct device *dev)
 {
