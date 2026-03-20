@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/export.h>
-#include <linux/io.h>
+//#include <linux/io.h>
+#include <asm-generic/io.h>
 
 /**
  * __iowrite32_copy - copy data to MMIO space, in 32-bit units
@@ -12,7 +13,7 @@
  * time.  Order of access is not guaranteed, nor is a memory barrier
  * performed afterwards.
  */
-void __iowrite32_copy(void __iomem *to,
+static inline void __iowrite32_copy(void __iomem *to,
 		      const void *from,
 		      size_t count)
 {
@@ -26,6 +27,7 @@ void __iowrite32_copy(void __iomem *to,
 	}
 
 }
+#define __iowrite32_copy __iowrite32_copy
 
 /**
  * __iowrite64_copy - copy data to MMIO space, in 64-bit or 32-bit units
@@ -37,7 +39,7 @@ void __iowrite32_copy(void __iomem *to,
  * time.  Order of access is not guaranteed, nor is a memory barrier
  * performed afterwards.
  */
-void __iowrite64_copy(void __iomem *to,
+static inline void __iowrite64_copy(void __iomem *to,
 		      const void *from,
 		      size_t count)
 {
@@ -50,3 +52,4 @@ void __iowrite64_copy(void __iomem *to,
 		mb();
 	}
 }
+#define __iowrite64_copy __iowrite64_copy
