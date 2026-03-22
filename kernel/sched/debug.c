@@ -687,6 +687,13 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_runnable", cfs_rq->h_nr_runnable);
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_queued", cfs_rq->h_nr_queued);
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_idle", cfs_rq->h_nr_idle);
+#ifdef CONFIG_GROUP_IDENTITY
+#ifdef CONFIG_SCHED_CORE
+	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_expeller", cfs_rq->h_nr_expeller);
+	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_expellee", cfs_rq->h_nr_expellee);
+#endif
+	SEQ_printf(m, "  .%-30s: %d\n", "nr_tasks", cfs_rq->nr_tasks);
+#endif
 	SEQ_printf(m, "  .%-30s: %ld\n", "load", cfs_rq->load.weight);
 #ifdef CONFIG_SMP
 	SEQ_printf(m, "  .%-30s: %lu\n", "load_avg",

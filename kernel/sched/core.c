@@ -6671,7 +6671,6 @@ static int cpu_identity_write(struct cgroup_subsys_state *css,
 			      struct cftype *cftype, s64 identity)
 {
 	struct task_group *tg = css_tg(css);
-	int cpu;
 	int ret;
 
 	if (identity < -1 || identity > 1)
@@ -6683,15 +6682,9 @@ static int cpu_identity_write(struct cgroup_subsys_state *css,
 	if (tg->identity == identity)
 		return 0;
 
-	ret = set_task_group_identity(tg, identity);
+	ret = update_identity(tg, identity);
 	if (ret)
 		return ret;
-
-	for_each_online_cpu(cpu) {
-		struct sched_entity *se = tg->se[cpu];
-
-		se->identity = identity;
-	}
 
 	return 0;
 }
