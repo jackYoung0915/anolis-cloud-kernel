@@ -364,6 +364,7 @@ static inline int task_has_dl_policy(struct task_struct *p)
 }
 
 extern int task_is_idle(struct task_struct *p);
+extern bool task_is_expeller(struct task_struct *p);
 #ifdef CONFIG_SMP
 extern void update_sched_idle_avg(struct rq *rq, u64 delta);
 #endif
@@ -861,9 +862,16 @@ struct balance_callback {
 struct cfs_rq {
 	struct load_weight	load;
 	unsigned int		nr_queued;
+#ifdef CONFIG_GROUP_IDENTITY
+	unsigned int		nr_tasks;
+#endif
 	unsigned int		h_nr_queued;       /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		h_nr_runnable;     /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		h_nr_idle; /* SCHED_IDLE */
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+	unsigned int		h_nr_expeller;
+	unsigned int		h_nr_expellee;
+#endif
 
 	s64			avg_vruntime;
 	u64			avg_load;
@@ -1795,6 +1803,7 @@ void account_ht_aware_quota(struct task_struct *p, u64 delta) {}
 #endif
 #ifdef CONFIG_GROUP_IDENTITY
 struct cgroup_taskset;
+extern int update_identity(struct task_group *tg, int identity);
 extern int set_task_group_identity(struct task_group *tg, int identity);
 extern void sched_core_identity_attach(struct cgroup_taskset *tset);
 #else
