@@ -10,6 +10,7 @@
 #include <linux/acpi.h>
 
 struct apei_exec_context;
+struct cper_sec_proc_arm;
 
 typedef int (*apei_exec_ins_func_t)(struct apei_exec_context *ctx,
 				    struct acpi_whea_header *entry);
