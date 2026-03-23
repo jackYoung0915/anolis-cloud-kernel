@@ -45,6 +45,12 @@ static DEFINE_MUTEX(domain_list_lock);
 DEFINE_PER_CPU(struct resctrl_pqr_state, pqr_state);
 
 /*
+ * Used to store the max resource name width and max resource data width
+ * to display the schemata in a tabular format
+ */
+int max_name_width, max_data_width;
+
+/*
  * Global boolean for rdt_alloc which is true if any
  * resource allocation is enabled.
  */
@@ -69,6 +75,7 @@ struct rdt_hw_resource rdt_resources_all[] = {
 			.name			= "L3",
 			.cache_level		= 3,
 			.domains		= domain_init(RDT_RESOURCE_L3),
+			.parse_ctrlval		= parse_cbm,
 			.format_str		= "%d=%0*x",
 			.fflags			= RFTYPE_RES_CACHE,
 		},
@@ -82,6 +89,7 @@ struct rdt_hw_resource rdt_resources_all[] = {
 			.name			= "L2",
 			.cache_level		= 2,
 			.domains		= domain_init(RDT_RESOURCE_L2),
+			.parse_ctrlval		= parse_cbm,
 			.format_str		= "%d=%0*x",
 			.fflags			= RFTYPE_RES_CACHE,
 		},
@@ -95,6 +103,7 @@ struct rdt_hw_resource rdt_resources_all[] = {
 			.name			= "MB",
 			.cache_level		= 3,
 			.domains		= domain_init(RDT_RESOURCE_MBA),
+			.parse_ctrlval		= parse_bw,
 			.format_str		= "%d=%*u",
 			.fflags			= RFTYPE_RES_MB,
 		},
@@ -106,19 +115,12 @@ struct rdt_hw_resource rdt_resources_all[] = {
 			.name			= "SMBA",
 			.cache_level		= 3,
 			.domains		= domain_init(RDT_RESOURCE_SMBA),
+			.parse_ctrlval		= parse_bw,
 			.format_str		= "%d=%*u",
 			.fflags			= RFTYPE_RES_MB,
 		},
 	},
 };
-
-struct rdt_resource *resctrl_arch_get_resource(enum resctrl_res_level l)
-{
-	if (l >= RDT_NUM_RESOURCES)
-		return NULL;
-
-	return &rdt_resources_all[l].r_resctrl;
-}
 
 /*
  * cache_alloc_hsw_probe() - Have to probe for Intel haswell server CPUs
@@ -162,6 +164,21 @@ static inline void cache_alloc_hsw_probe(void)
 	r->alloc_capable = true;
 
 	rdt_alloc_capable = true;
+}
+
+bool is_mba_sc(struct rdt_resource *r)
+{
+	if (!r)
+		return rdt_resources_all[RDT_RESOURCE_MBA].r_resctrl.membw.mba_sc;
+
+	/*
+	 * The software controller support is only applicable to MBA resource.
+	 * Make sure to check for resource type.
+	 */
+	if (r->rid != RDT_RESOURCE_MBA)
+		return false;
+
+	return r->membw.mba_sc;
 }
 
 /*
@@ -212,6 +229,7 @@ static __init bool __get_mem_config_intel(struct rdt_resource *r)
 		r->membw.throttle_mode = THREAD_THROTTLE_PER_THREAD;
 	else
 		r->membw.throttle_mode = THREAD_THROTTLE_MAX;
+	thread_throttle_mode_init();
 
 	r->alloc_capable = true;
 
@@ -281,11 +299,6 @@ static void rdt_get_cdp_config(int level)
 	rdt_resources_all[level].r_resctrl.cdp_capable = true;
 }
 
-static void rdt_set_io_alloc_capable(struct rdt_resource *r)
-{
-	r->cache.io_alloc_capable = true;
-}
-
 static void rdt_get_cdp_l3_config(void)
 {
 	rdt_get_cdp_config(RDT_RESOURCE_L3);
@@ -294,11 +307,6 @@ static void rdt_get_cdp_l3_config(void)
 static void rdt_get_cdp_l2_config(void)
 {
 	rdt_get_cdp_config(RDT_RESOURCE_L2);
-}
-
-bool resctrl_arch_get_cdp_enabled(enum resctrl_res_level l)
-{
-	return rdt_resources_all[l].cdp_enabled;
 }
 
 static void
@@ -350,6 +358,19 @@ cat_wrmsr(struct rdt_domain *d, struct msr_param *m, struct rdt_resource *r)
 		wrmsrl(hw_res->msr_base + i, hw_dom->ctrl_val[i]);
 }
 
+struct rdt_domain *get_domain_from_cpu(int cpu, struct rdt_resource *r)
+{
+	struct rdt_domain *d;
+
+	list_for_each_entry(d, &r->domains, list) {
+		/* Find the domain that contains this CPU */
+		if (cpumask_test_cpu(cpu, &d->cpu_mask))
+			return d;
+	}
+
+	return NULL;
+}
+
 u32 resctrl_arch_get_num_closid(struct rdt_resource *r)
 {
 	return resctrl_to_arch_res(r)->num_closid;
@@ -363,7 +384,7 @@ void rdt_ctrl_update(void *arg)
 	int cpu = smp_processor_id();
 	struct rdt_domain *d;
 
-	d = resctrl_get_domain_from_cpu(cpu, r);
+	d = get_domain_from_cpu(cpu, r);
 	if (d) {
 		hw_res->msr_update(d, m, r);
 		return;
@@ -380,8 +401,8 @@ void rdt_ctrl_update(void *arg)
  * caller, return the first domain whose id is bigger than the input id.
  * The domain list is sorted by id in ascending order.
  */
-static struct rdt_domain *rdt_find_domain(struct rdt_resource *r, int id,
-					  struct list_head **pos)
+struct rdt_domain *rdt_find_domain(struct rdt_resource *r, int id,
+				   struct list_head **pos)
 {
 	struct rdt_domain *d;
 	struct list_head *l;
@@ -403,11 +424,6 @@ static struct rdt_domain *rdt_find_domain(struct rdt_resource *r, int id,
 		*pos = l;
 
 	return NULL;
-}
-
-struct rdt_domain *resctrl_arch_find_domain(struct rdt_resource *r, int id)
-{
-	return rdt_find_domain(r, id, NULL);
 }
 
 static void setup_default_ctrlval(struct rdt_resource *r, u32 *dc)
@@ -462,13 +478,13 @@ static int arch_domain_mbm_alloc(u32 num_rmid, struct rdt_hw_domain *hw_dom)
 {
 	size_t tsize;
 
-	if (resctrl_arch_is_mbm_total_enabled()) {
+	if (is_mbm_total_enabled()) {
 		tsize = sizeof(*hw_dom->arch_mbm_total);
 		hw_dom->arch_mbm_total = kcalloc(num_rmid, tsize, GFP_KERNEL);
 		if (!hw_dom->arch_mbm_total)
 			return -ENOMEM;
 	}
-	if (resctrl_arch_is_mbm_local_enabled()) {
+	if (is_mbm_local_enabled()) {
 		tsize = sizeof(*hw_dom->arch_mbm_local);
 		hw_dom->arch_mbm_local = kcalloc(num_rmid, tsize, GFP_KERNEL);
 		if (!hw_dom->arch_mbm_local) {
@@ -502,7 +518,6 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 	struct rdt_domain *d;
 	int err;
 
-	BUG_ON(id > NR_CPUS);
 	lockdep_assert_held(&domain_list_lock);
 
 	d = rdt_find_domain(r, id, &add_pos);
@@ -515,7 +530,6 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 		cpumask_set_cpu(cpu, &d->cpu_mask);
 		if (r->cache.arch_has_per_cpu_cfg)
 			rdt_domain_reconfigure_cdp(r);
-		resctrl_arch_mbm_cntr_assign_configure();
 		return;
 	}
 
@@ -525,8 +539,6 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 
 	d = &hw_dom->d_resctrl;
 	d->id = id;
-	r->rdt_domain_list[id] = d;
-
 	cpumask_set_cpu(cpu, &d->cpu_mask);
 
 	rdt_domain_reconfigure_cdp(r);
@@ -536,10 +548,7 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 		return;
 	}
 
-	resctrl_mbm_evt_config_init(hw_dom);
-	resctrl_arch_mbm_cntr_assign_configure();
-
-	if (r->mon_capable && arch_domain_mbm_alloc(r->mon.num_rmid, hw_dom)) {
+	if (r->mon_capable && arch_domain_mbm_alloc(r->num_rmid, hw_dom)) {
 		domain_free(hw_dom);
 		return;
 	}
@@ -560,7 +569,6 @@ static void domain_remove_cpu(int cpu, struct rdt_resource *r)
 	struct rdt_hw_domain *hw_dom;
 	struct rdt_domain *d;
 
-	BUG_ON(id > NR_CPUS);
 	lockdep_assert_held(&domain_list_lock);
 
 	d = rdt_find_domain(r, id, NULL);
@@ -582,7 +590,6 @@ static void domain_remove_cpu(int cpu, struct rdt_resource *r)
 		 */
 		if (d->plr)
 			d->plr->d = NULL;
-		r->rdt_domain_list[id] = NULL;
 		domain_free(hw_dom);
 
 		return;
@@ -632,6 +639,20 @@ static int resctrl_arch_offline_cpu(unsigned int cpu)
 	return 0;
 }
 
+/*
+ * Choose a width for the resource name and resource data based on the
+ * resource that has widest name and cbm.
+ */
+static __init void rdt_init_padding(void)
+{
+	struct rdt_resource *r;
+
+	for_each_alloc_capable_rdt_resource(r) {
+		if (r->data_width > max_data_width)
+			max_data_width = r->data_width;
+	}
+}
+
 enum {
 	RDT_FLAG_CMT,
 	RDT_FLAG_MBM_TOTAL,
@@ -643,8 +664,6 @@ enum {
 	RDT_FLAG_MBA,
 	RDT_FLAG_SMBA,
 	RDT_FLAG_BMEC,
-	RDT_FLAG_ABMC,
-	RDT_FLAG_SDCIAE,
 };
 
 #define RDT_OPT(idx, n, f)	\
@@ -659,7 +678,7 @@ struct rdt_options {
 	bool	force_off, force_on;
 };
 
-static struct rdt_options rdt_options[]  __ro_after_init = {
+static struct rdt_options rdt_options[]  __initdata = {
 	RDT_OPT(RDT_FLAG_CMT,	    "cmt",	X86_FEATURE_CQM_OCCUP_LLC),
 	RDT_OPT(RDT_FLAG_MBM_TOTAL, "mbmtotal", X86_FEATURE_CQM_MBM_TOTAL),
 	RDT_OPT(RDT_FLAG_MBM_LOCAL, "mbmlocal", X86_FEATURE_CQM_MBM_LOCAL),
@@ -670,8 +689,6 @@ static struct rdt_options rdt_options[]  __ro_after_init = {
 	RDT_OPT(RDT_FLAG_MBA,	    "mba",	X86_FEATURE_MBA),
 	RDT_OPT(RDT_FLAG_SMBA,	    "smba",	X86_FEATURE_SMBA),
 	RDT_OPT(RDT_FLAG_BMEC,	    "bmec",	X86_FEATURE_BMEC),
-	RDT_OPT(RDT_FLAG_ABMC,	    "abmc",	X86_FEATURE_ABMC),
-	RDT_OPT(RDT_FLAG_SDCIAE,    "sdciae",	X86_FEATURE_SDCIAE),
 };
 #define NUM_RDT_OPTIONS ARRAY_SIZE(rdt_options)
 
@@ -701,7 +718,7 @@ static int __init set_rdt_options(char *str)
 }
 __setup("rdt", set_rdt_options);
 
-bool rdt_cpu_has(int flag)
+bool __init rdt_cpu_has(int flag)
 {
 	bool ret = boot_cpu_has(flag);
 	struct rdt_options *o;
@@ -721,21 +738,6 @@ bool rdt_cpu_has(int flag)
 	return ret;
 }
 
-bool resctrl_arch_is_evt_configurable(enum resctrl_event_id evt)
-{
-	if (!rdt_cpu_has(X86_FEATURE_BMEC))
-		return false;
-
-	switch (evt) {
-	case QOS_L3_MBM_TOTAL_EVENT_ID:
-		return rdt_cpu_has(X86_FEATURE_CQM_MBM_TOTAL);
-	case QOS_L3_MBM_LOCAL_EVENT_ID:
-		return rdt_cpu_has(X86_FEATURE_CQM_MBM_LOCAL);
-	default:
-		return false;
-	}
-}
-
 static __init bool get_mem_config(void)
 {
 	struct rdt_hw_resource *hw_res = &rdt_resources_all[RDT_RESOURCE_MBA];
@@ -745,8 +747,7 @@ static __init bool get_mem_config(void)
 
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
 		return __get_mem_config_intel(&hw_res->r_resctrl);
-	else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
-		 boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+	else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
 		return __rdt_get_mem_config_amd(&hw_res->r_resctrl);
 
 	return false;
@@ -781,8 +782,6 @@ static __init bool get_rdt_alloc_resources(void)
 		rdt_get_cache_alloc_cfg(1, r);
 		if (rdt_cpu_has(X86_FEATURE_CDP_L3))
 			rdt_get_cdp_l3_config();
-		if (rdt_cpu_has(X86_FEATURE_SDCIAE))
-			rdt_set_io_alloc_capable(r);
 		ret = true;
 	}
 	if (rdt_cpu_has(X86_FEATURE_CAT_L2)) {
@@ -899,8 +898,7 @@ static __init void rdt_init_res_defs(void)
 {
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
 		rdt_init_res_defs_intel();
-	else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
-		 boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+	else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
 		rdt_init_res_defs_amd();
 }
 
@@ -931,23 +929,12 @@ void resctrl_cpu_detect(struct cpuinfo_x86 *c)
 		c->x86_cache_occ_scale = ebx;
 		c->x86_cache_mbm_width_offset = eax & 0xff;
 
-		if (!c->x86_cache_mbm_width_offset) {
-			switch (c->x86_vendor) {
-			case X86_VENDOR_AMD:
-				c->x86_cache_mbm_width_offset = MBM_CNTR_WIDTH_OFFSET_AMD;
-				break;
-			case X86_VENDOR_HYGON:
-				c->x86_cache_mbm_width_offset = MBM_CNTR_WIDTH_OFFSET_HYGON;
-				break;
-			default:
-				/* Leave c->x86_cache_mbm_width_offset as 0 */
-				break;
-			}
-		}
+		if (c->x86_vendor == X86_VENDOR_AMD && !c->x86_cache_mbm_width_offset)
+			c->x86_cache_mbm_width_offset = MBM_CNTR_WIDTH_OFFSET_AMD;
 	}
 }
 
-static int __init resctrl_arch_late_init(void)
+static int __init resctrl_late_init(void)
 {
 	struct rdt_resource *r;
 	int state, ret;
@@ -963,6 +950,8 @@ static int __init resctrl_arch_late_init(void)
 	if (!get_rdt_resources())
 		return -ENODEV;
 
+	rdt_init_padding();
+
 	state = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
 				  "x86/resctrl/cat:online:",
 				  resctrl_arch_online_cpu,
@@ -970,7 +959,7 @@ static int __init resctrl_arch_late_init(void)
 	if (state < 0)
 		return state;
 
-	ret = resctrl_init();
+	ret = rdtgroup_init();
 	if (ret) {
 		cpuhp_remove_state(state);
 		return ret;
@@ -986,13 +975,18 @@ static int __init resctrl_arch_late_init(void)
 	return 0;
 }
 
-late_initcall(resctrl_arch_late_init);
+late_initcall(resctrl_late_init);
 
-static void __exit resctrl_arch_exit(void)
+static void __exit resctrl_exit(void)
 {
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+
 	cpuhp_remove_state(rdt_online);
 
-	resctrl_exit();
+	rdtgroup_exit();
+
+	if (r->mon_capable)
+		rdt_put_mon_l3_config();
 }
 
-__exitcall(resctrl_arch_exit);
+__exitcall(resctrl_exit);
