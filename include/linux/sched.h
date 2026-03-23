@@ -645,9 +645,8 @@ struct sched_entity {
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 	unsigned int			ht_ratio;
 #endif
-	struct list_head		expel_node;
-
 #ifdef CONFIG_GROUP_IDENTITY
+	struct list_head		expel_node;
 	long			priority;
 #ifdef CONFIG_SCHED_CORE
 	int			identity;

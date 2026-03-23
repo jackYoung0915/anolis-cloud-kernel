@@ -927,6 +927,10 @@ struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
 	return __node_2_se(root);
 }
 
+static inline int cfs_rq_throttled(struct cfs_rq *cfs_rq);
+static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags);
+
+#ifdef CONFIG_GROUP_IDENTITY
 static inline bool idle_only(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq;
@@ -941,12 +945,9 @@ static inline bool idle_only(struct sched_entity *se)
 	return cfs_rq->h_nr_runnable == cfs_rq->h_nr_idle;
 }
 
-static inline int cfs_rq_throttled(struct cfs_rq *cfs_rq);
-#ifdef CONFIG_GROUP_IDENTITY
-/* TODO: Change these helpers from stub to a real function when the interface is ready.*/
-static inline bool se_is_highclass(struct sched_entity *se)
+static inline int get_se_priority(struct sched_entity *se)
 {
-	return false;
+	return se->priority;
 }
 
 #ifdef CONFIG_SCHED_CORE
@@ -982,6 +983,30 @@ bool task_is_expellee(struct task_struct *p)
 	rcu_read_unlock();
 
 	return ret;
+}
+
+static inline int get_task_identity(struct task_struct *p)
+{
+	struct sched_entity *parent = p->se.parent;
+
+	if (parent)
+		return parent->identity;
+
+	return 0;
+}
+
+static inline bool expellee_only(struct rq *rq, struct sched_entity *se)
+{
+	struct cfs_rq *cfs_rq;
+
+	if (!sched_core_enabled(rq))
+		return false;
+
+	if (entity_is_task(se))
+		return task_is_expellee(task_of(se));
+
+	cfs_rq = group_cfs_rq(se);
+	return cfs_rq->h_nr_runnable == cfs_rq->h_nr_expellee;
 }
 
 int update_identity(struct task_group *tg, int identity)
@@ -1045,33 +1070,53 @@ int update_identity(struct task_group *tg, int identity)
 	return 0;
 }
 #endif
+
+#define EXPEL_BY_HIGHCLASS	0x0001
+#ifdef CONFIG_SCHED_CORE
+#define EXPEL_BY_SMT_EXPELLER	0x0002
+#define EXPEL_BY_ALL		0x0003
+#else
+#define EXPEL_BY_ALL		0x0001
 #endif
 
-static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags);
-
-static inline bool rq_on_expel(struct rq *rq)
+static inline unsigned int rq_on_expel(struct rq *rq)
 {
-	if (!sched_feat(ID_ABSOLUTE_EXPEL))
-		return false;
-
 	return rq->on_expel;
 }
 
-static inline void check_idle_se(struct cfs_rq *cfs_rq)
+static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
+{
+	unsigned int on_expel = rq_on_expel(rq);
+
+	if (!on_expel)
+		return false;
+
+	if ((on_expel & EXPEL_BY_HIGHCLASS) && idle_only(se))
+		return true;
+#ifdef CONFIG_SCHED_CORE
+	if ((on_expel & EXPEL_BY_SMT_EXPELLER) && expellee_only(rq, se))
+		return true;
+#endif
+	return false;
+}
+
+static inline void check_expellee_se(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *se, *tmp;
 
 	list_for_each_entry_safe(se, tmp, &cfs_rq->expel_list, expel_node) {
-		if (rq_on_expel(rq_of(cfs_rq)) && idle_only(se))
+		if (should_expel_se(rq_of(cfs_rq), se))
 			continue;
 
 		list_del_init(&se->expel_node);
+		/* To avoid priority inversion. */
+		se->vlag = 0;
 		place_entity(cfs_rq, se, 0);
 		__enqueue_entity(cfs_rq, se);
 	}
 }
 
-static inline struct rb_node *skip_idle_se(struct cfs_rq *cfs_rq)
+static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 {
 	struct rb_node *left = rb_first_cached(&cfs_rq->tasks_timeline);
 
@@ -1079,7 +1124,7 @@ static inline struct rb_node *skip_idle_se(struct cfs_rq *cfs_rq)
 		struct sched_entity *se =
 			rb_entry(left, struct sched_entity, run_node);
 
-		if (!idle_only(se))
+		if (!should_expel_se(rq_of(cfs_rq), se))
 			break;
 
 		left = rb_next(&se->run_node);
@@ -1098,12 +1143,18 @@ static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 	if (!sched_feat(ID_ABSOLUTE_EXPEL))
 		return rb_first_cached(&cfs_rq->tasks_timeline);
 
-	check_idle_se(cfs_rq);
+	check_expellee_se(cfs_rq);
 	if (rq_on_expel(rq_of(cfs_rq)))
-		return skip_idle_se(cfs_rq);
+		return skip_expellee_se(cfs_rq);
 
 	return rb_first_cached(&cfs_rq->tasks_timeline);
 }
+#else
+static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
+{
+	return rb_first_cached(&cfs_rq->tasks_timeline);
+}
+#endif
 
 struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
 {
@@ -4254,6 +4305,7 @@ static inline void
 dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 #endif
 
+static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags);
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
 {
@@ -9457,27 +9509,54 @@ preempt:
 	resched_curr(rq);
 }
 
-static inline bool need_expel(struct rq *rq)
+#ifdef CONFIG_GROUP_IDENTITY
+static inline unsigned int need_expel(struct rq *rq, unsigned int expel_type)
 {
-	if (!sched_feat(ID_ABSOLUTE_EXPEL))
-		return false;
+	unsigned int ret = 0;
+#ifdef CONFIG_SCHED_CORE
+	int this_cpu, cpu;
 
-	return rq->cfs.h_nr_idle && rq->cfs.h_nr_runnable > rq->cfs.h_nr_idle;
+	this_cpu = cpu_of(rq);
+	if ((expel_type & EXPEL_BY_SMT_EXPELLER) && sched_core_enabled(rq) &&
+	    cpu_smt_mask(this_cpu)) {
+		for_each_cpu(cpu, cpu_smt_mask(this_cpu)) {
+			if (cpu == this_cpu)
+				continue;
+			if (cpu_rq(cpu)->smt_expeller) {
+				ret |= EXPEL_BY_SMT_EXPELLER;
+				break;
+			}
+		}
+	}
+#endif
+	if (!(expel_type & EXPEL_BY_HIGHCLASS) || !sched_feat(ID_ABSOLUTE_EXPEL))
+		return ret;
+	if (rq->cfs.h_nr_idle && rq->cfs.h_nr_runnable > rq->cfs.h_nr_idle)
+		ret |= EXPEL_BY_HIGHCLASS;
+	return ret;
 }
 
 static inline void update_rq_on_expel(struct rq *rq)
 {
-	bool ret;
+	unsigned int ret;
 
-	if (!sched_feat(ID_ABSOLUTE_EXPEL))
-		return;
-
-	ret = need_expel(rq);
+	ret = need_expel(rq, EXPEL_BY_ALL);
 	if (ret != rq->on_expel) {
 		sched_update_tick_dependency(rq);
 		rq->on_expel = ret;
 	}
 }
+
+#ifdef CONFIG_SCHED_CORE
+void update_rq_on_expel_by_smt_expeller(struct rq *rq)
+{
+	unsigned int ret;
+
+	ret = need_expel(rq, EXPEL_BY_SMT_EXPELLER);
+	if ((rq->on_expel & EXPEL_BY_SMT_EXPELLER) != ret)
+		rq->on_expel ^= EXPEL_BY_SMT_EXPELLER;
+}
+#endif
 
 #ifdef CONFIG_SMP
 static DEFINE_PER_CPU(struct balance_callback, push_expellee_head);
@@ -9513,7 +9592,7 @@ static void __push_expellee(struct rq *rq)
 			break;
 		if (!rq->cfs.h_nr_idle)
 			break;
-		if (!task_is_idle(p))
+		if (!should_expel_se(rq, &p->se))
 			continue;
 		if (p == rq->curr)
 			continue;
@@ -9541,7 +9620,7 @@ static void __push_expellee(struct rq *rq)
 						dst_cpu = -1;
 						dst_rq = NULL;
 					}
-				} else if (!rq_on_expel(tmp_rq)) {
+				} else if (!should_expel_se(tmp_rq, &p->se)) {
 					if (tmp_rq->nr_running < min_nr_running) {
 						backup_cpu = i;
 						min_nr_running = tmp_rq->nr_running;
@@ -9608,8 +9687,12 @@ void task_tick_gi(struct rq *rq)
 #else
 static inline void push_expellee(struct rq *rq) { }
 #endif
+#else
+static inline void update_rq_on_expel(struct rq *rq) { }
+static inline void push_expellee(struct rq *rq) { }
+#endif
 
-#if defined(CONFIG_NO_HZ_FULL) && defined(CONFIG_SMP)
+#if defined(CONFIG_NO_HZ_FULL) && defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
 bool id_can_stop_tick(struct rq *rq)
 {
 	if (!sched_feat(ID_PUSH_EXPELLEE))
@@ -13861,10 +13944,25 @@ bool cfs_prio_less(const struct task_struct *a, const struct task_struct *b,
 	const struct sched_entity *seb = &b->se;
 	struct cfs_rq *cfs_rqa;
 	struct cfs_rq *cfs_rqb;
+#ifdef CONFIG_GROUP_IDENTITY
+	int a_identity = get_task_identity((struct task_struct *)a);
+	int b_identity = get_task_identity((struct task_struct *)b);
+#endif
+
 	s64 delta;
 
 	SCHED_WARN_ON(task_rq(b)->core != rq->core);
 
+#ifdef CONFIG_GROUP_IDENTITY
+	/*
+	 * Identity:
+	 * -1: expellee
+	 *  0: normal
+	 *  1: expeller
+	 */
+	if ((a_identity ^ b_identity) < 0 && a_identity && b_identity)
+		return a_identity < 0;
+#endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/*
 	 * Find an se in the hierarchy for tasks a and b, such that the se's
@@ -13889,13 +13987,21 @@ bool cfs_prio_less(const struct task_struct *a, const struct task_struct *b,
 	cfs_rqa = &task_rq(a)->cfs;
 	cfs_rqb = &task_rq(b)->cfs;
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
 	if (sched_feat(ID_ABSOLUTE_EXPEL)) {
-		bool a_is_idle = se_is_idle((struct sched_entity *)sea);
-		bool b_is_idle = se_is_idle((struct sched_entity *)seb);
+		int a_priority = get_se_priority((struct sched_entity *)sea);
+		int b_priority = get_se_priority((struct sched_entity *)seb);
 
-		if (a_is_idle != b_is_idle)
-			return a_is_idle > b_is_idle;
+		/*
+		 * Priority:
+		 * less than 0: underclass priority
+		 *           0: normal priority
+		 * more than 0: highclass priority
+		 */
+		if ((a_priority ^ b_priority) < 0 && a_priority && b_priority)
+			return a_priority < 0;
 	}
+#endif
 
 	/*
 	 * Find delta after normalizing se's vruntime with its cfs_rq's
@@ -14184,7 +14290,9 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 #ifdef CONFIG_SMP
 	raw_spin_lock_init(&cfs_rq->removed.lock);
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
 	INIT_LIST_HEAD(&cfs_rq->expel_list);
+#endif
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -14463,8 +14571,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	se->cg_idle_start = se->cg_init_time = cpu_clock(cpu);
 #ifdef CONFIG_GROUP_IDENTITY
 	WRITE_ONCE(se->priority, READ_ONCE(tg->priority));
-#endif
 	INIT_LIST_HEAD(&se->expel_node);
+#endif
 }
 
 static DEFINE_MUTEX(shares_mutex);
