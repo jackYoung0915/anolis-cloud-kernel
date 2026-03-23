@@ -2113,7 +2113,7 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
 	{
 		.procname	= "sched_push_expellee_interval_ns",
 		.data		= &sysctl_sched_push_expellee_interval,

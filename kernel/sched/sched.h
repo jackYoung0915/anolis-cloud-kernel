@@ -364,7 +364,6 @@ static inline int task_has_dl_policy(struct task_struct *p)
 }
 
 extern int task_is_idle(struct task_struct *p);
-extern bool task_is_expeller(struct task_struct *p);
 #ifdef CONFIG_SMP
 extern void update_sched_idle_avg(struct rq *rq, u64 delta);
 #endif
@@ -966,7 +965,9 @@ struct cfs_rq {
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 	unsigned long		nr_uninterruptible;
+#ifdef CONFIG_GROUP_IDENTITY
 	struct list_head	expel_list;
+#endif
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1560,6 +1561,9 @@ struct rq {
 	u64			core_sibidle_start;
 	u64			core_sibidle_start_task;
 	unsigned int		core_sibidle_count;
+#ifdef CONFIG_GROUP_IDENTITY
+	bool			smt_expeller;
+#endif
 #endif
 
 	/* Scratch cpumask to be temporarily used under rq_lock */
@@ -1581,11 +1585,13 @@ struct rq {
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
 	u64			last_push_expellee;
 	bool			queued_push_expellee;
+	unsigned int		on_expel;
+#endif
 	bool			booked;
 	bool			pulled;
-	bool			on_expel;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1806,6 +1812,8 @@ struct cgroup_taskset;
 extern int update_identity(struct task_group *tg, int identity);
 extern int set_task_group_identity(struct task_group *tg, int identity);
 extern void sched_core_identity_attach(struct cgroup_taskset *tset);
+extern void update_rq_on_expel_by_smt_expeller(struct rq *rq);
+extern bool task_is_expeller(struct task_struct *p);
 #else
 static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
 #endif
@@ -4454,7 +4462,7 @@ static inline void gb_load_balance(struct lb_env *env) { }
 #endif
 static inline void task_tick_gb(struct task_struct *p) { }
 #endif
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
 extern void task_tick_gi(struct rq *rq);
 #else
 static inline void task_tick_gi(struct rq *rq) { }
