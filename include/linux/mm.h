@@ -4778,4 +4778,40 @@ int set_linear_mapping_invalid(unsigned long start_pfn, unsigned long end_pfn,
 	return -EINVAL;
 }
 #endif
+
+#ifdef CONFIG_GMEM
+DECLARE_STATIC_KEY_FALSE(gmem_status);
+
+static inline bool gmem_is_enabled(void)
+{
+	return static_branch_likely(&gmem_status);
+}
+
+static inline bool vma_is_peer_shared(struct vm_area_struct *vma)
+{
+	if (!gmem_is_enabled())
+		return false;
+
+	return !!(vma->vm_flags & VM_PEER_SHARED);
+}
+#else
+static inline bool gmem_is_enabled(void) { return false; }
+static inline bool vma_is_peer_shared(struct vm_area_struct *vma)
+{
+	return false;
+}
+#endif
+
+#ifdef CONFIG_ACPI_APEI_RAS_CRITICAL
+static inline bool mm_is_critical_error(struct mm_struct *mm)
+{
+	return mm && test_bit(MMF_CRITICAL_ERR, &mm->flags);
+}
+#else
+static inline bool mm_is_critical_error(struct mm_struct *mm)
+{
+	return false;
+}
+#endif
+
 #endif /* _LINUX_MM_H */
