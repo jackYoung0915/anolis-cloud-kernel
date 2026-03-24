@@ -3603,7 +3603,7 @@ static struct iommu_domain arm_smmu_blocked_domain = {
 };
 
 static struct iommu_domain *
-arm_smmu_domain_alloc_paging_flags(struct device *dev, u32 flags, struct kvm *kvm,
+arm_smmu_domain_alloc_paging_flags(struct device *dev, u32 flags,
 				   const struct iommu_user_data *user_data)
 {
 	struct arm_smmu_master *master = dev_iommu_priv_get(dev);
@@ -4217,7 +4217,7 @@ static struct iommu_ops arm_smmu_ops = {
 	.capable		= arm_smmu_capable,
 	.hw_info		= arm_smmu_hw_info,
 	.domain_alloc_sva       = arm_smmu_sva_domain_alloc,
-	.domain_alloc_paging_flags_v2 = arm_smmu_domain_alloc_paging_flags,
+	.domain_alloc_paging_flags = arm_smmu_domain_alloc_paging_flags,
 	.probe_device		= arm_smmu_probe_device,
 	.release_device		= arm_smmu_release_device,
 	.device_group		= arm_smmu_device_group,
