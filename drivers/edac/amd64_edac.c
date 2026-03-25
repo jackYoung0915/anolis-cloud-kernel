@@ -108,6 +108,29 @@ static u32 get_umc_base_f18h_m4h(u16 node, u8 channel)
 	return get_umc_base(channel) + (0x80000000 + (0x10000000 * df_id));
 }
 
+static u32 get_umc_base_f18h_m18h(u8 channel)
+{
+	return 0x70000000 + (channel << 20);
+}
+
+static u32 hygon_get_umc_base(struct amd64_pvt *pvt, u8 channel)
+{
+	u32 umc_base;
+
+	if (hygon_f18h_m4h())
+		umc_base = get_umc_base_f18h_m4h(pvt->mc_node_id, channel);
+	/*
+	 * For Hygon family 18h model 0x18h-0x1fh processors, the UMC base
+	 * are identical.
+	 */
+	else if (hygon_f18h_m10h() && boot_cpu_data.x86_model >= 0x18)
+		umc_base = get_umc_base_f18h_m18h(channel);
+	else
+		umc_base = get_umc_base(channel);
+
+	return umc_base;
+}
+
 /*
  * Select DCT to which PCI cfg accesses are routed
  */
@@ -1796,8 +1819,8 @@ static void umc_read_base_mask(struct amd64_pvt *pvt)
 		if (!hygon_umc_channel_enabled(pvt, umc))
 			continue;
 
-		if (hygon_f18h_m4h())
-			umc_base = get_umc_base_f18h_m4h(pvt->mc_node_id, umc);
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+			umc_base = hygon_get_umc_base(pvt, umc);
 		else
 			umc_base = get_umc_base(umc);
 
@@ -3290,8 +3313,8 @@ static void umc_read_mc_regs(struct amd64_pvt *pvt)
 		if (!hygon_umc_channel_enabled(pvt, i))
 			continue;
 
-		if (hygon_f18h_m4h())
-			umc_base = get_umc_base_f18h_m4h(pvt->mc_node_id, i);
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+			umc_base = hygon_get_umc_base(pvt, i);
 		else
 			umc_base = get_umc_base(i);
 
@@ -4248,6 +4271,10 @@ static int per_family_init(struct amd64_pvt *pvt)
 			break;
 		case 0x10:
 			pvt->ctl_name			= "F18h_M10h";
+			break;
+		case 0x18:
+			pvt->ctl_name			= "F18h_M18h";
+			pvt->max_mcs			= 1;
 			break;
 		default:
 			pvt->ctl_name			= "F18h";
