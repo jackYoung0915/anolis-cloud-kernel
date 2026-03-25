@@ -6666,6 +6666,44 @@ static inline void sched_core_cpu_dying(unsigned int cpu)
 		rq->core = rq;
 }
 
+#ifdef CONFIG_GROUP_IDENTITY
+static int cpu_identity_write(struct cgroup_subsys_state *css,
+			      struct cftype *cftype, s64 identity)
+{
+	struct task_group *tg = css_tg(css);
+	int cpu;
+	int ret;
+
+	if (identity < -1 || identity > 1)
+		return -EINVAL;
+
+	if (tg == &root_task_group)
+		return -EPERM;
+
+	if (tg->identity == identity)
+		return 0;
+
+	ret = set_task_group_identity(tg, identity);
+	if (ret)
+		return ret;
+
+	for_each_online_cpu(cpu) {
+		struct sched_entity *se = tg->se[cpu];
+
+		se->identity = identity;
+	}
+
+	return 0;
+}
+
+static s64 cpu_identity_read(struct cgroup_subsys_state *css,
+					       struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->identity;
+}
+#endif
 #else /* !CONFIG_SCHED_CORE */
 
 static inline void sched_core_cpu_starting(unsigned int cpu) {}
@@ -9374,6 +9412,8 @@ static void cpu_cgroup_attach(struct cgroup_taskset *tset)
 	cgroup_taskset_for_each(task, css, tset)
 		sched_move_task(task, false);
 
+	sched_core_identity_attach(tset);
+
 	scx_cgroup_finish_attach();
 }
 
@@ -10357,6 +10397,13 @@ static struct cftype cpu_legacy_files[] = {
 		.write_u64 = cpu_ht_ratio_write,
 	},
 #endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+	{
+		.name = "identity",
+		.read_s64 = cpu_identity_read,
+		.write_s64 = cpu_identity_write,
+	},
+#endif
 #ifdef CONFIG_GROUP_BALANCER
 	{
 		.name = "soft_cpus",
@@ -11055,6 +11102,13 @@ static struct cftype cpu_files[] = {
 		.name = "ht_ratio",
 		.read_u64 = cpu_ht_ratio_read,
 		.write_u64 = cpu_ht_ratio_write,
+	},
+#endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+	{
+		.name = "identity",
+		.read_s64 = cpu_identity_read,
+		.write_s64 = cpu_identity_write,
 	},
 #endif
 #ifdef CONFIG_SCHED_SLI
