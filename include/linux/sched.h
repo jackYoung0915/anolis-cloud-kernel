@@ -649,6 +649,9 @@ struct sched_entity {
 
 #ifdef CONFIG_GROUP_IDENTITY
 	long			priority;
+#ifdef CONFIG_SCHED_CORE
+	int			identity;
+#endif
 #endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)

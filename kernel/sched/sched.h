@@ -692,6 +692,9 @@ struct task_group {
 
 #ifdef CONFIG_GROUP_IDENTITY
 	long			priority;
+#ifdef CONFIG_SCHED_CORE
+	int			identity;
+#endif
 #endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1790,6 +1793,14 @@ extern void account_ht_aware_quota(struct task_struct *p, u64 delta);
 #else
 void account_ht_aware_quota(struct task_struct *p, u64 delta) {}
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
+struct cgroup_taskset;
+extern int set_task_group_identity(struct task_group *tg, int identity);
+extern void sched_core_identity_attach(struct cgroup_taskset *tset);
+#else
+static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
+#endif
+
 #else /* !CONFIG_SCHED_CORE */
 
 static inline bool sched_core_enabled(struct rq *rq)
@@ -1828,6 +1839,7 @@ static inline bool sched_group_cookie_match(struct rq *rq,
 {
 	return true;
 }
+static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
 #endif /* CONFIG_SCHED_CORE */
 
 static inline void lockdep_assert_rq_held(struct rq *rq)
