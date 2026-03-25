@@ -60,7 +60,6 @@
 #ifdef CONFIG_PAGECACHE_LIMIT
 #include <linux/pagecache_limit.h>
 #endif
-#include <linux/pre_oom.h>
 #include <linux/mmu_notifier.h>
 
 #include <asm/tlbflush.h>
@@ -6990,7 +6989,6 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
 	};
 
 	set_task_reclaim_state(current, &sc.reclaim_state);
-	pre_oom_enter();
 	psi_memstall_enter(&pflags);
 	__fs_reclaim_acquire(_THIS_IP_);
 
@@ -7173,7 +7171,6 @@ out:
 	snapshot_refaults(NULL, pgdat);
 	__fs_reclaim_release(_THIS_IP_);
 	psi_memstall_leave(&pflags);
-	pre_oom_leave();
 	set_task_reclaim_state(current, NULL);
 
 	/*
