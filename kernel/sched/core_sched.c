@@ -14,14 +14,17 @@ static unsigned long sched_core_alloc_cookie(u32 flags)
 	return (unsigned long)ck;
 }
 
-static void sched_core_put_cookie(unsigned long cookie)
+static bool sched_core_put_cookie(unsigned long cookie)
 {
 	struct sched_core_cookie *ptr = (void *)cookie;
 
 	if (ptr && refcount_dec_and_test(&ptr->refcnt)) {
 		kfree(ptr);
 		sched_core_put();
+		return true;
 	}
+
+	return false;
 }
 
 static unsigned long sched_core_get_cookie(unsigned long cookie)
@@ -366,3 +369,143 @@ void __sched_core_tick(struct rq *rq)
 }
 
 #endif /* CONFIG_SCHEDSTATS */
+
+#ifdef CONFIG_GROUP_IDENTITY
+unsigned long sched_core_expeller_cookie;
+unsigned long sched_core_expellee_cookie;
+raw_spinlock_t sched_core_expeller_lock;
+raw_spinlock_t sched_core_expellee_lock;
+
+static unsigned long sched_core_get_expeller_cookie(void)
+{
+	guard(raw_spinlock_irq)(&sched_core_expeller_lock);
+	if (sched_core_expeller_cookie)
+		return sched_core_get_cookie(sched_core_expeller_cookie);
+	sched_core_expeller_cookie =
+		sched_core_alloc_cookie(SCHED_COOKIE_MATCH_UNSET | SCHED_COOKIE_NO_GATHER);
+	return sched_core_expeller_cookie;
+}
+
+static unsigned long sched_core_get_expellee_cookie(void)
+{
+	guard(raw_spinlock_irq)(&sched_core_expellee_lock);
+	if (sched_core_expellee_cookie)
+		return sched_core_get_cookie(sched_core_expellee_cookie);
+	sched_core_expellee_cookie = sched_core_alloc_cookie(0);
+	return sched_core_expellee_cookie;
+}
+
+static void sched_core_put_expeller_cookie(void)
+{
+	guard(raw_spinlock_irq)(&sched_core_expeller_lock);
+	if (sched_core_put_cookie(sched_core_expeller_cookie))
+		sched_core_expeller_cookie = 0UL;
+}
+
+static void sched_core_put_expellee_cookie(void)
+{
+	guard(raw_spinlock_irq)(&sched_core_expellee_lock);
+	if (sched_core_put_cookie(sched_core_expellee_cookie))
+		sched_core_expellee_cookie = 0UL;
+}
+
+static inline bool task_has_identity(struct task_struct *p)
+{
+	return p->core_cookie &&
+	       (p->core_cookie == sched_core_expeller_cookie ||
+	       p->core_cookie == sched_core_expellee_cookie);
+}
+
+int set_task_group_identity(struct task_group *tg, int identity)
+{
+	unsigned long cookie = 0;
+	int old_identity = tg->identity;
+	struct css_task_iter it;
+	struct task_struct *task;
+
+	if (old_identity == identity)
+		return 0;
+
+	switch (identity) {
+	case -1:
+		cookie = sched_core_get_expellee_cookie();
+		break;
+	case 0:
+		cookie = 0;
+		break;
+	case 1:
+		cookie = sched_core_get_expeller_cookie();
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	cgroup_lock();
+	css_task_iter_start(&tg->css, 0, &it);
+	while ((task = css_task_iter_next(&it)))
+		__sched_core_set(task, cookie);
+	css_task_iter_end(&it);
+	cgroup_unlock();
+
+	tg->identity = identity;
+
+	switch (old_identity) {
+	case -1:
+		sched_core_put_expellee_cookie();
+		break;
+	case 0:
+		break;
+	case 1:
+		sched_core_put_expeller_cookie();
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+void sched_core_identity_attach(struct cgroup_taskset *tset)
+{
+	struct task_struct *task;
+	struct cgroup_subsys_state *css;
+	struct task_group *tg;
+	unsigned long cookie;
+
+	cgroup_taskset_for_each(task, css, tset) {
+		tg = css_tg(css);
+
+		switch (tg->identity) {
+		case -1:
+			cookie = sched_core_get_expellee_cookie();
+			break;
+		case 1:
+			cookie = sched_core_get_expeller_cookie();
+			break;
+		default:
+			cookie = 0;
+			break;
+		}
+
+		/*
+		 * If a task moves between task groups with identity,
+		 * the cookie should be updated.
+		 */
+		if (task_has_identity(task) || cookie)
+			__sched_core_set(task, cookie);
+
+		if (cookie)
+			sched_core_put_cookie(cookie);
+	}
+}
+
+static int __init sched_core_identity_lock_init(void)
+{
+	raw_spin_lock_init(&sched_core_expeller_lock);
+	raw_spin_lock_init(&sched_core_expellee_lock);
+
+	return 0;
+}
+
+early_initcall(sched_core_identity_lock_init);
+#endif

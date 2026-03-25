@@ -14076,6 +14076,10 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 
 #ifdef CONFIG_GROUP_IDENTITY
 	WRITE_ONCE(tg->priority, READ_ONCE(parent->priority));
+#ifdef CONFIG_SCHED_CORE
+	if (set_task_group_identity(tg, READ_ONCE(parent->identity)))
+		goto err;
+#endif
 #endif
 	init_cfs_bandwidth(tg_cfs_bandwidth(tg), tg_cfs_bandwidth(parent));
 	tg_set_specs_ratio(tg);
@@ -14197,6 +14201,9 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	} else {
 		se->cfs_rq = parent->my_q;
 		se->depth = parent->depth + 1;
+#ifdef CONFIG_GROUP_IDENTITY
+		se->identity = parent->identity;
+#endif
 	}
 
 	se->my_q = cfs_rq;
