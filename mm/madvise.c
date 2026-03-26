@@ -1118,6 +1118,13 @@ static int madvise_vma_behavior(struct vm_area_struct *vma,
 				   anon_name);
 	anon_vma_name_put(anon_name);
 
+	/*
+	 * If the vma become good for khugepaged to scan,
+	 * register it here without waiting a page fault that
+	 * may not happen any time soon.
+	 */
+	if (!error && new_flags & VM_HUGEPAGE)
+		khugepaged_enter_mm(vma->vm_mm);
 out:
 	/*
 	 * madvise() returns EAGAIN if kernel resources, such as

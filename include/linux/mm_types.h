@@ -788,6 +788,19 @@ struct mm_cid {
 };
 #endif
 
+#ifdef CONFIG_BPF_THP
+struct bpf_thp_ops;
+#endif
+
+#ifdef CONFIG_BPF_MM
+struct bpf_mm_ops {
+#ifdef CONFIG_BPF_THP
+	struct bpf_thp_ops __rcu *bpf_thp;
+	struct list_head bpf_thp_list;
+#endif
+};
+#endif
+
 struct kioctx_table;
 struct iommu_mm_data;
 struct mm_struct {
@@ -1049,6 +1062,10 @@ struct mm_struct {
 #endif
 #ifdef CONFIG_FUTEX
 		unsigned int futex_nid;
+#endif
+
+#ifdef CONFIG_BPF_MM
+		struct bpf_mm_ops bpf_mm;
 #endif
 	} __randomize_layout;
 
