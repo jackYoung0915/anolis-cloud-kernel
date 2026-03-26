@@ -72,6 +72,8 @@
  *
  *********************************************************************/
 
+#define INIT_SEED_MAX_SIZE	32
+
 /*
  * crng_init is protected by base_crng->lock, and only increases
  * its value (from empty->early->ready).
@@ -95,6 +97,11 @@ static int ratelimit_disable __read_mostly =
 	IS_ENABLED(CONFIG_WARN_ALL_UNSEEDED_RANDOM);
 module_param_named(ratelimit_disable, ratelimit_disable, int, 0644);
 MODULE_PARM_DESC(ratelimit_disable, "Disable random ratelimit suppression");
+
+static char *init_seed = "";
+static bool seed_inited;
+module_param(init_seed, charp, 0400);
+MODULE_PARM_DESC(init_seed, "Initialization random seed");
 
 /*
  * Returns whether or not the input pool has been seeded and thus guaranteed
@@ -1085,6 +1092,34 @@ static void mix_interrupt_randomness(struct timer_list *work)
 	memzero_explicit(pool, sizeof(pool));
 }
 
+static void add_init_randomness(const char *buffer, size_t count)
+{
+	mix_pool_bytes(buffer, count);
+	credit_init_bits(count * 8);
+}
+
+static size_t ascii_hex2bin(const char *buffer, size_t count,
+			    char *bin_buf, size_t len)
+{
+	const char *pbuf = buffer;
+	size_t bin_cnt;
+	char buf[4];
+	int i;
+
+	if (count == 0)
+		return 0;
+
+	bin_cnt = min(len, count / 2);
+	buf[2] = buf[3] = 0;
+	for (i = 0; i < bin_cnt; i++) {
+		buf[0] = *pbuf++;
+		buf[1] = *pbuf++;
+		if (kstrtou8(buf, 16, &bin_buf[i]) != 0)
+			return 0;
+	}
+	return bin_cnt;
+}
+
 void add_interrupt_randomness(int irq)
 {
 	enum { MIX_INFLIGHT = 1U << 31 };
@@ -1092,6 +1127,8 @@ void add_interrupt_randomness(int irq)
 	struct fast_pool *fast_pool = this_cpu_ptr(&irq_randomness);
 	struct pt_regs *regs = get_irq_regs();
 	unsigned int new_count;
+	size_t seedlen;
+	char seed_bin[INIT_SEED_MAX_SIZE];
 
 	fast_mix(fast_pool->pool, entropy,
 		 (regs ? instruction_pointer(regs) : _RET_IP_) ^ swab(irq));
@@ -1100,8 +1137,18 @@ void add_interrupt_randomness(int irq)
 	if (new_count & MIX_INFLIGHT)
 		return;
 
-	if (new_count < 1024 && !time_is_before_jiffies(fast_pool->last + HZ))
+	if (new_count < 1024 && !time_is_before_jiffies(fast_pool->last + HZ) &&
+	    crng_ready())
 		return;
+
+	if (!seed_inited) {
+		seed_inited = 1;
+		seedlen = strlen(init_seed);
+		seedlen = ascii_hex2bin(init_seed, seedlen,
+					seed_bin, sizeof(seed_bin));
+		if (seedlen != 0)
+			add_init_randomness(seed_bin, seedlen);
+	}
 
 	fast_pool->count |= MIX_INFLIGHT;
 	if (!timer_pending(&fast_pool->mix)) {
