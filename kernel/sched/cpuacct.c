@@ -1026,9 +1026,7 @@ int load_calc_func(void *unsed)
 	unsigned long update_version = 0;
 
 	while (!kthread_should_stop()) {
-		set_current_state(TASK_UNINTERRUPTIBLE);
-		schedule_timeout(HZ/5);
-		set_current_state(TASK_RUNNING);
+		schedule_timeout_idle(HZ/5);
 
 		if (time_before(jiffies, next_update + 10))
 			continue;
