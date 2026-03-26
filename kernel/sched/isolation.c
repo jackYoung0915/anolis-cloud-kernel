@@ -321,21 +321,38 @@ void wilds_cpus_allowed(struct cpumask *pmask)
 		cpumask_and(pmask, pmask, dyn_allowed);
 }
 
+/*
+ * Update the cpumask of all wild tasks (non-kthread tasks whose
+ * cpus_ptr matches @old_allowed) to @new_allowed.
+ *
+ * set_cpus_allowed_ptr() may sleep, so we cannot call it under
+ * tasklist_lock or any spinlock.  Instead we walk the cpu cgroup
+ * hierarchy under cgroup_mutex (a mutex, sleepable) and use
+ * css_task_iter to enumerate tasks in each cgroup — the same
+ * pattern used by cpuset's update_tasks_cpumask().
+ */
 void update_wilds_cpumask(cpumask_var_t new_allowed, cpumask_var_t old_allowed)
 {
-	struct task_struct *g, *task;
+	struct cgroup_subsys_state *pos;
+	struct css_task_iter it;
+	struct task_struct *task;
 
-	read_lock(&tasklist_lock);
-	for_each_process_thread(g, task) {
-		if (task->flags & PF_KTHREAD)
-			continue;
+	cgroup_lock();
+	css_for_each_descendant_pre(pos, &root_task_group.css) {
+		css_task_iter_start(pos, 0, &it);
+		while ((task = css_task_iter_next(&it))) {
+			/* Percpu kthreads are ignored */
+			if ((task->flags & PF_KTHREAD) && kthread_is_per_cpu(task))
+				continue;
 
-		if (!cpumask_equal(task->cpus_ptr, old_allowed))
-			continue;
+			if (!cpumask_equal(task->cpus_ptr, old_allowed))
+				continue;
 
-		set_cpus_allowed_ptr(task, new_allowed);
+			set_cpus_allowed_ptr(task, new_allowed);
+		}
+		css_task_iter_end(&it);
 	}
-	read_unlock(&tasklist_lock);
+	cgroup_unlock();
 }
 
 static DEFINE_MUTEX(dyn_isolcpus_mutex);
