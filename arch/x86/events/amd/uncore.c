@@ -203,42 +203,6 @@ static void amd_uncore_del(struct perf_event *event, int flags)
 	hwc->idx = -1;
 }
 
-/*
- * Return a full thread and slice mask unless user
- * has provided them
- */
-static u64 l3_thread_slice_mask(u64 config)
-{
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
-	    boot_cpu_data.x86 <= 0x18)
-		return ((config & AMD64_L3_SLICE_MASK) ? : AMD64_L3_SLICE_MASK) |
-		       ((config & AMD64_L3_THREAD_MASK) ? : AMD64_L3_THREAD_MASK);
-
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
-	    boot_cpu_data.x86 == 0x18) {
-		if (boot_cpu_data.x86_model >= 0x6 && boot_cpu_data.x86_model <= 0xf)
-			return ((config & HYGON_L3_SLICE_MASK) ? : HYGON_L3_SLICE_MASK) |
-			       ((config & HYGON_L3_THREAD_MASK) ? : HYGON_L3_THREAD_MASK);
-		else
-			return ((config & AMD64_L3_SLICE_MASK) ? : AMD64_L3_SLICE_MASK) |
-			       ((config & AMD64_L3_THREAD_MASK) ? : AMD64_L3_THREAD_MASK);
-	}
-
-	/*
-	 * If the user doesn't specify a threadmask, they're not trying to
-	 * count core 0, so we enable all cores & threads.
-	 * We'll also assume that they want to count slice 0 if they specify
-	 * a threadmask and leave sliceid and enallslices unpopulated.
-	 */
-	if (!(config & AMD64_L3_F19H_THREAD_MASK))
-		return AMD64_L3_F19H_THREAD_MASK | AMD64_L3_EN_ALL_SLICES |
-		       AMD64_L3_EN_ALL_CORES;
-
-	return config & (AMD64_L3_F19H_THREAD_MASK | AMD64_L3_SLICEID_MASK |
-			 AMD64_L3_EN_ALL_CORES | AMD64_L3_EN_ALL_SLICES |
-			 AMD64_L3_COREID_MASK);
-}
-
 static int amd_uncore_event_init(struct perf_event *event)
 {
 	struct amd_uncore_pmu *pmu;
@@ -284,14 +248,6 @@ amd_f17h_uncore_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 }
 
 static umode_t
-hygon_f18h_m6h_uncore_is_visible(struct kobject *kobj, struct attribute *attr, int i)
-{
-	return boot_cpu_data.x86 == 0x18 &&
-	       boot_cpu_data.x86_model >= 0x6 && boot_cpu_data.x86_model <= 0xf ?
-	       attr->mode : 0;
-}
-
-static umode_t
 amd_f19h_uncore_is_visible(struct kobject *kobj, struct attribute *attr, int i)
 {
 	return boot_cpu_data.x86 >= 0x19 ? attr->mode : 0;
@@ -331,11 +287,8 @@ static struct device_attribute format_attr_##_var =			\
 DEFINE_UNCORE_FORMAT_ATTR(event12,	event,		"config:0-7,32-35");
 DEFINE_UNCORE_FORMAT_ATTR(event14,	event,		"config:0-7,32-35,59-60"); /* F17h+ DF */
 DEFINE_UNCORE_FORMAT_ATTR(event14v2,	event,		"config:0-7,32-37");	   /* PerfMonV2 DF */
-DEFINE_UNCORE_FORMAT_ATTR(event14f18h,	event,		"config:0-7,32-35,61-62"); /* F18h DF */
 DEFINE_UNCORE_FORMAT_ATTR(event8,	event,		"config:0-7");		   /* F17h+ L3, PerfMonV2 UMC */
 DEFINE_UNCORE_FORMAT_ATTR(umask8,	umask,		"config:8-15");
-DEFINE_UNCORE_FORMAT_ATTR(umask10f18h,	umask,		"config:8-17");		   /* F18h M4h DF */
-DEFINE_UNCORE_FORMAT_ATTR(umask12f18h,	umask,		"config:8-19");		   /* F18h M6h DF */
 DEFINE_UNCORE_FORMAT_ATTR(umask12,	umask,		"config:8-15,24-27");	   /* PerfMonV2 DF */
 DEFINE_UNCORE_FORMAT_ATTR(coreid,	coreid,		"config:42-44");	   /* F19h L3 */
 DEFINE_UNCORE_FORMAT_ATTR(slicemask,	slicemask,	"config:48-51");	   /* F17h L3 */
@@ -344,8 +297,6 @@ DEFINE_UNCORE_FORMAT_ATTR(threadmask2,	threadmask,	"config:56-57");	   /* F19h L
 DEFINE_UNCORE_FORMAT_ATTR(enallslices,	enallslices,	"config:46");		   /* F19h L3 */
 DEFINE_UNCORE_FORMAT_ATTR(enallcores,	enallcores,	"config:47");		   /* F19h L3 */
 DEFINE_UNCORE_FORMAT_ATTR(sliceid,	sliceid,	"config:48-50");	   /* F19h L3 */
-DEFINE_UNCORE_FORMAT_ATTR(slicemask4,	slicemask,	"config:28-31");	   /* F18h L3 */
-DEFINE_UNCORE_FORMAT_ATTR(threadmask32,	threadmask,	"config:32-63");	   /* F18h L3 */
 DEFINE_UNCORE_FORMAT_ATTR(rdwrmask,	rdwrmask,	"config:8-9");		   /* PerfMonV2 UMC */
 
 /* Common DF and NB attributes */
@@ -376,12 +327,6 @@ static struct attribute *amd_f17h_uncore_l3_format_attr[] = {
 	NULL,
 };
 
-/* F18h M06h unique L3 attributes */
-static struct attribute *hygon_f18h_m6h_uncore_l3_format_attr[] = {
-	&format_attr_slicemask4.attr,	/* slicemask */
-	NULL,
-};
-
 /* F19h unique L3 attributes */
 static struct attribute *amd_f19h_uncore_l3_format_attr[] = {
 	&format_attr_coreid.attr,	/* coreid */
@@ -405,12 +350,6 @@ static struct attribute_group amd_f17h_uncore_l3_format_group = {
 	.name = "format",
 	.attrs = amd_f17h_uncore_l3_format_attr,
 	.is_visible = amd_f17h_uncore_is_visible,
-};
-
-static struct attribute_group hygon_f18h_m6h_uncore_l3_format_group = {
-	.name = "format",
-	.attrs = hygon_f18h_m6h_uncore_l3_format_attr,
-	.is_visible = hygon_f18h_m6h_uncore_is_visible,
 };
 
 static struct attribute_group amd_f19h_uncore_l3_format_group = {
@@ -439,11 +378,6 @@ static const struct attribute_group *amd_uncore_l3_attr_groups[] = {
 static const struct attribute_group *amd_uncore_l3_attr_update[] = {
 	&amd_f17h_uncore_l3_format_group,
 	&amd_f19h_uncore_l3_format_group,
-	NULL,
-};
-
-static const struct attribute_group *hygon_uncore_l3_attr_update[] = {
-	&hygon_f18h_m6h_uncore_l3_format_group,
 	NULL,
 };
 
@@ -748,18 +682,8 @@ int amd_uncore_df_ctx_init(struct amd_uncore *uncore, unsigned int cpu)
 	if (pmu_version >= 2) {
 		*df_attr++ = &format_attr_event14v2.attr;
 		*df_attr++ = &format_attr_umask12.attr;
-	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
-		   boot_cpu_data.x86 >= 0x17) {
+	} else if (boot_cpu_data.x86 >= 0x17) {
 		*df_attr = &format_attr_event14.attr;
-	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
-		   boot_cpu_data.x86 == 0x18) {
-		*df_attr++ = &format_attr_event14f18h.attr;
-		if (boot_cpu_data.x86_model == 0x4 ||
-		    boot_cpu_data.x86_model == 0x5)
-			*df_attr++ = &format_attr_umask10f18h.attr;
-		else if (boot_cpu_data.x86_model >= 0x6 &&
-			 boot_cpu_data.x86_model <= 0x18)
-			*df_attr++ = &format_attr_umask12f18h.attr;
 	}
 
 	pmu->ctx = alloc_percpu(struct amd_uncore_ctx *);
@@ -786,9 +710,7 @@ int amd_uncore_df_ctx_init(struct amd_uncore *uncore, unsigned int cpu)
 		goto done;
 	}
 
-	pr_info("%d %s%s counters detected\n", pmu->num_counters,
-		boot_cpu_data.x86_vendor == X86_VENDOR_HYGON ?  "HYGON " : "",
-		pmu->pmu.name);
+	pr_info("%d %s counters detected\n", pmu->num_counters, pmu->pmu.name);
 
 	uncore->num_pmus = 1;
 
@@ -803,6 +725,7 @@ static int amd_uncore_l3_event_init(struct perf_event *event)
 	int ret = amd_uncore_event_init(event);
 	struct hw_perf_event *hwc = &event->hw;
 	u64 config = event->attr.config;
+	u64 mask;
 
 	hwc->config = config & AMD64_RAW_EVENT_MASK_NB;
 
@@ -813,7 +736,25 @@ static int amd_uncore_l3_event_init(struct perf_event *event)
 	if (ret || boot_cpu_data.x86 < 0x17)
 		return ret;
 
-	hwc->config |= l3_thread_slice_mask(config);
+	mask = config & (AMD64_L3_F19H_THREAD_MASK | AMD64_L3_SLICEID_MASK |
+			 AMD64_L3_EN_ALL_CORES | AMD64_L3_EN_ALL_SLICES |
+			 AMD64_L3_COREID_MASK);
+
+	if (boot_cpu_data.x86 <= 0x18)
+		mask = ((config & AMD64_L3_SLICE_MASK) ? : AMD64_L3_SLICE_MASK) |
+		       ((config & AMD64_L3_THREAD_MASK) ? : AMD64_L3_THREAD_MASK);
+
+	/*
+	 * If the user doesn't specify a threadmask, they're not trying to
+	 * count core 0, so we enable all cores & threads.
+	 * We'll also assume that they want to count slice 0 if they specify
+	 * a threadmask and leave sliceid and enallslices unpopulated.
+	 */
+	else if (!(config & AMD64_L3_F19H_THREAD_MASK))
+		mask = AMD64_L3_F19H_THREAD_MASK | AMD64_L3_EN_ALL_SLICES |
+		       AMD64_L3_EN_ALL_CORES;
+
+	hwc->config |= mask;
 
 	return 0;
 }
@@ -882,23 +823,12 @@ int amd_uncore_l3_ctx_init(struct amd_uncore *uncore, unsigned int cpu)
 		.module		= THIS_MODULE,
 	};
 
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
-	    boot_cpu_data.x86 >= 0x17) {
+	if (boot_cpu_data.x86 >= 0x17) {
 		*l3_attr++ = &format_attr_event8.attr;
 		*l3_attr++ = &format_attr_umask8.attr;
 		*l3_attr++ = boot_cpu_data.x86 >= 0x19 ?
 			     &format_attr_threadmask2.attr :
 			     &format_attr_threadmask8.attr;
-	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
-		   boot_cpu_data.x86 == 0x18) {
-		*l3_attr++ = &format_attr_event8.attr;
-		*l3_attr++ = &format_attr_umask8.attr;
-		if (boot_cpu_data.x86_model >= 0x6 && boot_cpu_data.x86_model <= 0xf) {
-			*l3_attr++ = &format_attr_threadmask32.attr;
-			pmu->pmu.attr_update = hygon_uncore_l3_attr_update;
-		} else {
-			*l3_attr++ = &format_attr_threadmask8.attr;
-		}
 	}
 
 	pmu->ctx = alloc_percpu(struct amd_uncore_ctx *);
@@ -911,9 +841,7 @@ int amd_uncore_l3_ctx_init(struct amd_uncore *uncore, unsigned int cpu)
 		goto done;
 	}
 
-	pr_info("%d %s%s counters detected\n", pmu->num_counters,
-		boot_cpu_data.x86_vendor == X86_VENDOR_HYGON ?  "HYGON " : "",
-		pmu->pmu.name);
+	pr_info("%d %s counters detected\n", pmu->num_counters, pmu->pmu.name);
 
 	uncore->num_pmus = 1;
 
@@ -1080,8 +1008,7 @@ static int __init amd_uncore_init(void)
 	int ret = -ENODEV;
 	int i;
 
-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
-	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
 		return -ENODEV;
 
 	if (!boot_cpu_has(X86_FEATURE_TOPOEXT))
