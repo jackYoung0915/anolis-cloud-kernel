@@ -4511,7 +4511,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_GROUP_BALANCER
 	p->soft_cpus_version = -1;
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
 	INIT_LIST_HEAD(&p->se.expel_node);
+#endif
 }
 
 DEFINE_STATIC_KEY_FALSE(sched_numa_balancing);
@@ -6224,20 +6226,23 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	bool fi_before = false;
 	bool core_clock_updated = (rq == rq->core);
 	unsigned long cookie;
-	int i, cpu, occ = 0;
+	int i, cpu, core_pick_start, occ = 0;
 	struct rq *rq_i;
 	bool need_sync;
 
 	if (sched_feat(ID_LOAD_BALANCE))
 		rq->pulled = false;
 
+#ifdef CONFIG_GROUP_IDENTITY
 	if (sched_feat(ID_PUSH_EXPELLEE))
 		rq->queued_push_expellee = false;
+#endif
 
 	if (!sched_core_enabled(rq))
 		return __pick_next_task(rq, prev, rf);
 
 	cpu = cpu_of(rq);
+	core_pick_start = cpu;
 
 	/* Stopper task is switching into idle, no need core-wide selection. */
 	if (cpu_is_offline(cpu)) {
@@ -6287,6 +6292,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		rq->core->core_sibidle_start_task = 0;
 		rq->core->core_sibidle_count = 0;
 		rq->core->core_sibidle_occupation = 0;
+
 		if (rq->core->core_forceidle_count) {
 			rq->core->core_forceidle_count = 0;
 			need_sync = true;
@@ -6306,6 +6312,16 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 */
 	rq->core->core_task_seq++;
 
+#ifdef CONFIG_GROUP_IDENTITY
+	/* Reset smt_expeller to avoid over expel. */
+	if (sched_feat(ID_SMT_EXPEL) || !id_expeller_share_core()) {
+		for_each_cpu(i, smt_mask) {
+			rq_i = cpu_rq(i);
+			rq_i->smt_expeller = false;
+		}
+	}
+#endif
+
 	/*
 	 * Optimize for common case where this CPU has no cookies
 	 * and there are no cookied tasks running on siblings.
@@ -6324,13 +6340,27 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		}
 	}
 
+#ifdef CONFIG_GROUP_IDENTITY
+	if (sched_feat(ID_SMT_EXPEL)) {
+		for_each_cpu_wrap(i, smt_mask, cpu) {
+			rq_i = cpu_rq(i);
+			if (rq_i->cfs.h_nr_expeller > 0)
+				core_pick_start = i;
+			else
+				continue;
+			if (rq_i->cfs.h_nr_expeller == rq_i->cfs.h_nr_runnable)
+				break;
+		}
+	}
+#endif
+
 	/*
 	 * For each thread: do the regular task pick and find the max prio task
 	 * amongst them.
 	 *
 	 * Tie-break prio towards the current CPU
 	 */
-	for_each_cpu_wrap(i, smt_mask, cpu) {
+	for_each_cpu_wrap(i, smt_mask, core_pick_start) {
 		rq_i = cpu_rq(i);
 
 		/*
@@ -6344,6 +6374,10 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		p = rq_i->core_pick = pick_task(rq_i);
 		if (!max || prio_less(max, p, fi_before))
 			max = p;
+#ifdef CONFIG_GROUP_IDENTITY
+		if (sched_feat(ID_SMT_EXPEL) && task_is_expeller(p))
+			rq_i->smt_expeller = true;
+#endif
 	}
 
 	cookie = rq->core->core_cookie = max->core_cookie;
@@ -6365,6 +6399,10 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		}
 
 		rq_i->core_pick = p;
+#ifdef CONFIG_GROUP_IDENTITY
+		if (sched_feat(ID_SMT_EXPEL) || !id_expeller_share_core())
+			rq_i->smt_expeller = task_is_expeller(p);
+#endif
 
 		if (p == rq_i->idle) {
 			rq->core->core_sibidle_count++;
@@ -6377,6 +6415,16 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 			occ++;
 		}
 	}
+
+#ifdef CONFIG_GROUP_IDENTITY
+	/* Make accurate on_expel updates for statistics tracking. */
+	if (sched_feat(ID_SMT_EXPEL)) {
+		for_each_cpu(i, smt_mask) {
+			rq_i = cpu_rq(i);
+			update_rq_on_expel_by_smt_expeller(rq_i);
+		}
+	}
+#endif
 
 	if (schedstat_enabled() && rq->core->core_sibidle_count) {
 		rq->core->core_sibidle_start = rq_clock(rq->core);
@@ -6650,6 +6698,9 @@ static void sched_core_cpu_deactivate(unsigned int cpu)
 	 */
 	core_rq->core_sibidle_start = 0;
 	core_rq->core_sibidle_start_task = 0;
+#ifdef CONFIG_GROUP_IDENTITY
+	core_rq->smt_expeller = false;
+#endif
 
 	/* install new leader */
 	for_each_cpu(t, smt_mask) {
@@ -6666,6 +6717,37 @@ static inline void sched_core_cpu_dying(unsigned int cpu)
 		rq->core = rq;
 }
 
+#ifdef CONFIG_GROUP_IDENTITY
+static int cpu_identity_write(struct cgroup_subsys_state *css,
+			      struct cftype *cftype, s64 identity)
+{
+	struct task_group *tg = css_tg(css);
+	int ret;
+
+	if (identity < -1 || identity > 1)
+		return -EINVAL;
+
+	if (tg == &root_task_group)
+		return -EPERM;
+
+	if (tg->identity == identity)
+		return 0;
+
+	ret = update_identity(tg, identity);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static s64 cpu_identity_read(struct cgroup_subsys_state *css,
+					       struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->identity;
+}
+#endif
 #else /* !CONFIG_SCHED_CORE */
 
 static inline void sched_core_cpu_starting(unsigned int cpu) {}
@@ -8516,7 +8598,7 @@ static struct kmem_cache *task_group_cache __read_mostly;
 DECLARE_PER_CPU(cpumask_var_t, group_balancer_mask);
 #endif
 
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
 DECLARE_PER_CPU(cpumask_var_t, push_expellee_traverse_mask);
 DECLARE_PER_CPU(cpumask_var_t, push_expellee_traversed_mask);
 #endif
@@ -8693,6 +8775,9 @@ void __init sched_init(void)
 		rq->core_sibidle_start_task = 0;
 
 		rq->core_cookie = 0UL;
+#ifdef CONFIG_GROUP_IDENTITY
+		rq->smt_expeller = false;
+#endif
 #endif
 		rq->booked = false;
 #ifdef CONFIG_GROUP_BALANCER
@@ -8703,7 +8788,7 @@ void __init sched_init(void)
 		zalloc_cpumask_var_node(
 			&per_cpu(group_balancer_mask, i), GFP_KERNEL, cpu_to_node(i));
 #endif
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
 		zalloc_cpumask_var_node(
 			&per_cpu(push_expellee_traverse_mask, i), GFP_KERNEL, cpu_to_node(i));
 		zalloc_cpumask_var_node(
@@ -9373,6 +9458,8 @@ static void cpu_cgroup_attach(struct cgroup_taskset *tset)
 
 	cgroup_taskset_for_each(task, css, tset)
 		sched_move_task(task, false);
+
+	sched_core_identity_attach(tset);
 
 	scx_cgroup_finish_attach();
 }
@@ -10357,6 +10444,13 @@ static struct cftype cpu_legacy_files[] = {
 		.write_u64 = cpu_ht_ratio_write,
 	},
 #endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+	{
+		.name = "identity",
+		.read_s64 = cpu_identity_read,
+		.write_s64 = cpu_identity_write,
+	},
+#endif
 #ifdef CONFIG_GROUP_BALANCER
 	{
 		.name = "soft_cpus",
@@ -11055,6 +11149,13 @@ static struct cftype cpu_files[] = {
 		.name = "ht_ratio",
 		.read_u64 = cpu_ht_ratio_read,
 		.write_u64 = cpu_ht_ratio_write,
+	},
+#endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+	{
+		.name = "identity",
+		.read_s64 = cpu_identity_read,
+		.write_s64 = cpu_identity_write,
 	},
 #endif
 #ifdef CONFIG_SCHED_SLI

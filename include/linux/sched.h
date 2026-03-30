@@ -556,6 +556,9 @@ struct sched_statistics {
 	u64				nr_failed_migrations_running;
 	u64				nr_failed_migrations_hot;
 	u64				nr_forced_migrations;
+#ifdef CONFIG_GROUP_IDENTITY
+	u64				nr_failed_migrations_id;
+#endif
 
 	u64				nr_wakeups;
 	u64				nr_wakeups_sync;
@@ -645,10 +648,12 @@ struct sched_entity {
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
 	unsigned int			ht_ratio;
 #endif
-	struct list_head		expel_node;
-
 #ifdef CONFIG_GROUP_IDENTITY
+	struct list_head		expel_node;
 	long			priority;
+#ifdef CONFIG_SCHED_CORE
+	int			identity;
+#endif
 #endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)

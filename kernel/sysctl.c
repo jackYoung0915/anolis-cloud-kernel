@@ -2113,7 +2113,7 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
 	{
 		.procname	= "sched_push_expellee_interval_ns",
 		.data		= &sysctl_sched_push_expellee_interval,
@@ -2202,6 +2202,15 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= proc_dointvec,
 	},
 #endif
+	{
+		.procname	= "sched_idle_shares_relax",
+		.data		= &sysctl_sched_idle_shares_relax,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
 	{ }
 };
 

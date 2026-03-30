@@ -692,6 +692,9 @@ struct task_group {
 
 #ifdef CONFIG_GROUP_IDENTITY
 	long			priority;
+#ifdef CONFIG_SCHED_CORE
+	int			identity;
+#endif
 #endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -858,9 +861,16 @@ struct balance_callback {
 struct cfs_rq {
 	struct load_weight	load;
 	unsigned int		nr_queued;
+#ifdef CONFIG_GROUP_IDENTITY
+	unsigned int		nr_tasks;
+#endif
 	unsigned int		h_nr_queued;       /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		h_nr_runnable;     /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		h_nr_idle; /* SCHED_IDLE */
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+	unsigned int		h_nr_expeller;
+	unsigned int		h_nr_expellee;
+#endif
 
 	s64			avg_vruntime;
 	u64			avg_load;
@@ -955,7 +965,9 @@ struct cfs_rq {
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 	unsigned long		nr_uninterruptible;
+#ifdef CONFIG_GROUP_IDENTITY
 	struct list_head	expel_list;
+#endif
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1549,6 +1561,9 @@ struct rq {
 	u64			core_sibidle_start;
 	u64			core_sibidle_start_task;
 	unsigned int		core_sibidle_count;
+#ifdef CONFIG_GROUP_IDENTITY
+	bool			smt_expeller;
+#endif
 #endif
 
 	/* Scratch cpumask to be temporarily used under rq_lock */
@@ -1570,11 +1585,13 @@ struct rq {
 #ifdef CONFIG_GROUP_BALANCER
 	struct group_balancer_sched_domain *gb_sd;
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
 	u64			last_push_expellee;
 	bool			queued_push_expellee;
+	unsigned int		on_expel;
+#endif
 	bool			booked;
 	bool			pulled;
-	bool			on_expel;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1790,6 +1807,17 @@ extern void account_ht_aware_quota(struct task_struct *p, u64 delta);
 #else
 void account_ht_aware_quota(struct task_struct *p, u64 delta) {}
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
+struct cgroup_taskset;
+extern int update_identity(struct task_group *tg, int identity);
+extern int set_task_group_identity(struct task_group *tg, int identity);
+extern void sched_core_identity_attach(struct cgroup_taskset *tset);
+extern void update_rq_on_expel_by_smt_expeller(struct rq *rq);
+extern bool task_is_expeller(struct task_struct *p);
+#else
+static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
+#endif
+
 #else /* !CONFIG_SCHED_CORE */
 
 static inline bool sched_core_enabled(struct rq *rq)
@@ -1828,6 +1856,7 @@ static inline bool sched_group_cookie_match(struct rq *rq,
 {
 	return true;
 }
+static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
 #endif /* CONFIG_SCHED_CORE */
 
 static inline void lockdep_assert_rq_held(struct rq *rq)
@@ -4433,9 +4462,22 @@ static inline void gb_load_balance(struct lb_env *env) { }
 #endif
 static inline void task_tick_gb(struct task_struct *p) { }
 #endif
+#ifdef CONFIG_GROUP_IDENTITY
 #ifdef CONFIG_SMP
 extern void task_tick_gi(struct rq *rq);
 #else
 static inline void task_tick_gi(struct rq *rq) { }
 #endif
+#ifdef CONFIG_SCHED_CORE
+static inline bool id_expeller_share_core(void)
+{
+	return sched_feat(ID_EXPELLER_SHARE_CORE);
+}
+#else
+static inline bool id_expeller_share_core(void) { return true; }
+#endif
+#else
+static inline void task_tick_gi(struct rq *rq) { }
+static inline bool id_expeller_share_core(void) { return true; }
+#endif /* CONFIG_GROUP_IDENTITY */
 #endif /* _KERNEL_SCHED_SCHED_H */

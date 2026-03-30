@@ -687,6 +687,13 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_runnable", cfs_rq->h_nr_runnable);
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_queued", cfs_rq->h_nr_queued);
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_idle", cfs_rq->h_nr_idle);
+#ifdef CONFIG_GROUP_IDENTITY
+#ifdef CONFIG_SCHED_CORE
+	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_expeller", cfs_rq->h_nr_expeller);
+	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_expellee", cfs_rq->h_nr_expellee);
+#endif
+	SEQ_printf(m, "  .%-30s: %d\n", "nr_tasks", cfs_rq->nr_tasks);
+#endif
 	SEQ_printf(m, "  .%-30s: %ld\n", "load", cfs_rq->load.weight);
 #ifdef CONFIG_SMP
 	SEQ_printf(m, "  .%-30s: %lu\n", "load_avg",
@@ -1046,6 +1053,9 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 		P_SCHEDSTAT(nr_failed_migrations_affine);
 		P_SCHEDSTAT(nr_failed_migrations_running);
 		P_SCHEDSTAT(nr_failed_migrations_hot);
+#ifdef CONFIG_GROUP_IDENTITY
+		P_SCHEDSTAT(nr_failed_migrations_id);
+#endif
 		P_SCHEDSTAT(nr_forced_migrations);
 		P_SCHEDSTAT(nr_wakeups);
 		P_SCHEDSTAT(nr_wakeups_sync);
