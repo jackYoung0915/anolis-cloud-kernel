@@ -523,7 +523,9 @@ struct blk_mq_tag_set {
 	struct srcu_struct	*srcu;
 
 	/* number of static alloc rqs if dyn_alloc flag is set */
-	CK_KABI_REPLACE(CK_KABI_RESERVE(1), unsigned int nr_static_rqs)
+	unsigned int nr_static_rqs;
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
