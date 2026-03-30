@@ -6314,9 +6314,11 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 #ifdef CONFIG_GROUP_IDENTITY
 	/* Reset smt_expeller to avoid over expel. */
-	for_each_cpu(i, smt_mask) {
-		rq_i = cpu_rq(i);
-		rq_i->smt_expeller = false;
+	if (sched_feat(ID_SMT_EXPEL)) {
+		for_each_cpu(i, smt_mask) {
+			rq_i = cpu_rq(i);
+			rq_i->smt_expeller = false;
+		}
 	}
 #endif
 
@@ -6339,14 +6341,16 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	}
 
 #ifdef CONFIG_GROUP_IDENTITY
-	for_each_cpu_wrap(i, smt_mask, cpu) {
-		rq_i = cpu_rq(i);
-		if (rq_i->cfs.h_nr_expeller > 0)
-			core_pick_start = i;
-		else
-			continue;
-		if (rq_i->cfs.h_nr_expeller == rq_i->cfs.h_nr_runnable)
-			break;
+	if (sched_feat(ID_SMT_EXPEL)) {
+		for_each_cpu_wrap(i, smt_mask, cpu) {
+			rq_i = cpu_rq(i);
+			if (rq_i->cfs.h_nr_expeller > 0)
+				core_pick_start = i;
+			else
+				continue;
+			if (rq_i->cfs.h_nr_expeller == rq_i->cfs.h_nr_runnable)
+				break;
+		}
 	}
 #endif
 
@@ -6371,7 +6375,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		if (!max || prio_less(max, p, fi_before))
 			max = p;
 #ifdef CONFIG_GROUP_IDENTITY
-		if (task_is_expeller(p))
+		if (sched_feat(ID_SMT_EXPEL) && task_is_expeller(p))
 			rq_i->smt_expeller = true;
 #endif
 	}
@@ -6396,7 +6400,8 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 		rq_i->core_pick = p;
 #ifdef CONFIG_GROUP_IDENTITY
-		rq_i->smt_expeller = task_is_expeller(p);
+		if (sched_feat(ID_SMT_EXPEL))
+			rq_i->smt_expeller = task_is_expeller(p);
 #endif
 
 		if (p == rq_i->idle) {
@@ -6413,9 +6418,11 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 #ifdef CONFIG_GROUP_IDENTITY
 	/* Make accurate on_expel updates for statistics tracking. */
-	for_each_cpu(i, smt_mask) {
-		rq_i = cpu_rq(i);
-		update_rq_on_expel_by_smt_expeller(rq_i);
+	if (sched_feat(ID_SMT_EXPEL)) {
+		for_each_cpu(i, smt_mask) {
+			rq_i = cpu_rq(i);
+			update_rq_on_expel_by_smt_expeller(rq_i);
+		}
 	}
 #endif
 
