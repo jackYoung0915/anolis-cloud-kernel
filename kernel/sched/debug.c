@@ -1053,6 +1053,9 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 		P_SCHEDSTAT(nr_failed_migrations_affine);
 		P_SCHEDSTAT(nr_failed_migrations_running);
 		P_SCHEDSTAT(nr_failed_migrations_hot);
+#ifdef CONFIG_GROUP_IDENTITY
+		P_SCHEDSTAT(nr_failed_migrations_id);
+#endif
 		P_SCHEDSTAT(nr_forced_migrations);
 		P_SCHEDSTAT(nr_wakeups);
 		P_SCHEDSTAT(nr_wakeups_sync);

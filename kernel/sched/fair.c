@@ -941,7 +941,7 @@ static inline bool idle_only(struct sched_entity *se)
 		return false;
 
 	if (entity_is_task(se))
-		return task_has_idle_policy(task_of(se));
+		return task_is_idle(task_of(se));
 
 	cfs_rq = group_cfs_rq(se);
 	return cfs_rq->h_nr_runnable == cfs_rq->h_nr_idle;
@@ -1086,6 +1086,21 @@ static inline unsigned int rq_on_expel(struct rq *rq)
 	return rq->on_expel;
 }
 
+#ifdef CONFIG_SCHED_CORE
+static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
+{
+	unsigned int on_expel = rq->on_expel;
+
+	return sched_core_enabled(rq) && (on_expel & EXPEL_BY_SMT_EXPELLER);
+}
+
+#else
+static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
+{
+	return false;
+}
+#endif
+
 static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 {
 	unsigned int on_expel = rq_on_expel(rq);
@@ -1100,6 +1115,17 @@ static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 		return true;
 #endif
 	return false;
+}
+
+static noinline bool id_idle_cpu(struct task_struct *p, int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	if (should_expel_se(rq, &p->se))
+		return false;
+	if (!id_expeller_share_core() && task_is_expeller(p) && rq_on_expel_by_smt_expeller(rq))
+		return false;
+	return true;
 }
 
 static inline void check_expellee_se(struct cfs_rq *cfs_rq)
@@ -1156,6 +1182,14 @@ static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
 	return rb_first_cached(&cfs_rq->tasks_timeline);
+}
+static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
+{
+	return false;
+}
+static inline bool id_idle_cpu(struct task_struct *p, int cpu)
+{
+	return true;
 }
 #endif
 
@@ -8245,11 +8279,16 @@ static inline int find_idlest_cpu(struct sched_domain *sd, struct task_struct *p
 	return new_cpu;
 }
 
-static inline int __select_idle_cpu(int cpu, struct task_struct *p)
+static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_backup)
 {
 	if ((available_idle_cpu(cpu) || sched_idle_cpu(cpu)) &&
-	    sched_cpu_cookie_match(cpu_rq(cpu), p))
+	    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
+		if (!id_idle_cpu(p, cpu) && id_backup) {
+			*id_backup = cpu;
+			return -1;
+		}
 		return cpu;
+	}
 
 	return -1;
 }
@@ -8376,7 +8415,7 @@ static inline bool test_idle_cores(int cpu)
 
 static inline int select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu)
 {
-	return __select_idle_cpu(core, p);
+	return __select_idle_cpu(core, p, NULL);
 }
 
 static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd, int target)
@@ -8394,7 +8433,7 @@ static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd
 static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_core, int target)
 {
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_rq_mask);
-	int i, cpu, idle_cpu = -1, nr = INT_MAX;
+	int i, cpu, idle_cpu = -1, nr = INT_MAX, id_backup = -1;
 	struct sched_domain_shared *sd_share;
 	struct rq *this_rq = this_rq();
 	int this = smp_processor_id();
@@ -8461,7 +8500,7 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool 
 				} else {
 					if (--nr <= 0)
 						return -1;
-					idle_cpu = __select_idle_cpu(cpu, p);
+					idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
 					if ((unsigned int)idle_cpu < nr_cpumask_bits)
 						return idle_cpu;
 				}
@@ -8479,7 +8518,7 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool 
 		} else {
 			if (--nr <= 0)
 				return -1;
-			idle_cpu = __select_idle_cpu(cpu, p);
+			idle_cpu = __select_idle_cpu(cpu, p, &id_backup);
 			if ((unsigned int)idle_cpu < nr_cpumask_bits)
 				break;
 		}
@@ -8500,6 +8539,8 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool 
 		update_avg(&this_sd->avg_scan_cost, time);
 	}
 
+	if (!id_expeller_share_core())
+		return (unsigned int)idle_cpu < nr_cpumask_bits ? idle_cpu : id_backup;
 	return idle_cpu;
 }
 
@@ -8605,6 +8646,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	lockdep_assert_irqs_disabled();
 
 	if ((available_idle_cpu(target) || sched_idle_cpu(target)) &&
+	    id_idle_cpu(p, target) &&
 	    asym_fits_cpu(task_util, util_min, util_max, target))
 		return target;
 
@@ -8613,6 +8655,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	 */
 	if (prev != target && cpus_share_cache(prev, target) &&
 	    (available_idle_cpu(prev) || sched_idle_cpu(prev)) &&
+	    id_idle_cpu(p, prev) &&
 	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
 
 		if (!static_branch_unlikely(&sched_cluster_active) ||
@@ -8645,6 +8688,7 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	    recent_used_cpu != target &&
 	    cpus_share_cache(recent_used_cpu, target) &&
 	    (available_idle_cpu(recent_used_cpu) || sched_idle_cpu(recent_used_cpu)) &&
+	    id_idle_cpu(p, recent_used_cpu) &&
 	    cpumask_test_cpu(recent_used_cpu, task_allowed_cpu(p)) &&
 	    asym_fits_cpu(task_util, util_min, util_max, recent_used_cpu)) {
 
@@ -9558,7 +9602,7 @@ void update_rq_on_expel_by_smt_expeller(struct rq *rq)
 {
 	unsigned int ret;
 
-	if (!sched_feat(ID_SMT_EXPEL))
+	if (!sched_feat(ID_SMT_EXPEL) && id_expeller_share_core())
 		return;
 
 	ret = need_expel(rq, EXPEL_BY_SMT_EXPELLER);
@@ -9693,12 +9737,44 @@ void task_tick_gi(struct rq *rq)
 	    rq_clock(rq) - rq->last_push_expellee > sysctl_sched_push_expellee_interval)
 		resched_curr(rq);
 }
+
 #else
 static inline void push_expellee(struct rq *rq) { }
 #endif
+static int id_can_migrate_task(struct task_struct *p, struct lb_env *env)
+{
+	struct rq *src_rq = env->src_rq;
+	struct rq *dst_rq = env->dst_rq;
+
+	if (!id_expeller_share_core() && env->id_need_redo && task_is_expeller(p) &&
+	    rq_on_expel_by_smt_expeller(dst_rq))
+		goto bad_dst;
+	if ((!sched_feat(ID_SMT_EXPEL) || !task_is_expellee(p)) &&
+	    (!sched_feat(ID_ABSOLUTE_EXPEL) || !task_is_idle(p)))
+		return -1;
+	/* Do not migrate expellee task to CPU on expel */
+	if (should_expel_se(dst_rq, &p->se))
+		goto bad_dst;
+	if (sched_feat(ID_EXPELLEE_NEVER_HOT))
+		goto good_dst;
+	if (!should_expel_se(src_rq, &p->se))
+		return -1;
+	if (!sched_feat(ID_RESCUE_EXPELLEE))
+		return -1;
+good_dst:
+	schedstat_inc(p->stats.nr_forced_migrations);
+	return 1;
+bad_dst:
+	schedstat_inc(p->stats.nr_failed_migrations_id);
+	return 0;
+}
 #else
 static inline void update_rq_on_expel(struct rq *rq) { }
 static inline void push_expellee(struct rq *rq) { }
+static inline int id_can_migrate_task(struct task_struct *p, struct lb_env *env)
+{
+	return -1;
+}
 #endif
 
 #if defined(CONFIG_NO_HZ_FULL) && defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
@@ -10235,6 +10311,7 @@ static
 int can_migrate_task(struct task_struct *p, struct lb_env *env)
 {
 	int tsk_cache_hot;
+	int ret;
 
 	lockdep_assert_rq_held(env->src_rq);
 	if (p->sched_task_hot)
@@ -10309,6 +10386,10 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		return 0;
 	}
 
+	ret = id_can_migrate_task(p, env);
+	if (ret != -1)
+		return ret;
+
 	/*
 	 * Aggressive migration if:
 	 * 1) active balance
@@ -10363,6 +10444,9 @@ static struct task_struct *detach_one_task(struct lb_env *env)
 
 	lockdep_assert_rq_held(env->src_rq);
 
+#ifdef CONFIG_GROUP_IDENTITY
+redo:
+#endif
 	list_for_each_entry_reverse(p,
 			&env->src_rq->cfs_tasks, se.group_node) {
 		if (!can_migrate_task(p, env))
@@ -10379,6 +10463,12 @@ static struct task_struct *detach_one_task(struct lb_env *env)
 		schedstat_inc(env->sd->lb_gained[env->idle]);
 		return p;
 	}
+#ifdef CONFIG_GROUP_IDENTITY
+	if (!id_expeller_share_core() && env->id_need_redo) {
+		env->id_need_redo = false;
+		goto redo;
+	}
+#endif
 	return NULL;
 }
 
@@ -12621,7 +12711,7 @@ static inline void unset_gb_need_redo(struct lb_env *env) { }
 
 static inline bool id_need_redo(struct lb_env *env)
 {
-	if (sched_feat(ID_LOAD_BALANCE))
+	if (sched_feat(ID_LOAD_BALANCE) || !id_expeller_share_core())
 		return env->id_need_redo;
 	return false;
 }

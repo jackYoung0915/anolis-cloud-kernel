@@ -6314,7 +6314,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 #ifdef CONFIG_GROUP_IDENTITY
 	/* Reset smt_expeller to avoid over expel. */
-	if (sched_feat(ID_SMT_EXPEL)) {
+	if (sched_feat(ID_SMT_EXPEL) || !id_expeller_share_core()) {
 		for_each_cpu(i, smt_mask) {
 			rq_i = cpu_rq(i);
 			rq_i->smt_expeller = false;
@@ -6400,7 +6400,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 		rq_i->core_pick = p;
 #ifdef CONFIG_GROUP_IDENTITY
-		if (sched_feat(ID_SMT_EXPEL))
+		if (sched_feat(ID_SMT_EXPEL) || !id_expeller_share_core())
 			rq_i->smt_expeller = task_is_expeller(p);
 #endif
 

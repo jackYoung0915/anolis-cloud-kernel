@@ -556,6 +556,9 @@ struct sched_statistics {
 	u64				nr_failed_migrations_running;
 	u64				nr_failed_migrations_hot;
 	u64				nr_forced_migrations;
+#ifdef CONFIG_GROUP_IDENTITY
+	u64				nr_failed_migrations_id;
+#endif
 
 	u64				nr_wakeups;
 	u64				nr_wakeups_sync;
