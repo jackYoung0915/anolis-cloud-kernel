@@ -3526,7 +3526,10 @@ restart:
 		if (folio_test_large(folio)) {
 			unsigned int max_nr = (end - addr) >> PAGE_SHIFT;
 
-			nr = folio_pte_batch(folio, ptep, ptent, max_nr);
+			nr = folio_pte_batch_flags(folio, NULL, ptep, &ptent,
+						   max_nr, FPB_MERGE_YOUNG_DIRTY);
+			total += nr - 1;
+			walk->mm_stats[MM_LEAF_TOTAL] += nr - 1;
 		}
 
 		if (!clear_young_ptes_notify(args->vma, addr, ptep, nr))
@@ -3542,8 +3545,8 @@ restart:
 		if (pte_dirty(ptent))
 			dirty = true;
 
-		young++;
-		walk->mm_stats[MM_LEAF_YOUNG]++;
+		young += nr;
+		walk->mm_stats[MM_LEAF_YOUNG] += nr;
 	}
 
 	walk_update_folio(walk, last, gen, dirty);
@@ -4257,7 +4260,8 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int batched
 		if (folio_test_large(folio)) {
 			unsigned int max_nr = (end - addr) >> PAGE_SHIFT;
 
-			nr = folio_pte_batch(folio, ptep, ptent, max_nr);
+			nr = folio_pte_batch_flags(folio, NULL, ptep, &ptent,
+						   max_nr, FPB_MERGE_YOUNG_DIRTY);
 		}
 
 		if (!clear_young_ptes_notify(vma, addr, ptep, nr))
@@ -4273,7 +4277,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int batched
 		if (pte_dirty(ptent))
 			dirty = true;
 
-		young++;
+		young += nr;
 	}
 
 	walk_update_folio(walk, last, gen, dirty);
