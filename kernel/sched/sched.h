@@ -4462,9 +4462,22 @@ static inline void gb_load_balance(struct lb_env *env) { }
 #endif
 static inline void task_tick_gb(struct task_struct *p) { }
 #endif
-#if defined(CONFIG_SMP) && defined(CONFIG_GROUP_IDENTITY)
+#ifdef CONFIG_GROUP_IDENTITY
+#ifdef CONFIG_SMP
 extern void task_tick_gi(struct rq *rq);
 #else
 static inline void task_tick_gi(struct rq *rq) { }
 #endif
+#ifdef CONFIG_SCHED_CORE
+static inline bool id_expeller_share_core(void)
+{
+	return sched_feat(ID_EXPELLER_SHARE_CORE);
+}
+#else
+static inline bool id_expeller_share_core(void) { return true; }
+#endif
+#else
+static inline void task_tick_gi(struct rq *rq) { }
+static inline bool id_expeller_share_core(void) { return true; }
+#endif /* CONFIG_GROUP_IDENTITY */
 #endif /* _KERNEL_SCHED_SCHED_H */
