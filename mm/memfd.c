@@ -389,7 +389,7 @@ static int sanitize_flags(unsigned int *flags_ptr)
 			current->comm, task_pid_nr(current));
 	}
 
-	return check_sysctl_memfd_noexec(&flags);
+	return check_sysctl_memfd_noexec(flags_ptr);
 }
 
 static char *alloc_name(const char __user *uname)
