@@ -36,11 +36,14 @@ struct netns_smc {
 	struct socket			*rsvd_sock[SMC_IWARP_RSVD_PORTS_NUM];
 	struct smc_dump_ctx		*dump_ctx;
 
-	CK_KABI_RESERVE(1)
-	CK_KABI_REPLACE(struct {CK_KABI_RESERVE(2); CK_KABI_RESERVE(3); CK_KABI_RESERVE(4); },
-			long sysctl_mem[3])
-	CK_KABI_REPLACE(CK_KABI_RESERVE(5), atomic_long_t memory_allocated)
+	long sysctl_mem[3];
+	atomic_long_t memory_allocated;
 
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
 	CK_KABI_RESERVE(6)
 	CK_KABI_RESERVE(7)
 	CK_KABI_RESERVE(8)
