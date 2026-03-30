@@ -647,6 +647,9 @@ struct sched_entity {
 #endif
 	struct list_head		expel_node;
 
+#ifdef CONFIG_GROUP_IDENTITY
+	long			priority;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
