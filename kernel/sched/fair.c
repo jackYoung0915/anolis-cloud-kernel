@@ -1001,7 +1001,7 @@ static inline bool expellee_only(struct rq *rq, struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq;
 
-	if (!sched_core_enabled(rq))
+	if (!sched_core_enabled(rq) || !sched_feat(ID_SMT_EXPEL))
 		return false;
 
 	if (entity_is_task(se))
@@ -1093,10 +1093,10 @@ static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 	if (!on_expel)
 		return false;
 
-	if ((on_expel & EXPEL_BY_HIGHCLASS) && idle_only(se))
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && (on_expel & EXPEL_BY_HIGHCLASS) && idle_only(se))
 		return true;
 #ifdef CONFIG_SCHED_CORE
-	if ((on_expel & EXPEL_BY_SMT_EXPELLER) && expellee_only(rq, se))
+	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) && expellee_only(rq, se))
 		return true;
 #endif
 	return false;
@@ -1142,7 +1142,8 @@ static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 
 static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
-	if (!sched_feat(ID_ABSOLUTE_EXPEL))
+	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !sched_feat(ID_SMT_EXPEL) &&
+	    list_empty(&cfs_rq->expel_list))
 		return rb_first_cached(&cfs_rq->tasks_timeline);
 
 	check_expellee_se(cfs_rq);
@@ -9520,7 +9521,7 @@ static inline unsigned int need_expel(struct rq *rq, unsigned int expel_type)
 
 	this_cpu = cpu_of(rq);
 	if ((expel_type & EXPEL_BY_SMT_EXPELLER) && sched_core_enabled(rq) &&
-	    cpu_smt_mask(this_cpu)) {
+	    cpu_smt_mask(this_cpu) && sched_feat(ID_SMT_EXPEL)) {
 		for_each_cpu(cpu, cpu_smt_mask(this_cpu)) {
 			if (cpu == this_cpu)
 				continue;
@@ -9542,6 +9543,9 @@ static inline void update_rq_on_expel(struct rq *rq)
 {
 	unsigned int ret;
 
+	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !sched_feat(ID_SMT_EXPEL))
+		return;
+
 	ret = need_expel(rq, EXPEL_BY_ALL);
 	if (ret != rq->on_expel) {
 		sched_update_tick_dependency(rq);
@@ -9553,6 +9557,9 @@ static inline void update_rq_on_expel(struct rq *rq)
 void update_rq_on_expel_by_smt_expeller(struct rq *rq)
 {
 	unsigned int ret;
+
+	if (!sched_feat(ID_SMT_EXPEL))
+		return;
 
 	ret = need_expel(rq, EXPEL_BY_SMT_EXPELLER);
 	if ((rq->on_expel & EXPEL_BY_SMT_EXPELLER) != ret)
@@ -13946,24 +13953,24 @@ bool cfs_prio_less(const struct task_struct *a, const struct task_struct *b,
 	const struct sched_entity *seb = &b->se;
 	struct cfs_rq *cfs_rqa;
 	struct cfs_rq *cfs_rqb;
-#ifdef CONFIG_GROUP_IDENTITY
-	int a_identity = get_task_identity((struct task_struct *)a);
-	int b_identity = get_task_identity((struct task_struct *)b);
-#endif
-
 	s64 delta;
 
 	SCHED_WARN_ON(task_rq(b)->core != rq->core);
 
 #ifdef CONFIG_GROUP_IDENTITY
-	/*
-	 * Identity:
-	 * -1: expellee
-	 *  0: normal
-	 *  1: expeller
-	 */
-	if ((a_identity ^ b_identity) < 0 && a_identity && b_identity)
-		return a_identity < 0;
+	if (sched_feat(ID_SMT_EXPEL)) {
+		int a_identity = get_task_identity((struct task_struct *)a);
+		int b_identity = get_task_identity((struct task_struct *)b);
+
+		/*
+		 * Identity:
+		 * -1: expellee
+		 *  0: normal
+		 *  1: expeller
+		 */
+		if ((a_identity ^ b_identity) < 0 && a_identity && b_identity)
+			return a_identity < 0;
+	}
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/*
