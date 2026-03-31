@@ -23,13 +23,9 @@
  * This list should get updated as new features get added to the NV
  * support, and new extension to the architecture.
  */
-void access_nested_id_reg(struct kvm_vcpu *v, struct sys_reg_params *p,
-			  const struct sys_reg_desc *r)
+static u64 limit_nv_id_reg(u32 id, u64 val)
 {
-	u32 id = reg_to_encoding(r);
-	u64 val, tmp;
-
-	val = p->regval;
+	u64 tmp;
 
 	switch (id) {
 	case SYS_ID_AA64ISAR0_EL1:
@@ -137,6 +133,13 @@ void access_nested_id_reg(struct kvm_vcpu *v, struct sys_reg_params *p,
 		val |= FIELD_PREP(NV_FTR(MMFR2, TTL), 0b0001);
 		break;
 
+	case SYS_ID_AA64MMFR4_EL1:
+		val = 0;
+		if (!cpus_have_final_cap(ARM64_HAS_HCR_NV1))
+			val |= FIELD_PREP(NV_FTR(MMFR4, E2H0),
+					  ID_AA64MMFR4_EL1_E2H0_NI_NV1);
+		break;
+
 	case SYS_ID_AA64DFR0_EL1:
 		/* Only limited support for PMU, Debug, BPs and WPs */
 		val &= (NV_FTR(DFR0, PMUVer)	|
@@ -158,5 +161,17 @@ void access_nested_id_reg(struct kvm_vcpu *v, struct sys_reg_params *p,
 		break;
 	}
 
-	p->regval = val;
+	return val;
+}
+int kvm_init_nv_sysregs(struct kvm *kvm)
+{
+	mutex_lock(&kvm->arch.config_lock);
+
+	for (int i = 0; i < KVM_ARM_ID_REG_NUM; i++)
+		kvm->arch.id_regs[i] = limit_nv_id_reg(IDX_IDREG(i),
+						       kvm->arch.id_regs[i]);
+
+	mutex_unlock(&kvm->arch.config_lock);
+
+	return 0;
 }
