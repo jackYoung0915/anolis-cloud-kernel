@@ -1861,6 +1861,11 @@ static bool unmap_kernel_at_el0(const struct arm64_cpu_capabilities *entry,
 	return !meltdown_safe;
 }
 
+static bool has_nv1(const struct arm64_cpu_capabilities *entry, int scope)
+{
+	return !has_cpuid_feature(entry, scope);
+}
+
 #ifdef CONFIG_UNMAP_KERNEL_AT_EL0
 #define KPTI_NG_TEMP_VA		(-(1UL << PMD_SHIFT))
 
@@ -2868,6 +2873,13 @@ static const struct arm64_cpu_capabilities arm64_features[] = {
 		.matches = has_cpuid_feature,
 		.cpu_enable = cpu_enable_fpmr,
 		ARM64_CPUID_FIELDS(ID_AA64PFR2_EL1, FPMR, IMP)
+	},
+	{
+		.desc = "NV1",
+		.capability = ARM64_HAS_HCR_NV1,
+		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
+		.matches = has_nv1,
+		ARM64_CPUID_FIELDS_NEG(ID_AA64MMFR4_EL1, E2H0, NI_NV1)
 	},
 #ifdef CONFIG_ARM64_POE
 	{
