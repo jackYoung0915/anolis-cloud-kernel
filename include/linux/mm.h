@@ -2020,8 +2020,43 @@ static inline void kidled_set_folio_age(pg_data_t *pgdat,
 }
 #endif /* CONFIG_KIDLED */
 
+#ifdef CONFIG_MMU
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 /**
- * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
+ * folio_mk_pmd - Create a PMD for this folio
+ * @folio: The folio to create a PMD for
+ * @pgprot: The page protection bits to use
+ *
+ * Create a page table entry for the first page of this folio.
+ * This is suitable for passing to set_pmd_at().
+ *
+ * Return: A page table entry suitable for mapping this folio.
+ */
+static inline pmd_t folio_mk_pmd(struct folio *folio, pgprot_t pgprot)
+{
+        return pmd_mkhuge(pfn_pmd(folio_pfn(folio), pgprot));
+}
+
+#ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+/** 
+ * folio_mk_pud - Create a PUD for this folio
+ * @folio: The folio to create a PUD for
+ * @pgprot: The page protection bits to use
+ *
+ * Create a page table entry for the first page of this folio.
+ * This is suitable for passing to set_pud_at().
+ *
+ * Return: A page table entry suitable for mapping this folio.
+ */
+static inline pud_t folio_mk_pud(struct folio *folio, pgprot_t pgprot)
+{
+	return pud_mkhuge(pfn_pud(folio_pfn(folio), pgprot));
+}
+#endif /* CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD */
+#endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+#endif /* CONFIG_MMU */
+
+/**
  * @folio: The folio.
  *
  * This function checks if a folio has been pinned via a call to
@@ -2124,6 +2159,13 @@ static inline bool folio_is_longterm_pinnable(struct folio *folio)
 	if (folio_is_device_coherent(folio))
 		return false;
 
+	/*
+	 * Filesystems can only tolerate transient delays to truncate and
+	 * hole-punch operations
+	 */
+	if (folio_is_fsdax(folio))
+		return false;
+
 	/* Otherwise, non-movable zone folios can be pinned. */
 	return !folio_is_zone_movable(folio);
 
@@ -2173,6 +2215,13 @@ static inline long folio_nr_pages(struct folio *folio)
 	return 1L << (folio->_flags_1 & 0xff);
 #endif
 }
+
+/* Only hugetlbfs can allocate folios larger than MAX_ORDER */
+#ifdef CONFIG_ARCH_HAS_GIGANTIC_PAGE
+#define MAX_FOLIO_NR_PAGES	(1UL << PUD_ORDER)
+#else
+#define MAX_FOLIO_NR_PAGES	MAX_ORDER_NR_PAGES
+#endif
 
 /*
  * compound_nr() returns the number of pages in this potentially compound
@@ -3815,6 +3864,8 @@ int vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 				unsigned long num);
 int vm_map_pages_zero(struct vm_area_struct *vma, struct page **pages,
 				unsigned long num);
+vm_fault_t vmf_insert_page_mkwrite(struct vm_fault *vmf, struct page *page,
+			bool write);
 vm_fault_t vmf_insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 			unsigned long pfn);
 vm_fault_t vmf_insert_pfn_prot(struct vm_area_struct *vma, unsigned long addr,
