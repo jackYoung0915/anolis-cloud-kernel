@@ -14531,6 +14531,7 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 
 #ifdef CONFIG_GROUP_IDENTITY
 	WRITE_ONCE(tg->priority, READ_ONCE(parent->priority));
+	WRITE_ONCE(tg->bvt_warp_ns, READ_ONCE(parent->bvt_warp_ns));
 #ifdef CONFIG_SCHED_CORE
 	if (set_task_group_identity(tg, READ_ONCE(parent->identity)))
 		goto err;
