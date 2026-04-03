@@ -692,6 +692,7 @@ struct task_group {
 
 #ifdef CONFIG_GROUP_IDENTITY
 	long			priority;
+	int			bvt_warp_ns;
 #ifdef CONFIG_SCHED_CORE
 	int			identity;
 #endif

@@ -10162,6 +10162,77 @@ static int cpu_priority_write_s64(struct cgroup_subsys_state *css,
 
 	return ret;
 }
+
+static int sched_group_map_bvt_warp_ns(s64 bvt_warp_ns,
+				       s64 *priority, int *identity)
+{
+	switch (bvt_warp_ns) {
+	case 2:
+		*priority = 1;
+		*identity = 1;
+		return 0;
+	case 1:
+		*priority = 1;
+		*identity = 0;
+		return 0;
+	case 0:
+		*priority = 0;
+		*identity = 0;
+		return 0;
+	case -1:
+		*priority = -1;
+		*identity = -1;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+/*
+ * bvt_warp_ns is a compatibility knob: writing it re-applies the mapped
+ * priority/identity pair, while direct priority/identity writes don't rewrite
+ * the stored bvt_warp_ns value.
+ */
+static int sched_group_set_bvt_warp_ns(struct task_group *tg, s64 bvt_warp_ns)
+{
+	s64 priority;
+	int identity;
+	int ret;
+
+	ret = sched_group_map_bvt_warp_ns(bvt_warp_ns, &priority, &identity);
+	if (ret)
+		return ret;
+
+	if (tg == &root_task_group)
+		return -EPERM;
+
+	ret = sched_group_set_priority(tg, priority);
+	if (ret)
+		return ret;
+
+	scx_group_set_idle(tg, READ_ONCE(tg->idle));
+
+#ifdef CONFIG_SCHED_CORE
+	ret = update_identity(tg, identity);
+	if (ret)
+		return ret;
+#endif
+
+	WRITE_ONCE(tg->bvt_warp_ns, bvt_warp_ns);
+	return 0;
+}
+
+static int cpu_bvt_warp_ns_write_s64(struct cgroup_subsys_state *css,
+				     struct cftype *cftype, s64 bvt_warp_ns)
+{
+	return sched_group_set_bvt_warp_ns(css_tg(css), bvt_warp_ns);
+}
+
+static s64 cpu_bvt_warp_ns_read_s64(struct cgroup_subsys_state *css,
+				    struct cftype *cft)
+{
+	return READ_ONCE(css_tg(css)->bvt_warp_ns);
+}
 #endif
 #endif
 
@@ -10372,6 +10443,12 @@ static struct cftype cpu_legacy_files[] = {
 		.name = "priority",
 		.read_s64 = cpu_priority_read_s64,
 		.write_s64 = cpu_priority_write_s64,
+	},
+	/* Compat alias: writing bvt_warp_ns re-applies the mapped priority/identity. */
+	{
+		.name = "bvt_warp_ns",
+		.read_s64 = cpu_bvt_warp_ns_read_s64,
+		.write_s64 = cpu_bvt_warp_ns_write_s64,
 	},
 #endif
 	{
@@ -11101,6 +11178,13 @@ static struct cftype cpu_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_s64 = cpu_priority_read_s64,
 		.write_s64 = cpu_priority_write_s64,
+	},
+	/* Compat alias: writing bvt_warp_ns re-applies the mapped priority/identity. */
+	{
+		.name = "bvt_warp_ns",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_bvt_warp_ns_read_s64,
+		.write_s64 = cpu_bvt_warp_ns_write_s64,
 	},
 #endif
 	{
