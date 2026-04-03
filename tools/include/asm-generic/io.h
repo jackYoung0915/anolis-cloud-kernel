@@ -60,6 +60,10 @@
 #define _THIS_IP_ 0
 #endif
 
+#ifndef __iomem
+#define __iomem
+#endif
+
 static inline void log_write_mmio(u64 val, u8 width, volatile void __iomem *addr,
 				  unsigned long caller_addr, unsigned long caller_addr0) {}
 static inline void log_post_write_mmio(u64 val, u8 width, volatile void __iomem *addr,
