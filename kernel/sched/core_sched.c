@@ -373,12 +373,12 @@ void __sched_core_tick(struct rq *rq)
 #ifdef CONFIG_GROUP_IDENTITY
 unsigned long sched_core_expeller_cookie;
 unsigned long sched_core_expellee_cookie;
-raw_spinlock_t sched_core_expeller_lock;
-raw_spinlock_t sched_core_expellee_lock;
+static DEFINE_MUTEX(sched_core_expeller_mutex);
+static DEFINE_MUTEX(sched_core_expellee_mutex);
 
 static unsigned long sched_core_get_expeller_cookie(void)
 {
-	guard(raw_spinlock_irq)(&sched_core_expeller_lock);
+	guard(mutex)(&sched_core_expeller_mutex);
 	if (sched_core_expeller_cookie)
 		return sched_core_get_cookie(sched_core_expeller_cookie);
 	sched_core_expeller_cookie =
@@ -388,7 +388,7 @@ static unsigned long sched_core_get_expeller_cookie(void)
 
 static unsigned long sched_core_get_expellee_cookie(void)
 {
-	guard(raw_spinlock_irq)(&sched_core_expellee_lock);
+	guard(mutex)(&sched_core_expellee_mutex);
 	if (sched_core_expellee_cookie)
 		return sched_core_get_cookie(sched_core_expellee_cookie);
 	sched_core_expellee_cookie = sched_core_alloc_cookie(0);
@@ -397,14 +397,14 @@ static unsigned long sched_core_get_expellee_cookie(void)
 
 static void sched_core_put_expeller_cookie(void)
 {
-	guard(raw_spinlock_irq)(&sched_core_expeller_lock);
+	guard(mutex)(&sched_core_expeller_mutex);
 	if (sched_core_put_cookie(sched_core_expeller_cookie))
 		sched_core_expeller_cookie = 0UL;
 }
 
 static void sched_core_put_expellee_cookie(void)
 {
-	guard(raw_spinlock_irq)(&sched_core_expellee_lock);
+	guard(mutex)(&sched_core_expellee_mutex);
 	if (sched_core_put_cookie(sched_core_expellee_cookie))
 		sched_core_expellee_cookie = 0UL;
 }
@@ -416,7 +416,7 @@ static inline bool task_has_identity(struct task_struct *p)
 	       p->core_cookie == sched_core_expellee_cookie);
 }
 
-int set_task_group_identity(struct task_group *tg, int identity)
+int set_task_group_identity_locked(struct task_group *tg, int identity)
 {
 	unsigned long cookie = 0;
 	int old_identity = tg->identity;
@@ -440,12 +440,10 @@ int set_task_group_identity(struct task_group *tg, int identity)
 		return -EINVAL;
 	}
 
-	cgroup_lock();
 	css_task_iter_start(&tg->css, 0, &it);
 	while ((task = css_task_iter_next(&it)))
 		__sched_core_set(task, cookie);
 	css_task_iter_end(&it);
-	cgroup_unlock();
 
 	tg->identity = identity;
 
@@ -463,6 +461,17 @@ int set_task_group_identity(struct task_group *tg, int identity)
 	}
 
 	return 0;
+}
+
+int set_task_group_identity(struct task_group *tg, int identity)
+{
+	int ret;
+
+	cgroup_lock();
+	ret = set_task_group_identity_locked(tg, identity);
+	cgroup_unlock();
+
+	return ret;
 }
 
 void sched_core_identity_attach(struct cgroup_taskset *tset)
@@ -498,14 +507,4 @@ void sched_core_identity_attach(struct cgroup_taskset *tset)
 			sched_core_put_cookie(cookie);
 	}
 }
-
-static int __init sched_core_identity_lock_init(void)
-{
-	raw_spin_lock_init(&sched_core_expeller_lock);
-	raw_spin_lock_init(&sched_core_expellee_lock);
-
-	return 0;
-}
-
-early_initcall(sched_core_identity_lock_init);
 #endif

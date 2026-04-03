@@ -1811,6 +1811,7 @@ void account_ht_aware_quota(struct task_struct *p, u64 delta) {}
 #ifdef CONFIG_GROUP_IDENTITY
 struct cgroup_taskset;
 extern int update_identity(struct task_group *tg, int identity);
+extern int set_task_group_identity_locked(struct task_group *tg, int identity);
 extern int set_task_group_identity(struct task_group *tg, int identity);
 extern void sched_core_identity_attach(struct cgroup_taskset *tset);
 extern void update_rq_on_expel_by_smt_expeller(struct rq *rq);

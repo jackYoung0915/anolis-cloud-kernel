@@ -1034,6 +1034,7 @@ int update_identity(struct task_group *tg, int identity)
 		update_rq_clock(rq);
 
 		delta = se->my_q->nr_tasks;
+		se->identity = identity;
 		if (delta) {
 			for_each_sched_entity(se) {
 				cfs_rq = cfs_rq_of(se);
@@ -1060,8 +1061,6 @@ int update_identity(struct task_group *tg, int identity)
 					break;
 			}
 		}
-
-		se->identity = identity;
 		rq_unlock_irq(rq, &rf);
 	}
 
@@ -1178,6 +1177,22 @@ static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 
 	return rb_first_cached(&cfs_rq->tasks_timeline);
 }
+
+static int sched_idle_rq(struct rq *rq);
+static inline bool expellee_only_rq(struct rq *rq)
+{
+	unsigned int on_expel = rq_on_expel(rq);
+
+#ifdef CONFIG_SCHED_CORE
+	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) &&
+	    rq->cfs.h_nr_queued == rq->cfs.h_nr_expellee)
+		return true;
+#endif
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && (on_expel & EXPEL_BY_HIGHCLASS) && sched_idle_rq(rq))
+		return true;
+	return false;
+}
+
 #else
 static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
@@ -1190,6 +1205,10 @@ static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
 static inline bool id_idle_cpu(struct task_struct *p, int cpu)
 {
 	return true;
+}
+static inline bool expellee_only_rq(struct rq *rq)
+{
+	return false;
 }
 #endif
 
@@ -9803,6 +9822,9 @@ again:
 	if (!cfs_rq->nr_queued)
 		return NULL;
 
+	if (expellee_only_rq(rq))
+		return NULL;
+
 	do {
 		/* Might not have done put_prev_entity() */
 		if (cfs_rq->curr && cfs_rq->curr->on_rq)
@@ -14533,8 +14555,13 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 	WRITE_ONCE(tg->priority, READ_ONCE(parent->priority));
 	WRITE_ONCE(tg->bvt_warp_ns, READ_ONCE(parent->bvt_warp_ns));
 #ifdef CONFIG_SCHED_CORE
-	if (set_task_group_identity(tg, READ_ONCE(parent->identity)))
-		goto err;
+	/*
+	 * Inherit parent's identity. Don't call set_task_group_identity_locked()
+	 * here because tg->css is not fully initialized yet (css->cgroup is NULL).
+	 * Tasks will get their cookies set when they move into this cgroup via
+	 * sched_core_identity_attach().
+	 */
+	tg->identity = READ_ONCE(parent->identity);
 #endif
 #endif
 	init_cfs_bandwidth(tg_cfs_bandwidth(tg), tg_cfs_bandwidth(parent));
@@ -14657,7 +14684,7 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	} else {
 		se->cfs_rq = parent->my_q;
 		se->depth = parent->depth + 1;
-#ifdef CONFIG_GROUP_IDENTITY
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
 		se->identity = parent->identity;
 #endif
 	}
