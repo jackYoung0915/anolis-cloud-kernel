@@ -264,7 +264,7 @@ int pci_liveupdate_preserve(struct pci_dev *dev)
 	int i, ret;
 
 	/* SR-IOV is not supported yet. */
-	if (dev->is_virtfn || dev->is_physfn)
+	if (dev->is_virtfn || (dev->is_physfn && pci_num_vf(dev) > 0))
 		return -EINVAL;
 
 	ret = pci_liveupdate_validate_iommu_group(dev);
