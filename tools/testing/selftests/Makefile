@@ -101,6 +101,7 @@ TARGETS += user
 TARGETS += user_events
 TARGETS += vDSO
 TARGETS += mm
+TARGETS += vfio
 TARGETS += x86
 TARGETS += zram
 #Please keep the TARGETS list alphabetically sorted

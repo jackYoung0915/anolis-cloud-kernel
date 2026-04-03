@@ -6,6 +6,10 @@
 #include <linux/types.h>
 #include "special_insns.h"
 
+#ifndef __iomem
+#define __iomem
+#endif
+
 #define build_mmio_read(name, size, type, reg, barrier) \
 static inline type name(const volatile void __iomem *addr) \
 { type ret; asm volatile("mov" size " %1,%0":reg (ret) \
