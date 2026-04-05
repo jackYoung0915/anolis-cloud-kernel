@@ -699,6 +699,8 @@ SYSCALL_DEFINE5(fsetxattr, int, fd, const char __user *, name,
 	int error;
 
 	CLASS(fd, f)(fd);
+	if (!f.file)
+		return -EBADF;
 
 	audit_file(f.file);
 	error = setxattr_copy(name, &ctx);
@@ -809,11 +811,16 @@ SYSCALL_DEFINE4(lgetxattr, const char __user *, pathname,
 SYSCALL_DEFINE4(fgetxattr, int, fd, const char __user *, name,
 		void __user *, value, size_t, size)
 {
-	CLASS(fd, f)(fd);
+	struct fd f = fdget(fd);
+	ssize_t error = -EBADF;
 
+	if (!f.file)
+		return error;
 	audit_file(f.file);
-	return getxattr(file_mnt_idmap(f.file), f.file->f_path.dentry,
+	error = getxattr(file_mnt_idmap(f.file), f.file->f_path.dentry,
 			 name, value, size);
+	fdput(f);
+	return error;
 }
 
 /*
@@ -880,10 +887,15 @@ SYSCALL_DEFINE3(llistxattr, const char __user *, pathname, char __user *, list,
 
 SYSCALL_DEFINE3(flistxattr, int, fd, char __user *, list, size_t, size)
 {
-	CLASS(fd, f)(fd);
+	struct fd f = fdget(fd);
+	ssize_t error = -EBADF;
 
+	if (!f.file)
+		return error;
 	audit_file(f.file);
-	return listxattr(f.file->f_path.dentry, list, size);
+	error = listxattr(f.file->f_path.dentry, list, size);
+	fdput(f);
+	return error;
 }
 
 /*
@@ -940,10 +952,12 @@ SYSCALL_DEFINE2(lremovexattr, const char __user *, pathname,
 
 SYSCALL_DEFINE2(fremovexattr, int, fd, const char __user *, name)
 {
-	CLASS(fd, f)(fd);
+	struct fd f = fdget(fd);
 	char kname[XATTR_NAME_MAX + 1];
-	int error;
+	int error = -EBADF;
 
+	if (!f.file)
+		return error;
 	audit_file(f.file);
 
 	error = strncpy_from_user(kname, name, sizeof(kname));
@@ -958,6 +972,7 @@ SYSCALL_DEFINE2(fremovexattr, int, fd, const char __user *, name)
 				    f.file->f_path.dentry, kname);
 		mnt_drop_write_file(f.file);
 	}
+	fdput(f);
 	return error;
 }
 
