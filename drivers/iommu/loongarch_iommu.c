@@ -590,24 +590,6 @@ static void dom_info_free(struct dom_info *info)
 	kfree(info);
 }
 
-static struct iommu_domain *la_iommu_domain_alloc(unsigned int type)
-{
-	struct dom_info *info;
-
-	switch (type) {
-	case IOMMU_DOMAIN_BLOCKED:
-	case IOMMU_DOMAIN_IDENTITY:
-	case IOMMU_DOMAIN_UNMANAGED:
-		info = alloc_dom_info();
-		if (info == NULL)
-			return NULL;
-		break;
-	default:
-		return NULL;
-	}
-	return &info->domain;
-}
-
 void domain_deattach_iommu(struct dom_info *priv, struct iommu_info *info)
 {
 	if ((priv == NULL) || (info == NULL) ||
@@ -836,7 +818,8 @@ static struct la_iommu_dev_data *get_devdata_from_iommu_info(struct dom_info *in
 }
 static void la_iommu_detach_dev(struct device *dev);
 
-static int la_iommu_attach_dev(struct iommu_domain *domain, struct device *dev)
+static int la_iommu_attach_dev(struct iommu_domain *domain, struct device *dev,
+			       struct iommu_domain *old)
 {
 	struct dom_info *priv = to_dom_info(domain);
 	struct pci_dev  *pdev = to_pci_dev(dev);
@@ -847,11 +830,6 @@ static int la_iommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	unsigned short bdf;
 
 	la_iommu_detach_dev(dev);
-
-	if (domain != NULL &&
-	    (domain->type == IOMMU_DOMAIN_IDENTITY ||
-	     domain->type == IOMMU_DOMAIN_BLOCKED))
-		return 0;
 
 	if (domain == NULL)
 		return 0;
@@ -1121,22 +1099,27 @@ static size_t domain_unmap_page(struct dom_info *priv,
 	return unmap_len;
 }
 
-static int la_iommu_map(struct iommu_domain *domain, unsigned long vaddr,
-			 phys_addr_t paddr, size_t len, int prot, gfp_t gfp)
+static int la_iommu_map_pages(struct iommu_domain *domain, unsigned long iova,
+			      phys_addr_t paddr, size_t pgsize, size_t pgcount,
+			      int prot, gfp_t gfp, size_t *mapped)
 {
 	int ret;
+	size_t len = pgsize * pgcount;
 	struct dom_info *priv = to_dom_info(domain);
 
-	ret = domain_map_page(priv, vaddr, paddr, len);
+	ret = domain_map_page(priv, iova, paddr, len);
+	if (!ret && mapped)
+		*mapped = len;
 	return ret;
 }
 
-static size_t la_iommu_unmap(struct iommu_domain *domain, unsigned long vaddr,
-				size_t len, struct iommu_iotlb_gather *iotlb_gather)
+static size_t la_iommu_unmap_pages(struct iommu_domain *domain, unsigned long iova,
+				   size_t pgsize, size_t pgcount,
+				   struct iommu_iotlb_gather *iotlb_gather)
 {
 	struct dom_info *priv = to_dom_info(domain);
 
-	return domain_unmap_page(priv, vaddr, len);
+	return domain_unmap_page(priv, iova, pgsize * pgcount);
 }
 
 static phys_addr_t _iommu_iova_to_phys(struct dom_info *info, dma_addr_t vaddr)
@@ -1186,9 +1169,53 @@ static int la_iommu_def_domain_type(struct device *dev)
 	return IOMMU_DOMAIN_IDENTITY;
 }
 
+static struct iommu_domain *la_iommu_domain_alloc_paging(struct device *dev)
+{
+	struct dom_info *info;
+
+	info = alloc_dom_info();
+	if (!info)
+		return NULL;
+	return &info->domain;
+}
+
+static int la_iommu_identity_attach(struct iommu_domain *domain,
+				    struct device *dev, struct iommu_domain *old)
+{
+	la_iommu_detach_dev(dev);
+	return 0;
+}
+
+static const struct iommu_domain_ops la_iommu_identity_ops = {
+	.attach_dev = la_iommu_identity_attach,
+};
+
+static struct iommu_domain la_iommu_identity_domain = {
+	.type = IOMMU_DOMAIN_IDENTITY,
+	.ops  = &la_iommu_identity_ops,
+};
+
+static int la_iommu_blocked_attach(struct iommu_domain *domain,
+				   struct device *dev, struct iommu_domain *old)
+{
+	la_iommu_detach_dev(dev);
+	return 0;
+}
+
+static const struct iommu_domain_ops la_iommu_blocked_ops = {
+	.attach_dev = la_iommu_blocked_attach,
+};
+
+static struct iommu_domain la_iommu_blocked_domain = {
+	.type = IOMMU_DOMAIN_BLOCKED,
+	.ops  = &la_iommu_blocked_ops,
+};
+
 const struct iommu_ops la_iommu_ops = {
 	.capable = la_iommu_capable,
-	.domain_alloc = la_iommu_domain_alloc,
+	.identity_domain = &la_iommu_identity_domain,
+	.blocked_domain = &la_iommu_blocked_domain,
+	.domain_alloc_paging = la_iommu_domain_alloc_paging,
 	.probe_device = la_iommu_probe_device,
 	.release_device = la_iommu_remove_device,
 	.device_group = la_iommu_device_group,
@@ -1197,8 +1224,8 @@ const struct iommu_ops la_iommu_ops = {
 	.owner = THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= la_iommu_attach_dev,
-		.map = la_iommu_map,
-		.unmap = la_iommu_unmap,
+		.map_pages	= la_iommu_map_pages,
+		.unmap_pages	= la_iommu_unmap_pages,
 		.iova_to_phys	= la_iommu_iova_to_phys,
 		.flush_iotlb_all = la_iommu_flush_iotlb_all,
 		.free		= la_iommu_domain_free,
