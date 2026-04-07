@@ -10433,6 +10433,7 @@ static struct cftype memsw_files[] = {
 	{ },	/* terminate */
 };
 
+#ifdef CONFIG_ZSWAP
 static bool __memcg_may_zswap(struct mem_cgroup *memcg)
 {
 	struct mem_cgroup *temp_memcg;
@@ -10458,6 +10459,7 @@ static bool __memcg_may_zswap(struct mem_cgroup *memcg)
 	}
 	return ret;
 }
+#endif
 
 #if defined(CONFIG_MEMCG_KMEM) && defined(CONFIG_ZSWAP)
 static inline struct mem_cgroup *get_mem_cgroup_from_objcg(struct obj_cgroup *objcg)
