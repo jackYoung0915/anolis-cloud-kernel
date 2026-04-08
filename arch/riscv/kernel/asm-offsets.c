@@ -13,8 +13,6 @@
 #include <asm/thread_info.h>
 #include <asm/ptrace.h>
 #include <asm/cpu_ops_sbi.h>
-#include <asm/sbi.h>
-#include <asm/sse.h>
 #include <asm/stacktrace.h>
 #include <asm/suspend.h>
 
@@ -530,18 +528,5 @@ void asm_offsets(void)
 	DEFINE(FREGS_A5,	    offsetof(struct __arch_ftrace_regs, a5));
 	DEFINE(FREGS_A6,	    offsetof(struct __arch_ftrace_regs, a6));
 	DEFINE(FREGS_A7,	    offsetof(struct __arch_ftrace_regs, a7));
-#endif
-
-#ifdef CONFIG_RISCV_SSE
-	OFFSET(SSE_REG_EVT_STACK, sse_event_arch_data, stack);
-	OFFSET(SSE_REG_EVT_SHADOW_STACK, sse_event_arch_data, shadow_stack);
-	OFFSET(SSE_REG_EVT_TMP, sse_event_arch_data, tmp);
-	OFFSET(SSE_REG_HART_ID, sse_event_arch_data, hart_id);
-	OFFSET(SSE_REG_CPU_ID, sse_event_arch_data, cpu_id);
-
-	DEFINE(SBI_EXT_SSE, SBI_EXT_SSE);
-	DEFINE(SBI_SSE_EVENT_COMPLETE, SBI_SSE_EVENT_COMPLETE);
-	#define ASM_MAX_CPUS NR_CPUS
-	DEFINE(ASM_NR_CPUS, ASM_MAX_CPUS);
 #endif
 }
