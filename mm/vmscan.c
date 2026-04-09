@@ -2309,7 +2309,7 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 	struct lruvec *target_lruvec;
 
 	if (lru_gen_enabled())
-		return;
+		goto file_reserved;
 
 	target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
 
@@ -2368,6 +2368,7 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 	else
 		sc->cache_trim_mode = 0;
 
+file_reserved:
 	/*
 	 * Prevent the reclaimer from falling into the cache trap: as
 	 * cache pages start out inactive, every cache fault will tip
@@ -4680,6 +4681,11 @@ static int isolate_folios(struct lruvec *lruvec, struct scan_control *sc, int sw
 
 		*type_scanned = type;
 
+		if (sc->file_is_reserved && (type == LRU_GEN_FILE)) {
+			type = !type;
+			continue;
+		}
+
 		scanned = scan_folios(lruvec, sc, type, tier, list);
 		if (scanned)
 			return scanned;
@@ -6031,6 +6037,7 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 	if (lru_gen_enabled() && root_reclaim(sc)) {
 		memset(&sc->nr, 0, sizeof(sc->nr));
+		prepare_scan_count(pgdat, sc);
 		lru_gen_shrink_node(pgdat, sc);
 		return;
 	}
