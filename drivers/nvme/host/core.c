@@ -2852,6 +2852,10 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
 		dev_err(ctrl->device, "Identify Controller failed (%d)\n", ret);
 		return -EIO;
 	}
+#ifdef CONFIG_NVME_PASS_REQFLAG
+	if (le16_to_cpu(id->vid) == PCI_VENDOR_ID_ALIBABA)
+		ctrl->pass_reqflag_enabled = true;
+#endif
 
 	if (id->lpa & NVME_CTRL_LPA_CMD_EFFECTS_LOG) {
 		ret = nvme_get_effects_log(ctrl, NVME_CSI_NVM, &ctrl->effects);
