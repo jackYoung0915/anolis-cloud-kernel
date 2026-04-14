@@ -360,6 +360,9 @@ struct nvme_ctrl {
 	unsigned long discard_page_busy;
 
 	struct nvme_fault_inject fault_inject;
+#ifdef CONFIG_NVME_PASS_REQFLAG
+	bool pass_reqflag_enabled;
+#endif
 };
 
 static inline enum nvme_ctrl_state nvme_ctrl_state(struct nvme_ctrl *ctrl)
