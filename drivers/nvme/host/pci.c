@@ -962,6 +962,9 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	struct nvme_command *cmnd = &iod->cmd;
 	blk_status_t ret;
+#ifdef CONFIG_NVME_PASS_REQFLAG
+	u16 reqflag = 0;
+#endif
 
 	iod->aborted = 0;
 	iod->npages = -1;
@@ -985,6 +988,19 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 		ret = nvme_map_data(dev, req, cmnd);
 		if (ret)
 			goto out_free_cmd;
+#ifdef CONFIG_NVME_PASS_REQFLAG
+		if (dev->ctrl.pass_reqflag_enabled &&
+			(req_op(req) == REQ_OP_WRITE || req_op(req) == REQ_OP_READ)) {
+			/* Extract and pack request flags into reqflag from low to high bit,
+			 * bit-0 informs backend that feature is enabled
+			 */
+			reqflag = get_and_pack_req_cmd_flags(req);
+
+			/* Set reqflag to the high 16 bits of cdw3 */
+			cmnd->common.cdw2[1] = (cmnd->common.cdw2[1] & cpu_to_le32(0xFFFF))
+						| cpu_to_le32((u32)reqflag << 16);
+		}
+#endif
 	}
 
 	if (blk_integrity_rq(req)) {
