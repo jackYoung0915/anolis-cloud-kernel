@@ -58,6 +58,7 @@
 #include <linux/kfence.h>
 #include <linux/cacheinfo.h>
 #include <linux/pre_oom.h>
+#include <linux/crash_dump.h>
 #include <asm/div64.h>
 #include "internal.h"
 #include "shuffle.h"
@@ -6459,6 +6460,10 @@ static void setup_min_cache_kbytes(void)
 int __meminit init_min_cache_kbytes(void)
 {
 	unsigned long total_ram_bytes = totalram_pages() << PAGE_SHIFT;
+
+	/* kdump capture kernel has very limited memory, skip reservation */
+	if (is_kdump_kernel())
+		return 0;
 
 	if (total_ram_bytes <= 4UL * SZ_1G)
 		/* limit min_cache_kbytes to 1/2 of total memory at most */
