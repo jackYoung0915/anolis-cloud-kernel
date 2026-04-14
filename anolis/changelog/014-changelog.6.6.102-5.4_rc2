@@ -1,0 +1,7 @@
+* Tue Apr 14 2026 Weilin Tong <tongweilin@linux.alibaba.com> [6.6.102-5.4_rc2%%DIST%%]
+- anolis: mm: skip min_cache_kbytes reservation in kdump capture kernel (Yuanhe Shu)
+- NFS: Fix a deadlock involving nfs_release_folio() (Trond Myklebust)
+- nfs: pass explicit offset/count to trace events (Christoph Hellwig)
+- anolis: mm: Fix unexpected kidled_reset even kidled is disabled (Zelin Deng)
+- anolis: mm: make mglru completely mutually exclusive with kidled (Zelin Deng)
+
