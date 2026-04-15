@@ -951,6 +951,59 @@ static inline int get_se_priority(struct sched_entity *se)
 {
 	return se->priority;
 }
+/*
+ * cpu.priority is intentionally a strict 3-state class selector:
+ *   1  => high
+ *   0  => normal
+ *  -1  => low
+ *
+ * sched_group_set_priority() rejects every other value, so the helper
+ * predicates below can test these exact class values directly while leaving
+ * the wakeup/tick policy unchanged.
+ */
+
+static inline bool is_highclass(const struct sched_entity *se)
+{
+	return READ_ONCE(se->priority) == 1;
+}
+
+static inline bool is_underclass(const struct sched_entity *se)
+{
+	return READ_ONCE(se->priority) == -1;
+}
+
+static inline bool is_normalclass(const struct sched_entity *se)
+{
+	return READ_ONCE(se->priority) == 0;
+}
+
+static inline bool task_is_highclass(struct task_struct *p)
+{
+	return p->se.parent && is_highclass(p->se.parent);
+}
+
+static inline bool task_is_underclass(struct task_struct *p)
+{
+	return p->se.parent && is_underclass(p->se.parent);
+}
+
+static inline void inc_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	if (se->sched_delayed)
+		return;
+
+	cfs_rq->nr_highclass += is_highclass(se);
+	cfs_rq->nr_underclass += is_underclass(se);
+}
+
+static inline void dec_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	if (se->sched_delayed)
+		return;
+
+	cfs_rq->nr_highclass -= is_highclass(se);
+	cfs_rq->nr_underclass -= is_underclass(se);
+}
 
 #ifdef CONFIG_SCHED_CORE
 static inline bool is_expeller(struct sched_entity *se)
@@ -1008,7 +1061,7 @@ static inline bool expellee_only(struct rq *rq, struct sched_entity *se)
 		return task_is_expellee(task_of(se));
 
 	cfs_rq = group_cfs_rq(se);
-	return cfs_rq->h_nr_runnable == cfs_rq->h_nr_expellee;
+	return cfs_rq->h_nr_expellee && cfs_rq->h_nr_runnable == cfs_rq->h_nr_expellee;
 }
 
 int update_identity(struct task_group *tg, int identity)
@@ -1020,25 +1073,61 @@ int update_identity(struct task_group *tg, int identity)
 	if (old_identity == identity)
 		return 0;
 
-	for_each_online_cpu(cpu) {
+	ret = set_task_group_identity(tg, identity);
+	if (ret)
+		return ret;
+
+	for_each_possible_cpu(cpu) {
 		struct rq *rq = cpu_rq(cpu);
 		struct rq_flags rf;
 		struct sched_entity *se = tg->se[cpu];
 		struct cfs_rq *cfs_rq;
 		unsigned int delta;
 
-		if (!se || !se->my_q)
+		if (!se)
 			continue;
 
 		rq_lock_irq(rq, &rf);
 		update_rq_clock(rq);
+		WRITE_ONCE(se->identity, identity);
+
+		/*
+		 * Only adjust hierarchical expeller/expellee counters when the
+		 * group entity is actually on_rq. Otherwise enqueue / delayed /
+		 * unthrottle paths will pick up the new se->identity when the
+		 * hierarchy becomes visible again.
+		 */
+		if (!se->my_q || !se->on_rq) {
+			rq_unlock_irq(rq, &rf);
+			continue;
+		}
 
 		delta = se->my_q->nr_tasks;
-		se->identity = identity;
 		if (delta) {
+			cfs_rq = group_cfs_rq(se);
+			switch (old_identity) {
+			case 1:
+				cfs_rq->h_nr_expeller -= delta;
+				break;
+			case -1:
+				cfs_rq->h_nr_expellee -= delta;
+				break;
+			}
+
+			switch (identity) {
+			case 1:
+				cfs_rq->h_nr_expeller += delta;
+				break;
+			case -1:
+				cfs_rq->h_nr_expellee += delta;
+				break;
+			}
+
+
 			for_each_sched_entity(se) {
 				cfs_rq = cfs_rq_of(se);
-
+				if (!se->on_rq)
+					break;
 				switch (old_identity) {
 				case 1:
 					cfs_rq->h_nr_expeller -= delta;
@@ -1064,13 +1153,73 @@ int update_identity(struct task_group *tg, int identity)
 		rq_unlock_irq(rq, &rf);
 	}
 
-	ret = set_task_group_identity(tg, identity);
-	if (ret)
-		return ret;
-
 	return 0;
 }
 #endif
+
+/*
+ * Hierarchical identity delta -- bundles the per-cfs_rq hierarchical
+ * counters that must be propagated together when a task enters or
+ * leaves a cfs_rq hierarchy.
+ */
+struct identity_delta {
+	int highclass;
+	int underclass;
+#ifdef CONFIG_SCHED_CORE
+	int expeller;
+	int expellee;
+#endif
+};
+
+#define IDENTITY_DELTA_ZERO ((struct identity_delta){ 0 })
+
+static inline struct identity_delta
+task_identity_delta(struct task_struct *p)
+{
+	return (struct identity_delta) {
+		.highclass	= task_is_highclass(p),
+		.underclass	= task_is_underclass(p),
+#ifdef CONFIG_SCHED_CORE
+		.expeller	= task_is_expeller(p),
+		.expellee	= task_is_expellee(p),
+#endif
+	};
+}
+
+static inline struct identity_delta
+cfs_rq_identity_delta(struct cfs_rq *cfs_rq)
+{
+	return (struct identity_delta) {
+		.highclass	= cfs_rq->h_nr_highclass,
+		.underclass	= cfs_rq->h_nr_underclass,
+#ifdef CONFIG_SCHED_CORE
+		.expeller	= cfs_rq->h_nr_expeller,
+		.expellee	= cfs_rq->h_nr_expellee,
+#endif
+	};
+}
+
+static inline void
+add_identity_delta(struct cfs_rq *cfs_rq, const struct identity_delta *d)
+{
+	cfs_rq->h_nr_highclass += d->highclass;
+	cfs_rq->h_nr_underclass += d->underclass;
+#ifdef CONFIG_SCHED_CORE
+	cfs_rq->h_nr_expeller += d->expeller;
+	cfs_rq->h_nr_expellee += d->expellee;
+#endif
+}
+
+static inline void
+sub_identity_delta(struct cfs_rq *cfs_rq, const struct identity_delta *d)
+{
+	cfs_rq->h_nr_highclass -= d->highclass;
+	cfs_rq->h_nr_underclass -= d->underclass;
+#ifdef CONFIG_SCHED_CORE
+	cfs_rq->h_nr_expeller -= d->expeller;
+	cfs_rq->h_nr_expellee -= d->expellee;
+#endif
+}
 
 #define EXPEL_BY_HIGHCLASS	0x0001
 #ifdef CONFIG_SCHED_CORE
@@ -1102,15 +1251,54 @@ static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
 
 static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 {
+	unsigned int __maybe_unused on_expel = rq_on_expel(rq);
+
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && cfs_rq_of(se)->nr_highclass && is_underclass(se))
+		return true;
+#ifdef CONFIG_SCHED_CORE
+	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) && expellee_only(rq, se))
+		return true;
+#endif
+	return false;
+}
+
+static inline bool task_will_be_expelled(struct rq *rq, struct task_struct *p)
+{
 	unsigned int on_expel = rq_on_expel(rq);
 
 	if (!on_expel)
 		return false;
 
-	if (sched_feat(ID_ABSOLUTE_EXPEL) && (on_expel & EXPEL_BY_HIGHCLASS) && idle_only(se))
+	/*
+	 * O(1) conservative check using the cached has_underclass_in_chain
+	 * flag. This may produce false positives when highclass entities
+	 * exist on this rq but at a different cfs_rq level than the task's
+	 * underclass ancestor. Acceptable for load balancing heuristics.
+	 */
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && (on_expel & EXPEL_BY_HIGHCLASS) &&
+	    p->se.parent && READ_ONCE(p->se.parent->has_underclass_in_chain))
 		return true;
 #ifdef CONFIG_SCHED_CORE
-	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) && expellee_only(rq, se))
+	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) &&
+	    task_is_expellee(p))
+		return true;
+#endif
+	return false;
+}
+
+static inline bool has_task_on_expel(struct rq *rq)
+{
+	unsigned int on_expel = rq_on_expel(rq);
+
+	if (!on_expel)
+		return false;
+
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && (on_expel & EXPEL_BY_HIGHCLASS) &&
+	    rq->cfs.h_nr_underclass)
+		return true;
+#ifdef CONFIG_SCHED_CORE
+	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) &&
+	    rq->cfs.h_nr_expellee)
 		return true;
 #endif
 	return false;
@@ -1120,7 +1308,7 @@ static noinline bool id_idle_cpu(struct task_struct *p, int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 
-	if (should_expel_se(rq, &p->se))
+	if (task_will_be_expelled(rq, p))
 		return false;
 	if (!id_expeller_share_core() && task_is_expeller(p) && rq_on_expel_by_smt_expeller(rq))
 		return false;
@@ -1136,7 +1324,13 @@ static inline void check_expellee_se(struct cfs_rq *cfs_rq)
 			continue;
 
 		list_del_init(&se->expel_node);
-		/* To avoid priority inversion. */
+
+		/*
+		 * Reset lag before requeueing the entity. Once the expel
+		 * condition disappears, let it compete again from a neutral
+		 * position instead of preserving stale debt/credit accumulated
+		 * while it was hidden from the pick path.
+		 */
 		se->vlag = 0;
 		place_entity(cfs_rq, se, 0);
 		__enqueue_entity(cfs_rq, se);
@@ -1154,12 +1348,30 @@ static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 		if (!should_expel_se(rq_of(cfs_rq), se))
 			break;
 
-		left = rb_next(&se->run_node);
+		/*
+		 * Delayed entities must still be returned to pick_next_entity()
+		 * once so the delayed-dequeue path can finish their real dequeue.
+		 * Hiding them here would leave nr_queued non-zero while making the
+		 * entity unreachable to pick.
+		 */
+		if (se->sched_delayed)
+			break;
 
-		if (!se->sched_delayed) {
-			__dequeue_entity(cfs_rq, se);
-			list_add_tail(&se->expel_node, &cfs_rq->expel_list);
-		}
+		/*
+		 * Skip only the leftmost expellee prefix.
+		 *
+		 * __dequeue_entity() removes the entity from both the deadline
+		 * tree and the queued-entity average used by eligibility tests
+		 * (avg_vruntime/avg_load). Therefore expellees moved to expel_list
+		 * no longer contribute through the queued tree population.
+		 *
+		 * Note that this only applies to entities actually dequeued from
+		 * the rb-tree. The current entity (cfs_rq->curr) is not in the
+		 * tree and must be handled separately by the pick path.
+		 */
+		left = rb_next(&se->run_node);
+		__dequeue_entity(cfs_rq, se);
+		list_add_tail(&se->expel_node, &cfs_rq->expel_list);
 	}
 
 	return left;
@@ -1185,15 +1397,15 @@ static inline bool expellee_only_rq(struct rq *rq)
 
 #ifdef CONFIG_SCHED_CORE
 	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) &&
-	    rq->cfs.h_nr_queued == rq->cfs.h_nr_expellee)
+	    rq->cfs.h_nr_expellee && rq->cfs.h_nr_runnable == rq->cfs.h_nr_expellee)
 		return true;
 #endif
-	if (sched_feat(ID_ABSOLUTE_EXPEL) && (on_expel & EXPEL_BY_HIGHCLASS) && sched_idle_rq(rq))
-		return true;
 	return false;
 }
 
 #else
+static inline void inc_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
+static inline void dec_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
 	return rb_first_cached(&cfs_rq->tasks_timeline);
@@ -1207,6 +1419,10 @@ static inline bool id_idle_cpu(struct task_struct *p, int cpu)
 	return true;
 }
 static inline bool expellee_only_rq(struct rq *rq)
+{
+	return false;
+}
+static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 {
 	return false;
 }
@@ -1261,65 +1477,248 @@ static inline void cancel_protect_slice(struct sched_entity *se)
  *
  * Which allows tree pruning through eligibility.
  */
+static inline void pick_eligible_data(struct cfs_rq *cfs_rq,
+				      s64 *avg, long *load)
+{
+	struct sched_entity *curr = cfs_rq->curr;
+
+	*avg = cfs_rq->avg_vruntime;
+	*load = cfs_rq->avg_load;
+
+	/*
+	 * The queued expellees hidden by skip_expellee_se() have already been
+	 * removed from avg_vruntime/avg_load via __dequeue_entity().
+	 *
+	 * Mirror that same filtered view for cfs_rq->curr here. curr is not
+	 * part of the rb-tree, but the generic vruntime_eligible() logic would
+	 * otherwise add it back unconditionally when curr->on_rq. If curr is
+	 * currently expelled, keeping it in the average would let a hidden
+	 * entity continue to skew the pick-side eligibility test.
+	 */
+	if (curr && curr->on_rq && !should_expel_se(rq_of(cfs_rq), curr)) {
+		unsigned long weight = scale_load_down(curr->load.weight);
+
+		*avg += entity_key(cfs_rq, curr) * weight;
+		*load += weight;
+	}
+}
+
+static inline int vruntime_eligible_pick_avg(struct cfs_rq *cfs_rq,
+				     s64 avg, long load, u64 vruntime)
+{
+	return avg >= (s64)(vruntime - cfs_rq->min_vruntime) * load;
+}
+
+static inline int vruntime_eligible_pick(struct cfs_rq *cfs_rq, u64 vruntime)
+{
+	s64 avg;
+	long load;
+
+	pick_eligible_data(cfs_rq, &avg, &load);
+	return vruntime_eligible_pick_avg(cfs_rq, avg, load, vruntime);
+}
+
+static inline int entity_eligible_pick(struct cfs_rq *cfs_rq,
+				       struct sched_entity *se)
+{
+	return vruntime_eligible_pick(cfs_rq, se->vruntime);
+}
+
+static inline s64 entity_eligibility_deficit(struct cfs_rq *cfs_rq,
+				     s64 avg, long load,
+				     struct sched_entity *se)
+{
+	return (s64)(se->vruntime - cfs_rq->min_vruntime) * load - avg;
+}
+
+static inline bool better_fallback_entity(struct cfs_rq *cfs_rq,
+					  s64 avg, long load,
+					  struct sched_entity *se,
+					  struct sched_entity *best)
+{
+	s64 deficit = entity_eligibility_deficit(cfs_rq, avg, load, se);
+	s64 best_deficit = entity_eligibility_deficit(cfs_rq, avg, load, best);
+
+	if (deficit < best_deficit)
+		return true;
+	if (deficit > best_deficit)
+		return false;
+
+	return entity_before(se, best);
+}
+
 static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 {
 	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 	struct sched_entity *se = __pick_first_entity(cfs_rq);
 	struct sched_entity *curr = cfs_rq->curr;
 	struct sched_entity *best = NULL;
+	struct sched_entity *fallback = NULL;
+	struct rq *rq = rq_of(cfs_rq);
+	s64 avg;
+	long load;
+
+	pick_eligible_data(cfs_rq, &avg, &load);
+
+	if (curr) {
+		if (should_expel_se(rq, curr) || !curr->on_rq)
+			curr = NULL;
+		else if (vruntime_eligible_pick_avg(cfs_rq, avg, load, curr->vruntime))
+			best = curr;
+		else
+			fallback = curr;
+	}
 
 	/*
 	 * We can safely skip eligibility check if there is only one entity
 	 * in this cfs_rq, saving some cycles.
 	 */
-	if (cfs_rq->nr_queued == 1)
-		return curr && curr->on_rq ? curr : se;
-
-	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
-		curr = NULL;
-
-	if (sched_feat(RUN_TO_PARITY) && curr && protect_slice(curr))
-		return curr;
-
-	/* Pick the leftmost entity if it's eligible */
-	if (se && entity_eligible(cfs_rq, se)) {
-		best = se;
-		goto found;
+	if (cfs_rq->nr_queued == 1) {
+		if (best)
+			return best;
+		if (fallback)
+			return fallback;
+		return se;
 	}
 
-	/* Heap search for the EEVD entity */
+	if (sched_feat(RUN_TO_PARITY) && best && protect_slice(best))
+		return best;
+
+	/*
+	 * Fast check for the leftmost queued entity.
+	 *
+	 * __pick_first_entity() already reflects skip_expellee_se() filtering.
+	 * If the leftmost visible entity is eligible and selectable, it is still
+	 * the best queued winner. Otherwise, keep the closest non-expellee entity
+	 * as a fallback so the slow path never returns NULL.
+	 */
+	if (se && !should_expel_se(rq, se)) {
+		if (vruntime_eligible_pick_avg(cfs_rq, avg, load, se->vruntime)) {
+			best = se;
+			goto found;
+		}
+
+		if (!fallback || better_fallback_entity(cfs_rq, avg, load, se,
+						       fallback))
+			fallback = se;
+	}
+
+	/*
+	 * Heap search for the earliest eligible entity.
+	 *
+	 * Keep avg/load fixed for the whole pick. Following the EEVDF model,
+	 * eligibility is defined against the runqueue virtual time V:
+	 *
+	 *   lag_i = w_i * (V - v_i)
+	 *   eligible(i) <=> lag_i >= 0 <=> V >= v_i
+	 *
+	 * In the kernel's weighted-average form, that becomes:
+	 *
+	 *   avg >= (v_i - min_vruntime) * load
+	 *
+	 * where:
+	 *
+	 *   avg  = cfs_rq->avg_vruntime
+	 *   load = cfs_rq->avg_load
+	 *   v_i  = se->vruntime
+	 *
+	 * Equivalently, with avg/load fixed during this pick, eligibility is a
+	 * stable predicate with a fixed threshold:
+	 *
+	 *   eligible(se) <=> se->vruntime <= min_vruntime + avg / load
+	 *
+	 * The slow path uses two winner sets:
+	 *
+	 *   strict winner   = earliest deadline in
+	 *                     { se | eligible(se) && !should_expel_se(se) }
+	 *
+	 *   fallback winner = minimum eligibility deficit in
+	 *                     { se | !should_expel_se(se) }
+	 *
+	 * where:
+	 *
+	 *   deficit(se) = (se->vruntime - min_vruntime) * load - avg
+	 *
+	 * So deficit <= 0 means eligible, and the smallest positive deficit is
+	 * the non-expellee entity closest to becoming eligible. This preserves
+	 * the scheduler iron law for this project: slow-path pick_eevdf() must
+	 * never return NULL.
+	 *
+	 * The augmented tree gives us only one safe pruning dimension here:
+	 * eligibility via min_vruntime. Do not mix should_expel_se() into the
+	 * tree descent logic. Expel is not represented in the subtree
+	 * augmentation, so pruning on it would be incorrect and can miss the
+	 * real winner.
+	 */
 	while (node) {
 		struct rb_node *left = node->rb_left;
 
 		/*
-		 * Eligible entities in left subtree are always better
-		 * choices, since they have earlier deadlines.
+		 * If the left subtree contains any eligible entity, it must beat
+		 * the current node on deadline order.
 		 */
-		if (left && vruntime_eligible(cfs_rq,
-					__node_2_se(left)->min_vruntime)) {
+		if (left && vruntime_eligible_pick_avg(cfs_rq, avg, load,
+					      __node_2_se(left)->min_vruntime)) {
 			node = left;
 			continue;
 		}
 
 		se = __node_2_se(node);
 
+		if (!should_expel_se(rq, se) &&
+		    (!fallback || better_fallback_entity(cfs_rq, avg, load, se,
+						      fallback)))
+			fallback = se;
+
 		/*
-		 * The left subtree either is empty or has no eligible
-		 * entity, so check the current node since it is the one
-		 * with earliest deadline that might be eligible.
+		 * The left subtree is either empty or provably contains no eligible
+		 * entity, therefore this node is the earliest-deadline eligible
+		 * candidate if vruntime_eligible_pick_avg() succeeds.
 		 */
-		if (entity_eligible(cfs_rq, se)) {
-			best = se;
+		if (vruntime_eligible_pick_avg(cfs_rq, avg, load, se->vruntime)) {
+			if (!should_expel_se(rq, se)) {
+				best = se;
+				break;
+			}
+
+			/*
+			 * The earliest eligible candidate is expelled. Keep scanning in
+			 * full in-order successor order until we find the first strict
+			 * non-expellee eligible winner. While scanning, keep updating the
+			 * closest non-expellee fallback under the same fixed avg/load view.
+			 */
+			for (node = rb_next(&se->run_node); node;
+			     node = rb_next(node)) {
+				se = __node_2_se(node);
+
+				if (!should_expel_se(rq, se) &&
+				    (!fallback || better_fallback_entity(cfs_rq, avg,
+							      load, se, fallback)))
+					fallback = se;
+
+				if (!vruntime_eligible_pick_avg(cfs_rq, avg, load,
+						       se->vruntime))
+					continue;
+				if (should_expel_se(rq, se))
+					continue;
+
+				best = se;
+				break;
+			}
 			break;
 		}
 
 		node = node->rb_right;
 	}
 found:
-	if (!best || (curr && entity_before(curr, best)))
-		best = curr;
+	if (best && (!fallback || entity_before(best, fallback)))
+		return best;
+	if (best)
+		return best;
+	if (fallback)
+		return fallback;
 
-	return best;
+	return curr;
 }
 
 #ifdef CONFIG_SCHED_DEBUG
@@ -1558,32 +1957,6 @@ static inline bool do_preempt_short(struct cfs_rq *cfs_rq,
 }
 
 #ifdef CONFIG_GROUP_IDENTITY
-/*
- * cpu.priority is intentionally a strict 3-state class selector:
- *   1  => high
- *   0  => normal
- *  -1  => low
- *
- * sched_group_set_priority() rejects every other value, so the helper
- * predicates below can test these exact class values directly while leaving
- * the wakeup/tick policy unchanged.
- */
-
-static inline bool is_highclass(const struct sched_entity *se)
-{
-	return READ_ONCE(se->priority) == 1;
-}
-
-static inline bool is_underclass(const struct sched_entity *se)
-{
-	return READ_ONCE(se->priority) == -1;
-}
-
-static inline bool is_normalclass(const struct sched_entity *se)
-{
-	return READ_ONCE(se->priority) == 0;
-}
-
 static inline struct sched_entity *pick_eevdf_ignore_slice(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *curr = cfs_rq->curr;
@@ -4265,11 +4638,13 @@ account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		account_numa_enqueue(rq, task_of(se));
 		list_add(&se->group_node, &rq->cfs_tasks);
 #ifdef CONFIG_GROUP_IDENTITY
-		cfs_rq->nr_tasks++;
+		if (!se->sched_delayed)
+			cfs_rq->nr_tasks++;
 #endif
 	}
 #endif
 	cfs_rq->nr_queued++;
+	inc_nr_class(cfs_rq, se);
 }
 
 static void
@@ -4287,6 +4662,7 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	}
 #endif
 	cfs_rq->nr_queued--;
+	dec_nr_class(cfs_rq, se);
 }
 
 /*
@@ -4374,6 +4750,7 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		se->deadline -= se->vruntime;
 		se->rel_deadline = 1;
 		cfs_rq->nr_queued--;
+		dec_nr_class(cfs_rq, se);
 		if (!curr)
 			__dequeue_entity(cfs_rq, se);
 		update_load_sub(&cfs_rq->load, se->load.weight);
@@ -4405,6 +4782,7 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		if (!curr)
 			__enqueue_entity(cfs_rq, se);
 		cfs_rq->nr_queued++;
+		inc_nr_class(cfs_rq, se);
 
 		/*
 		 * The entity's vruntime has been adjusted, so let's check
@@ -5953,10 +6331,9 @@ static __always_inline void return_cfs_rq_runtime(struct cfs_rq *cfs_rq);
 
 static void set_delayed(struct sched_entity *se)
 {
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	int expeller_delta;
-	int expellee_delta;
-	struct rq *rq;
+	struct task_struct *p;
+#ifdef CONFIG_GROUP_IDENTITY
+	struct identity_delta id;
 #endif
 
 	se->sched_delayed = 1;
@@ -5968,25 +6345,21 @@ static void set_delayed(struct sched_entity *se)
 	 */
 	if (!entity_is_task(se))
 		return;
+	p = task_of(se);
 #ifdef CONFIG_GROUP_IDENTITY
-	cfs_rq_of(se)->nr_tasks--;
-#ifdef CONFIG_SCHED_CORE
-	rq = rq_of(cfs_rq_of(se));
-	if (sched_core_enabled(rq)) {
-		expeller_delta = task_is_expeller(task_of(se));
-		expellee_delta = task_is_expellee(task_of(se));
-	}
-#endif
+	struct cfs_rq *task_cfs_rq = cfs_rq_of(se);
+
+	task_cfs_rq->nr_tasks--;
+	task_cfs_rq->nr_highclass -= task_is_highclass(p);
+	task_cfs_rq->nr_underclass -= task_is_underclass(p);
+	id = task_identity_delta(p);
 #endif
 	for_each_sched_entity(se) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 		cfs_rq->h_nr_runnable--;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			cfs_rq->h_nr_expeller -= expeller_delta;
-			cfs_rq->h_nr_expellee -= expellee_delta;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		sub_identity_delta(cfs_rq, &id);
 #endif
 		if (cfs_rq_throttled(cfs_rq))
 			break;
@@ -5995,10 +6368,9 @@ static void set_delayed(struct sched_entity *se)
 
 static void __clear_delayed(struct sched_entity *se, bool keep_nr_tasks)
 {
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	int expeller_delta;
-	int expellee_delta;
-	struct rq *rq;
+	struct task_struct *p;
+#ifdef CONFIG_GROUP_IDENTITY
+	struct identity_delta id;
 #endif
 
 	se->sched_delayed = 0;
@@ -6012,26 +6384,23 @@ static void __clear_delayed(struct sched_entity *se, bool keep_nr_tasks)
 	if (!entity_is_task(se))
 		return;
 
+	p = task_of(se);
 #ifdef CONFIG_GROUP_IDENTITY
-	if (keep_nr_tasks)
-		cfs_rq_of(se)->nr_tasks++;
-#ifdef CONFIG_SCHED_CORE
-	rq = rq_of(cfs_rq_of(se));
-	if (sched_core_enabled(rq)) {
-		expeller_delta = task_is_expeller(task_of(se));
-		expellee_delta = task_is_expellee(task_of(se));
+	struct cfs_rq *task_cfs_rq = cfs_rq_of(se);
+
+	if (keep_nr_tasks) {
+		task_cfs_rq->nr_tasks++;
+		task_cfs_rq->nr_highclass += task_is_highclass(p);
+		task_cfs_rq->nr_underclass += task_is_underclass(p);
 	}
-#endif
+	id = task_identity_delta(p);
 #endif
 	for_each_sched_entity(se) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 		cfs_rq->h_nr_runnable++;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			cfs_rq->h_nr_expeller += expeller_delta;
-			cfs_rq->h_nr_expellee += expellee_delta;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		add_identity_delta(cfs_rq, &id);
 #endif
 		if (cfs_rq_throttled(cfs_rq))
 			break;
@@ -6495,9 +6864,8 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 	struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
 	struct sched_entity *se;
 	long queued_delta, runnable_delta, idle_delta, dequeue = 1;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	long expeller_delta;
-	long expellee_delta;
+#ifdef CONFIG_GROUP_IDENTITY
+	struct identity_delta id;
 #endif
 
 	raw_spin_lock(&cfs_b->lock);
@@ -6531,11 +6899,8 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 	queued_delta = cfs_rq->h_nr_queued;
 	runnable_delta = cfs_rq->h_nr_runnable;
 	idle_delta = cfs_rq->h_nr_idle;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	if (sched_core_enabled(rq)) {
-		expeller_delta = cfs_rq->h_nr_expeller;
-		expellee_delta = cfs_rq->h_nr_expellee;
-	}
+#ifdef CONFIG_GROUP_IDENTITY
+	id = cfs_rq_identity_delta(cfs_rq);
 #endif
 	for_each_sched_entity(se) {
 		struct cfs_rq *qcfs_rq = cfs_rq_of(se);
@@ -6564,11 +6929,8 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 		qcfs_rq->h_nr_queued -= queued_delta;
 		qcfs_rq->h_nr_runnable -= runnable_delta;
 		qcfs_rq->h_nr_idle -= idle_delta;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			qcfs_rq->h_nr_expeller -= expeller_delta;
-			qcfs_rq->h_nr_expellee -= expellee_delta;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		sub_identity_delta(qcfs_rq, &id);
 #endif
 
 		if (qcfs_rq->load.weight) {
@@ -6593,11 +6955,8 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 		qcfs_rq->h_nr_queued -= queued_delta;
 		qcfs_rq->h_nr_runnable -= runnable_delta;
 		qcfs_rq->h_nr_idle -= idle_delta;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			qcfs_rq->h_nr_expeller -= expeller_delta;
-			qcfs_rq->h_nr_expellee -= expellee_delta;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		sub_identity_delta(qcfs_rq, &id);
 #endif
 	}
 
@@ -6623,9 +6982,8 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 	struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
 	struct sched_entity *se;
 	long queued_delta, runnable_delta, idle_delta;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	long expeller_delta;
-	long expellee_delta;
+#ifdef CONFIG_GROUP_IDENTITY
+	struct identity_delta id;
 #endif
 
 	se = cfs_rq->tg->se[cpu_of(rq)];
@@ -6662,11 +7020,8 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 	queued_delta = cfs_rq->h_nr_queued;
 	runnable_delta = cfs_rq->h_nr_runnable;
 	idle_delta = cfs_rq->h_nr_idle;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	if (sched_core_enabled(rq)) {
-		expeller_delta = cfs_rq->h_nr_expeller;
-		expellee_delta = cfs_rq->h_nr_expellee;
-	}
+#ifdef CONFIG_GROUP_IDENTITY
+	id = cfs_rq_identity_delta(cfs_rq);
 #endif
 	for_each_sched_entity(se) {
 		struct cfs_rq *qcfs_rq = cfs_rq_of(se);
@@ -6689,11 +7044,8 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 		qcfs_rq->h_nr_queued += queued_delta;
 		qcfs_rq->h_nr_runnable += runnable_delta;
 		qcfs_rq->h_nr_idle += idle_delta;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			qcfs_rq->h_nr_expeller += expeller_delta;
-			qcfs_rq->h_nr_expellee += expellee_delta;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		add_identity_delta(qcfs_rq, &id);
 #endif
 
 		/* end evaluation on encountering a throttled cfs_rq */
@@ -6713,11 +7065,8 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 		qcfs_rq->h_nr_queued += queued_delta;
 		qcfs_rq->h_nr_runnable += runnable_delta;
 		qcfs_rq->h_nr_idle += idle_delta;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			qcfs_rq->h_nr_expeller += expeller_delta;
-			qcfs_rq->h_nr_expellee += expellee_delta;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		add_identity_delta(qcfs_rq, &id);
 #endif
 
 		/* end evaluation on encountering a throttled cfs_rq */
@@ -7570,6 +7919,7 @@ requeue_delayed_entity(struct sched_entity *se)
 		update_entity_lag(cfs_rq, se);
 		if (se->vlag > 0) {
 			cfs_rq->nr_queued--;
+			dec_nr_class(cfs_rq, se);
 			if (se != cfs_rq->curr)
 				__dequeue_entity(cfs_rq, se);
 			se->vlag = 0;
@@ -7577,6 +7927,7 @@ requeue_delayed_entity(struct sched_entity *se)
 			if (se != cfs_rq->curr)
 				__enqueue_entity(cfs_rq, se);
 			cfs_rq->nr_queued++;
+			inc_nr_class(cfs_rq, se);
 		}
 	}
 
@@ -7602,9 +7953,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct sched_entity *se = &p->se;
 	int h_nr_idle = task_has_idle_policy(p);
 	int h_nr_runnable = 1;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	int h_nr_expeller;
-	int h_nr_expellee;
+#ifdef CONFIG_GROUP_IDENTITY
+	struct identity_delta id = task_identity_delta(p);
 #endif
 	int task_new = !(flags & ENQUEUE_WAKEUP);
 	u64 slice = 0;
@@ -7636,14 +7986,12 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (p->in_iowait)
 		cpufreq_update_util(rq, SCHED_CPUFREQ_IOWAIT);
 
-	if (task_new && se->sched_delayed)
+	if (task_new && se->sched_delayed) {
 		h_nr_runnable = 0;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	if (sched_core_enabled(rq)) {
-		h_nr_expeller = task_is_expeller(p);
-		h_nr_expellee = task_is_expellee(p);
-	}
+#ifdef CONFIG_GROUP_IDENTITY
+		id = IDENTITY_DELTA_ZERO;
 #endif
+	}
 	for_each_sched_entity(se) {
 		if (se->on_rq) {
 			if (se->sched_delayed)
@@ -7670,11 +8018,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq->h_nr_runnable += h_nr_runnable;
 		cfs_rq->h_nr_queued++;
 		cfs_rq->h_nr_idle += h_nr_idle;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			cfs_rq->h_nr_expeller += h_nr_expeller;
-			cfs_rq->h_nr_expellee += h_nr_expellee;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		add_identity_delta(cfs_rq, &id);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -7707,11 +8052,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq->h_nr_runnable += h_nr_runnable;
 		cfs_rq->h_nr_queued++;
 		cfs_rq->h_nr_idle += h_nr_idle;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			cfs_rq->h_nr_expeller += h_nr_expeller;
-			cfs_rq->h_nr_expellee += h_nr_expellee;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		add_identity_delta(cfs_rq, &id);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -7771,9 +8113,8 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 	int h_nr_idle = 0;
 	int h_nr_queued = 0;
 	int h_nr_runnable = 0;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-	int h_nr_expeller = 0;
-	int h_nr_expellee = 0;
+#ifdef CONFIG_GROUP_IDENTITY
+	struct identity_delta id = IDENTITY_DELTA_ZERO;
 #endif
 	struct cfs_rq *cfs_rq;
 	u64 slice = 0;
@@ -7782,14 +8123,12 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 		p = task_of(se);
 		h_nr_queued = 1;
 		h_nr_idle = task_has_idle_policy(p);
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			h_nr_expeller = task_is_expeller(p);
-			h_nr_expellee = task_is_expellee(p);
-		}
-#endif
-		if (task_sleep || task_delayed || !se->sched_delayed)
+		if (task_sleep || task_delayed || !se->sched_delayed) {
 			h_nr_runnable = 1;
+#ifdef CONFIG_GROUP_IDENTITY
+			id = task_identity_delta(p);
+#endif
+		}
 	}
 
 	for_each_sched_entity(se) {
@@ -7809,11 +8148,8 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 		cfs_rq->h_nr_runnable -= h_nr_runnable;
 		cfs_rq->h_nr_queued -= h_nr_queued;
 		cfs_rq->h_nr_idle -= h_nr_idle;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			cfs_rq->h_nr_expeller -= h_nr_expeller;
-			cfs_rq->h_nr_expellee -= h_nr_expellee;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		sub_identity_delta(cfs_rq, &id);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -7861,11 +8197,8 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 		cfs_rq->h_nr_runnable -= h_nr_runnable;
 		cfs_rq->h_nr_queued -= h_nr_queued;
 		cfs_rq->h_nr_idle -= h_nr_idle;
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
-		if (sched_core_enabled(rq)) {
-			cfs_rq->h_nr_expeller -= h_nr_expeller;
-			cfs_rq->h_nr_expellee -= h_nr_expellee;
-		}
+#ifdef CONFIG_GROUP_IDENTITY
+		sub_identity_delta(cfs_rq, &id);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -9597,7 +9930,7 @@ static inline unsigned int need_expel(struct rq *rq, unsigned int expel_type)
 #endif
 	if (!(expel_type & EXPEL_BY_HIGHCLASS) || !sched_feat(ID_ABSOLUTE_EXPEL))
 		return ret;
-	if (rq->cfs.h_nr_idle && rq->cfs.h_nr_runnable > rq->cfs.h_nr_idle)
+	if (rq->cfs.h_nr_highclass)
 		ret |= EXPEL_BY_HIGHCLASS;
 	return ret;
 }
@@ -9650,7 +9983,7 @@ static void __push_expellee(struct rq *rq)
 	struct cpumask *traverse_mask = this_cpu_cpumask_var_ptr(push_expellee_traverse_mask);
 	struct cpumask *traversed_mask = this_cpu_cpumask_var_ptr(push_expellee_traversed_mask);
 
-	if (!sched_feat(ID_PUSH_EXPELLEE) || !rq_on_expel(rq))
+	if (!sched_feat(ID_PUSH_EXPELLEE) || !rq_on_expel(rq) || !has_task_on_expel(rq))
 		return;
 
 	preempt_disable();
@@ -9662,9 +9995,9 @@ static void __push_expellee(struct rq *rq)
 
 		if (need_resched())
 			break;
-		if (!rq->cfs.h_nr_idle)
+		if (!has_task_on_expel(rq))
 			break;
-		if (!should_expel_se(rq, &p->se))
+		if (!task_will_be_expelled(rq, p))
 			continue;
 		if (p == rq->curr)
 			continue;
@@ -9678,7 +10011,7 @@ static void __push_expellee(struct rq *rq)
 			for_each_cpu_wrap(i, traverse_mask, cpu) {
 				struct rq *tmp_rq = cpu_rq(i);
 
-				if (available_idle_cpu(i)) {
+				if (id_idle_cpu(p, i)) {
 					dst_cpu = i;
 					dst_rq = cpu_rq(dst_cpu);
 					/*
@@ -9692,7 +10025,13 @@ static void __push_expellee(struct rq *rq)
 						dst_cpu = -1;
 						dst_rq = NULL;
 					}
-				} else if (!should_expel_se(tmp_rq, &p->se)) {
+				/*
+				 * Idle-saver and other load-balancing mechanisms have not yet
+				 * been introduced, so this branch is currently inactive.
+				 * It is being retained temporarily in anticipation of the
+				 * integration of these mechanisms.
+				 */
+				} else if (!task_will_be_expelled(tmp_rq, p)) {
 					if (tmp_rq->nr_running < min_nr_running) {
 						backup_cpu = i;
 						min_nr_running = tmp_rq->nr_running;
@@ -9769,14 +10108,14 @@ static int id_can_migrate_task(struct task_struct *p, struct lb_env *env)
 	    rq_on_expel_by_smt_expeller(dst_rq))
 		goto bad_dst;
 	if ((!id_smt_expel_enabled() || !task_is_expellee(p)) &&
-	    (!sched_feat(ID_ABSOLUTE_EXPEL) || !task_is_idle(p)))
+	    (!sched_feat(ID_ABSOLUTE_EXPEL) || !task_is_underclass(p)))
 		return -1;
 	/* Do not migrate expellee task to CPU on expel */
-	if (should_expel_se(dst_rq, &p->se))
+	if (task_will_be_expelled(dst_rq, p))
 		goto bad_dst;
 	if (sched_feat(ID_EXPELLEE_NEVER_HOT))
 		goto good_dst;
-	if (!should_expel_se(src_rq, &p->se))
+	if (!task_will_be_expelled(src_rq, p))
 		return -1;
 	if (!sched_feat(ID_RESCUE_EXPELLEE))
 		return -1;
@@ -14553,6 +14892,8 @@ int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent)
 
 #ifdef CONFIG_GROUP_IDENTITY
 	WRITE_ONCE(tg->priority, READ_ONCE(parent->priority));
+	WRITE_ONCE(tg->has_underclass_in_chain, (tg->priority == -1) ||
+		parent->has_underclass_in_chain);
 	WRITE_ONCE(tg->bvt_warp_ns, READ_ONCE(parent->bvt_warp_ns));
 #ifdef CONFIG_SCHED_CORE
 	/*
@@ -14698,6 +15039,7 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	se->cg_idle_start = se->cg_init_time = cpu_clock(cpu);
 #ifdef CONFIG_GROUP_IDENTITY
 	WRITE_ONCE(se->priority, READ_ONCE(tg->priority));
+	WRITE_ONCE(se->has_underclass_in_chain, tg->has_underclass_in_chain);
 	INIT_LIST_HEAD(&se->expel_node);
 #endif
 }
@@ -14839,9 +15181,138 @@ int sched_group_set_idle(struct task_group *tg, long idle)
  * scale. Low class reuses idle-group semantics while it is active; writing a
  * non-low class through cpu.priority clears any existing idle-group state.
  */
+
+static void update_priority(struct task_group *tg, long old_priority, s64 priority)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+		struct rq_flags rf;
+		struct sched_entity *se = tg->se[cpu];
+		struct cfs_rq *cfs_rq;
+		unsigned int delta;
+
+		if (!se)
+			continue;
+
+		cfs_rq = cfs_rq_of(se);
+		rq_lock_irq(rq, &rf);
+		update_rq_clock(rq);
+		WRITE_ONCE(se->priority, priority);
+
+		/*
+		 * Only adjust nr_highclass / nr_underclass when the group
+		 * se is actually on_rq. When it is not queued, the enqueue
+		 * path will pick up the new se->priority naturally.
+		 */
+		if (se->on_rq && !se->sched_delayed) {
+			switch (old_priority) {
+			case 1:
+				cfs_rq->nr_highclass--;
+				break;
+			case -1:
+				cfs_rq->nr_underclass--;
+				break;
+			}
+
+			switch (priority) {
+			case 1:
+				cfs_rq->nr_highclass++;
+				break;
+			case -1:
+				cfs_rq->nr_underclass++;
+				break;
+			}
+		}
+
+		if (!se->my_q || !se->on_rq) {
+			rq_unlock_irq(rq, &rf);
+			continue;
+		}
+
+		delta = se->my_q->nr_tasks;
+		if (delta) {
+			cfs_rq = group_cfs_rq(se);
+			switch (old_priority) {
+			case 1:
+				cfs_rq->h_nr_highclass -= delta;
+				break;
+			case -1:
+				cfs_rq->h_nr_underclass -= delta;
+				break;
+			}
+
+			switch (priority) {
+			case 1:
+				cfs_rq->h_nr_highclass += delta;
+				break;
+			case -1:
+				cfs_rq->h_nr_underclass += delta;
+				break;
+			}
+
+			for_each_sched_entity(se) {
+				cfs_rq = cfs_rq_of(se);
+				if (!se->on_rq)
+					break;
+				switch (old_priority) {
+				case 1:
+					cfs_rq->h_nr_highclass -= delta;
+					break;
+				case -1:
+					cfs_rq->h_nr_underclass -= delta;
+					break;
+				}
+
+				switch (priority) {
+				case 1:
+					cfs_rq->h_nr_highclass += delta;
+					break;
+				case -1:
+					cfs_rq->h_nr_underclass += delta;
+					break;
+				}
+
+				if (cfs_rq_throttled(cfs_rq))
+					break;
+			}
+		}
+		rq_unlock_irq(rq, &rf);
+	}
+	WRITE_ONCE(tg->priority, priority);
+}
+
+static void update_has_underclass_in_chain(struct task_group *tg)
+{
+	struct cgroup_subsys_state *css;
+	int cpu;
+
+	WRITE_ONCE(tg->has_underclass_in_chain, (tg->priority == -1) ||
+		(tg->parent ? tg->parent->has_underclass_in_chain : 0));
+	for_each_possible_cpu(cpu) {
+		if (tg->se[cpu])
+			WRITE_ONCE(tg->se[cpu]->has_underclass_in_chain,
+				tg->has_underclass_in_chain);
+	}
+
+	rcu_read_lock();
+	css_for_each_descendant_pre(css, &tg->css) {
+		struct task_group *child = css_tg(css);
+		int val = (child->priority == -1) ||
+			(child->parent ? READ_ONCE(child->parent->has_underclass_in_chain) : 0);
+
+		WRITE_ONCE(child->has_underclass_in_chain, val);
+		for_each_possible_cpu(cpu) {
+			if (child->se[cpu])
+				WRITE_ONCE(child->se[cpu]->has_underclass_in_chain, val);
+		}
+	}
+	rcu_read_unlock();
+}
+
 int sched_group_set_priority(struct task_group *tg, s64 priority)
 {
-	int i;
 	long old_priority;
 	int ret;
 
@@ -14851,20 +15322,13 @@ int sched_group_set_priority(struct task_group *tg, s64 priority)
 	if (tg == &root_task_group)
 		return -EINVAL;
 
-	mutex_lock(&shares_mutex);
+	guard(mutex)(&shares_mutex);
 
 	old_priority = READ_ONCE(tg->priority);
-	if (old_priority != priority) {
-		WRITE_ONCE(tg->priority, priority);
-		for_each_possible_cpu(i) {
-			struct sched_entity *se = tg->se[i];
+	if (old_priority == priority)
+		return 0;
 
-			if (!se)
-				continue;
-			WRITE_ONCE(se->priority, priority);
-		}
-	}
-
+	update_priority(tg, old_priority, priority);
 	if (priority == -1)
 		ret = __sched_group_set_idle_locked(tg, 1);
 	else if (tg->idle)
@@ -14872,7 +15336,7 @@ int sched_group_set_priority(struct task_group *tg, s64 priority)
 	else
 		ret = 0;
 
-	mutex_unlock(&shares_mutex);
+	update_has_underclass_in_chain(tg);
 	return ret;
 }
 #endif

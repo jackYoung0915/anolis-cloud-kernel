@@ -651,6 +651,7 @@ struct sched_entity {
 #ifdef CONFIG_GROUP_IDENTITY
 	struct list_head		expel_node;
 	long			priority;
+	int			has_underclass_in_chain;
 #ifdef CONFIG_SCHED_CORE
 	int			identity;
 #endif
