@@ -1816,6 +1816,7 @@ extern int set_task_group_identity(struct task_group *tg, int identity);
 extern void sched_core_identity_attach(struct cgroup_taskset *tset);
 extern void update_rq_on_expel_by_smt_expeller(struct rq *rq);
 extern bool task_is_expeller(struct task_struct *p);
+extern bool task_is_expellee(struct task_struct *p);
 #else
 static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
 #endif
@@ -4471,15 +4472,28 @@ extern void task_tick_gi(struct rq *rq);
 static inline void task_tick_gi(struct rq *rq) { }
 #endif
 #ifdef CONFIG_SCHED_CORE
+static inline bool id_smt_expel_enabled(void)
+{
+	return sched_feat(ID_SMT_EXPEL);
+}
+
 static inline bool id_expeller_share_core(void)
 {
 	return sched_feat(ID_EXPELLER_SHARE_CORE);
 }
 #else
+static inline void update_rq_on_expel_by_smt_expeller(struct rq *rq) { }
+static inline bool task_is_expeller(struct task_struct *p) { return false; }
+static inline bool task_is_expellee(struct task_struct *p) { return false; }
+static inline bool id_smt_expel_enabled(void) { return false; }
 static inline bool id_expeller_share_core(void) { return true; }
 #endif
 #else
 static inline void task_tick_gi(struct rq *rq) { }
+static inline void update_rq_on_expel_by_smt_expeller(struct rq *rq) { }
+static inline bool task_is_expeller(struct task_struct *p) { return false; }
+static inline bool task_is_expellee(struct task_struct *p) { return false; }
+static inline bool id_smt_expel_enabled(void) { return false; }
 static inline bool id_expeller_share_core(void) { return true; }
 #endif /* CONFIG_GROUP_IDENTITY */
 #endif /* _KERNEL_SCHED_SCHED_H */
