@@ -1167,7 +1167,7 @@ static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 
 static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
-	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !sched_feat(ID_SMT_EXPEL) &&
+	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !id_smt_expel_enabled() &&
 	    list_empty(&cfs_rq->expel_list))
 		return rb_first_cached(&cfs_rq->tasks_timeline);
 
@@ -9606,7 +9606,7 @@ static inline void update_rq_on_expel(struct rq *rq)
 {
 	unsigned int ret;
 
-	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !sched_feat(ID_SMT_EXPEL))
+	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !id_smt_expel_enabled())
 		return;
 
 	ret = need_expel(rq, EXPEL_BY_ALL);
@@ -9768,7 +9768,7 @@ static int id_can_migrate_task(struct task_struct *p, struct lb_env *env)
 	if (!id_expeller_share_core() && env->id_need_redo && task_is_expeller(p) &&
 	    rq_on_expel_by_smt_expeller(dst_rq))
 		goto bad_dst;
-	if ((!sched_feat(ID_SMT_EXPEL) || !task_is_expellee(p)) &&
+	if ((!id_smt_expel_enabled() || !task_is_expellee(p)) &&
 	    (!sched_feat(ID_ABSOLUTE_EXPEL) || !task_is_idle(p)))
 		return -1;
 	/* Do not migrate expellee task to CPU on expel */
