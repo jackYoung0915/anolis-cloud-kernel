@@ -16,6 +16,7 @@
 #include <linux/hashtable.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/page_idle.h>
+#include <linux/sizes.h>
 #include <linux/page_table_check.h>
 #include <linux/swapops.h>
 #include <linux/shmem_fs.h>
@@ -419,7 +420,12 @@ int __init khugepaged_init(void)
 	if (!mm_slot_cache)
 		return -ENOMEM;
 
-	khugepaged_pages_to_scan = HPAGE_PMD_NR * 8;
+	/*
+	 * Equals HPAGE_PMD_NR * 8 on 4KB kernels (4096), preserving the
+	 * historical default.  On 64KB kernels HPAGE_PMD_NR * 8 inflates
+	 * to 65536, causing excessive collapse attempts per wakeup cycle.
+	 */
+	khugepaged_pages_to_scan = SZ_16M >> PAGE_SHIFT;
 	khugepaged_max_ptes_none = HPAGE_PMD_NR - 1;
 	khugepaged_max_ptes_swap = HPAGE_PMD_NR / 8;
 	khugepaged_max_ptes_shared = HPAGE_PMD_NR / 2;
