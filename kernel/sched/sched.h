@@ -692,6 +692,7 @@ struct task_group {
 
 #ifdef CONFIG_GROUP_IDENTITY
 	long			priority;
+	int			has_underclass_in_chain;
 	int			bvt_warp_ns;
 #ifdef CONFIG_SCHED_CORE
 	int			identity;
@@ -862,15 +863,19 @@ struct balance_callback {
 struct cfs_rq {
 	struct load_weight	load;
 	unsigned int		nr_queued;
-#ifdef CONFIG_GROUP_IDENTITY
-	unsigned int		nr_tasks;
-#endif
 	unsigned int		h_nr_queued;       /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		h_nr_runnable;     /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		h_nr_idle; /* SCHED_IDLE */
-#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_GROUP_IDENTITY)
+#ifdef CONFIG_GROUP_IDENTITY
+#ifdef CONFIG_SCHED_CORE
 	unsigned int		h_nr_expeller;
 	unsigned int		h_nr_expellee;
+#endif
+	unsigned int		nr_highclass;
+	unsigned int		nr_underclass;
+	unsigned int		h_nr_highclass;
+	unsigned int		h_nr_underclass;
+	unsigned int		nr_tasks;
 #endif
 
 	s64			avg_vruntime;
