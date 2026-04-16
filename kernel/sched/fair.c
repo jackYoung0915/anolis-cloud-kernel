@@ -1410,6 +1410,10 @@ static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
 	return rb_first_cached(&cfs_rq->tasks_timeline);
 }
+static inline unsigned int rq_on_expel(struct rq *rq)
+{
+	return false;
+}
 static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
 {
 	return false;
@@ -1477,8 +1481,8 @@ static inline void cancel_protect_slice(struct sched_entity *se)
  *
  * Which allows tree pruning through eligibility.
  */
-static inline void pick_eligible_data(struct cfs_rq *cfs_rq,
-				      s64 *avg, long *load)
+static inline void id_pick_eligible_data(struct cfs_rq *cfs_rq,
+					 s64 *avg, long *load)
 {
 	struct sched_entity *curr = cfs_rq->curr;
 
@@ -1504,24 +1508,17 @@ static inline void pick_eligible_data(struct cfs_rq *cfs_rq,
 }
 
 static inline int vruntime_eligible_pick_avg(struct cfs_rq *cfs_rq,
-				     s64 avg, long load, u64 vruntime)
+					    s64 avg, long load,
+					    u64 vruntime)
 {
 	return avg >= (s64)(vruntime - cfs_rq->min_vruntime) * load;
 }
 
-static inline int vruntime_eligible_pick(struct cfs_rq *cfs_rq, u64 vruntime)
-{
-	s64 avg;
-	long load;
-
-	pick_eligible_data(cfs_rq, &avg, &load);
-	return vruntime_eligible_pick_avg(cfs_rq, avg, load, vruntime);
-}
-
 static inline int entity_eligible_pick(struct cfs_rq *cfs_rq,
-				       struct sched_entity *se)
+					     s64 avg, long load,
+					     struct sched_entity *se)
 {
-	return vruntime_eligible_pick(cfs_rq, se->vruntime);
+	return vruntime_eligible_pick_avg(cfs_rq, avg, load, se->vruntime);
 }
 
 static inline s64 entity_eligibility_deficit(struct cfs_rq *cfs_rq,
@@ -1547,7 +1544,57 @@ static inline bool better_fallback_entity(struct cfs_rq *cfs_rq,
 	return entity_before(se, best);
 }
 
-static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
+static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
+{
+	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
+	struct sched_entity *se = __pick_first_entity(cfs_rq);
+	struct sched_entity *curr = cfs_rq->curr;
+	struct sched_entity *best = NULL;
+
+	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
+		curr = NULL;
+
+	/*
+	 * Once selected, run a task until it either becomes non-eligible or
+	 * until it gets a new slice.
+	 */
+	if (sched_feat(RUN_TO_PARITY) && curr && protect_slice(curr))
+		return curr;
+
+	/*
+	 * Maintain O(log n) search: follow the left subtree only while its
+	 * min_vruntime proves it still contains an eligible entity; otherwise
+	 * the current node is the earliest-deadline remaining candidate.
+	 */
+	if (se && entity_eligible(cfs_rq, se)) {
+		best = se;
+		goto found;
+	}
+
+	while (node) {
+		struct rb_node *left = node->rb_left;
+
+		if (left && vruntime_eligible(cfs_rq, __node_2_se(left)->min_vruntime)) {
+			node = left;
+			continue;
+		}
+
+		se = __node_2_se(node);
+		if (entity_eligible(cfs_rq, se)) {
+			best = se;
+			break;
+		}
+
+		node = node->rb_right;
+	}
+found:
+	if (!best || (curr && entity_before(curr, best)))
+		best = curr;
+
+	return best;
+}
+
+static struct sched_entity *id_pick_eevdf(struct cfs_rq *cfs_rq)
 {
 	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 	struct sched_entity *se = __pick_first_entity(cfs_rq);
@@ -1558,12 +1605,12 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 	s64 avg;
 	long load;
 
-	pick_eligible_data(cfs_rq, &avg, &load);
+	id_pick_eligible_data(cfs_rq, &avg, &load);
 
 	if (curr) {
 		if (should_expel_se(rq, curr) || !curr->on_rq)
 			curr = NULL;
-		else if (vruntime_eligible_pick_avg(cfs_rq, avg, load, curr->vruntime))
+		else if (entity_eligible_pick(cfs_rq, avg, load, curr))
 			best = curr;
 		else
 			fallback = curr;
@@ -1593,7 +1640,7 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 	 * as a fallback so the slow path never returns NULL.
 	 */
 	if (se && !should_expel_se(rq, se)) {
-		if (vruntime_eligible_pick_avg(cfs_rq, avg, load, se->vruntime)) {
+		if (entity_eligible_pick(cfs_rq, avg, load, se)) {
 			best = se;
 			goto found;
 		}
@@ -1658,7 +1705,7 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 		 * the current node on deadline order.
 		 */
 		if (left && vruntime_eligible_pick_avg(cfs_rq, avg, load,
-					      __node_2_se(left)->min_vruntime)) {
+						     __node_2_se(left)->min_vruntime)) {
 			node = left;
 			continue;
 		}
@@ -1675,7 +1722,7 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 		 * entity, therefore this node is the earliest-deadline eligible
 		 * candidate if vruntime_eligible_pick_avg() succeeds.
 		 */
-		if (vruntime_eligible_pick_avg(cfs_rq, avg, load, se->vruntime)) {
+		if (entity_eligible_pick(cfs_rq, avg, load, se)) {
 			if (!should_expel_se(rq, se)) {
 				best = se;
 				break;
@@ -1696,8 +1743,7 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 							      load, se, fallback)))
 					fallback = se;
 
-				if (!vruntime_eligible_pick_avg(cfs_rq, avg, load,
-						       se->vruntime))
+				if (!entity_eligible_pick(cfs_rq, avg, load, se))
 					continue;
 				if (should_expel_se(rq, se))
 					continue;
@@ -1719,6 +1765,14 @@ found:
 		return fallback;
 
 	return curr;
+}
+
+static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
+{
+	if (rq_on_expel(rq_of(cfs_rq)))
+		return id_pick_eevdf(cfs_rq);
+
+	return __pick_eevdf(cfs_rq);
 }
 
 #ifdef CONFIG_SCHED_DEBUG
