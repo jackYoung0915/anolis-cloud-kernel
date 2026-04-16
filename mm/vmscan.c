@@ -1226,6 +1226,9 @@ static enum page_references page_check_references(struct page *page,
 		return PAGEREF_KEEP;
 	}
 
+	if (sc->file_is_reserved && (vm_flags & VM_EXEC) && !PageSwapBacked(page))
+		return PAGEREF_ACTIVATE;
+
 	/* Reclaim if clean, defer dirty pages to writeback */
 	if (referenced_page && !PageSwapBacked(page))
 		return PAGEREF_RECLAIM_CLEAN;
@@ -2686,6 +2689,10 @@ static void prepare_scan_count(pg_data_t *pgdat, struct scan_control *sc)
 		 */
 		min_cache_kbytes = READ_ONCE(sysctl_min_cache_kbytes);
 		if (min_cache_kbytes && !sc->file_is_reserved) {
+			unsigned long f_dirty;
+
+			f_dirty = node_page_state(pgdat, NR_FILE_DIRTY);
+			file = (file > f_dirty) ? file - f_dirty : 0;
 			sc->file_is_reserved = file <= pgdat->min_cache_pages;
 		}
 	}
@@ -2891,9 +2898,6 @@ out:
 			/* Look ma, no brain */
 			BUG();
 		}
-
-		if (sc->file_is_reserved && file)
-			scan = 0;
 
 		nr[lru] = scan;
 	}
@@ -6366,14 +6370,15 @@ static void snapshot_refaults(struct mem_cgroup *target_memcg, pg_data_t *pgdat)
 static bool memcg_can_shrink(struct scan_control *sc)
 {
 	struct mem_cgroup *memcg = sc->target_mem_cgroup;
-	unsigned long file;
+	unsigned long file, f_dirty;
 
 	if (cgroup_reclaim(sc) && memcg->min_cache_pages) {
 		file = memcg_page_state(memcg, NR_ACTIVE_FILE) +
 			memcg_page_state(memcg, NR_INACTIVE_FILE);
+		f_dirty = memcg_page_state(memcg, NR_FILE_DIRTY);
+		file = (file > f_dirty) ? file - f_dirty : 0;
+
 		sc->file_is_reserved = file < memcg->min_cache_pages;
-		if (sc->file_is_reserved && !mem_cgroup_swappiness(memcg))
-			return false;
 	}
 
 	return true;
