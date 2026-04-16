@@ -688,6 +688,10 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_queued", cfs_rq->h_nr_queued);
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_idle", cfs_rq->h_nr_idle);
 #ifdef CONFIG_GROUP_IDENTITY
+	SEQ_printf(m, "  .%-30s: %d\n", "nr_highclass", cfs_rq->nr_highclass);
+	SEQ_printf(m, "  .%-30s: %d\n", "nr_underclass", cfs_rq->nr_underclass);
+	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_highclass", cfs_rq->h_nr_highclass);
+	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_underclass", cfs_rq->h_nr_underclass);
 #ifdef CONFIG_SCHED_CORE
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_expeller", cfs_rq->h_nr_expeller);
 	SEQ_printf(m, "  .%-30s: %d\n", "h_nr_expellee", cfs_rq->h_nr_expellee);
