@@ -927,6 +927,11 @@ static enum folio_references folio_check_references(struct folio *folio,
 	/* rmap lock contention: rotate */
 	if (referenced_ptes == -1)
 		return FOLIOREF_KEEP;
+	/*
+	 * Activate file-backed executable folios if min_cache_kbytes is enabled.
+	 */
+	if ((vm_flags & VM_EXEC) && folio_is_file_lru(folio) && sc->file_is_reserved)
+		return FOLIOREF_ACTIVATE;
 
 	if (lru_gen_enabled()) {
 		if (!referenced_ptes)
@@ -2413,8 +2418,13 @@ file_reserved:
 		 * given watermark.
 		 */
 		min_cache_kbytes = READ_ONCE(sysctl_min_cache_kbytes);
-		if (min_cache_kbytes)
+		if (min_cache_kbytes && !sc->file_is_reserved) {
+			unsigned long f_dirty;
+
+			f_dirty = node_page_state(pgdat, NR_FILE_DIRTY);
+			file = (file > f_dirty) ? file - f_dirty : 0;
 			sc->file_is_reserved = file <= pgdat->min_cache_pages;
+		}
 	}
 }
 
@@ -2620,9 +2630,6 @@ out:
 			/* Look ma, no brain */
 			BUG();
 		}
-
-		if (sc->file_is_reserved && file)
-			scan = 0;
 
 		nr[lru] = scan;
 	}
@@ -4816,11 +4823,6 @@ static int isolate_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
 		int type_scan;
 		int tier = get_tier_idx(lruvec, type);
 
-		if (sc->file_is_reserved && (type == LRU_GEN_FILE)) {
-			type = !type;
-			continue;
-		}
-
 		type_scan = scan_folios(nr_to_scan, lruvec, sc,
 					type, tier, list, isolated);
 		scanned += type_scan;
@@ -6477,14 +6479,15 @@ static void snapshot_refaults(struct mem_cgroup *target_memcg, pg_data_t *pgdat)
 static bool memcg_can_shrink(struct scan_control *sc)
 {
 	struct mem_cgroup *memcg = sc->target_mem_cgroup;
-	unsigned long file;
+	unsigned long file, f_dirty;
 
 	if (cgroup_reclaim(sc) && memcg->min_cache_pages) {
 		file = memcg_page_state(memcg, NR_ACTIVE_FILE) +
 			memcg_page_state(memcg, NR_INACTIVE_FILE);
+		f_dirty = memcg_page_state(memcg, NR_FILE_DIRTY);
+		file = (file > f_dirty) ? file - f_dirty : 0;
+
 		sc->file_is_reserved = file < memcg->min_cache_pages;
-		if (sc->file_is_reserved && !mem_cgroup_swappiness(memcg))
-			return false;
 	}
 
 	return true;
