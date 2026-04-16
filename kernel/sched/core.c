@@ -10445,6 +10445,29 @@ static struct cftype cpu_legacy_files[] = {
 		.write_s64 = cpu_priority_write_s64,
 	},
 	/* Compat alias: writing bvt_warp_ns re-applies the mapped priority/identity. */
+	/* legacy bvt interface
+	 *
+	 * BVT(Borrowed Virtual Time) is derived from paper:
+	 * "Borrowed-virtual-time (BVT) scheduling: supporting
+	 * latency-sensitive threads in a general-purpose scheduler"
+	 * Link: https://dl.acm.org/doi/abs/10.1145/319344.319169
+	 *
+	 * Jacob Leverich implemented the idea of this paper, and
+	 * 'bvt_warp_ns' interface is derived from Leverich's code.
+	 * Link: https://gist.github.com/leverich/5913713.
+	 *
+	 * Now we have reformed the whole idea, and only reserved
+	 * the name of 'bvt_warp_ns' to be compalitible.
+	 *
+	 * 'bvt_warp_ns' will be converted into priority&identity when written.
+	 * The correspondence of bvt_warp_ns and priority&identity follows:
+	 * bvt	priority identity
+	 * -1	-1	-1
+	 * 0	0	0
+	 * 1	1	0
+	 * 2	1	1
+	 *
+	 */
 	{
 		.name = "bvt_warp_ns",
 		.read_s64 = cpu_bvt_warp_ns_read_s64,
