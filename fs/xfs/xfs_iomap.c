@@ -1438,7 +1438,7 @@ xfs_zero_range(
 {
 	struct inode		*inode = VFS_I(ip);
 
-	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL | XFS_MMAPLOCK_EXCL));
+	ASSERT(xfs_isilocked(ip, XFS_IOLOCK_EXCL | XFS_MMAPLOCK_EXCL));
 
 	if (IS_DAX(inode))
 		return dax_zero_range(inode, pos, len, did_zero,
