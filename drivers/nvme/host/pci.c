@@ -4273,6 +4273,7 @@ static int __init nvme_init(void)
 	BUILD_BUG_ON(sizeof(struct nvme_delete_queue) != 64);
 	BUILD_BUG_ON(IRQ_AFFINITY_MAX_SETS < 2);
 
+	printk("LGXLGXLGX");
 	return pci_register_driver(&nvme_driver);
 }
 
