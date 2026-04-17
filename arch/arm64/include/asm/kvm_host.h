@@ -1680,4 +1680,7 @@ u32 kvm_pv_cpu_freq_get(struct kvm_vcpu *vcpu);
 		(pa + pi + pa3) == 1;					\
 	})
 
+#define kvm_has_ras(k)							\
+	(kvm_has_feat((k), ID_AA64PFR0_EL1, RAS, IMP))
+
 #endif /* __ARM64_KVM_HOST_H__ */
