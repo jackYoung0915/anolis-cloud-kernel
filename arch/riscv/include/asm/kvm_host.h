@@ -43,6 +43,17 @@
 	KVM_ARCH_REQ_FLAGS(5, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 #define KVM_REQ_STEAL_UPDATE		KVM_ARCH_REQ(6)
 
+#define KVM_HEDELEG_DEFAULT		(BIT(EXC_INST_MISALIGNED) | \
+					 BIT(EXC_BREAKPOINT)      | \
+					 BIT(EXC_SYSCALL)         | \
+					 BIT(EXC_INST_PAGE_FAULT) | \
+					 BIT(EXC_LOAD_PAGE_FAULT) | \
+					 BIT(EXC_STORE_PAGE_FAULT))
+
+#define KVM_HIDELEG_DEFAULT		(BIT(IRQ_VS_SOFT)  | \
+					 BIT(IRQ_VS_TIMER) | \
+					 BIT(IRQ_VS_EXT))
+
 enum kvm_riscv_hfence_type {
 	KVM_RISCV_HFENCE_UNKNOWN = 0,
 	KVM_RISCV_HFENCE_GVMA_VMID_GPA,
@@ -178,6 +189,7 @@ struct kvm_vcpu_csr {
 struct kvm_vcpu_config {
 	u64 henvcfg;
 	u64 hstateen0;
+	unsigned long hedeleg;
 };
 
 struct kvm_vcpu_smstateen_csr {
@@ -284,10 +296,23 @@ struct kvm_vcpu_arch {
 	} sta;
 };
 
+/*
+ * Returns true if a Performance Monitoring Interrupt (PMI), a.k.a. perf event,
+ * arrived in guest context.  For riscv, any event that arrives while a vCPU is
+ * loaded is considered to be "in guest".
+ */
+static inline bool kvm_arch_pmi_in_guest(struct kvm_vcpu *vcpu)
+{
+	return IS_ENABLED(CONFIG_GUEST_PERF_EVENTS) && !!vcpu;
+}
+
 static inline void kvm_arch_sync_events(struct kvm *kvm) {}
 static inline void kvm_arch_sched_in(struct kvm_vcpu *vcpu, int cpu) {}
 
 #define KVM_ARCH_WANT_MMU_NOTIFIER
+
+static inline void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu) {}
+static inline void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu) {}
 
 #define KVM_RISCV_GSTAGE_TLB_MIN_ORDER		12
 
