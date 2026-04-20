@@ -1223,6 +1223,9 @@ void __init setup_arch(char **cmdline_p)
 
 	initmem_init();
 #ifdef CONFIG_HYGON_CSV
+	/* CSV guest memory specific initialization */
+	early_csv_guest_mem_init();
+
 	early_csv_reserve_mem();
 #endif
 	dma_contiguous_reserve(max_pfn_mapped << PAGE_SHIFT);
