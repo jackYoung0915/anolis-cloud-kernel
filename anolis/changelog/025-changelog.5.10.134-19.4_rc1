@@ -1,4 +1,4 @@
-* 一 4月 20 2026 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-19.4_rc1%%DIST%%]
+* 一 Mon Apr 20 2026 Ferry Meng <mengferry@linux.alibaba.com> [5.10.134-19.4_rc1%%DIST%%]
 - net/smc: fix NULL dereference and UAF in smc_tcp_syn_recv_sock() (Jiayuan Chen)
 - net: fix refcount bug in sk_psock_get (2) (Hawkins Jiawei)
 - PM: runtime: Fix a race condition related to device removal (Bart Van Assche) {CVE-2026-23452}
