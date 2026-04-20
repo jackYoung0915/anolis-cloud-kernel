@@ -901,10 +901,21 @@ RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
 		     run_node, min_vruntime, min_vruntime_update);
 
 /*
- * Enqueue an entity into the rb-tree:
+ * Enqueue an entity into the rb-tree.
+ *
+ * An entity that has been hidden onto cfs_rq->expel_list by skip_expellee_se()
+ * is logically off the rb-tree until check_expellee_se() puts it back via
+ * list_del_init(&se->expel_node). Skip the rb-tree work here in that case so
+ * that callers (set_next_entity / put_prev_entity / reweight_entity /
+ * requeue_delayed_entity / enqueue_entity / dequeue_entity) do not have to
+ * special-case expel_list membership themselves.
  */
 static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
+#ifdef CONFIG_GROUP_IDENTITY
+	if (!list_empty(&se->expel_node))
+		return;
+#endif
 	avg_vruntime_add(cfs_rq, se);
 	se->min_vruntime = se->vruntime;
 	se->min_slice = se->slice;
@@ -914,6 +925,18 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
+#ifdef CONFIG_GROUP_IDENTITY
+	/*
+	 * Symmetric to __enqueue_entity(): an entity on expel_list is already
+	 * off the rb-tree (skip_expellee_se() did the rb_erase). Just unlink
+	 * it from expel_list so the caller's "no longer queued in tree"
+	 * postcondition holds.
+	 */
+	if (!list_empty(&se->expel_node)) {
+		list_del_init(&se->expel_node);
+		return;
+	}
+#endif
 	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
 				  &min_vruntime_cb);
 	avg_vruntime_sub(cfs_rq, se);
@@ -1320,6 +1343,10 @@ static inline void check_expellee_se(struct cfs_rq *cfs_rq)
 	struct sched_entity *se, *tmp;
 
 	list_for_each_entry_safe(se, tmp, &cfs_rq->expel_list, expel_node) {
+		if (!se->on_rq) {
+			list_del_init(&se->expel_node);
+			continue;
+		}
 		if (should_expel_se(rq_of(cfs_rq), se))
 			continue;
 
