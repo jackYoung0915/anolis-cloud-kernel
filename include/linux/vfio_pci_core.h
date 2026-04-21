@@ -25,6 +25,7 @@
 #define VFIO_PCI_OFFSET_MASK	(((u64)(1) << VFIO_PCI_OFFSET_SHIFT) - 1)
 
 struct vfio_pci_core_device;
+struct vfio_pci_core_device_ser;
 struct vfio_pci_region;
 
 struct vfio_pci_regops {
@@ -94,6 +95,7 @@ struct vfio_pci_core_device {
 	struct vfio_pci_core_device	*sriov_pf_core_dev;
 	struct notifier_block	nb;
 	struct rw_semaphore	memory_lock;
+	struct vfio_pci_core_device_ser *liveupdate_incoming_state;
 };
 
 /* Will be exported for vfio pci drivers usage */

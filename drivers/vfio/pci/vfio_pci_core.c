@@ -16,6 +16,7 @@
 #include <linux/file.h>
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
+#include <linux/kho/abi/vfio_pci.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
@@ -463,6 +464,30 @@ static const struct dev_pm_ops vfio_pci_core_pm_ops = {
 			   NULL)
 };
 
+static int vfio_pci_core_probe_reset(struct vfio_pci_core_device *vdev)
+{
+	int ret;
+
+	/*
+	 * This device was preserved by the previous kernel across a Live
+	 * Update, so it does not need to be reset and reset_works can be
+	 * inherited from the previous kernel.
+	 */
+	if (vdev->liveupdate_incoming_state) {
+		vdev->reset_works = vdev->liveupdate_incoming_state->reset_works;
+		return 0;
+	}
+
+	ret = pci_try_reset_function(vdev->pdev);
+
+	/* Bail if the device lock cannot be acquired. */
+	if (ret == -EAGAIN)
+		return ret;
+
+	vdev->reset_works = !ret;
+	return 0;
+}
+
 int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
@@ -483,12 +508,10 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	if (ret)
 		goto out_power;
 
-	/* If reset fails because of the device lock, fail this path entirely */
-	ret = pci_try_reset_function(pdev);
-	if (ret == -EAGAIN)
+	ret = vfio_pci_core_probe_reset(vdev);
+	if (ret)
 		goto out_disable_device;
 
-	vdev->reset_works = !ret;
 	pci_save_state(pdev);
 	vdev->pci_saved_state = pci_store_saved_state(pdev);
 	if (!vdev->pci_saved_state)
@@ -537,7 +560,7 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	if (!vfio_vga_disabled() && vfio_pci_is_vga(pdev))
 		vdev->has_vga = true;
 
-
+	vdev->liveupdate_incoming_state = NULL;
 	return 0;
 
 out_free_zdev:
@@ -553,6 +576,40 @@ out_power:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_enable);
+
+void vfio_pci_core_try_reset(struct vfio_pci_core_device *vdev)
+{
+	struct pci_dev *pdev = vdev->pdev;
+	struct pci_dev *bridge = pci_upstream_bridge(pdev);
+
+	lockdep_assert_held(&vdev->vdev.dev_set->lock);
+
+	if (!vdev->reset_works)
+		return;
+
+	/*
+	 * Try to get the locks ourselves to prevent a deadlock. The
+	 * success of this is dependent on being able to lock the device,
+	 * which is not always possible.
+	 *
+	 * We cannot use the "try" reset interface here, since that will
+	 * overwrite the previously restored configuration information.
+	 */
+	if (bridge && !pci_dev_trylock(bridge))
+		return;
+
+	if (!pci_dev_trylock(pdev))
+		goto out;
+
+	if (!__pci_reset_function_locked(pdev))
+		vdev->needs_reset = false;
+
+	pci_dev_unlock(pdev);
+out:
+	if (bridge)
+		pci_dev_unlock(bridge);
+}
+EXPORT_SYMBOL_GPL(vfio_pci_core_try_reset);
 
 void vfio_pci_core_disable(struct vfio_pci_core_device *vdev)
 {
@@ -655,19 +712,7 @@ void vfio_pci_core_disable(struct vfio_pci_core_device *vdev)
 	 */
 	pci_write_config_word(pdev, PCI_COMMAND, PCI_COMMAND_INTX_DISABLE);
 
-	/*
-	 * Try to get the locks ourselves to prevent a deadlock. The
-	 * success of this is dependent on being able to lock the device,
-	 * which is not always possible.
-	 * We can not use the "try" reset interface here, which will
-	 * overwrite the previously restored configuration information.
-	 */
-	if (vdev->reset_works && pci_dev_trylock(pdev)) {
-		if (!__pci_reset_function_locked(pdev))
-			vdev->needs_reset = false;
-		pci_dev_unlock(pdev);
-	}
-
+	vfio_pci_core_try_reset(vdev);
 	pci_restore_state(pdev);
 out:
 	pci_disable_device(pdev);
