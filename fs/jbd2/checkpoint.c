@@ -131,8 +131,8 @@ __releases(&journal->j_state_lock)
 				mutex_unlock(&journal->j_checkpoint_mutex);
 				wake_up(&journal->j_wait_checkpoint);
 				schedule();
-				mutex_lock(&journal->j_checkpoint_mutex);
 				finish_wait(&journal->j_wait_done_checkpoint, &wait);
+				mutex_lock_io(&journal->j_checkpoint_mutex);
 				jbd_debug(1, "wake up checkpoint thread.\n");
 			} else if (jbd2_cleanup_journal_tail(journal) <= 0) {
 				/*

@@ -288,13 +288,14 @@ loop:
 	prepare_to_wait(&journal->j_wait_checkpoint, &wait,
 			TASK_INTERRUPTIBLE);
 	wake_up_all(&journal->j_wait_done_checkpoint);
-	schedule();
+	if (!(journal->j_flags & JBD2_UNMOUNT))
+		schedule();
 	finish_wait(&journal->j_wait_checkpoint, &wait);
 
 	if (journal->j_flags & JBD2_UNMOUNT)
 		goto end_loop;
 
-	mutex_lock(&journal->j_checkpoint_mutex);
+	mutex_lock_io(&journal->j_checkpoint_mutex);
 	jbd2_log_do_checkpoint(journal);
 	mutex_unlock(&journal->j_checkpoint_mutex);
 
@@ -345,11 +346,9 @@ static void journal_kill_thread(journal_t *journal)
 	write_unlock(&journal->j_state_lock);
 
 	while (journal->j_checkpoint_task) {
-		mutex_lock(&journal->j_checkpoint_mutex);
 		wake_up(&journal->j_wait_checkpoint);
 		wait_event(journal->j_wait_done_checkpoint,
 			   journal->j_checkpoint_task == NULL);
-		mutex_unlock(&journal->j_checkpoint_mutex);
 	}
 }
 
