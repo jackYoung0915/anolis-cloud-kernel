@@ -78,6 +78,13 @@ static inline void __activate_traps_fpsimd32(struct kvm_vcpu *vcpu)
 		clr |= ~hfg & __ ## reg ## _nMASK; 			\
 	} while(0)
 
+static inline bool cpu_has_amu(void)
+{
+       u64 pfr0 = read_sysreg_s(SYS_ID_AA64PFR0_EL1);
+
+       return cpuid_feature_extract_unsigned_field(pfr0,
+               ID_AA64PFR0_EL1_AMU_SHIFT);
+}
 
 static inline void __activate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 {
@@ -155,6 +162,20 @@ static inline void __activate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 
 	write_sysreg_s(r_val, SYS_HDFGRTR_EL2);
 	write_sysreg_s(w_val, SYS_HDFGWTR_EL2);
+
+       if (!cpu_has_amu())
+               return;
+
+	ctxt_sys_reg(hctxt, HAFGRTR_EL2) = read_sysreg_s(SYS_HAFGRTR_EL2);
+
+	r_clr = r_set = 0;
+	compute_clr_set(vcpu, HAFGRTR_EL2, r_clr, r_set);
+
+	r_val = __HAFGRTR_EL2_nMASK;
+	r_val |= r_set;
+	r_val &= ~r_clr;
+
+	write_sysreg_s(r_val, SYS_HAFGRTR_EL2);
 }
 
 static inline void __deactivate_traps_hfgxtr(struct kvm_vcpu *vcpu)
@@ -173,6 +194,9 @@ static inline void __deactivate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 	write_sysreg_s(ctxt_sys_reg(hctxt, HFGITR_EL2), SYS_HFGITR_EL2);
 	write_sysreg_s(ctxt_sys_reg(hctxt, HDFGRTR_EL2), SYS_HDFGRTR_EL2);
 	write_sysreg_s(ctxt_sys_reg(hctxt, HDFGWTR_EL2), SYS_HDFGWTR_EL2);
+
+	if (cpu_has_amu())
+		write_sysreg_s(ctxt_sys_reg(hctxt, HAFGRTR_EL2), SYS_HAFGRTR_EL2);
 }
 
 static inline void  __activate_traps_mpam(struct kvm_vcpu *vcpu)
