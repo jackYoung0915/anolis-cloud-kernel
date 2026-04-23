@@ -6613,11 +6613,16 @@ pick_next_entity(struct rq *rq, struct cfs_rq *cfs_rq)
 	/*
 	 * Picking the ->next buddy will affect latency but not fairness.
 	 */
-	if (sched_feat(PICK_BUDDY) &&
-	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next)) {
-		/* ->next will never be delayed */
-		SCHED_WARN_ON(cfs_rq->next->sched_delayed);
-		return cfs_rq->next;
+	if (sched_feat(PICK_BUDDY) && cfs_rq->next) {
+		struct sched_entity *next = cfs_rq->next;
+
+		if (should_expel_se(rq, next)) {
+			clear_buddies(cfs_rq, next);
+		} else if (entity_eligible(cfs_rq, next)) {
+			/* ->next will never be delayed */
+			SCHED_WARN_ON(next->sched_delayed);
+			return next;
+		}
 	}
 
 	se = pick_eevdf(cfs_rq);
