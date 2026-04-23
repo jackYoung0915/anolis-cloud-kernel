@@ -10,12 +10,14 @@
 #include "debug.h"
 #include <linux/init.h>
 #include <linux/bitops.h>
+#include <linux/kstrtox.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/printk.h>
 #include <linux/compiler.h>
 #include <linux/rwlock.h>
 #include <linux/cred.h>
+#include <linux/percpu.h>
 #include <linux/syscalls.h>	/* for __MAP */
 #include <linux/timekeeping.h>	/* for ktime_get */
 #include <linux/lsm_hooks.h>
@@ -77,6 +79,19 @@ static atomic_t vm_nusage = ATOMIC_INIT(0);
 
 #ifdef CONFIG_SECURITY_LUA_LSM_STATS
 
+struct lua_lsm_hook_pcpu_stat {
+	u64_stats_t count;
+	u64_stats_t time;
+	u64_stats_t maxtime;
+	struct u64_stats_sync syncp;
+};
+
+struct lua_lsm_pcpu_stats {
+	struct lua_lsm_hook_pcpu_stat hooks[__LL_NR_MAX];
+};
+
+static DEFINE_PER_CPU(struct lua_lsm_pcpu_stats, lua_lsm_pcpu_stats);
+
 static atomic_t vm_nalloc = ATOMIC_INIT(0);
 static atomic_t vm_nfree = ATOMIC_INIT(0);
 static atomic64_t mem_nalloc = ATOMIC64_INIT(0);
@@ -85,6 +100,33 @@ static atomic64_t mem_nfree = ATOMIC64_INIT(0);
 static atomic_t mem_total = ATOMIC_INIT(0);
 static atomic_t mem_minimum = ATOMIC_INIT(INT_MAX);
 static atomic_t mem_maximum = ATOMIC_INIT(0);
+
+static void lua_lsm_hook_stats_init_cpu(int cpu)
+{
+	struct lua_lsm_pcpu_stats *stats = per_cpu_ptr(&lua_lsm_pcpu_stats, cpu);
+	int i;
+
+	for (i = 0; i < __LL_NR_MAX; i++)
+		u64_stats_init(&stats->hooks[i].syncp);
+}
+
+void lua_lsm_hook_stats_record(unsigned int nr, u64 delta)
+{
+	struct lua_lsm_hook_pcpu_stat *stat;
+	unsigned long flags;
+	u64 maxtime;
+
+	local_irq_save(flags);
+	stat = &this_cpu_ptr(&lua_lsm_pcpu_stats)->hooks[nr];
+	u64_stats_update_begin(&stat->syncp);
+	u64_stats_inc(&stat->count);
+	u64_stats_add(&stat->time, delta);
+	maxtime = u64_stats_read(&stat->maxtime);
+	if (maxtime < delta)
+		u64_stats_set(&stat->maxtime, delta);
+	u64_stats_update_end(&stat->syncp);
+	local_irq_restore(flags);
+}
 
 static void lvm_stats_vmalloc(void)
 {
@@ -155,22 +197,42 @@ void lvm_stats_show(struct seq_file *m)
 
 int lsm_funcs_show(struct seq_file *m, void *v)
 {
-	struct lua_lsm_hook_stat *stat;
-	int i = 1;
+	int i;
+	int cpu;
 
 	seq_printf(m, "stats for lua-lsm (ns)\n");
 	seq_printf(m, "%3s %-28s %4s %12s %15s %10s %12s\n",
 		   "num", "name", "nlsm", "count", "total", "average", "maxtime");
 	seq_printf(m, "%s\n", TABLINE);
 
-	for (stat = lua_lsm_hook_stats; stat->name; stat++) {
-		int n = atomic_read(&stat->count);
-		s64 total = atomic64_read(&stat->time);
-		s64 maxtime = atomic64_read(&stat->maxtime);
+	for (i = 0; lua_lsm_hook_stats[i].name; i++) {
+		u64 count = 0;
+		u64 total = 0;
+		u64 maxtime = 0;
 
-		seq_printf(m, "%3d %-28s %4d %12d %15llu %10llu %12llu\n",
-			   i++, stat->name, atomic_read(&stat->nhooks),
-			   n, total, n ? total / n : 0, maxtime);
+		for_each_possible_cpu(cpu) {
+			const struct lua_lsm_hook_pcpu_stat *stat;
+			unsigned int start;
+			u64 tcount, ttotal, tmaxtime;
+
+			stat = &per_cpu_ptr(&lua_lsm_pcpu_stats, cpu)->hooks[i];
+			do {
+				start = u64_stats_fetch_begin(&stat->syncp);
+				tcount = u64_stats_read(&stat->count);
+				ttotal = u64_stats_read(&stat->time);
+				tmaxtime = u64_stats_read(&stat->maxtime);
+			} while (u64_stats_fetch_retry(&stat->syncp, start));
+
+			count += tcount;
+			total += ttotal;
+			if (maxtime < tmaxtime)
+				maxtime = tmaxtime;
+		}
+
+		seq_printf(m, "%3d %-28s %4d %12llu %15llu %10llu %12llu\n",
+			   i + 1, lua_lsm_hook_stats[i].name,
+			   atomic_read(&lua_lsm_hook_stats[i].nhooks),
+			   count, total, count ? total / count : 0, maxtime);
 	}
 	return 0;
 }
@@ -201,7 +263,36 @@ static DEFINE_PER_CPU(struct lvm_state *, irq_lvms);
 static int lua_state_alloc(struct lvm_state *lvm);
 static void lua_state_free(struct lvm_state *lvm);
 
-#define LVM_POOL_MAX	8
+#define LUA_LVM_POOL_MAX_DEFAULT	32
+#define LUA_LVM_POOL_MAX_LIMIT		256
+
+static unsigned int lua_lvm_pool_max __read_mostly = LUA_LVM_POOL_MAX_DEFAULT;
+
+static int __init lua_lvm_pool_max_setup(char *str)
+{
+	unsigned int val;
+	int err;
+
+	if (!str || !*str)
+		return 1;
+
+	err = kstrtouint(str, 10, &val);
+	if (err) {
+		pr_warn("invalid lua.lvm_pool_max='%s', keeping %u\n",
+			str, lua_lvm_pool_max);
+		return 1;
+	}
+
+	if (val > LUA_LVM_POOL_MAX_LIMIT) {
+		pr_warn("lua.lvm_pool_max=%u exceeds limit %u, keeping %u\n",
+			val, LUA_LVM_POOL_MAX_LIMIT, lua_lvm_pool_max);
+		return 1;
+	}
+
+	WRITE_ONCE(lua_lvm_pool_max, val);
+	return 1;
+}
+__setup("lua.lvm_pool_max=", lua_lvm_pool_max_setup);
 
 struct lvm_pool_cpu {
 	struct lvm_state *head;
@@ -256,7 +347,7 @@ static void lvm_pool_put(struct lvm_state *lvm)
 	cpu = get_cpu();
 	pool = &per_cpu(lvm_pools, cpu);
 	raw_spin_lock_irqsave(&pool->lock, flags);
-	if (pool->count < LVM_POOL_MAX) {
+	if (pool->count < READ_ONCE(lua_lvm_pool_max)) {
 		lvm->next = pool->head;
 		pool->head = lvm;
 		pool->count++;
@@ -1287,6 +1378,11 @@ static int __init lua_lsm_init(void)
 	for_each_possible_cpu(cpu)
 		lvm_pool_init_cpu(cpu);
 
+#ifdef CONFIG_SECURITY_LUA_LSM_STATS
+	for_each_possible_cpu(cpu)
+		lua_lsm_hook_stats_init_cpu(cpu);
+#endif
+
 	err = task_blob_init(current);
 	if (err)
 		return err;
@@ -1308,7 +1404,8 @@ static int __init lua_lsm_init(void)
 	/* Report that Lua-LSM successfully initialized */
 	lua_lsm_initialized = 1;
 
-	pr_info("Lua based LSM initialized\n");
+	pr_info("Lua based LSM initialized (lvm_pool_max=%u)\n",
+		READ_ONCE(lua_lvm_pool_max));
 	return 0;
 }
 
