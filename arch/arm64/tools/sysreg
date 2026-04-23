@@ -1321,7 +1321,10 @@ Enum	63:60	HPMN0
 	0b0000	UNPREDICTABLE
 	0b0001	DEF
 EndEnum
-Res0	59:56
+UnsignedEnum	59:56	ExtTrcBuff
+	0b0000	NI
+	0b0001	IMP
+EndEnum
 UnsignedEnum	55:52	BRBE
 	0b0000	NI
 	0b0001	IMP
@@ -1524,6 +1527,7 @@ EndEnum
 UnsignedEnum	43:40	SPECRES
 	0b0000	NI
 	0b0001	IMP
+	0b0010	COSP_RCTX
 EndEnum
 UnsignedEnum	39:36	SB
 	0b0000	NI
@@ -1561,6 +1565,7 @@ UnsignedEnum	11:8	API
 	0b0011	PAuth2
 	0b0100	FPAC
 	0b0101	FPACCOMBINE
+	0b0110	PAuth_LR
 EndEnum
 UnsignedEnum	7:4	APA
 	0b0000	NI
@@ -1569,6 +1574,7 @@ UnsignedEnum	7:4	APA
 	0b0011	PAuth2
 	0b0100	FPAC
 	0b0101	FPACCOMBINE
+	0b0110	PAuth_LR
 EndEnum
 UnsignedEnum	3:0	DPB
 	0b0000	NI
@@ -1647,7 +1653,12 @@ EndEnum
 EndSysreg
 
 Sysreg	ID_AA64ISAR3_EL1	3	0	0	6	3
-Res0	63:12
+Res0	63:16
+UnsignedEnum	15:12	PACM
+	0b0000	NI
+	0b0001	TRIVIAL_IMP
+	0b0010	FULL_IMP
+EndEnum
 UnsignedEnum	11:8	TLBIW
 	0b0000	NI
 	0b0001	IMP
@@ -2337,8 +2348,16 @@ Sysreg	CONTEXTIDR_EL1	3	0	13	0	1
 Fields	CONTEXTIDR_ELx
 EndSysreg
 
+Sysreg	RCWSMASK_EL1	3	0	13	0	3
+Field	63:0	RCWSMASK
+EndSysreg
+
 Sysreg	TPIDR_EL1	3	0	13	0	4
 Field	63:0	ThreadID
+EndSysreg
+
+Sysreg	RCWMASK_EL1	3	0	13	0	6
+Field	63:0	RCWMASK
 EndSysreg
 
 Sysreg	SCXTNUM_EL1	3	0	13	0	7
@@ -3212,6 +3231,33 @@ Field	1	PIE
 Field	0	PnCH
 EndSysreg
 
+SysregFields MAIR2_ELx
+Field	63:56	Attr7
+Field	55:48	Attr6
+Field	47:40	Attr5
+Field	39:32	Attr4
+Field	31:24	Attr3
+Field	23:16	Attr2
+Field	15:8	Attr1
+Field	7:0	Attr0
+EndSysregFields
+
+Sysreg	MAIR2_EL1	3	0	10	2	1
+Fields	MAIR2_ELx
+EndSysreg
+
+Sysreg	MAIR2_EL2	3	4	10	1	1
+Fields	MAIR2_ELx
+EndSysreg
+
+Sysreg	AMAIR2_EL1	3	0	10	3	1
+Field	63:0	ImpDef
+EndSysreg
+
+Sysreg	AMAIR2_EL2	3	4	10	3	1
+Field	63:0	ImpDef
+EndSysreg
+
 SysregFields PIRx_ELx
 Field	63:60	Perm15
 Field	59:56	Perm14
@@ -3260,6 +3306,14 @@ Fields	PIRx_ELx
 EndSysreg
 
 Sysreg	POR_EL12	3	5	10	2	4
+Fields	PIRx_ELx
+EndSysreg
+
+Sysreg	S2POR_EL1	3	0	10	2	5
+Fields	PIRx_ELx
+EndSysreg
+
+Sysreg	S2PIR_EL2	3	4	10	2	5
 Fields	PIRx_ELx
 EndSysreg
 

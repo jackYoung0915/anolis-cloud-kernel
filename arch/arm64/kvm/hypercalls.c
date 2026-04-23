@@ -144,11 +144,9 @@ static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 						   ARM_SMCCC_SMC_64,		\
 						   0, ARM_SMCCC_FUNC_MASK)
 
-static void init_smccc_filter(struct kvm *kvm)
+static int kvm_smccc_filter_insert_reserved(struct kvm *kvm)
 {
 	int r;
-
-	mt_init(&kvm->arch.smccc_filter);
 
 	/*
 	 * Prevent userspace from handling any SMCCC calls in the architecture
@@ -159,14 +157,25 @@ static void init_smccc_filter(struct kvm *kvm)
 			       SMC32_ARCH_RANGE_BEGIN, SMC32_ARCH_RANGE_END,
 			       xa_mk_value(KVM_SMCCC_FILTER_HANDLE),
 			       GFP_KERNEL_ACCOUNT);
-	WARN_ON_ONCE(r);
+	if (r)
+		goto out_destroy;
 
 	r = mtree_insert_range(&kvm->arch.smccc_filter,
 			       SMC64_ARCH_RANGE_BEGIN, SMC64_ARCH_RANGE_END,
 			       xa_mk_value(KVM_SMCCC_FILTER_HANDLE),
 			       GFP_KERNEL_ACCOUNT);
-	WARN_ON_ONCE(r);
+	if (r)
+		goto out_destroy;
 
+	return 0;
+out_destroy:
+	mtree_destroy(&kvm->arch.smccc_filter);
+	return r;
+}
+
+static bool kvm_smccc_filter_configured(struct kvm *kvm)
+{
+	return !mtree_empty(&kvm->arch.smccc_filter);
 }
 
 static int kvm_smccc_set_filter(struct kvm *kvm, struct kvm_smccc_filter __user *uaddr)
@@ -195,13 +204,14 @@ static int kvm_smccc_set_filter(struct kvm *kvm, struct kvm_smccc_filter __user 
 		goto out_unlock;
 	}
 
+	if (!kvm_smccc_filter_configured(kvm)) {
+		r = kvm_smccc_filter_insert_reserved(kvm);
+		if (WARN_ON_ONCE(r))
+			goto out_unlock;
+	}
+
 	r = mtree_insert_range(&kvm->arch.smccc_filter, start, end,
 			       xa_mk_value(filter.action), GFP_KERNEL_ACCOUNT);
-	if (r)
-		goto out_unlock;
-
-	set_bit(KVM_ARCH_FLAG_SMCCC_FILTER_CONFIGURED, &kvm->arch.flags);
-
 out_unlock:
 	mutex_unlock(&kvm->arch.config_lock);
 	return r;
@@ -212,7 +222,7 @@ static u8 kvm_smccc_filter_get_action(struct kvm *kvm, u32 func_id)
 	unsigned long idx = func_id;
 	void *val;
 
-	if (!test_bit(KVM_ARCH_FLAG_SMCCC_FILTER_CONFIGURED, &kvm->arch.flags))
+	if (!kvm_smccc_filter_configured(kvm))
 		return KVM_SMCCC_FILTER_HANDLE;
 
 	/*
@@ -428,7 +438,7 @@ void kvm_arm_init_hypercalls(struct kvm *kvm)
 	smccc_feat->std_hyp_bmap = KVM_ARM_SMCCC_STD_HYP_FEATURES;
 	smccc_feat->vendor_hyp_bmap = KVM_ARM_SMCCC_VENDOR_HYP_FEATURES;
 
-	init_smccc_filter(kvm);
+	mt_init(&kvm->arch.smccc_filter);
 }
 
 void kvm_arm_teardown_hypercalls(struct kvm *kvm)

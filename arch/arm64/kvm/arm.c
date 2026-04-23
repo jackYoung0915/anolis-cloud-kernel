@@ -191,6 +191,11 @@ vm_fault_t kvm_arch_vcpu_fault(struct kvm_vcpu *vcpu, struct vm_fault *vmf)
 	return VM_FAULT_SIGBUS;
 }
 
+int kvm_arch_create_vm_debugfs(struct kvm *kvm)
+{
+	kvm_sys_regs_create_debugfs(kvm);
+	return 0;
+}
 
 static void kvm_destroy_mpidr_data(struct kvm *kvm)
 {
@@ -225,6 +230,7 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 
 	kvm_destroy_mpidr_data(kvm);
 
+	kfree(kvm->arch.sysreg_masks);
 	kvm_destroy_vcpus(kvm);
 
 	kvm_unshare_hyp(kvm, kvm + 1);
@@ -727,6 +733,12 @@ int kvm_arch_vcpu_run_pid_change(struct kvm_vcpu *vcpu)
 		if (ret)
 			return ret;
 	}
+
+	/*
+	 * This needs to happen after NV has imposed its own restrictions on
+	 * the feature set
+	 */
+	kvm_init_sysreg(vcpu);
 
 	ret = kvm_timer_enable(vcpu);
 	if (ret)
