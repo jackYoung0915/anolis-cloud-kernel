@@ -1041,7 +1041,7 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 EXPORT_SYMBOL_GPL(filemap_add_folio);
 
 #ifdef CONFIG_NUMA
-struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
+struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order)
 {
 	int n;
 	struct folio *folio;
@@ -1051,7 +1051,7 @@ struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
 		do {
 			cpuset_mems_cookie = read_mems_allowed_begin();
 			n = cpuset_mem_spread_node();
-			folio = __folio_alloc_node(gfp, order, n);
+			folio = __folio_alloc_node_noprof(gfp, order, n);
 		} while (!folio && read_mems_allowed_retry(cpuset_mems_cookie));
 
 		if (folio)
@@ -1059,12 +1059,12 @@ struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
 		return folio;
 	}
 
-	folio = folio_alloc(gfp, order);
+	folio = folio_alloc_noprof(gfp, order);
 	if (folio)
 		count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
 	return folio;
 }
-EXPORT_SYMBOL(filemap_alloc_folio);
+EXPORT_SYMBOL(filemap_alloc_folio_noprof);
 #endif
 
 /*

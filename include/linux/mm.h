@@ -5,6 +5,7 @@
 #include <linux/errno.h>
 #include <linux/mmdebug.h>
 #include <linux/gfp.h>
+#include <linux/pgalloc_tag.h>
 #include <linux/bug.h>
 #include <linux/list.h>
 #include <linux/mmzone.h>
@@ -3469,13 +3470,7 @@ extern void reserve_bootmem_region(phys_addr_t start,
 				   phys_addr_t end, int nid);
 
 /* Free the reserved page into the buddy system, so it gets managed. */
-static inline void free_reserved_page(struct page *page)
-{
-	ClearPageReserved(page);
-	init_page_count(page);
-	__free_page(page);
-	adjust_managed_page_count(page, 1);
-}
+void free_reserved_page(struct page *page);
 #define free_highmem_page(page) free_reserved_page(page)
 
 static inline void mark_page_reserved(struct page *page)
@@ -4583,5 +4578,73 @@ static inline bool brk_thp_aligned_enabled(void)
 	return false;
 }
 #endif
+
+#ifdef CONFIG_MEM_ALLOC_PROFILING
+static inline void pgalloc_tag_split(struct folio *folio, int old_order, int new_order)
+{
+	int i;
+	struct alloc_tag *tag;
+	unsigned int nr_pages = 1 << new_order;
+
+	if (!mem_alloc_profiling_enabled())
+		return;
+
+	tag = pgalloc_tag_get(&folio->page);
+	if (!tag)
+		return;
+
+	for (i = nr_pages; i < (1 << old_order); i += nr_pages) {
+		union codetag_ref *ref = get_page_tag_ref(folio_page(folio, i));
+
+		if (ref) {
+			/* Set new reference to point to the original tag */
+			alloc_tag_ref_set(ref, tag);
+			put_page_tag_ref(ref);
+		}
+	}
+}
+
+static inline void pgalloc_tag_swap(struct folio *new, struct folio *old)
+{
+	union codetag_ref *ref_old, *ref_new;
+	struct alloc_tag *tag_old, *tag_new;
+
+	if (!mem_alloc_profiling_enabled())
+		return;
+
+	tag_old = pgalloc_tag_get(&old->page);
+	if (!tag_old)
+		return;
+	tag_new = pgalloc_tag_get(&new->page);
+	if (!tag_new)
+		return;
+
+	ref_old = get_page_tag_ref(&old->page);
+	if (!ref_old)
+		return;
+	ref_new = get_page_tag_ref(&new->page);
+	if (!ref_new) {
+		put_page_tag_ref(ref_old);
+		return;
+	}
+
+	/*
+	 * Clear tag references to avoid debug warning when using
+	 * __alloc_tag_ref_set() with non-empty reference.
+	 */
+	set_codetag_empty(ref_old);
+	set_codetag_empty(ref_new);
+
+	/* swap tags */
+	__alloc_tag_ref_set(ref_old, tag_new);
+	__alloc_tag_ref_set(ref_new, tag_old);
+	put_page_tag_ref(ref_old);
+	put_page_tag_ref(ref_new);
+}
+#else /* !CONFIG_MEM_ALLOC_PROFILING */
+static inline void pgalloc_tag_swap(struct folio *new, struct folio *old)
+{
+}
+#endif /* CONFIG_MEM_ALLOC_PROFILING */
 
 #endif /* _LINUX_MM_H */
