@@ -1012,18 +1012,12 @@ static inline bool task_is_underclass(struct task_struct *p)
 
 static inline void inc_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	if (se->sched_delayed)
-		return;
-
 	cfs_rq->nr_highclass += is_highclass(se);
 	cfs_rq->nr_underclass += is_underclass(se);
 }
 
 static inline void dec_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	if (se->sched_delayed)
-		return;
-
 	cfs_rq->nr_highclass -= is_highclass(se);
 	cfs_rq->nr_underclass -= is_underclass(se);
 }
@@ -1084,7 +1078,7 @@ static inline bool expellee_only(struct rq *rq, struct sched_entity *se)
 		return task_is_expellee(task_of(se));
 
 	cfs_rq = group_cfs_rq(se);
-	return cfs_rq->h_nr_expellee && cfs_rq->h_nr_runnable == cfs_rq->h_nr_expellee;
+	return cfs_rq->h_nr_expellee && cfs_rq->h_nr_queued == cfs_rq->h_nr_expellee;
 }
 
 int update_identity(struct task_group *tg, int identity)
@@ -1376,10 +1370,12 @@ static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 			break;
 
 		/*
-		 * Delayed entities must still be returned to pick_next_entity()
-		 * once so the delayed-dequeue path can finish their real dequeue.
-		 * Hiding them here would leave nr_queued non-zero while making the
-		 * entity unreachable to pick.
+		 * Return delayed entities to pick_next_entity() once so the
+		 * delayed-dequeue path can finish their real dequeue.
+		 * This is just a workaround to avoid panic.
+		 * TODO: Unify how the entire pick path handles sched_entities
+		 * that are both candidates for expel and currently in
+		 * delay-dequeue state.
 		 */
 		if (se->sched_delayed)
 			break;
@@ -1424,7 +1420,7 @@ static inline bool expellee_only_rq(struct rq *rq)
 
 #ifdef CONFIG_SCHED_CORE
 	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) &&
-	    rq->cfs.h_nr_expellee && rq->cfs.h_nr_runnable == rq->cfs.h_nr_expellee)
+	    rq->cfs.h_nr_expellee && rq->cfs.h_nr_queued == rq->cfs.h_nr_expellee)
 		return true;
 #endif
 	return false;
@@ -4719,8 +4715,7 @@ account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		account_numa_enqueue(rq, task_of(se));
 		list_add(&se->group_node, &rq->cfs_tasks);
 #ifdef CONFIG_GROUP_IDENTITY
-		if (!se->sched_delayed)
-			cfs_rq->nr_tasks++;
+		cfs_rq->nr_tasks++;
 #endif
 	}
 #endif
@@ -4737,8 +4732,7 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		account_numa_dequeue(rq_of(cfs_rq), task_of(se));
 		list_del_init(&se->group_node);
 #ifdef CONFIG_GROUP_IDENTITY
-		if (!se->sched_delayed)
-			cfs_rq->nr_tasks--;
+		cfs_rq->nr_tasks--;
 #endif
 	}
 #endif
@@ -6407,11 +6401,6 @@ static __always_inline void return_cfs_rq_runtime(struct cfs_rq *cfs_rq);
 
 static void set_delayed(struct sched_entity *se)
 {
-	struct task_struct *p;
-#ifdef CONFIG_GROUP_IDENTITY
-	struct identity_delta id;
-#endif
-
 	se->sched_delayed = 1;
 
 	/*
@@ -6421,32 +6410,16 @@ static void set_delayed(struct sched_entity *se)
 	 */
 	if (!entity_is_task(se))
 		return;
-	p = task_of(se);
-#ifdef CONFIG_GROUP_IDENTITY
-	struct cfs_rq *task_cfs_rq = cfs_rq_of(se);
 
-	task_cfs_rq->nr_tasks--;
-	task_cfs_rq->nr_highclass -= task_is_highclass(p);
-	task_cfs_rq->nr_underclass -= task_is_underclass(p);
-	id = task_identity_delta(p);
-#endif
 	for_each_sched_entity(se) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 		cfs_rq->h_nr_runnable--;
-#ifdef CONFIG_GROUP_IDENTITY
-		sub_identity_delta(cfs_rq, &id);
-#endif
 	}
 }
 
-static void __clear_delayed(struct sched_entity *se, bool keep_nr_tasks)
+static void clear_delayed(struct sched_entity *se)
 {
-	struct task_struct *p;
-#ifdef CONFIG_GROUP_IDENTITY
-	struct identity_delta id;
-#endif
-
 	se->sched_delayed = 0;
 
 	/*
@@ -6458,35 +6431,16 @@ static void __clear_delayed(struct sched_entity *se, bool keep_nr_tasks)
 	if (!entity_is_task(se))
 		return;
 
-	p = task_of(se);
-#ifdef CONFIG_GROUP_IDENTITY
-	struct cfs_rq *task_cfs_rq = cfs_rq_of(se);
-
-	if (keep_nr_tasks) {
-		task_cfs_rq->nr_tasks++;
-		task_cfs_rq->nr_highclass += task_is_highclass(p);
-		task_cfs_rq->nr_underclass += task_is_underclass(p);
-	}
-	id = task_identity_delta(p);
-#endif
 	for_each_sched_entity(se) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 		cfs_rq->h_nr_runnable++;
-#ifdef CONFIG_GROUP_IDENTITY
-		add_identity_delta(cfs_rq, &id);
-#endif
 	}
-}
-
-static void clear_delayed(struct sched_entity *se)
-{
-	__clear_delayed(se, true);
 }
 
 static inline void finish_delayed_dequeue_entity(struct sched_entity *se)
 {
-	__clear_delayed(se, false);
+	clear_delayed(se);
 	if (sched_feat(DELAY_ZERO) && se->vlag > 0)
 		se->vlag = 0;
 }
@@ -8137,12 +8091,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (p->in_iowait)
 		cpufreq_update_util(rq, SCHED_CPUFREQ_IOWAIT);
 
-	if (task_new && se->sched_delayed) {
+	if (task_new && se->sched_delayed)
 		h_nr_runnable = 0;
-#ifdef CONFIG_GROUP_IDENTITY
-		id = IDENTITY_DELTA_ZERO;
-#endif
-	}
+
 	for_each_sched_entity(se) {
 		if (se->on_rq) {
 			if (se->sched_delayed)
@@ -8263,10 +8214,10 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 		h_nr_idle = task_has_idle_policy(p);
 		if (task_sleep || task_delayed || !se->sched_delayed) {
 			h_nr_runnable = 1;
-#ifdef CONFIG_GROUP_IDENTITY
-			id = task_identity_delta(p);
-#endif
 		}
+#ifdef CONFIG_GROUP_IDENTITY
+		id = task_identity_delta(p);
+#endif
 	}
 
 	for_each_sched_entity(se) {
@@ -15350,7 +15301,7 @@ static void update_priority(struct task_group *tg, long old_priority, s64 priori
 		 * se is actually on_rq. When it is not queued, the enqueue
 		 * path will pick up the new se->priority naturally.
 		 */
-		if (se->on_rq && !se->sched_delayed) {
+		if (se->on_rq) {
 			switch (old_priority) {
 			case 1:
 				cfs_rq->nr_highclass--;
