@@ -653,6 +653,12 @@ struct sched_entity {
 	long			priority;
 	int			has_underclass_in_chain;
 #ifdef CONFIG_SCHED_CORE
+	/*
+	 * Cached "expellee_only" state for this group_se's subtree.  Used to
+	 * maintain cfs_rq->nr_highclass_pickable lazily on each h_nr_expellee
+	 * propagation.  Only meaningful for highclass group_se.
+	 */
+	bool			cached_expellee_only;
 	int			identity;
 #endif
 #endif

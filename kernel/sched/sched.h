@@ -873,6 +873,13 @@ struct cfs_rq {
 #endif
 	unsigned int		nr_highclass;
 	unsigned int		nr_underclass;
+	/*
+	 * Subset of nr_highclass that excludes group_ses whose subtree is
+	 * fully expellee_only (i.e. would be skipped by ID_SMT_EXPEL).  Used
+	 * by should_expel_se() to decide whether ID_ABSOLUTE_EXPEL still has
+	 * a pickable highclass to fall back on under SMT pressure.
+	 */
+	unsigned int		nr_highclass_pickable;
 	unsigned int		h_nr_highclass;
 	unsigned int		h_nr_underclass;
 	unsigned int		nr_tasks;

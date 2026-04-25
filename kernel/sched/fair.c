@@ -1010,14 +1010,60 @@ static inline bool task_is_underclass(struct task_struct *p)
 	return p->se.parent && is_underclass(p->se.parent);
 }
 
+#ifdef CONFIG_SCHED_CORE
+/*
+ * Compute and cache "is this highclass group_se's subtree fully expellee?"
+ * at the moment se is being added to its parent cfs_rq. The cached value
+ * is the source of truth for nr_highclass_pickable maintenance: subsequent
+ * recheck_highclass_pickable() calls compare against it to decide whether
+ * the parent's pickable counter needs to flip.
+ *
+ * For non-highclass se, or task se, the field is meaningless; callers
+ * gate on is_highclass(se) && !entity_is_task(se) before using it.
+ */
+static inline void init_cached_expellee_only(struct sched_entity *se)
+{
+	struct cfs_rq *child = group_cfs_rq(se);
+
+	se->cached_expellee_only = child->h_nr_expellee &&
+				   child->h_nr_expellee == child->h_nr_queued;
+}
+#else
+static inline void init_cached_expellee_only(struct sched_entity *se) { }
+#endif
+
 static inline void inc_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 	cfs_rq->nr_highclass += is_highclass(se);
 	cfs_rq->nr_underclass += is_underclass(se);
+#ifdef CONFIG_SCHED_CORE
+	/*
+	 * Maintain nr_highclass_pickable for highclass group_se entering
+	 * the parent cfs_rq. Initialise cached_expellee_only first so that
+	 * subsequent recheck_highclass_pickable() calls have a correct
+	 * baseline (without this, the lazy recheck would never see a
+	 * "false -> true" first transition for an expellee_only subtree
+	 * and the counter would stay at 0 forever).
+	 */
+	if (!entity_is_task(se) && is_highclass(se)) {
+		init_cached_expellee_only(se);
+		if (!se->cached_expellee_only)
+			cfs_rq->nr_highclass_pickable++;
+	}
+#endif
 }
 
 static inline void dec_nr_class(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
+#ifdef CONFIG_SCHED_CORE
+	/*
+	 * Symmetric pickable maintenance for highclass group_se leaving
+	 * the parent cfs_rq. cached_expellee_only carries the contribution
+	 * this se made on enqueue -- undo it.
+	 */
+	if (!entity_is_task(se) && is_highclass(se) && !se->cached_expellee_only)
+		cfs_rq->nr_highclass_pickable--;
+#endif
 	cfs_rq->nr_highclass -= is_highclass(se);
 	cfs_rq->nr_underclass -= is_underclass(se);
 }
@@ -1081,6 +1127,36 @@ static inline bool expellee_only(struct rq *rq, struct sched_entity *se)
 	return cfs_rq->h_nr_expellee && cfs_rq->h_nr_queued == cfs_rq->h_nr_expellee;
 }
 
+/*
+ * Check if a highclass group_se's expellee_only state flipped and update
+ * the parent cfs_rq's nr_highclass_pickable counter accordingly.
+ * Called from identity_delta propagation path after h_nr_expellee changed.
+ */
+static inline void recheck_highclass_pickable(struct sched_entity *se)
+{
+#ifdef CONFIG_SCHED_CORE
+	struct cfs_rq *child, *parent;
+	bool now;
+
+	if (entity_is_task(se) || !is_highclass(se) || !se->on_rq)
+		return;
+
+	child = group_cfs_rq(se);
+	now = child->h_nr_expellee &&
+	      child->h_nr_expellee == child->h_nr_queued;
+
+	if (now == se->cached_expellee_only)
+		return;
+
+	parent = cfs_rq_of(se);
+	if (now)
+		parent->nr_highclass_pickable--;
+	else
+		parent->nr_highclass_pickable++;
+	se->cached_expellee_only = now;
+#endif
+}
+
 int update_identity(struct task_group *tg, int identity)
 {
 	int old_identity = tg->identity;
@@ -1140,6 +1216,11 @@ int update_identity(struct task_group *tg, int identity)
 				break;
 			}
 
+			/*
+			 * h_nr_expellee on se's own subtree just changed ->
+			 * se's cached_expellee_only may need to flip.
+			 */
+			recheck_highclass_pickable(se);
 
 			for_each_sched_entity(se) {
 				cfs_rq = cfs_rq_of(se);
@@ -1162,6 +1243,14 @@ int update_identity(struct task_group *tg, int identity)
 					cfs_rq->h_nr_expellee += delta;
 					break;
 				}
+
+				/*
+				 * cfs_rq_of(se)->h_nr_expellee changed -> the
+				 * group_se sitting one level above (parent of se)
+				 * may need its cached state flipped.
+				 */
+				if (parent_entity(se))
+					recheck_highclass_pickable(parent_entity(se));
 
 				if (cfs_rq_throttled(cfs_rq))
 					break;
@@ -1216,25 +1305,38 @@ cfs_rq_identity_delta(struct cfs_rq *cfs_rq)
 	};
 }
 
+
 static inline void
-add_identity_delta(struct cfs_rq *cfs_rq, const struct identity_delta *d)
+add_identity_delta(struct cfs_rq *cfs_rq, const struct identity_delta *d, struct sched_entity *se)
 {
 	cfs_rq->h_nr_highclass += d->highclass;
 	cfs_rq->h_nr_underclass += d->underclass;
 #ifdef CONFIG_SCHED_CORE
 	cfs_rq->h_nr_expeller += d->expeller;
 	cfs_rq->h_nr_expellee += d->expellee;
+	/*
+	 * h_nr_expellee just changed -> reconsider the parent group_se's
+	 * pickable state (nr_highclass_pickable counter).
+	 */
+	if (se && parent_entity(se))
+		recheck_highclass_pickable(parent_entity(se));
 #endif
 }
 
 static inline void
-sub_identity_delta(struct cfs_rq *cfs_rq, const struct identity_delta *d)
+sub_identity_delta(struct cfs_rq *cfs_rq, const struct identity_delta *d, struct sched_entity *se)
 {
 	cfs_rq->h_nr_highclass -= d->highclass;
 	cfs_rq->h_nr_underclass -= d->underclass;
 #ifdef CONFIG_SCHED_CORE
 	cfs_rq->h_nr_expeller -= d->expeller;
 	cfs_rq->h_nr_expellee -= d->expellee;
+	/*
+	 * h_nr_expellee just changed -> reconsider the parent group_se's
+	 * pickable state (nr_highclass_pickable counter).
+	 */
+	if (se && parent_entity(se))
+		recheck_highclass_pickable(parent_entity(se));
 #endif
 }
 
@@ -1266,11 +1368,43 @@ static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
 }
 #endif
 
+/*
+ * Return the number of pickable highclass entities on this cfs_rq.
+ * Under SMT expel, expellee_only highclass groups cannot actually run,
+ * so they are excluded; otherwise fall back to the raw highclass count.
+ *
+ * This avoids ID_ABSOLUTE_EXPEL evicting underclass when no pickable
+ * highclass exists, which would otherwise leave pick with no candidate
+ * and risk a NULL sched_entity dereference.
+ */
+static inline unsigned int
+nr_pickable_highclass(struct cfs_rq *cfs_rq, struct rq *rq)
+{
+#ifdef CONFIG_SCHED_CORE
+	/*
+	 * Sanity check: nr_highclass_pickable is by definition a subset of
+	 * nr_highclass (pickable = highclass - expellee_only). If the
+	 * counter ever exceeds the upper bound, our maintenance points are
+	 * broken. Return 0 to fail safe and avoid feeding a bogus count
+	 * into should_expel_se(), which would otherwise let
+	 * ID_ABSOLUTE_EXPEL evict underclass while no pickable highclass
+	 * exists and risk a NULL sched_entity on the pick path.
+	 */
+	if (WARN_ON_ONCE(cfs_rq->nr_highclass_pickable > cfs_rq->nr_highclass))
+		return 0;
+
+	if (sched_feat(ID_SMT_EXPEL) && rq_on_expel_by_smt_expeller(rq))
+		return cfs_rq->nr_highclass_pickable;
+#endif
+	return cfs_rq->nr_highclass;
+}
+
 static inline bool should_expel_se(struct rq *rq, struct sched_entity *se)
 {
 	unsigned int __maybe_unused on_expel = rq_on_expel(rq);
 
-	if (sched_feat(ID_ABSOLUTE_EXPEL) && cfs_rq_of(se)->nr_highclass && is_underclass(se))
+	if (sched_feat(ID_ABSOLUTE_EXPEL) && nr_pickable_highclass(cfs_rq_of(se), rq) &&
+	    is_underclass(se))
 		return true;
 #ifdef CONFIG_SCHED_CORE
 	if (sched_feat(ID_SMT_EXPEL) && (on_expel & EXPEL_BY_SMT_EXPELLER) && expellee_only(rq, se))
@@ -8126,7 +8260,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq->h_nr_queued++;
 		cfs_rq->h_nr_idle += h_nr_idle;
 #ifdef CONFIG_GROUP_IDENTITY
-		add_identity_delta(cfs_rq, &id);
+		add_identity_delta(cfs_rq, &id, se);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -8151,7 +8285,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq->h_nr_queued++;
 		cfs_rq->h_nr_idle += h_nr_idle;
 #ifdef CONFIG_GROUP_IDENTITY
-		add_identity_delta(cfs_rq, &id);
+		add_identity_delta(cfs_rq, &id, se);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -8243,7 +8377,7 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 		cfs_rq->h_nr_queued -= h_nr_queued;
 		cfs_rq->h_nr_idle -= h_nr_idle;
 #ifdef CONFIG_GROUP_IDENTITY
-		sub_identity_delta(cfs_rq, &id);
+		sub_identity_delta(cfs_rq, &id, se);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -8286,7 +8420,7 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 		cfs_rq->h_nr_queued -= h_nr_queued;
 		cfs_rq->h_nr_idle -= h_nr_idle;
 #ifdef CONFIG_GROUP_IDENTITY
-		sub_identity_delta(cfs_rq, &id);
+		sub_identity_delta(cfs_rq, &id, se);
 #endif
 
 		if (cfs_rq_is_idle(cfs_rq))
@@ -15309,6 +15443,18 @@ static void update_priority(struct task_group *tg, long old_priority, s64 priori
 		if (se->on_rq) {
 			switch (old_priority) {
 			case 1:
+#ifdef CONFIG_SCHED_CORE
+				/*
+				 * Leaving highclass: undo the pickable
+				 * contribution this se made on enqueue and
+				 * clear cached_expellee_only so it is not
+				 * carried over to the next priority window.
+				 */
+				if (!entity_is_task(se) &&
+				    !se->cached_expellee_only)
+					cfs_rq->nr_highclass_pickable--;
+				se->cached_expellee_only = false;
+#endif
 				cfs_rq->nr_highclass--;
 				break;
 			case -1:
@@ -15319,6 +15465,17 @@ static void update_priority(struct task_group *tg, long old_priority, s64 priori
 			switch (priority) {
 			case 1:
 				cfs_rq->nr_highclass++;
+#ifdef CONFIG_SCHED_CORE
+				/*
+				 * Entering highclass: compute a fresh cached
+				 * baseline and bump pickable accordingly.
+				 */
+				if (!entity_is_task(se)) {
+					init_cached_expellee_only(se);
+					if (!se->cached_expellee_only)
+						cfs_rq->nr_highclass_pickable++;
+				}
+#endif
 				break;
 			case -1:
 				cfs_rq->nr_underclass++;
