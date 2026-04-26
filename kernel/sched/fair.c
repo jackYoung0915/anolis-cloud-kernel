@@ -1380,8 +1380,13 @@ static inline struct rb_node *skip_expellee_se(struct cfs_rq *cfs_rq)
 static inline struct rb_node *id_rb_first_cached(struct cfs_rq *cfs_rq)
 {
 	if (!sched_feat(ID_ABSOLUTE_EXPEL) && !id_smt_expel_enabled() &&
-	    list_empty(&cfs_rq->expel_list))
+	    list_empty(&cfs_rq->expel_list)) {
+		struct rq *rq = rq_of(cfs_rq);
+
+		if (rq->on_expel)
+			rq->on_expel = 0;
 		return rb_first_cached(&cfs_rq->tasks_timeline);
+	}
 
 	check_expellee_se(cfs_rq);
 	if (rq_on_expel(rq_of(cfs_rq)))
