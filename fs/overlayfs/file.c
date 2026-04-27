@@ -235,6 +235,12 @@ static loff_t ovl_llseek(struct file *file, loff_t offset, int whence)
 	return ret;
 }
 
+static void ovl_file_modified(struct file *file)
+{
+	/* Update size/mtime */
+	ovl_copyattr(file_inode(file));
+}
+
 static void ovl_file_accessed(struct file *file)
 {
 	struct inode *inode, *upperinode;
@@ -289,12 +295,8 @@ static void ovl_aio_cleanup_handler(struct ovl_aio_req *aio_req)
 	struct kiocb *iocb = &aio_req->iocb;
 	struct kiocb *orig_iocb = aio_req->orig_iocb;
 
-	if (iocb->ki_flags & IOCB_WRITE) {
-		struct inode *inode = file_inode(orig_iocb->ki_filp);
-
-		kiocb_end_write(iocb);
-		ovl_copyattr(inode);
-	}
+	if (iocb->ki_flags & IOCB_WRITE)
+		ovl_file_modified(orig_iocb->ki_filp);
 
 	orig_iocb->ki_pos = iocb->ki_pos;
 	ovl_aio_put(aio_req);
@@ -305,6 +307,9 @@ static void ovl_aio_rw_complete(struct kiocb *iocb, long res)
 	struct ovl_aio_req *aio_req = container_of(iocb,
 						   struct ovl_aio_req, iocb);
 	struct kiocb *orig_iocb = aio_req->orig_iocb;
+
+	if (iocb->ki_flags & IOCB_WRITE)
+		kiocb_end_write(iocb);
 
 	ovl_aio_cleanup_handler(aio_req);
 	orig_iocb->ki_complete(orig_iocb, res);
@@ -398,12 +403,10 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	if (is_sync_kiocb(iocb)) {
-		file_start_write(real.file);
 		ret = vfs_iter_write(real.file, iter, &iocb->ki_pos,
 				     ovl_iocb_to_rwf(ifl));
-		file_end_write(real.file);
 		/* Update size */
-		ovl_copyattr(inode);
+		ovl_file_modified(file);
 	} else {
 		struct ovl_aio_req *aio_req;
 
@@ -417,7 +420,6 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 		aio_req->iocb.ki_flags = ifl;
 		aio_req->iocb.ki_complete = ovl_aio_rw_complete;
 		refcount_set(&aio_req->ref, 2);
-		kiocb_start_write(&aio_req->iocb);
 		ret = vfs_iocb_iter_write(real.file, &aio_req->iocb, iter);
 		ovl_aio_put(aio_req);
 		if (ret != -EIOCBQUEUED)
@@ -489,7 +491,7 @@ static ssize_t ovl_splice_write(struct pipe_inode_info *pipe, struct file *out,
 
 	file_end_write(real.file);
 	/* Update size */
-	ovl_copyattr(inode);
+	ovl_file_modified(out);
 	revert_creds(old_cred);
 	fdput(real);
 
@@ -570,7 +572,7 @@ static long ovl_fallocate(struct file *file, int mode, loff_t offset, loff_t len
 	revert_creds(old_cred);
 
 	/* Update size */
-	ovl_copyattr(inode);
+	ovl_file_modified(file);
 
 	fdput(real);
 
@@ -654,7 +656,7 @@ static loff_t ovl_copyfile(struct file *file_in, loff_t pos_in,
 	revert_creds(old_cred);
 
 	/* Update size */
-	ovl_copyattr(inode_out);
+	ovl_file_modified(file_out);
 
 	fdput(real_in);
 	fdput(real_out);
