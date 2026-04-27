@@ -2739,11 +2739,9 @@ LUA_LSM_INT_DEFINE3(socket_getpeersec_dgram, struct socket *, sock,
 LUA_LSM_PREPARE_DEFINE3(sk_alloc_security, struct sock *, sk,
 		int, family, gfp_t, priority)
 {
-	/*
-	 * This kernel tree doesn't provide a dedicated socket LSM blob slot
-	 * for stacked modules, so sk->sk_security may be NULL or owned by
-	 * another LSM (for example SELinux). Do not treat it as lua_lsm_object.
-	 */
+	struct lua_lsm_object *llo = lua_lsm_sock(sk);
+
+	kvcache_dict_init(&llo->dict);
 	return 0;
 }
 
@@ -2764,7 +2762,9 @@ LUA_LSM_INT_DEFINE3(sk_alloc_security, struct sock *, sk,
  */
 LUA_LSM_POSTPONE_DEFINE1(sk_free_security, struct sock *, sk)
 {
-	/* See sk_alloc_security: socket security storage isn't Lua-owned here. */
+	struct lua_lsm_object *llo = lua_lsm_sock(sk);
+
+	kvcache_dict_free(&llo->dict);
 }
 
 /**
