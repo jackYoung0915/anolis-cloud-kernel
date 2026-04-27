@@ -147,6 +147,14 @@ SCHED_FEAT(ID_EXPELLER_SHARE_CORE, true)
 #endif
 SCHED_FEAT(ID_EXPELLEE_NEVER_HOT, false)
 SCHED_FEAT(ID_RESCUE_EXPELLEE, false)
+/*
+ * Collect per-CPU statistics for GROUP_IDENTITY expel events.
+ * When enabled, pick_task_fair() counts how many times an expellee
+ * task was forced onto the CPU despite active expel pressure
+ * (ID_ABSOLUTE_EXPEL or ID_SMT_EXPEL).  Disable to eliminate the
+ * extra conditional on the pick hot-path.
+ */
+SCHED_FEAT(ID_GI_STAT, true)
 #endif
 
 SCHED_FEAT(SCHED_FEAT_RESERVE1, false)
