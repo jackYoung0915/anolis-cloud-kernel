@@ -2208,6 +2208,7 @@ static long tcmu_do_copy_data(struct tcmu_cmd *tcmu_cmd,
 	struct scatterlist *data_sg, *sg;
 	int i;
 	unsigned int data_nents;
+	size_t copied;
 
 	if (se_cmd->se_cmd_flags & SCF_BIDI) {
 		data_sg = se_cmd->t_bidi_data_sg;
@@ -2225,11 +2226,12 @@ static long tcmu_do_copy_data(struct tcmu_cmd *tcmu_cmd,
 
 	for_each_sg(data_sg, sg, data_nents, i) {
 		if (is_copy_to_sgl)
-			ret = copy_page_from_iter(sg_page(sg), sg->offset, sg->length, &iter);
+			copied = copy_page_from_iter(sg_page(sg), sg->offset, sg->length, &iter);
 		else
-			ret = copy_page_to_iter(sg_page(sg), sg->offset, sg->length, &iter);
-		if (ret < 0) {
+			copied = copy_page_to_iter(sg_page(sg), sg->offset, sg->length, &iter);
+		if (copied != sg->length) {
 			pr_err("copy failed.\n");
+			ret = -EFAULT;
 			break;
 		}
 	}
