@@ -3207,6 +3207,10 @@ static inline void mod_objcg_mlstate(struct obj_cgroup *objcg,
 static __always_inline
 struct mem_cgroup *mem_cgroup_from_obj_folio(struct folio *folio, void *p)
 {
+	/* KFENCE obj_exts may be unpopulated; skip early. */
+	if (is_kfence_address(p))
+			return NULL;
+
 	/*
 	 * Slab objects are accounted individually, not per-page.
 	 * Memcg membership data for each individual object is saved in
