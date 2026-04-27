@@ -10408,6 +10408,41 @@ again:
 		se = pick_next_entity(rq, cfs_rq);
 		if (!se)
 			goto again;
+#ifdef CONFIG_GROUP_IDENTITY
+		/*
+		 * At each level of the hierarchy check whether the picked se
+		 * is an expellee being forced onto the CPU despite active expel
+		 * pressure.  We count at every level so that both task ses and
+		 * intermediate group ses are captured.
+		 *
+		 *   ID_ABSOLUTE_EXPEL: se is underclass and at least one
+		 *                       pickable highclass se exists on the same
+		 *                       cfs_rq.
+		 *   ID_SMT_EXPEL:       SMT expeller present and se (or its
+		 *                       subtree) is expellee-only.
+		 */
+		if (sched_feat(ID_GI_STAT)) {
+			/*
+			 * ID_ABSOLUTE_EXPEL: uses per-cfs_rq nr_pickable_highclass
+			 * rather than rq_on_expel()'s EXPEL_BY_HIGHCLASS bit because
+			 * the bit is derived from the root cfs_rq h_nr_highclass
+			 * while the expel decision is made per-level.
+			 */
+			if (sched_feat(ID_ABSOLUTE_EXPEL) &&
+			    nr_pickable_highclass(cfs_rq, rq) && is_underclass(se))
+				rq->nr_expel_absolute_warn++;
+#ifdef CONFIG_SCHED_CORE
+			/*
+			 * ID_SMT_EXPEL: the EXPEL_BY_SMT_EXPELLER bit is rq-global
+			 * (sibling core has expeller), so use rq_on_expel() here.
+			 */
+			if (sched_feat(ID_SMT_EXPEL) &&
+			    (rq_on_expel(rq) & EXPEL_BY_SMT_EXPELLER) &&
+			    expellee_only(rq, se))
+				rq->nr_expel_smt_warn++;
+#endif
+		}
+#endif
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
 

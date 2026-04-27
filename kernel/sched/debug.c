@@ -840,6 +840,13 @@ do {									\
 	}
 #undef P
 
+#ifdef CONFIG_GROUP_IDENTITY
+	SEQ_printf(m, "  .%-30s: %llu\n", "nr_expel_absolute_warn", rq->nr_expel_absolute_warn);
+#ifdef CONFIG_SCHED_CORE
+	SEQ_printf(m, "  .%-30s: %llu\n", "nr_expel_smt_warn",      rq->nr_expel_smt_warn);
+#endif
+#endif
+
 	print_cfs_stats(m, cpu);
 	print_rt_stats(m, cpu);
 	print_dl_stats(m, cpu);
