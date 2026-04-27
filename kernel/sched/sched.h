@@ -1604,6 +1604,18 @@ struct rq {
 	u64			last_push_expellee;
 	bool			queued_push_expellee;
 	unsigned int		on_expel;
+	/*
+	 * Counts of times a sched_entity was suppressed onto expel_list
+	 * and thus prevented from being picked by the CFS pick path.
+	 * nr_expel_absolute: triggered by ID_ABSOLUTE_EXPEL (highclass present
+	 *                    and this se is underclass)
+	 * nr_expel_smt:      triggered by ID_SMT_EXPEL (SMT expeller sibling
+	 *                    and this se's subtree is expellee-only)
+	 */
+	u64			nr_expel_absolute_warn;
+#ifdef CONFIG_SCHED_CORE
+	u64			nr_expel_smt_warn;
+#endif
 #endif
 	bool			booked;
 	bool			pulled;
