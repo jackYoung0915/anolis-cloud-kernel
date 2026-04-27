@@ -152,7 +152,7 @@ static inline struct lua_lsm_object *lua_lsm_file(const struct file *file)
 
 static inline struct lua_lsm_object *lua_lsm_ib(void *ib_sec)
 {
-	return ib_sec;
+	return ib_sec + lua_lsm_blob_sizes.lbs_ib;
 }
 
 static inline struct lua_lsm_object *lua_lsm_inode(const struct inode *inode)
@@ -171,7 +171,9 @@ static inline struct lua_lsm_object *lua_lsm_inode_rcu(void *inode_security)
 
 static inline struct lua_lsm_object *lua_lsm_sock(const struct sock *sock)
 {
-	return sock->sk_security;
+	if (unlikely(!sock || !sock->sk_security))
+		return NULL;
+	return sock->sk_security + lua_lsm_blob_sizes.lbs_sock;
 }
 
 static inline struct lua_lsm_object *lua_lsm_superblock(const struct super_block *superblock)
@@ -190,7 +192,7 @@ static inline struct lua_lsm_object *lua_lsm_ipc(const struct kern_ipc_perm *ipc
 
 static inline struct lua_lsm_object *lua_lsm_key(const struct key *key)
 {
-	return key->security;
+	return key->security + lua_lsm_blob_sizes.lbs_key;
 }
 
 static inline struct lua_lsm_object *lua_lsm_msgmsg(const struct msg_msg *msg)
@@ -202,12 +204,12 @@ static inline struct lua_lsm_object *lua_lsm_msgmsg(const struct msg_msg *msg)
 
 static inline struct lua_lsm_object *lua_lsm_perfevent(const struct perf_event *event)
 {
-	return event->security;
+	return event->security + lua_lsm_blob_sizes.lbs_perf_event;
 }
 
 static inline struct lua_lsm_object *lua_lsm_tun_dev(void *security)
 {
-	return security;
+	return security + lua_lsm_blob_sizes.lbs_tun_dev;
 }
 
 static inline struct lua_lsm_object *lua_lsm_bdev(const struct block_device *bdev)
