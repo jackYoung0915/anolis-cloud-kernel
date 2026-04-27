@@ -1351,12 +1351,17 @@ struct lsm_blob_sizes lua_lsm_blob_sizes __ro_after_init = {
 	.lbs_task = sizeof(struct lua_lsm_task),
 	.lbs_cred = sizeof(struct lua_lsm_object),
 	.lbs_file = sizeof(struct lua_lsm_object),
+	.lbs_ib = 0,
 	.lbs_inode = sizeof(struct lua_lsm_object),
+	.lbs_sock = sizeof(struct lua_lsm_object),
 	.lbs_superblock = sizeof(struct lua_lsm_object),
 	.lbs_ipc = sizeof(struct lua_lsm_object),
+	.lbs_key = 0,
 	.lbs_msg_msg = sizeof(struct lua_lsm_object),
+	.lbs_perf_event = 0,
 	/* TODO: number of xattr slots in new_xattrs array */
 	.lbs_xattr_count = 10,
+	.lbs_tun_dev = 0,
 };
 
 static struct security_hook_list lua_lsm_hooks[] __ro_after_init = {

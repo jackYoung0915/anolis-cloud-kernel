@@ -131,7 +131,7 @@
 	LUA_OBJECT(func,	kernel,		perfevent,	struct perf_event *,	NULL)	\
 	LUA_OBJECT(object,	ipc,		ipc,		struct kern_ipc_perm *,	NULL)	\
 	LUA_OBJECT(object,	ipc,		msgmsg,		struct msg_msg *,	NULL)	\
-	LUA_OBJECT(func,	net,		sock,		struct sock *,		NULL)	\
+	LUA_OBJECT(object,	net,		sock,		struct sock *,		NULL)	\
 	LUA_OBJECT(func,	net,		ib,		void *,			NULL)	\
 	LUA_OBJECT(func,	net,		tundev,		void *,			NULL)	\
 	LUA_OBJECT(func,	net,		socket,		struct socket *,	NULL)	\
