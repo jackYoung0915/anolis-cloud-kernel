@@ -288,6 +288,7 @@ void bio_init(struct bio *bio, struct block_device *bdev, struct bio_vec *table,
 	bio->bi_max_vecs = max_vecs;
 	bio->bi_io_vec = table;
 	bio->bi_pool = NULL;
+	bio->bi_ext_flags = 0;
 }
 EXPORT_SYMBOL(bio_init);
 
