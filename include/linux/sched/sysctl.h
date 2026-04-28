@@ -45,4 +45,5 @@ extern int sched_group_balancer_enable_handler(struct ctl_table *table, int writ
 extern unsigned int sysctl_sched_push_expellee_interval;
 #endif
 extern unsigned int sysctl_sched_idle_shares_relax;
+extern unsigned int sysctl_sched_idle_shares_value;
 #endif /* _LINUX_SCHED_SYSCTL_H */

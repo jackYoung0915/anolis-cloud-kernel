@@ -85,6 +85,7 @@ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
 unsigned int sysctl_sched_child_runs_first __read_mostly;
 
 unsigned int sysctl_sched_idle_shares_relax;
+unsigned int sysctl_sched_idle_shares_value;
 
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 unsigned int sysctl_sched_id_book_cpu_nr_tries = 5;
@@ -15363,8 +15364,11 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 	mutex_lock(&shares_mutex);
 	if (tg_is_idle(tg) && !sysctl_sched_idle_shares_relax)
 		ret = -EINVAL;
-	else
+	else {
+		if (tg_is_idle(tg) && sysctl_sched_idle_shares_value)
+			shares = scale_load((unsigned long)sysctl_sched_idle_shares_value);
 		ret = __sched_group_set_shares(tg, shares);
+	}
 	mutex_unlock(&shares_mutex);
 
 	return ret;
