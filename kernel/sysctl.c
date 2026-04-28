@@ -1645,6 +1645,8 @@ int proc_do_static_key(struct ctl_table *table, int write,
 	return ret;
 }
 
+static int max_shares = 1 << 18; /* MAX_SHARES */
+
 static struct ctl_table kern_table[] = {
 	{
 		.procname	= "panic",
@@ -2210,6 +2212,15 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_ONE,
+	},
+	{
+		.procname	= "sched_idle_shares_value",
+		.data		= &sysctl_sched_idle_shares_value,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &max_shares,
 	},
 	{ }
 };
