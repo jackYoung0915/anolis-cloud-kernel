@@ -198,6 +198,7 @@ void lvm_stats_show(struct seq_file *m)
 int lsm_funcs_show(struct seq_file *m, void *v)
 {
 	int i;
+	int n = 0;
 	int cpu;
 
 	seq_printf(m, "stats for lua-lsm (ns)\n");
@@ -209,6 +210,9 @@ int lsm_funcs_show(struct seq_file *m, void *v)
 		u64 count = 0;
 		u64 total = 0;
 		u64 maxtime = 0;
+
+		if (!lua_lsm_hook_supported(i))
+			continue;
 
 		for_each_possible_cpu(cpu) {
 			const struct lua_lsm_hook_pcpu_stat *stat;
@@ -230,7 +234,7 @@ int lsm_funcs_show(struct seq_file *m, void *v)
 		}
 
 		seq_printf(m, "%3d %-28s %4d %12llu %15llu %10llu %12llu\n",
-			   i + 1, lua_lsm_hook_stats[i].name,
+			   ++n, lua_lsm_hook_stats[i].name,
 			   atomic_read(&lua_lsm_hook_stats[i].nhooks),
 			   count, total, count ? total / count : 0, maxtime);
 	}
@@ -939,6 +943,13 @@ int lua_lsm_module_register(const char *code, size_t len)
 				if (strcmp(lua_lsm_hook_stats[i].name, key) != 0)
 					continue;
 
+				if (!lua_lsm_hook_supported(i)) {
+					__log_err("hook '%s' is not supported by Lua-LSM\n",
+						  key);
+					err = -EOPNOTSUPP;
+					goto err_free_module;
+				}
+
 				if (!lua_isfunction(L, -1)) {
 					__log_err("field '%s' must be a function\n", key);
 					break;
@@ -1351,12 +1362,17 @@ struct lsm_blob_sizes lua_lsm_blob_sizes __ro_after_init = {
 	.lbs_task = sizeof(struct lua_lsm_task),
 	.lbs_cred = sizeof(struct lua_lsm_object),
 	.lbs_file = sizeof(struct lua_lsm_object),
+	.lbs_ib = 0,
 	.lbs_inode = sizeof(struct lua_lsm_object),
+	.lbs_sock = sizeof(struct lua_lsm_object),
 	.lbs_superblock = sizeof(struct lua_lsm_object),
 	.lbs_ipc = sizeof(struct lua_lsm_object),
+	.lbs_key = 0,
 	.lbs_msg_msg = sizeof(struct lua_lsm_object),
+	.lbs_perf_event = 0,
 	/* TODO: number of xattr slots in new_xattrs array */
 	.lbs_xattr_count = 10,
+	.lbs_tun_dev = 0,
 };
 
 static struct security_hook_list lua_lsm_hooks[] __ro_after_init = {
@@ -1374,6 +1390,7 @@ static int __init lua_lsm_init(void)
 	struct lvm_state *lvm;
 	int cpu;
 	int err;
+	int i;
 
 	for_each_possible_cpu(cpu)
 		lvm_pool_init_cpu(cpu);
@@ -1399,7 +1416,12 @@ static int __init lua_lsm_init(void)
 		per_cpu(irq_lvms, cpu) = lvm;
 	}
 
-	security_add_hooks(lua_lsm_hooks, ARRAY_SIZE(lua_lsm_hooks), "lua");
+	/* Register only the hooks that Lua-LSM exposes to modules. */
+	for (i = 0; i < ARRAY_SIZE(lua_lsm_hooks); i++) {
+		if (!lua_lsm_hook_supported(i))
+			continue;
+		security_add_hooks(&lua_lsm_hooks[i], 1, "lua");
+	}
 
 	/* Report that Lua-LSM successfully initialized */
 	lua_lsm_initialized = 1;

@@ -297,10 +297,6 @@ BTF_ID(func, bpf_lsm_kernel_module_request)
 BTF_ID(func, bpf_lsm_kernel_read_file)
 BTF_ID(func, bpf_lsm_kernfs_init_security)
 
-#ifdef CONFIG_KEYS
-BTF_ID(func, bpf_lsm_key_free)
-#endif /* CONFIG_KEYS */
-
 BTF_ID(func, bpf_lsm_mmap_file)
 BTF_ID(func, bpf_lsm_netlink_send)
 BTF_ID(func, bpf_lsm_path_notify)

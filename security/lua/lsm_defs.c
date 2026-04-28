@@ -2351,10 +2351,7 @@ LUA_LSM_VOID_DEFINE2(d_instantiate, struct dentry *, dentry,
  * Default: -EOPNOTSUPP
  */
 
-/**
- * TODO: getprocattr
- * Default: -EINVAL
- */
+/* Not registered by Lua-LSM. */
 LUA_LSM_INT_DEFINE3(getprocattr, struct task_struct *, p,
 		const char *, name, char **, value)
 {
@@ -2363,10 +2360,6 @@ LUA_LSM_INT_DEFINE3(getprocattr, struct task_struct *, p,
 	lua_pushnil(L);	/* TODO: value */
 }
 
-/**
- * setprocattr
- * Default: -EINVAL
- */
 LUA_LSM_INT_DEFINE3(setprocattr, const char *, name,
 		void *, value, size_t, size)
 {
@@ -2739,11 +2732,9 @@ LUA_LSM_INT_DEFINE3(socket_getpeersec_dgram, struct socket *, sock,
 LUA_LSM_PREPARE_DEFINE3(sk_alloc_security, struct sock *, sk,
 		int, family, gfp_t, priority)
 {
-	/*
-	 * This kernel tree doesn't provide a dedicated socket LSM blob slot
-	 * for stacked modules, so sk->sk_security may be NULL or owned by
-	 * another LSM (for example SELinux). Do not treat it as lua_lsm_object.
-	 */
+	struct lua_lsm_object *llo = lua_lsm_sock(sk);
+
+	kvcache_dict_init(&llo->dict);
 	return 0;
 }
 
@@ -2764,7 +2755,9 @@ LUA_LSM_INT_DEFINE3(sk_alloc_security, struct sock *, sk,
  */
 LUA_LSM_POSTPONE_DEFINE1(sk_free_security, struct sock *, sk)
 {
-	/* See sk_alloc_security: socket security storage isn't Lua-owned here. */
+	struct lua_lsm_object *llo = lua_lsm_sock(sk);
+
+	kvcache_dict_free(&llo->dict);
 }
 
 /**
@@ -2883,16 +2876,7 @@ LUA_LSM_VOID_DEFINE2(req_classify_flow, const struct request_sock *, req,
  * tun_dev_alloc_security
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(tun_dev_alloc_security, void **, security)
-{
-	*newtundev(L) = security ? *security : NULL;
-}
-
-/**
- * tun_dev_free_security
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(tun_dev_free_security, void *, security)
+LUA_LSM_INT_DEFINE1(tun_dev_alloc_security, void *, security)
 {
 	*newtundev(L) = security;
 }
@@ -3021,16 +3005,7 @@ LUA_LSM_INT_DEFINE3(ib_endport_manage_subnet, void *, sec,
  * ib_alloc_security
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(ib_alloc_security, void **, sec)
-{
-	*newib(L) = sec ? *sec : NULL;
-}
-
-/**
- * ib_free_security
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(ib_free_security, void *, sec)
+LUA_LSM_INT_DEFINE1(ib_alloc_security, void *, sec)
 {
 	*newib(L) = sec;
 }
@@ -3170,15 +3145,6 @@ LUA_LSM_INT_DEFINE3(key_alloc, struct key *, key, const struct cred *, cred,
 	*newkey(L) = key;
 	*(const struct cred **)newcred(L) = cred;
 	lua_pushnumber(L, (lua_Number)flags);
-}
-
-/**
- * key_free
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(key_free, struct key *, key)
-{
-	*newkey(L) = key;
 }
 
 /**
@@ -3395,15 +3361,6 @@ LUA_LSM_INT_DEFINE2(perf_event_open, struct perf_event_attr *, attr, int, type)
  * Default: 0
  */
 LUA_LSM_INT_DEFINE1(perf_event_alloc, struct perf_event *, event)
-{
-	*newperfevent(L) = event;
-}
-
-/**
- * perf_event_free
- * Default: LSM_RET_VOID
- */
-LUA_LSM_VOID_DEFINE1(perf_event_free, struct perf_event *, event)
 {
 	*newperfevent(L) = event;
 }
