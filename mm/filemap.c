@@ -997,9 +997,13 @@ struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order,
 	int n;
 	struct folio *folio;
 
-	if (policy)
-		return folio_alloc_mpol_noprof(gfp, order, policy,
+	if (policy) {
+		folio = folio_alloc_mpol_noprof(gfp, order, policy,
 				NO_INTERLEAVE_INDEX, numa_node_id());
+		if (folio)
+			count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
+		return folio;
+	}
 
 	if (cpuset_do_page_mem_spread()) {
 		unsigned int cpuset_mems_cookie;
@@ -1009,9 +1013,15 @@ struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order,
 			folio = __folio_alloc_node_noprof(gfp, order, n);
 		} while (!folio && read_mems_allowed_retry(cpuset_mems_cookie));
 
+		if (folio)
+			count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
 		return folio;
 	}
-	return folio_alloc_noprof(gfp, order);
+
+	folio = folio_alloc_noprof(gfp, order);
+	if (folio)
+		count_mthp_stat(order, MTHP_STAT_FILE_ALLOC);
+	return folio;
 }
 EXPORT_SYMBOL(filemap_alloc_folio_noprof);
 #endif
@@ -1983,6 +1993,7 @@ no_page:
 	if (!folio && (fgp_flags & FGP_CREAT)) {
 		unsigned int min_order = mapping_min_folio_order(mapping);
 		unsigned int order = max(min_order, FGF_GET_ORDER(fgp_flags));
+		unsigned long orders;
 		int err;
 		index = mapping_align_index(mapping, index);
 
@@ -1999,11 +2010,15 @@ no_page:
 
 		if (order > mapping_max_folio_order(mapping))
 			order = mapping_max_folio_order(mapping);
+
+		orders = file_orders_always() | BIT(0);
+		orders &= BIT(order + 1) - 1;
 		/* If we're not aligned, allocate a smaller folio */
 		if (index & ((1UL << order) - 1))
-			order = __ffs(index);
+			orders &= BIT(__ffs(index) + 1) - 1;
+		order = highest_order(orders);
 
-		do {
+		while (orders) {
 			gfp_t alloc_gfp = gfp;
 
 			err = -ENOMEM;
@@ -2011,7 +2026,7 @@ no_page:
 				alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
 			folio = filemap_alloc_folio(alloc_gfp, order, policy);
 			if (!folio)
-				continue;
+				goto try_next;
 
 			/* Init accessed so avoid atomic mark_page_accessed later */
 			if (fgp_flags & FGP_ACCESSED)
@@ -2024,7 +2039,12 @@ no_page:
 				break;
 			folio_put(folio);
 			folio = NULL;
-		} while (order-- > min_order);
+
+try_next:
+			if (order <= min_order)
+				break;
+			order = next_order(&orders, order);
+		};
 
 		if (err == -EEXIST)
 			goto repeat;
@@ -3382,9 +3402,11 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 		struct vm_area_struct *vma = vmf->vma;
 		unsigned long start = vma->vm_pgoff;
 		unsigned long end = start + vma_pages(vma);
+		int exec_order = file_exec_order();
 		unsigned long ra_end;
 
-		ra->order = exec_folio_order();
+		/* If explicit order is set for exec mappings, use it. */
+		ra->order = exec_order >= 0 ? exec_order : exec_folio_order();
 		ra->start = round_down(vmf->pgoff, 1UL << ra->order);
 		ra->start = max(ra->start, start);
 		ra_end = round_up(ra->start + ra->ra_pages, 1UL << ra->order);
