@@ -701,6 +701,17 @@ int kvm_vgic_hyp_init(void)
 
 void kvm_vgic_hyp_uninit(void)
 {
+#ifdef CONFIG_ARM64_HISI_IPIV
+	if (static_branch_unlikely(&ipiv_enable)) {
+		if (ipiv_irq > 0) {
+			free_percpu_irq(ipiv_irq, kvm_get_running_vcpus());
+			acpi_unregister_gsi(18);
+			ipiv_irq = 0;
+		}
+		static_branch_disable(&ipiv_enable);
+	}
+#endif
+
 	if (!has_vgic_maint_irq)
 		return;
 
