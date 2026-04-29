@@ -949,6 +949,7 @@ static void uio_device_release(struct device *dev)
 {
 	struct uio_device *idev = dev_get_drvdata(dev);
 
+	percpu_ref_exit(&idev->info_ref);
 	kfree(idev);
 }
 
@@ -1004,6 +1005,7 @@ int __uio_register_device(struct module *owner,
 
 	ret = uio_get_minor(idev);
 	if (ret) {
+		percpu_ref_exit(&idev->info_ref);
 		kfree(idev);
 		return ret;
 	}
