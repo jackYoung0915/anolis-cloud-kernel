@@ -303,6 +303,14 @@ swiotlb_init(int verbose)
 	}
 
 	/*
+	 * In TDX guest environment, use 2MB alignment for SWIOTLB buffer
+	 * to optimize IOMMU page table and avoid EPT large page splitting.
+	 */
+	if (cc_platform_has_tdx_guest() && swiotlb_any &&
+	    bytes >= SZ_2M)
+		align = SZ_2M;
+
+	/*
 	 * For TDX, SEV or CSV without tee-io, all dma have to use
 	 * shared memory, that is, using the swiotlb mechanism.
 	 * Reserve the memory below 4G is not enough for such scenario.

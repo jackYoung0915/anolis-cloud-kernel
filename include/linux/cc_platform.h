@@ -112,4 +112,10 @@ bool cc_platform_has_csv3(void);
 static inline bool cc_platform_has_csv3(void) { return false; }
 #endif	/* CONFIG_HYGON_CSV */
 
+#ifdef CONFIG_INTEL_TDX_GUEST
+bool cc_platform_has_tdx_guest(void);
+#else	/* !CONFIG_INTEL_TDX_GUEST */
+static inline bool cc_platform_has_tdx_guest(void) { return false; }
+#endif	/* CONFIG_INTEL_TDX_GUEST */
+
 #endif	/* _LINUX_CC_PLATFORM_H */
