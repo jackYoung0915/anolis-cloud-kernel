@@ -1708,8 +1708,8 @@ static inline bool better_fallback_entity(struct cfs_rq *cfs_rq,
 
 static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
 {
-	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 	struct sched_entity *se = __pick_first_entity(cfs_rq);
+	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 	struct sched_entity *curr = cfs_rq->curr;
 	struct sched_entity *best = NULL;
 
@@ -1758,8 +1758,8 @@ found:
 
 static struct sched_entity *id_pick_eevdf(struct cfs_rq *cfs_rq)
 {
-	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 	struct sched_entity *se = __pick_first_entity(cfs_rq);
+	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
 	struct sched_entity *curr = cfs_rq->curr;
 	struct sched_entity *best = NULL;
 	struct sched_entity *fallback = NULL;
