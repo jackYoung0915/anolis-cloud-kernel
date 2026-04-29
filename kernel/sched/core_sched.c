@@ -391,7 +391,7 @@ static unsigned long sched_core_get_expellee_cookie(void)
 	guard(mutex)(&sched_core_expellee_mutex);
 	if (sched_core_expellee_cookie)
 		return sched_core_get_cookie(sched_core_expellee_cookie);
-	sched_core_expellee_cookie = sched_core_alloc_cookie(0);
+	sched_core_expellee_cookie = sched_core_alloc_cookie(SCHED_COOKIE_MATCH_UNSET);
 	return sched_core_expellee_cookie;
 }
 
