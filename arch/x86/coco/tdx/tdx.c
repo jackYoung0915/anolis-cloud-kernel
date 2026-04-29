@@ -201,6 +201,12 @@ int tdx_mcall_extend_rtmr(u8 *data, u8 index)
 }
 EXPORT_SYMBOL_GPL(tdx_mcall_extend_rtmr);
 
+bool cc_platform_has_tdx_guest(void)
+{
+	return cpu_feature_enabled(X86_FEATURE_TDX_GUEST);
+}
+EXPORT_SYMBOL_GPL(cc_platform_has_tdx_guest);
+
 static void __noreturn tdx_panic(const char *msg)
 {
 	struct tdx_hypercall_args args = {
