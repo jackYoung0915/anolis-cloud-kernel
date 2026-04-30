@@ -1714,6 +1714,11 @@ static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
 	struct sched_entity *curr = cfs_rq->curr;
 	struct sched_entity *best = NULL;
 
+#ifdef CONFIG_GROUP_IDENTITY
+	if (sched_feat(ID_GI_STAT))
+		rq_of(cfs_rq)->last_pick_eevdf_path |= 0x1; /* bit0: __pick_eevdf */
+#endif
+
 	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
 		curr = NULL;
 
@@ -1767,6 +1772,11 @@ static struct sched_entity *id_pick_eevdf(struct cfs_rq *cfs_rq)
 	struct rq *rq = rq_of(cfs_rq);
 	s64 avg;
 	long load;
+
+#ifdef CONFIG_GROUP_IDENTITY
+	if (sched_feat(ID_GI_STAT))
+		rq->last_pick_eevdf_path |= 0x2; /* bit1: id_pick_eevdf */
+#endif
 
 	id_pick_eligible_data(cfs_rq, &avg, &load);
 
@@ -1932,6 +1942,10 @@ found:
 
 static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
 {
+#ifdef CONFIG_GROUP_IDENTITY
+	if (sched_feat(ID_GI_STAT))
+		rq_of(cfs_rq)->last_pick_eevdf_path = 0;
+#endif
 	if (rq_on_expel(rq_of(cfs_rq)))
 		return id_pick_eevdf(cfs_rq);
 
