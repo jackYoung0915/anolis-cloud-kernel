@@ -20,6 +20,7 @@
 #define __TPM_TIS_CORE_H__
 
 #include "tpm.h"
+#include <linux/ck_kabi.h>
 
 enum tis_access {
 	TPM_ACCESS_VALID = 0x80,
@@ -112,6 +113,8 @@ struct tpm_tis_data {
 	unsigned short rng_quality;
 	unsigned int timeout_min; /* usecs */
 	unsigned int timeout_max; /* usecs */
+
+	CK_KABI_RESERVE(1)
 };
 
 /*

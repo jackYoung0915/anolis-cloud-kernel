@@ -396,6 +396,7 @@ struct kvm_vcpu {
 	u64 last_used_slot_gen;
 
 	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 /*
@@ -594,6 +595,7 @@ struct kvm_memory_slot {
 	u16 as_id;
 
 	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 
 #ifdef CONFIG_KVM_PRIVATE_MEM
 	struct {
