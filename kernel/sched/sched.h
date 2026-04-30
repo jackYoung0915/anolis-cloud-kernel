@@ -1616,6 +1616,14 @@ struct rq {
 #ifdef CONFIG_SCHED_CORE
 	u64			nr_expel_smt_warn;
 #endif
+	/*
+	 * Tracks which branch was taken in the most recent pick_eevdf() call.
+	 * Cleared at pick_eevdf() entry, then the taken branch sets its bit:
+	 * bit 0 -> __pick_eevdf  (normal path)
+	 * bit 1 -> id_pick_eevdf (expel path)
+	 * remaining bits reserved for future branch tracking.
+	 */
+	u32			last_pick_eevdf_path;
 #endif
 	bool			booked;
 	bool			pulled;
