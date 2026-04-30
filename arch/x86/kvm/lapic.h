@@ -5,6 +5,7 @@
 #include <kvm/iodev.h>
 
 #include <linux/kvm_host.h>
+#include <linux/ck_kabi.h>
 
 #include "hyperv.h"
 #include "smm.h"
@@ -54,6 +55,7 @@ struct kvm_timer {
 	u32 timer_advance_ns;
 	atomic_t pending;			/* accumulated triggered timers */
 	bool hv_timer_in_use;
+	CK_KABI_RESERVE(1)
 };
 
 struct kvm_lapic {

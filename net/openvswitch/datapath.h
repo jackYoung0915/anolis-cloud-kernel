@@ -13,6 +13,7 @@
 #include <linux/skbuff.h>
 #include <linux/u64_stats_sync.h>
 #include <net/ip_tunnels.h>
+#include <linux/ck_kabi.h>
 
 #include "conntrack.h"
 #include "flow.h"
@@ -121,6 +122,9 @@ struct ovs_skb_cb {
 	u16			mru;
 	u16			acts_origlen;
 	u32			cutlen;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 #define OVS_CB(skb) ((struct ovs_skb_cb *)(skb)->cb)
 
