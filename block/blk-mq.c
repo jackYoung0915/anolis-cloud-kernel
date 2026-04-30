@@ -112,6 +112,34 @@ void blk_mq_in_driver_rw(struct block_device *part, unsigned int inflight[2])
 	inflight[WRITE] = mi.inflight[WRITE];
 }
 
+struct mq_hang {
+	struct block_device *part;
+	unsigned int hang[2];
+};
+
+static bool blk_mq_check_hang(struct request *rq, void *priv)
+{
+	struct mq_hang *mh = priv;
+	u64 now = ktime_get_ns(), duration;
+
+	duration = div_u64(now - rq->start_time_ns, NSEC_PER_MSEC);
+	if ((duration >= READ_ONCE(rq->q->rq_hang_threshold)) &&
+	    (!bdev_partno(mh->part) || rq->part == mh->part))
+		mh->hang[rq_data_dir(rq)]++;
+
+	return true;
+}
+
+void blk_mq_hang_rw(struct request_queue *q, struct block_device *part,
+		unsigned int hang[2])
+{
+	struct mq_hang mh = { .part = part };
+
+	blk_mq_queue_tag_busy_iter(q, blk_mq_check_hang, &mh);
+	hang[0] = mh.hang[0];
+	hang[1] = mh.hang[1];
+}
+
 #ifdef CONFIG_LOCKDEP
 static bool blk_freeze_set_owner(struct request_queue *q,
 				 struct task_struct *owner)
@@ -1084,6 +1112,10 @@ static inline void blk_account_io_done(struct request *req, u64 now)
 		part_stat_add(req->part, nsecs[sgrp], now - req->start_time_ns);
 		part_stat_local_dec(req->part,
 				    in_flight[op_is_write(req_op(req))]);
+		if (req->rq_flags & RQF_STATS) {
+			part_stat_add(req->part, d2c_nsecs[sgrp],
+				      now - req->io_start_time_ns);
+		}
 		part_stat_unlock();
 	}
 }
@@ -1371,8 +1403,8 @@ void blk_mq_start_request(struct request *rq)
 
 	trace_block_rq_issue(rq);
 
-	if (test_bit(QUEUE_FLAG_STATS, &q->queue_flags) &&
-	    !blk_rq_is_passthrough(rq)) {
+	if ((test_bit(QUEUE_FLAG_STATS, &q->queue_flags) ||
+	     READ_ONCE(q->enable_d2c_stats)) && !blk_rq_is_passthrough(rq)) {
 		rq->io_start_time_ns = blk_time_get_ns();
 		rq->stats_sectors = blk_rq_sectors(rq);
 		rq->rq_flags |= RQF_STATS;

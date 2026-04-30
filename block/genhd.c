@@ -116,6 +116,7 @@ static void part_stat_read_all(struct block_device *part,
 
 		for (group = 0; group < NR_STAT_GROUPS; group++) {
 			stat->nsecs[group] += ptr->nsecs[group];
+			stat->d2c_nsecs[group] += ptr->d2c_nsecs[group];
 			stat->sectors[group] += ptr->sectors[group];
 			stat->ios[group] += ptr->ios[group];
 			stat->merges[group] += ptr->merges[group];
@@ -1078,7 +1079,8 @@ ssize_t part_stat_show(struct device *dev,
 		"%8lu %8lu %8llu %8u "
 		"%8u %8u %8u "
 		"%8lu %8lu %8llu %8u "
-		"%8lu %8u"
+		"%8lu %8u "
+		"%8u %8u %8u"
 		"\n",
 		stat.ios[STAT_READ],
 		stat.merges[STAT_READ],
@@ -1100,7 +1102,10 @@ ssize_t part_stat_show(struct device *dev,
 		(unsigned long long)stat.sectors[STAT_DISCARD],
 		(unsigned int)div_u64(stat.nsecs[STAT_DISCARD], NSEC_PER_MSEC),
 		stat.ios[STAT_FLUSH],
-		(unsigned int)div_u64(stat.nsecs[STAT_FLUSH], NSEC_PER_MSEC));
+		(unsigned int)div_u64(stat.nsecs[STAT_FLUSH], NSEC_PER_MSEC),
+		(unsigned int)div_u64(stat.d2c_nsecs[STAT_READ], NSEC_PER_MSEC),
+		(unsigned int)div_u64(stat.d2c_nsecs[STAT_WRITE], NSEC_PER_MSEC),
+		(unsigned int)div_u64(stat.d2c_nsecs[STAT_DISCARD], NSEC_PER_MSEC));
 }
 
 /*
@@ -1118,6 +1123,23 @@ ssize_t part_inflight_show(struct device *dev, struct device_attribute *attr,
 	bdev_count_inflight_rw(bdev, inflight, queue_is_mq(q));
 
 	return sysfs_emit(buf, "%8u %8u\n", inflight[READ], inflight[WRITE]);
+}
+
+ssize_t part_hang_show(struct device *dev, struct device_attribute *attr,
+		       char *buf)
+{
+	struct block_device *bdev = dev_to_bdev(dev);
+	struct request_queue *q = bdev_get_queue(bdev);
+	unsigned int hang[2] = {0, 0};
+
+	/*
+	 * For now, we only support mq device, since don't find a generic method
+	 * to track reqs in single queue device.
+	 */
+	if (queue_is_mq(q))
+		blk_mq_hang_rw(q, bdev, hang);
+
+	return sysfs_emit(buf, "%8u %8u\n", hang[0], hang[1]);
 }
 
 static ssize_t disk_capability_show(struct device *dev,
@@ -1170,6 +1192,7 @@ static DEVICE_ATTR(discard_alignment, 0444, disk_discard_alignment_show, NULL);
 static DEVICE_ATTR(capability, 0444, disk_capability_show, NULL);
 static DEVICE_ATTR(stat, 0444, part_stat_show, NULL);
 static DEVICE_ATTR(inflight, 0444, part_inflight_show, NULL);
+static DEVICE_ATTR(hang, 0444, part_hang_show, NULL);
 static DEVICE_ATTR(badblocks, 0644, disk_badblocks_show, disk_badblocks_store);
 static DEVICE_ATTR(diskseq, 0444, diskseq_show, NULL);
 static DEVICE_ATTR(partscan, 0444, partscan_show, NULL);
@@ -1218,6 +1241,7 @@ static struct attribute *disk_attrs[] = {
 	&dev_attr_capability.attr,
 	&dev_attr_stat.attr,
 	&dev_attr_inflight.attr,
+	&dev_attr_hang.attr,
 	&dev_attr_badblocks.attr,
 	&dev_attr_events.attr,
 	&dev_attr_events_async.attr,
@@ -1406,6 +1430,12 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 		seq_put_decimal_ull(seqf, " ", stat.ios[STAT_FLUSH]);
 		seq_put_decimal_ull(seqf, " ", (unsigned int)div_u64(stat.nsecs[STAT_FLUSH],
 								     NSEC_PER_MSEC));
+		seq_put_decimal_ull(seqf, " ", (unsigned int)div_u64(stat.d2c_nsecs[STAT_READ],
+							     NSEC_PER_MSEC));
+		seq_put_decimal_ull(seqf, " ", (unsigned int)div_u64(stat.d2c_nsecs[STAT_WRITE],
+							     NSEC_PER_MSEC));
+		seq_put_decimal_ull(seqf, " ", (unsigned int)div_u64(stat.d2c_nsecs[STAT_DISCARD],
+							     NSEC_PER_MSEC));
 		seq_putc(seqf, '\n');
 	}
 	rcu_read_unlock();
