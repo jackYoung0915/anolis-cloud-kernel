@@ -30,6 +30,9 @@ struct obj_cgroup;
 struct page;
 struct mm_struct;
 struct kmem_cache;
+struct oom_control;
+
+#define MEMCG_OOM_PRIORITY 12
 
 /* Cgroup-specific page state, on top of universal node page state */
 enum memcg_stat_item {
@@ -60,6 +63,33 @@ enum memcg_memory_event {
 struct mem_cgroup_reclaim_cookie {
 	pg_data_t *pgdat;
 	int generation;
+};
+
+enum mem_lat_stat_item {
+	MEM_LAT_GLOBAL_DIRECT_RECLAIM,	/* global direct reclaim latency */
+	MEM_LAT_MEMCG_DIRECT_RECLAIM,	/* memcg direct reclaim latency */
+	MEM_LAT_DIRECT_COMPACT,		/* direct compact latency */
+	MEM_LAT_GLOBAL_DIRECT_SWAPOUT,	/* global direct swapout latency */
+	MEM_LAT_MEMCG_DIRECT_SWAPOUT,	/* memcg direct swapout latency */
+	MEM_LAT_DIRECT_SWAPIN,		/* direct swapin latency */
+	MEM_LAT_NR_STAT,
+};
+
+/* Memory latency histogram distribution, in milliseconds */
+enum mem_lat_count_t {
+	MEM_LAT_0_1,
+	MEM_LAT_1_5,
+	MEM_LAT_5_10,
+	MEM_LAT_10_100,
+	MEM_LAT_100_500,
+	MEM_LAT_500_1000,
+	MEM_LAT_1000_INF,
+	MEM_LAT_TOTAL,
+	MEM_LAT_NR_COUNT,
+};
+
+struct mem_cgroup_lat_stat_cpu {
+	unsigned long item[MEM_LAT_NR_STAT][MEM_LAT_NR_COUNT];
 };
 
 #ifdef CONFIG_MEMCG
@@ -330,6 +360,19 @@ struct mem_cgroup {
 	struct list_head event_list;
 	spinlock_t event_list_lock;
 #endif /* CONFIG_MEMCG_V1 */
+
+#ifdef CONFIG_MEMSLI
+	struct mem_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
+#ifdef CONFIG_MEMCG_V1
+	struct list_head lat_stat_notify[MEM_LAT_NR_STAT];
+	struct mutex lat_stat_notify_lock;
+#endif
+#endif
+	/* memcg oom priority */
+	bool use_priority_oom;
+	int priority;
+	int num_oom_skip;
+	struct mem_cgroup *next_reset;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -894,6 +937,33 @@ static inline bool mem_cgroup_online(struct mem_cgroup *memcg)
 	return css_is_online(&memcg->css);
 }
 
+/* memcg oom priority*/
+void mem_cgroup_account_oom_skip(struct task_struct *task,
+				 struct oom_control *oc);
+
+void mem_cgroup_select_bad_process(struct oom_control *oc);
+
+static inline bool root_memcg_use_priority_oom(void)
+{
+	if (mem_cgroup_disabled())
+		return false;
+	if (root_mem_cgroup->use_priority_oom)
+		return true;
+	return false;
+}
+
+extern u64 mem_cgroup_priority_oom_read(struct cgroup_subsys_state *css,
+					struct cftype *cft);
+
+extern int mem_cgroup_priority_oom_write(struct cgroup_subsys_state *css,
+					 struct cftype *cft, u64 val);
+
+extern u64 mem_cgroup_priority_read(struct cgroup_subsys_state *css,
+				    struct cftype *cft);
+
+extern int mem_cgroup_priority_write(struct cgroup_subsys_state *css,
+				     struct cftype *cft, u64 val);
+
 void mem_cgroup_update_lru_size(struct lruvec *lruvec, enum lru_list lru,
 		int zid, long nr_pages);
 
@@ -925,6 +995,11 @@ void mem_cgroup_print_oom_meminfo(struct mem_cgroup *memcg);
 struct mem_cgroup *mem_cgroup_get_oom_group(struct task_struct *victim,
 					    struct mem_cgroup *oom_domain);
 void mem_cgroup_print_oom_group(struct mem_cgroup *memcg);
+
+int memory_oom_group_show(struct seq_file *m, void *v);
+
+ssize_t memory_oom_group_write(struct kernfs_open_file *of,
+			       char *buf, size_t nbytes, loff_t off);
 
 /* idx can be of type enum memcg_stat_item or node_stat_item */
 void mod_memcg_state(struct mem_cgroup *memcg,
@@ -1323,6 +1398,21 @@ static inline struct mem_cgroup *lruvec_memcg(struct lruvec *lruvec)
 static inline bool mem_cgroup_online(struct mem_cgroup *memcg)
 {
 	return true;
+}
+
+/* memcg priority */
+static inline void mem_cgroup_account_oom_skip(struct task_struct *task,
+		struct oom_control *oc)
+{
+}
+
+static inline void mem_cgroup_select_bad_process(struct oom_control *oc)
+{
+}
+
+static inline bool root_memcg_use_priority_oom(void)
+{
+	return false;
 }
 
 static inline
@@ -1955,5 +2045,38 @@ static inline void memcg1_swapin(swp_entry_t entry, unsigned int nr_pages)
 }
 
 #endif /* CONFIG_MEMCG_V1 */
+
+#ifdef CONFIG_MEMSLI
+extern void memcg_lat_stat_start(u64 *start);
+extern void memcg_lat_stat_end(enum mem_lat_stat_item sidx, u64 start);
+extern int memcg_lat_stat_show(struct seq_file *m, void *v);
+extern int memcg_lat_stat_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val);
+#ifdef CONFIG_MEMCG_V1
+extern void memcg_lat_stat_notify_event(struct mem_cgroup *memcg,
+					enum mem_lat_stat_item sidx);
+#else
+static inline void memcg_lat_stat_notify_event(struct mem_cgroup *memcg,
+					       enum mem_lat_stat_item sidx)
+{
+}
+#endif
+#else
+static inline void memcg_lat_stat_start(u64 *start)
+{
+}
+static inline void memcg_lat_stat_end(enum mem_lat_stat_item sidx, u64 start)
+{
+}
+static inline int memcg_lat_stat_show(struct seq_file *m, void *v)
+{
+	return 0;
+}
+static inline int memcg_lat_stat_write(struct cgroup_subsys_state *css,
+				       struct cftype *cft, u64 val)
+{
+	return 0;
+}
+#endif /* CONFIG_MEMSLI */
 
 #endif /* _LINUX_MEMCONTROL_H */

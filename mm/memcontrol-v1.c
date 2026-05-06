@@ -40,9 +40,10 @@ static struct mem_cgroup_tree soft_limit_tree __read_mostly;
 #define	MEM_CGROUP_MAX_RECLAIM_LOOPS		100
 #define	MEM_CGROUP_MAX_SOFT_LIMIT_RECLAIM_LOOPS	2
 
-/* for OOM */
+/* for OOM and MEMSLI */
 struct mem_cgroup_eventfd_list {
 	struct list_head list;
+	struct rcu_head rcu;
 	struct eventfd_ctx *eventfd;
 };
 
@@ -1064,6 +1065,84 @@ static void memcg_event_ptable_queue_proc(struct file *file,
 	add_wait_queue(wqh, &event->wait);
 }
 
+#ifdef CONFIG_MEMSLI
+static int __memcg_lat_stat_register_event(struct mem_cgroup *memcg,
+	struct eventfd_ctx *eventfd, const char *args,
+	enum mem_lat_stat_item sidx)
+{
+	struct mem_cgroup_eventfd_list *evt;
+
+	evt = kmalloc(sizeof(*evt), GFP_KERNEL);
+	if (!evt)
+		return -ENOMEM;
+
+	mutex_lock(&memcg->lat_stat_notify_lock);
+
+	evt->eventfd = eventfd;
+	list_add_rcu(&evt->list, &memcg->lat_stat_notify[sidx]);
+
+	mutex_unlock(&memcg->lat_stat_notify_lock);
+
+	return 0;
+}
+
+static void __memcg_lat_stat_unregister_event(struct mem_cgroup *memcg,
+	struct eventfd_ctx *eventfd, enum mem_lat_stat_item sidx)
+{
+	struct mem_cgroup_eventfd_list *evt, *tmp;
+
+	mutex_lock(&memcg->lat_stat_notify_lock);
+
+	list_for_each_entry_safe(evt, tmp, &memcg->lat_stat_notify[sidx],
+				 list) {
+		if (evt->eventfd == eventfd) {
+			list_del_rcu(&evt->list);
+			kfree_rcu(evt, rcu);
+		}
+	}
+
+	mutex_unlock(&memcg->lat_stat_notify_lock);
+}
+
+#define MEMCG_LAT_STAT_REGISTER_EVENT(name, sidx)			    \
+static int register_event_##name(struct mem_cgroup *memcg,		    \
+	struct eventfd_ctx *eventfd, const char *args)			    \
+{									    \
+	return __memcg_lat_stat_register_event(memcg, eventfd, args, sidx); \
+}									    \
+static void unregister_event_##name(struct mem_cgroup *memcg,		    \
+	struct eventfd_ctx *eventfd)					    \
+{									    \
+	return __memcg_lat_stat_unregister_event(memcg, eventfd, sidx);	    \
+}
+
+MEMCG_LAT_STAT_REGISTER_EVENT(global_direct_reclaim,
+			      MEM_LAT_GLOBAL_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_REGISTER_EVENT(memcg_direct_reclaim,
+			      MEM_LAT_MEMCG_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_REGISTER_EVENT(direct_compact,
+			      MEM_LAT_DIRECT_COMPACT)
+MEMCG_LAT_STAT_REGISTER_EVENT(global_direct_swapout,
+			      MEM_LAT_GLOBAL_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_REGISTER_EVENT(memcg_direct_swapout,
+			      MEM_LAT_MEMCG_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_REGISTER_EVENT(direct_swapin,
+			      MEM_LAT_DIRECT_SWAPIN)
+
+void memcg_lat_stat_notify_event(struct mem_cgroup *memcg,
+				 enum mem_lat_stat_item sidx)
+{
+	struct mem_cgroup_eventfd_list *evt;
+
+	rcu_read_lock();
+
+	list_for_each_entry_rcu(evt, &memcg->lat_stat_notify[sidx], list)
+		eventfd_signal(evt->eventfd);
+
+	rcu_read_unlock();
+}
+#endif
+
 /*
  * DO NOT USE IN NEW FILES.
  *
@@ -1174,6 +1253,26 @@ static ssize_t memcg_write_event_control(struct kernfs_open_file *of,
 	} else if (!strcmp(name, "memory.memsw.usage_in_bytes")) {
 		event->register_event = memsw_cgroup_usage_register_event;
 		event->unregister_event = memsw_cgroup_usage_unregister_event;
+#ifdef CONFIG_MEMSLI
+	} else if (!strcmp(name, "memory.direct_reclaim_global_latency")) {
+		event->register_event = register_event_global_direct_reclaim;
+		event->unregister_event = unregister_event_global_direct_reclaim;
+	} else if (!strcmp(name, "memory.direct_reclaim_memcg_latency")) {
+		event->register_event = register_event_memcg_direct_reclaim;
+		event->unregister_event = unregister_event_memcg_direct_reclaim;
+	} else if (!strcmp(name, "memory.direct_compact_latency")) {
+		event->register_event = register_event_direct_compact;
+		event->unregister_event = unregister_event_direct_compact;
+	} else if (!strcmp(name, "memory.direct_swapout_global_latency")) {
+		event->register_event = register_event_global_direct_swapout;
+		event->unregister_event = unregister_event_global_direct_swapout;
+	} else if (!strcmp(name, "memory.direct_swapout_memcg_latency")) {
+		event->register_event = register_event_memcg_direct_swapout;
+		event->unregister_event = unregister_event_memcg_direct_swapout;
+	} else if (!strcmp(name, "memory.direct_swapin_latency")) {
+		event->register_event = register_event_direct_swapin;
+		event->unregister_event = unregister_event_direct_swapin;
+#endif
 	} else {
 		ret = -EINVAL;
 		goto out_put_eventfd;
@@ -2079,6 +2178,44 @@ struct cftype mem_cgroup_legacy_files[] = {
 		.name = "stat",
 		.seq_show = memory_stat_show,
 	},
+#ifdef CONFIG_MEMSLI
+	{
+		.name = "direct_reclaim_global_latency",
+		.private = MEM_LAT_GLOBAL_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_reclaim_memcg_latency",
+		.private = MEM_LAT_MEMCG_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_compact_latency",
+		.private = MEM_LAT_DIRECT_COMPACT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_global_latency",
+		.private = MEM_LAT_GLOBAL_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_memcg_latency",
+		.private = MEM_LAT_MEMCG_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapin_latency",
+		.private = MEM_LAT_DIRECT_SWAPIN,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+#endif /* CONFIG_MEMSLI */
 	{
 		.name = "force_empty",
 		.write = mem_cgroup_force_empty_write,
@@ -2169,6 +2306,23 @@ struct cftype mem_cgroup_legacy_files[] = {
 		.private = MEMFILE_PRIVATE(_TCP, RES_MAX_USAGE),
 		.write = mem_cgroup_reset,
 		.read_u64 = mem_cgroup_read_u64,
+	},
+	{
+		.name = "use_priority_oom",
+		.write_u64 = mem_cgroup_priority_oom_write,
+		.read_u64 = mem_cgroup_priority_oom_read,
+	},
+	{
+		.name = "priority",
+		.read_u64 = mem_cgroup_priority_read,
+		.write_u64 = mem_cgroup_priority_write,
+		.flags = CFTYPE_NOT_ON_ROOT,
+	},
+	{
+		.name = "oom.group",
+		.flags = CFTYPE_NOT_ON_ROOT | CFTYPE_NS_DELEGATABLE,
+		.seq_show = memory_oom_group_show,
+		.write = memory_oom_group_write,
 	},
 	{ },	/* terminate */
 };

@@ -63,6 +63,7 @@
 #include <linux/seq_buf.h>
 #include <linux/sched/isolation.h>
 #include <linux/kmemleak.h>
+#include <linux/proc_fs.h>
 #include "internal.h"
 #include <net/sock.h>
 #include <net/ip.h>
@@ -92,6 +93,11 @@ static bool cgroup_memory_nosocket __ro_after_init;
 
 /* Kernel memory accounting disabled? */
 static bool cgroup_memory_nokmem __ro_after_init;
+
+#ifdef CONFIG_MEMSLI
+/* Cgroup memory SLI disabled? */
+static DEFINE_STATIC_KEY_FALSE(cgroup_memory_nosli);
+#endif /* CONFIG_MEMSLI */
 
 /* BPF memory accounting disabled? */
 static bool cgroup_memory_nobpf __ro_after_init;
@@ -1337,6 +1343,133 @@ static void invalidate_reclaim_iterators(struct mem_cgroup *dead_memcg)
 						dead_memcg);
 }
 
+/* memcg oom priority */
+/*
+ * do_mem_cgroup_account_oom_skip - account the memcg with OOM-unkillable task
+ * @memcg: mem_cgroup struct with OOM-unkillable task
+ * @oc: oom_control struct
+ *
+ * Account OOM-unkillable task to its cgroup and up to the OOMing cgroup's
+ * @num_oom_skip, if all the tasks of one cgroup hierarchy are OOM-unkillable
+ * we skip this cgroup hierarchy when select the victim cgroup.
+ *
+ * The @num_oom_skip must be reset when bad process selection has finished,
+ * since before the next round bad process selection, these OOM-unkillable
+ * tasks might become killable.
+ *
+ */
+static void do_mem_cgroup_account_oom_skip(struct mem_cgroup *memcg,
+					   struct oom_control *oc)
+{
+	struct mem_cgroup *root;
+	struct cgroup_subsys_state *css;
+
+	if (!oc->use_priority_oom)
+		return;
+	if (unlikely(!memcg))
+		return;
+	root = oc->memcg;
+	if (!root)
+		root = root_mem_cgroup;
+
+	css = &memcg->css;
+	while (css) {
+		struct mem_cgroup *tmp;
+
+		tmp = mem_cgroup_from_css(css);
+		tmp->num_oom_skip++;
+		/*
+		 * Put these cgroups into a list to
+		 * reduce the iteration time when reset
+		 * the @num_oom_skip.
+		 */
+		if (!tmp->next_reset) {
+			css_get(&tmp->css);
+			tmp->next_reset = oc->reset_list;
+			oc->reset_list = tmp;
+		}
+
+		if (mem_cgroup_from_css(css) == root)
+			break;
+
+		css = css->parent;
+	}
+}
+
+void mem_cgroup_account_oom_skip(struct task_struct *task,
+		struct oom_control *oc)
+{
+	rcu_read_lock();
+	do_mem_cgroup_account_oom_skip(mem_cgroup_from_task(task), oc);
+	rcu_read_unlock();
+}
+
+static struct mem_cgroup *
+mem_cgroup_select_victim_cgroup(struct mem_cgroup *memcg)
+{
+	struct cgroup_subsys_state *chosen, *parent;
+	struct cgroup_subsys_state *victim;
+	int chosen_priority;
+
+again:
+	victim = NULL;
+	parent = &memcg->css;
+	rcu_read_lock();
+	while (parent) {
+		struct cgroup_subsys_state *pos;
+		struct mem_cgroup *parent_mem;
+
+		parent_mem = mem_cgroup_from_css(parent);
+
+		if (parent->nr_procs <= parent_mem->num_oom_skip)
+			break;
+		victim = parent;
+		chosen = NULL;
+		chosen_priority = DEF_PRIORITY + 1;
+		list_for_each_entry_rcu(pos, &parent->children, sibling) {
+			struct mem_cgroup *tmp, *chosen_mem;
+
+			tmp = mem_cgroup_from_css(pos);
+
+			if (pos->nr_procs <= tmp->num_oom_skip)
+				continue;
+			if (tmp->priority > chosen_priority)
+				continue;
+			if (tmp->priority < chosen_priority) {
+				chosen_priority = tmp->priority;
+				chosen = pos;
+				continue;
+			}
+
+			chosen_mem = mem_cgroup_from_css(chosen);
+
+			if (do_memsw_account()) {
+				if (page_counter_read(&tmp->memsw) >
+					page_counter_read(&chosen_mem->memsw))
+					chosen = pos;
+			} else if (page_counter_read(&tmp->memory) >
+				page_counter_read(&chosen_mem->memory)) {
+				chosen = pos;
+			}
+		}
+		parent = chosen;
+	}
+
+	if (likely(victim)) {
+		if (!css_tryget(victim)) {
+			rcu_read_unlock();
+			goto again;
+		}
+	}
+
+	rcu_read_unlock();
+
+	if (likely(victim))
+		return mem_cgroup_from_css(victim);
+
+	return NULL;
+}
+
 /**
  * mem_cgroup_scan_tasks - iterate over tasks of a memory cgroup hierarchy
  * @memcg: hierarchy root
@@ -1348,15 +1481,12 @@ static void invalidate_reclaim_iterators(struct mem_cgroup *dead_memcg)
  * value, the function breaks the iteration loop. Otherwise, it will iterate
  * over all tasks and return 0.
  *
- * This function must not be called for the root memory cgroup.
  */
 void mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 			   int (*fn)(struct task_struct *, void *), void *arg)
 {
 	struct mem_cgroup *iter;
 	int ret = 0;
-
-	BUG_ON(mem_cgroup_is_root(memcg));
 
 	for_each_mem_cgroup_tree(iter, memcg) {
 		struct css_task_iter it;
@@ -1374,6 +1504,91 @@ void mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 			break;
 		}
 	}
+}
+
+void mem_cgroup_select_bad_process(struct oom_control *oc)
+{
+	struct mem_cgroup *memcg, *victim, *iter;
+
+	memcg  = oc->memcg;
+
+	if (!memcg)
+		memcg = root_mem_cgroup;
+
+	oc->use_priority_oom = memcg->use_priority_oom;
+	victim = memcg;
+
+retry:
+	if (oc->use_priority_oom) {
+		victim = mem_cgroup_select_victim_cgroup(memcg);
+		if (!victim) {
+			if (mem_cgroup_is_root(memcg) && oc->num_skip)
+				oc->chosen = (void *)-1UL;
+			goto out;
+		}
+	}
+
+	mem_cgroup_scan_tasks(victim, oom_evaluate_task, oc);
+	if (oc->use_priority_oom) {
+		css_put(&victim->css);
+		if (oc->chosen == (void *)-1UL)
+			goto out;
+		if (!oc->chosen && victim != memcg) {
+			do_mem_cgroup_account_oom_skip(victim, oc);
+			goto retry;
+		}
+	}
+out:
+	/* See commets in mem_cgroup_account_oom_skip() */
+	while (oc->reset_list) {
+		iter = oc->reset_list;
+		iter->num_oom_skip = 0;
+		oc->reset_list = iter->next_reset;
+		iter->next_reset = NULL;
+		css_put(&iter->css);
+	}
+}
+
+u64 mem_cgroup_priority_oom_read(struct cgroup_subsys_state *css,
+				 struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->use_priority_oom;
+}
+
+int mem_cgroup_priority_oom_write(struct cgroup_subsys_state *css,
+				  struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 1)
+		return -EINVAL;
+
+	memcg->use_priority_oom = val;
+
+	return 0;
+}
+
+u64 mem_cgroup_priority_read(struct cgroup_subsys_state *css,
+			     struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return memcg->priority;
+}
+
+int mem_cgroup_priority_write(struct cgroup_subsys_state *css,
+			      struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > MEMCG_OOM_PRIORITY)
+		return -EINVAL;
+
+	memcg->priority = val;
+
+	return 0;
 }
 
 /**
@@ -1941,9 +2156,6 @@ struct mem_cgroup *mem_cgroup_get_oom_group(struct task_struct *victim,
 	struct mem_cgroup *oom_group = NULL;
 	struct mem_cgroup *memcg;
 
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return NULL;
-
 	if (!oom_domain)
 		oom_domain = root_mem_cgroup;
 
@@ -2474,9 +2686,11 @@ void __mem_cgroup_handle_over_high(gfp_t gfp_mask)
 	int nr_retries = MAX_RECLAIM_RETRIES;
 	struct mem_cgroup *memcg;
 	bool in_retry = false;
+	u64 start;
 
 	memcg = get_mem_cgroup_from_mm(current->mm);
 	current->memcg_nr_pages_over_high = 0;
+	memcg_lat_stat_start(&start);
 
 retry_reclaim:
 	/*
@@ -2552,6 +2766,7 @@ retry_reclaim:
 	psi_memstall_leave(&pflags);
 
 out:
+	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
 	css_put(&memcg->css);
 }
 
@@ -2569,6 +2784,7 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
 	bool raised_max_event = false;
 	unsigned long pflags;
 	bool allow_spinning = gfpflags_allow_spinning(gfp_mask);
+	u64 start;
 
 retry:
 	if (consume_stock(memcg, nr_pages))
@@ -2614,10 +2830,12 @@ retry:
 	__memcg_memory_event(mem_over_limit, MEMCG_MAX, allow_spinning);
 	raised_max_event = true;
 
+	memcg_lat_stat_start(&start);
 	psi_memstall_enter(&pflags);
 	nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages,
 						    gfp_mask, reclaim_options, NULL);
 	psi_memstall_leave(&pflags);
+	memcg_lat_stat_end(MEM_LAT_MEMCG_DIRECT_RECLAIM, start);
 
 	if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
 		goto retry;
@@ -3952,6 +4170,9 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	memcg1_free_events(memcg);
 	kfree(memcg->vmstats);
 	free_percpu(memcg->vmstats_percpu);
+#ifdef CONFIG_MEMSLI
+	free_percpu(memcg->lat_stat_cpu);
+#endif
 	kfree(memcg);
 }
 
@@ -3989,6 +4210,18 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
 						 GFP_KERNEL_ACCOUNT);
 	if (!memcg->vmstats_percpu)
 		goto fail;
+
+#ifdef CONFIG_MEMSLI
+	memcg->lat_stat_cpu = alloc_percpu_gfp(struct mem_cgroup_lat_stat_cpu,
+					       GFP_KERNEL_ACCOUNT);
+	if (!memcg->lat_stat_cpu)
+		goto fail;
+#ifdef CONFIG_MEMCG_V1
+	for (i = 0; i < MEM_LAT_NR_STAT; i++)
+		INIT_LIST_HEAD(&memcg->lat_stat_notify[i]);
+	mutex_init(&memcg->lat_stat_notify_lock);
+#endif
+#endif
 
 	if (!memcg1_alloc_events(memcg))
 		goto fail;
@@ -4835,7 +5068,7 @@ static int memory_numa_stat_show(struct seq_file *m, void *v)
 }
 #endif
 
-static int memory_oom_group_show(struct seq_file *m, void *v)
+int memory_oom_group_show(struct seq_file *m, void *v)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
 
@@ -4844,8 +5077,8 @@ static int memory_oom_group_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static ssize_t memory_oom_group_write(struct kernfs_open_file *of,
-				      char *buf, size_t nbytes, loff_t off)
+ssize_t memory_oom_group_write(struct kernfs_open_file *of,
+			       char *buf, size_t nbytes, loff_t off)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
 	int ret, oom_group;
@@ -4918,6 +5151,17 @@ static struct cftype memory_files[] = {
 		.write = memory_max_write,
 	},
 	{
+		.name = "priority",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = mem_cgroup_priority_read,
+		.write_u64 = mem_cgroup_priority_write,
+	},
+	{
+		.name = "use_priority_oom",
+		.write_u64 = mem_cgroup_priority_oom_write,
+		.read_u64 = mem_cgroup_priority_oom_read,
+	},
+	{
 		.name = "events",
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.file_offset = offsetof(struct mem_cgroup, events_file),
@@ -4933,6 +5177,50 @@ static struct cftype memory_files[] = {
 		.name = "stat",
 		.seq_show = memory_stat_show,
 	},
+#ifdef CONFIG_MEMSLI
+	{
+		.name = "direct_reclaim_global_latency",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEM_LAT_GLOBAL_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_reclaim_memcg_latency",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEM_LAT_MEMCG_DIRECT_RECLAIM,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_compact_latency",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEM_LAT_DIRECT_COMPACT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_global_latency",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEM_LAT_GLOBAL_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapout_memcg_latency",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEM_LAT_MEMCG_DIRECT_SWAPOUT,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+	{
+		.name = "direct_swapin_latency",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.private = MEM_LAT_DIRECT_SWAPIN,
+		.write_u64 = memcg_lat_stat_write,
+		.seq_show =  memcg_lat_stat_show,
+	},
+#endif /* CONFIG_MEMSLI */
 #ifdef CONFIG_NUMA
 	{
 		.name = "numa_stat",
@@ -5408,6 +5696,58 @@ static int __init cgroup_memory(char *s)
 }
 __setup("cgroup.memory=", cgroup_memory);
 
+#ifdef CONFIG_MEMSLI
+static int memsli_enabled_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", !static_key_enabled(&cgroup_memory_nosli));
+	return 0;
+}
+
+static int memsli_enabled_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, memsli_enabled_show, NULL);
+}
+
+static ssize_t memsli_enabled_write(struct file *file, const char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	char val = -1;
+	int ret = count;
+
+	if (count < 1 || *ppos) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (copy_from_user(&val, ubuf, 1)) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	switch (val) {
+	case '0':
+		static_branch_enable(&cgroup_memory_nosli);
+		break;
+	case '1':
+		static_branch_disable(&cgroup_memory_nosli);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+out:
+	return ret;
+}
+
+static const struct proc_ops memsli_enabled_proc_ops = {
+	.proc_open	= memsli_enabled_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_write	= memsli_enabled_write,
+	.proc_release	= single_release,
+};
+#endif /* CONFIG_MEMSLI */
+
 /*
  * Memory controller init before cgroup_init() initialize root_mem_cgroup.
  *
@@ -5420,6 +5760,10 @@ int __init mem_cgroup_init(void)
 {
 	unsigned int memcg_size;
 	int cpu;
+#ifdef CONFIG_MEMSLI
+	proc_mkdir("memsli", NULL);
+	proc_create("memsli/enabled", 0600, NULL, &memsli_enabled_proc_ops);
+#endif /* CONFIG_MEMSLI */
 
 	/*
 	 * Currently s32 type (can refer to struct batched_lruvec_stat) is
@@ -5666,6 +6010,145 @@ static int swap_events_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+
+#ifdef CONFIG_MEMSLI
+#define MEMCG_LAT_STAT_SMP_WRITE(name, sidx)				\
+static void smp_write_##name(void *info)				\
+{									\
+	struct mem_cgroup *memcg = (struct mem_cgroup *)info;		\
+	int i;								\
+									\
+	for (i = MEM_LAT_0_1; i < MEM_LAT_NR_COUNT; i++)		\
+		this_cpu_write(memcg->lat_stat_cpu->item[sidx][i], 0);	\
+}
+
+MEMCG_LAT_STAT_SMP_WRITE(global_direct_reclaim, MEM_LAT_GLOBAL_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_SMP_WRITE(memcg_direct_reclaim, MEM_LAT_MEMCG_DIRECT_RECLAIM)
+MEMCG_LAT_STAT_SMP_WRITE(direct_compact, MEM_LAT_DIRECT_COMPACT)
+MEMCG_LAT_STAT_SMP_WRITE(global_direct_swapout, MEM_LAT_GLOBAL_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_SMP_WRITE(memcg_direct_swapout, MEM_LAT_MEMCG_DIRECT_SWAPOUT)
+MEMCG_LAT_STAT_SMP_WRITE(direct_swapin, MEM_LAT_DIRECT_SWAPIN)
+
+smp_call_func_t smp_memcg_lat_write_funcs[] = {
+	smp_write_global_direct_reclaim,
+	smp_write_memcg_direct_reclaim,
+	smp_write_direct_compact,
+	smp_write_global_direct_swapout,
+	smp_write_memcg_direct_swapout,
+	smp_write_direct_swapin,
+};
+
+int memcg_lat_stat_write(struct cgroup_subsys_state *css,
+			 struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+	enum mem_lat_stat_item idx = cft->private;
+	smp_call_func_t func = smp_memcg_lat_write_funcs[idx];
+
+	if (val != 0)
+		return -EINVAL;
+
+	func((void *)memcg);
+	smp_call_function(func, (void *)memcg, 1);
+
+	return 0;
+}
+
+static u64 memcg_lat_stat_gather(struct mem_cgroup *memcg,
+				 enum mem_lat_stat_item sidx,
+				 enum mem_lat_count_t cidx)
+{
+	u64 sum = 0;
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		sum += per_cpu_ptr(memcg->lat_stat_cpu, cpu)->item[sidx][cidx];
+
+	return sum;
+}
+
+int memcg_lat_stat_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	enum mem_lat_stat_item idx = seq_cft(m)->private;
+
+	seq_printf(m, "0-1ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_0_1));
+	seq_printf(m, "1-5ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_1_5));
+	seq_printf(m, "5-10ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_5_10));
+	seq_printf(m, "10-100ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_10_100));
+	seq_printf(m, "100-500ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_100_500));
+	seq_printf(m, "500-1000ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_500_1000));
+	seq_printf(m, ">=1000ms: \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_1000_INF));
+	seq_printf(m, "total(ms): \t%llu\n",
+		   memcg_lat_stat_gather(memcg, idx, MEM_LAT_TOTAL) >> 20);
+
+	return 0;
+}
+
+static enum mem_lat_count_t get_mem_lat_count_idx(u64 duration)
+{
+	enum mem_lat_count_t idx;
+
+	duration = duration >> 20;
+	if (duration < 1)
+		idx = MEM_LAT_0_1;
+	else if (duration < 5)
+		idx = MEM_LAT_1_5;
+	else if (duration < 10)
+		idx = MEM_LAT_5_10;
+	else if (duration < 100)
+		idx = MEM_LAT_10_100;
+	else if (duration < 500)
+		idx = MEM_LAT_100_500;
+	else if (duration < 1000)
+		idx = MEM_LAT_500_1000;
+	else
+		idx = MEM_LAT_1000_INF;
+
+	return idx;
+}
+
+void memcg_lat_stat_start(u64 *start)
+{
+	if (!static_branch_unlikely(&cgroup_memory_nosli) &&
+	    !mem_cgroup_disabled())
+		*start = ktime_get_ns();
+	else
+		*start = 0;
+}
+
+void memcg_lat_stat_end(enum mem_lat_stat_item sidx, u64 start)
+{
+	struct mem_cgroup *memcg, *iter;
+	enum mem_lat_count_t cidx;
+	u64 duration;
+
+	if (static_branch_unlikely(&cgroup_memory_nosli) ||
+	    mem_cgroup_disabled())
+		return;
+
+	if (start == 0)
+		return;
+
+	duration = ktime_get_ns() - start;
+	cidx = get_mem_lat_count_idx(duration);
+	memcg = get_mem_cgroup_from_mm(current->mm);
+	for (iter = memcg; iter; iter = parent_mem_cgroup(iter)) {
+		this_cpu_inc(iter->lat_stat_cpu->item[sidx][cidx]);
+		this_cpu_add(iter->lat_stat_cpu->item[sidx][MEM_LAT_TOTAL],
+			       duration);
+		memcg_lat_stat_notify_event(iter, sidx);
+	}
+	css_put(&memcg->css);
+}
+#endif /* CONFIG_MEMSLI */
 
 static struct cftype swap_files[] = {
 	{
