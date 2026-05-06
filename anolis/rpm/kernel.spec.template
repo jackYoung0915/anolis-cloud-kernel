@@ -876,6 +876,9 @@ BuildKernel() {
 
     %{make} -s ARCH=$Arch olddefconfig >/dev/null
     %{make} -s ARCH=$Arch V=1 %{?_smp_mflags} KCFLAGS="$KCFLAGS" WITH_GCOV="%{?with_gcov}" $MakeTarget %{?sparse_mflags} %{?kernel_mflags}
+%ifarch loongarch64
+    %{make} -s ARCH=$Arch V=1 %{?_smp_mflags} KCFLAGS="$KCFLAGS" WITH_GCOV="%{?with_gcov}" vmlinuz.efi %{?sparse_mflags} %{?kernel_mflags}
+%endif
     if [ $DoModules -eq 1 ]; then
 	%{make} -s ARCH=$Arch V=1 %{?_smp_mflags} KCFLAGS="$KCFLAGS" WITH_GCOV="%{?with_gcov}" modules %{?sparse_mflags} || exit 1
     fi
@@ -915,6 +918,12 @@ BuildKernel() {
                 $RPM_BUILD_ROOT/%{image_install_path}/$InstallName-$KernelVer
     chmod 755 $RPM_BUILD_ROOT/%{image_install_path}/$InstallName-$KernelVer
     cp $RPM_BUILD_ROOT/%{image_install_path}/$InstallName-$KernelVer $RPM_BUILD_ROOT/lib/modules/$KernelVer/$InstallName
+
+%ifarch loongarch64
+    cp arch/$Arch/boot/vmlinuz.efi $RPM_BUILD_ROOT/%{image_install_path}/vmlinuz-$KernelVer-efi
+    chmod 755 $RPM_BUILD_ROOT/%{image_install_path}/vmlinuz-$KernelVer-efi
+    cp $RPM_BUILD_ROOT/%{image_install_path}/vmlinuz-$KernelVer-efi $RPM_BUILD_ROOT/lib/modules/$KernelVer/vmlinuz.efi
+%endif
 
     # hmac sign the kernel for FIPS
     echo "Creating hmac file: $RPM_BUILD_ROOT/%{image_install_path}/.vmlinuz-$KernelVer.hmac"
@@ -1550,6 +1559,11 @@ fi}\
 #
 %define kernel_variant_preun() \
 %{expand:%%preun %{?1}}\
+%ifarch loongarch64 \
+if command -v grubby > /dev/null; then\
+    grubby --remove-kernel=/%{image_install_path}/vmlinuz-%{KVERREL}%{?1:+%{1}}-efi >/dev/null 2>&1 || :\
+fi\
+%endif \
 /bin/kernel-install remove %{KVERREL}%{?1:+%{1}} /lib/modules/%{KVERREL}%{?1:+%{1}}/vmlinuz || exit $?\
 if [ -x %{_sbindir}/weak-modules ]\
 then\
@@ -1732,6 +1746,10 @@ fi
 /lib/modules/%{KVERREL}%{?2:+%{2}}/%{?-k:%{-k*}}%{!?-k:vmlinuz}\
 %ghost /%{image_install_path}/%{?-k:%{-k*}}%{!?-k:vmlinuz}-%{KVERREL}%{?2:+%{2}}\
 /lib/modules/%{KVERREL}%{?2:+%{2}}/.vmlinuz.hmac \
+%ifarch loongarch64\
+/%{image_install_path}/vmlinuz-%{KVERREL}%{?2:+%{2}}-efi\
+/lib/modules/%{KVERREL}%{?2:+%{2}}/vmlinuz.efi\
+%endif\
 %ghost /%{image_install_path}/.vmlinuz-%{KVERREL}%{?2:+%{2}}.hmac \
 %ifarch aarch64 riscv64\
 /lib/modules/%{KVERREL}%{?2:+%{2}}/dtb \
