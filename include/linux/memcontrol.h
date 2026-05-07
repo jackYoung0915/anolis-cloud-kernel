@@ -46,6 +46,16 @@ enum memcg_stat_item {
 	MEMCG_NR_STAT,
 };
 
+enum memcg_exstat_item {
+	MEMCG_WMARK_RECLAIM,
+	MEMCG_NR_EXSTAT,
+};
+
+/* Only care about 64bit using "long" */
+struct mem_cgroup_exstat_cpu {
+	unsigned long item[MEMCG_NR_EXSTAT];
+};
+
 enum memcg_memory_event {
 	MEMCG_LOW,
 	MEMCG_HIGH,
@@ -361,6 +371,13 @@ struct mem_cgroup {
 	spinlock_t event_list_lock;
 #endif /* CONFIG_MEMCG_V1 */
 
+	/* memory.exstat */
+	struct mem_cgroup_exstat_cpu __percpu *exstat_cpu;
+
+	unsigned int		wmark_ratio;
+	struct work_struct	wmark_work;
+	unsigned int		wmark_scale_factor;
+
 #ifdef CONFIG_MEMSLI
 	struct mem_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
 #ifdef CONFIG_MEMCG_V1
@@ -398,6 +415,8 @@ struct mem_cgroup {
 #endif
 
 extern struct mem_cgroup *root_mem_cgroup;
+
+extern struct workqueue_struct *memcg_wmark_wq;
 
 enum page_memcg_data_flags {
 	/* page->memcg_data is a pointer to an slabobj_ext vector */
@@ -1881,6 +1900,22 @@ static inline bool memcg_is_dying(struct mem_cgroup *memcg)
 	return memcg ? css_is_dying(&memcg->css) : false;
 }
 
+static inline bool is_wmark_ok(struct mem_cgroup *memcg, bool high)
+{
+	if (high)
+		return page_counter_read(&memcg->memory) < memcg->memory.wmark_high;
+
+	return page_counter_read(&memcg->memory) < memcg->memory.wmark_low;
+}
+
+void setup_memcg_wmark(struct mem_cgroup *memcg);
+int memory_wmark_ratio_show(struct seq_file *m, void *v);
+ssize_t memory_wmark_ratio_write(struct kernfs_open_file *of,
+				 char *buf, size_t nbytes, loff_t off);
+int memory_wmark_scale_factor_show(struct seq_file *m, void *v);
+ssize_t memory_wmark_scale_factor_write(struct kernfs_open_file *of,
+					char *buf, size_t nbytes, loff_t off);
+int memcg_exstat_show(struct seq_file *m, void *v);
 #else
 static inline bool mem_cgroup_kmem_disabled(void)
 {
@@ -1955,6 +1990,44 @@ static inline void mem_cgroup_show_protected_memory(struct mem_cgroup *memcg)
 static inline bool memcg_is_dying(struct mem_cgroup *memcg)
 {
 	return false;
+}
+
+static inline bool is_wmark_ok(struct mem_cgroup *memcg, bool low)
+{
+	return false;
+}
+
+static inline void setup_memcg_wmark(struct mem_cgroup *memcg)
+{
+}
+
+static inline int memory_wmark_ratio_show(struct seq_file *m, void *v)
+{
+	return 0;
+}
+
+static inline ssize_t memory_wmark_ratio_write(struct kernfs_open_file *of,
+					       char *buf, size_t nbytes,
+					       loff_t off)
+{
+	return 0;
+}
+
+static inline int memory_wmark_scale_factor_show(struct seq_file *m, void *v)
+{
+	return 0;
+}
+
+static inline ssize_t memory_wmark_scale_factor_write(struct kernfs_open_file *of,
+						      char *buf,
+						      size_t nbytes, loff_t off)
+{
+	return 0;
+}
+
+static inline int memcg_exstat_show(struct seq_file *m, void *v)
+{
+	return 0;
 }
 #endif /* CONFIG_MEMCG */
 
