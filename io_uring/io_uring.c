@@ -115,6 +115,8 @@
 #define IO_COMPL_BATCH			32
 #define IO_REQ_ALLOC_BATCH		8
 
+extern struct io_sq_data __percpu **percpu_sqd;
+
 /* requests with any of those set should undergo io_disarm_next() */
 #define IO_DISARM_MASK (REQ_F_ARM_LTIMEOUT | REQ_F_LINK_TIMEOUT | REQ_F_FAIL)
 
@@ -1301,13 +1303,20 @@ static void io_iopoll_req_issued(struct io_kiocb *req, unsigned int issue_flags)
 	if (unlikely(needs_lock)) {
 		/*
 		 * If IORING_SETUP_SQPOLL is enabled, sqes are either handle
-		 * in sq thread task context or in io worker task context. If
-		 * current task context is sq thread, we don't need to check
-		 * whether should wake up sq thread.
+		 * in sq thread task context or in io worker task context or
+		 * in original context. If current task context is sq thread,
+		 * we don't need to check whether should wake up sq thread.
 		 */
 		if ((ctx->flags & IORING_SETUP_SQPOLL) &&
-		    wq_has_sleeper(&ctx->sq_data->wait))
-			wake_up(&ctx->sq_data->wait);
+		    wq_has_sleeper(&ctx->sq_data->wait)) {
+			struct task_struct *tsk;
+
+			rcu_read_lock();
+			tsk = rcu_dereference(ctx->sq_data->thread);
+			if (current != tsk)
+				wake_up(&ctx->sq_data->wait);
+			rcu_read_unlock();
+		    }
 
 		mutex_unlock(&ctx->uring_lock);
 	}
@@ -2619,8 +2628,22 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 			ret = -EOWNERDEAD;
 			goto out;
 		}
-		if (flags & IORING_ENTER_SQ_WAKEUP)
+		if (flags & IORING_ENTER_SQ_WAKEUP) {
 			wake_up(&ctx->sq_data->wait);
+			if (flags & IORING_ENTER_SQ_SUBMIT_ON_IDLE) {
+				bool has_lock;
+
+				ret = io_uring_add_tctx_node(ctx);
+				if (unlikely(ret))
+					goto out;
+
+				has_lock = mutex_trylock(&ctx->uring_lock);
+				if (has_lock) {
+					io_submit_sqes(ctx, min(to_submit, 8U));
+					mutex_unlock(&ctx->uring_lock);
+				}
+			}
+		}
 		if (flags & IORING_ENTER_SQ_WAIT)
 			io_sqpoll_wait_sq(ctx);
 
@@ -3144,6 +3167,7 @@ SYSCALL_DEFINE2(io_uring_setup, u32, entries,
 
 static int __init io_uring_init(void)
 {
+	int cpu;
 	struct kmem_cache_args kmem_args = {
 		.useroffset = offsetof(struct io_kiocb, cmd.data),
 		.usersize = sizeof_field(struct io_kiocb, cmd.data),
@@ -3248,6 +3272,9 @@ static int __init io_uring_init(void)
 
 	iou_wq = alloc_workqueue("iou_exit", WQ_UNBOUND, 64);
 	BUG_ON(!iou_wq);
+	percpu_sqd = alloc_percpu(struct io_sq_data *);
+	for_each_possible_cpu(cpu)
+		*per_cpu_ptr(percpu_sqd, cpu) = NULL;
 
 #ifdef CONFIG_SYSCTL
 	register_sysctl_init("kernel", kernel_io_uring_disabled_table);
