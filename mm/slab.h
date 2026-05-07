@@ -709,12 +709,14 @@ static inline void free_slab_obj_exts(struct slab *slab)
 	/* kidled: free the age array stored in the tail slot.
 	 * Only when kmem is enabled (!cgroup_memory_nokmem); when kmem is
 	 * disabled kidled uses the SLAB_AGE path (handled separately). */
+#ifdef CONFIG_KIDLED
 	if (!cgroup_memory_nokmem &&
 	    kidled_available_slab(slab_folio(slab), slab->slab_cache)) {
 		unsigned int objects = objs_per_slab(slab->slab_cache, slab);
 		if (likely(obj_exts[objects].objcg))
 			kfree(obj_exts[objects].objcg);
 	}
+#endif
 
 	/*
 	 * obj_exts was created with __GFP_NO_OBJ_EXT flag, therefore its
