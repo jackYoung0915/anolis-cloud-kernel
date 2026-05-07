@@ -128,6 +128,16 @@ struct throtl_grp {
 
 	struct blkg_rwstat stat_bytes;
 	struct blkg_rwstat stat_ios;
+	/* total time spent on lower layer: scheduler, device and others */
+	struct blkg_rwstat service_time;
+	/* total time spent on block throttle */
+	struct blkg_rwstat wait_time;
+	/* total IOs completed */
+	struct blkg_rwstat completed;
+	/* total bytes throttled */
+	struct blkg_rwstat total_bytes_queued;
+	/* total IOs throttled */
+	struct blkg_rwstat total_io_queued;
 };
 
 extern struct blkcg_policy blkcg_policy_throtl;
