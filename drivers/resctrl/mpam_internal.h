@@ -239,6 +239,7 @@ struct mpam_quirk {
 	u32 iidr;
 	u32 iidr_mask;
 
+	struct acpi_platform_list *plat;
 	enum mpam_device_quirks workaround;
 };
 
