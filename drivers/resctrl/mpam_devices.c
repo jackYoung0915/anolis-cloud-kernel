@@ -39,6 +39,9 @@
 #define SMCCC_SOC_ID_T241		0x036b0241
 static void __iomem *t241_scratch_regs[T241_CHIPS_MAX];
 
+/* Values for the HISI workaround */
+#define HIP12_ACPI_PLAT  { "HISI  ", "HIP12   ", 0, ACPI_SIG_MPAM, all_versions }
+
 /*
  * mpam_list_lock protects the SRCU lists when writing. Once the
  * mpam_enabled key is enabled these lists are read-only,
