@@ -119,4 +119,14 @@ static inline void vfio_pci_liveupdate_cleanup(void)
 }
 #endif /* CONFIG_VFIO_PCI_LIVEUPDATE */
 
+static inline struct file *get_file_active(struct file **f)
+{
+	struct file *file;
+	rcu_read_lock();
+	file = *f;
+	if (file && !atomic_long_inc_not_zero(&file->f_count))
+		file = NULL;
+	rcu_read_unlock();
+	return file;
+}
 #endif
