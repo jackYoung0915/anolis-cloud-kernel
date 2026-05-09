@@ -6557,6 +6557,96 @@ static int watermark_scale_factor_sysctl_handler(const struct ctl_table *table, 
 	return 0;
 }
 
+static void setup_min_cache_kbytes(void)
+{
+	pg_data_t *pgdat;
+	struct zone *zone;
+	unsigned long lowmem_pages = 0;
+	unsigned long min_cache_pages = sysctl_min_cache_kbytes >> (PAGE_SHIFT - 10);
+
+	for_each_online_pgdat(pgdat)
+		pgdat->min_cache_pages = 0;
+
+	for_each_zone(zone) {
+		if (!is_highmem(zone))
+			lowmem_pages += zone_managed_pages(zone);
+	}
+
+	for_each_zone(zone) {
+		u64 tmp;
+
+		/*
+		 * Make sure that lowmem zone reserve a mount of file pages
+		 * to avoid thrashing. highmem zone is allowed to eat up
+		 * memory as soon as possible.
+		 */
+		if (!is_highmem(zone)) {
+			tmp = zone_managed_pages(zone) * min_cache_pages;
+			do_div(tmp, lowmem_pages);
+			zone->zone_pgdat->min_cache_pages += tmp;
+		}
+	}
+}
+
+/*
+ * Initialise min_cache_kbytes.
+ *
+ * 0   < total memory <= 4G,   min_cache_kbytes:  150M
+ * 4G  < total memory <= 8G,   min_cache_kbytes:  300M
+ * 8G  < total memory <= 16G,  min_cache_kbytes:  400M
+ * 16G < total memory <= 128G, min_cache_kbytes:  500M
+ *       total memory >  128G, min_cache_kbytes: 1024M
+ */
+
+int __meminit init_min_cache_kbytes(void)
+{
+	unsigned long total_ram_bytes = totalram_pages() << PAGE_SHIFT;
+
+	if (total_ram_bytes <= 4UL * SZ_1G)
+		/* limit min_cache_kbytes to 1/2 of total memory at most */
+		if (total_ram_bytes / 2 < 150 * SZ_1M)
+			sysctl_min_cache_kbytes = total_ram_bytes / 2 / SZ_1K;
+		else
+			sysctl_min_cache_kbytes = 150 * SZ_1K;
+	else if (total_ram_bytes <= 8UL * SZ_1G)
+		sysctl_min_cache_kbytes = 300 * SZ_1K;
+	else if (total_ram_bytes <= 16UL * SZ_1G)
+		sysctl_min_cache_kbytes = 400 * SZ_1K;
+	else if (total_ram_bytes <= 128UL * SZ_1G)
+		sysctl_min_cache_kbytes = 500 * SZ_1K;
+	else
+		sysctl_min_cache_kbytes = 1024 * SZ_1K;
+
+	setup_min_cache_kbytes();
+
+	return 0;
+}
+postcore_initcall(init_min_cache_kbytes)
+
+static int sysctl_min_cache_kbytes_sysctl_handler(const struct ctl_table *table, int write,
+	void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int rc;
+	unsigned long min_cache_pages;
+	unsigned long old_min_cache_kbytes = sysctl_min_cache_kbytes;
+
+	rc = proc_doulongvec_minmax(table, write, buffer, length, ppos);
+	if (rc)
+		return rc;
+
+	if (write) {
+		min_cache_pages = sysctl_min_cache_kbytes >> (PAGE_SHIFT - 10);
+		if (min_cache_pages > totalram_pages() / 2) {
+			sysctl_min_cache_kbytes = old_min_cache_kbytes;
+			return -EINVAL;
+		}
+
+		setup_min_cache_kbytes();
+	}
+
+	return 0;
+}
+
 #ifdef CONFIG_NUMA
 static void setup_min_unmapped_ratio(void)
 {
@@ -6734,6 +6824,14 @@ static const struct ctl_table page_alloc_sysctl_table[] = {
 		.maxlen		= sizeof(sysctl_lowmem_reserve_ratio),
 		.mode		= 0644,
 		.proc_handler	= lowmem_reserve_ratio_sysctl_handler,
+	},
+	{
+		.procname	= "min_cache_kbytes",
+		.data		= &sysctl_min_cache_kbytes,
+		.maxlen		= sizeof(sysctl_min_cache_kbytes),
+		.mode		= 0644,
+		.proc_handler	= sysctl_min_cache_kbytes_sysctl_handler,
+		.extra1		= SYSCTL_LONG_ZERO,
 	},
 #ifdef CONFIG_NUMA
 	{

@@ -149,6 +149,9 @@ struct scan_control {
 	/* Always discard instead of demoting to lower tier memory */
 	unsigned int no_demotion:1;
 
+	/* The file pages on the current node are not allowed to reclaim */
+	unsigned int file_is_reserved:1;
+
 	/* Allocation order */
 	s8 order;
 
@@ -197,6 +200,8 @@ struct scan_control {
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
  */
 int vm_swappiness = 60;
+/* The min page cache should be reserved in the system */
+unsigned long sysctl_min_cache_kbytes;
 
 #ifdef CONFIG_MEMCG
 
@@ -882,6 +887,11 @@ static enum folio_references folio_check_references(struct folio *folio,
 	 */
 	if (referenced_ptes == -1)
 		return FOLIOREF_KEEP;
+	/*
+	 * Activate file-backed executable folios if min_cache_kbytes is enabled.
+	 */
+	if ((vm_flags & VM_EXEC) && folio_is_file_lru(folio) && sc->file_is_reserved)
+		return FOLIOREF_ACTIVATE;
 
 	if (lru_gen_enabled() && !lru_gen_switching()) {
 		if (!referenced_ptes)
@@ -2298,7 +2308,7 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 	struct lruvec *target_lruvec;
 
 	if (lru_gen_enabled() && !lru_gen_switching())
-		return;
+		goto file_reserved;
 
 	target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
 
@@ -2359,6 +2369,7 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 	else
 		sc->cache_trim_mode = 0;
 
+file_reserved:
 	/*
 	 * Prevent the reclaimer from falling into the cache trap: as
 	 * cache pages start out inactive, every cache fault will tip
@@ -2371,6 +2382,7 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 	if (!cgroup_reclaim(sc)) {
 		unsigned long total_high_wmark = 0;
 		unsigned long free, anon;
+		unsigned long min_cache_kbytes;
 		int z;
 		struct zone *zone;
 
@@ -2393,6 +2405,20 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 			file + free <= total_high_wmark &&
 			!(sc->may_deactivate & DEACTIVATE_ANON) &&
 			anon >> sc->priority;
+
+		/*
+		 * Reserve a specified amount of page caches in case of thrashing.
+		 * OOM killer is preferred when the system page cache is below the
+		 * given watermark.
+		 */
+		min_cache_kbytes = READ_ONCE(sysctl_min_cache_kbytes);
+		if (min_cache_kbytes && !sc->file_is_reserved) {
+			unsigned long f_dirty;
+
+			f_dirty = node_page_state(pgdat, NR_FILE_DIRTY);
+			file = (file > f_dirty) ? file - f_dirty : 0;
+			sc->file_is_reserved = file <= pgdat->min_cache_pages;
+		}
 	}
 }
 
@@ -6339,6 +6365,7 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 	if ((lru_gen_enabled() || lru_gen_switching()) && root_reclaim(sc)) {
 		memset(&sc->nr, 0, sizeof(sc->nr));
+		prepare_scan_control(pgdat, sc);
 		lru_gen_shrink_node(pgdat, sc);
 
 		if (!lru_gen_switching())
