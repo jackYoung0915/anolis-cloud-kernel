@@ -16,6 +16,7 @@
 #include <linux/arm_sdei.h>
 #include <linux/kprobes.h>
 #include <linux/nmi.h>
+#include <linux/cpu_pm.h>
 
 /* We use the secure physical timer as SDEI NMI watchdog timer */
 #define SDEI_NMI_WATCHDOG_HWIRQ		29
@@ -24,6 +25,7 @@ static int sdei_watchdog_event_num;
 bool disable_sdei_nmi_watchdog;
 static bool sdei_watchdog_registered;
 static DEFINE_PER_CPU(ktime_t, last_check_time);
+static DEFINE_PER_CPU(bool, sdei_usr_en);
 
 void sdei_watchdog_hardlockup_enable(unsigned int cpu)
 {
@@ -43,6 +45,7 @@ void sdei_watchdog_hardlockup_enable(unsigned int cpu)
 		pr_err("Enable NMI Watchdog failed on cpu%d\n",
 				smp_processor_id());
 	}
+	__this_cpu_write(sdei_usr_en, 1);
 }
 
 void sdei_watchdog_hardlockup_disable(unsigned int cpu)
@@ -53,6 +56,7 @@ void sdei_watchdog_hardlockup_disable(unsigned int cpu)
 		return;
 
 	ret = sdei_api_event_disable(sdei_watchdog_event_num);
+	__this_cpu_write(sdei_usr_en, 0);
 	if (ret)
 		pr_err("Disable NMI Watchdog failed on cpu%d\n",
 				smp_processor_id());
@@ -106,6 +110,56 @@ void sdei_watchdog_clear_eoi(void)
 		sdei_api_clear_eoi(SDEI_NMI_WATCHDOG_HWIRQ);
 }
 
+static int sdei_watchdog_pm_notifier(struct notifier_block *nb,
+				unsigned long action, void *data)
+{
+	int rv = 0;
+	u64 result;
+
+	WARN_ON_ONCE(preemptible());
+
+	/*
+	 * Judge event status before disable or enable to prevent
+	 * incorrect state transitions, e.g., disabling after
+	 * unregistering.
+	 */
+	rv = sdei_api_event_status(sdei_watchdog_event_num, &result);
+	if (rv)
+		goto error;
+	if (!result)
+		goto success;
+
+	/*
+	 * After powering on/off the LPI (Low Power Idle),
+	 * the enable function must be called to enable the
+	 * EL3 Secure Timer, ensuring proper handling of
+	 * secure timer functionality.
+	 */
+	switch (action) {
+	case CPU_PM_ENTER:
+		if (per_cpu(sdei_usr_en, smp_processor_id()))
+			rv = sdei_api_event_disable(sdei_watchdog_event_num);
+		break;
+	case CPU_PM_EXIT:
+	case CPU_PM_ENTER_FAILED:
+		if (per_cpu(sdei_usr_en, smp_processor_id()))
+			rv = sdei_api_event_enable(sdei_watchdog_event_num);
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+
+error:
+	if (rv)
+		return notifier_from_errno(rv);
+success:
+	return NOTIFY_OK;
+}
+
+static struct notifier_block sdei_watchdog_pm_nb = {
+	.notifier_call = sdei_watchdog_pm_notifier,
+};
+
 int __init sdei_watchdog_hardlockup_probe(void)
 {
 	int ret;
@@ -144,8 +198,23 @@ int __init sdei_watchdog_hardlockup_probe(void)
 		return ret;
 	}
 
+	ret = cpu_pm_register_notifier(&sdei_watchdog_pm_nb);
+	if (ret) {
+		pr_warn("Failed to register sdei PM notifier...\n");
+		return ret;
+	}
 	sdei_watchdog_registered = true;
 	pr_info("SDEI Watchdog registered successfully\n");
 
 	return 0;
 }
+
+static int __init sdei_watchdog_hardlockup_init(void)
+{
+	/* sdei_watchdog needs to be initialized after sdei_init */
+	if (!disable_sdei_nmi_watchdog)
+		lockup_detector_retry_init();
+
+	return 0;
+}
+device_initcall(sdei_watchdog_hardlockup_init)
