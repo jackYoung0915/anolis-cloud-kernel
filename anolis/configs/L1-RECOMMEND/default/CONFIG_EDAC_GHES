@@ -1,1 +1,1 @@
-CONFIG_EDAC_GHES=y
+# CONFIG_EDAC_GHES is not set
