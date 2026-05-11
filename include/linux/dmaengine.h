@@ -13,6 +13,7 @@
 #include <linux/bitmap.h>
 #include <linux/types.h>
 #include <asm/page.h>
+#include <linux/ck_kabi.h>
 
 /**
  * typedef dma_cookie_t - an opaque DMA cookie
@@ -942,6 +943,9 @@ struct dma_device {
 	/* debugfs support */
 	void (*dbg_summary_show)(struct seq_file *s, struct dma_device *dev);
 	struct dentry *dbg_dev_root;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 static inline int dmaengine_slave_config(struct dma_chan *chan,

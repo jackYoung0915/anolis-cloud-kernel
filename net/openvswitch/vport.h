@@ -14,6 +14,7 @@
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/u64_stats_sync.h>
+#include <linux/ck_kabi.h>
 
 #include "datapath.h"
 
@@ -85,6 +86,9 @@ struct vport {
 
 	struct list_head detach_list;
 	struct rcu_head rcu;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 /**
