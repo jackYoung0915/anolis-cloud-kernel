@@ -526,6 +526,7 @@ static int cmm_migratepage(struct balloon_dev_info *b_dev_info,
 	 * when inflating.
 	 */
 	if (page_zone(page) != page_zone(newpage)) {
+	__count_vm_event(BALLOON_MIGRATE);
 		adjust_managed_page_count(page, 1);
 		adjust_managed_page_count(newpage, -1);
 	}
