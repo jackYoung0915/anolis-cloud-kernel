@@ -373,6 +373,12 @@ static inline void jbd_unlock_bh_journal_head(struct buffer_head *bh)
 #define J_EXPECT_BH(bh, expr, why...)	__journal_expect(expr, ## why)
 #define J_EXPECT_JH(jh, expr, why...)	__journal_expect(expr, ## why)
 #endif
+	/**
+	 * @jbd2_trans_commit_key:
+	 *
+	 * "struct lock_class_key" for @j_trans_commit_map
+	 */
+	struct lock_class_key	jbd2_trans_commit_key;
 
 /* Flags in jbd_inode->i_flags */
 #define __JI_COMMIT_RUNNING 0

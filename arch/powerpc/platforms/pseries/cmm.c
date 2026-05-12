@@ -526,6 +526,7 @@ static int cmm_migratepage(struct balloon_dev_info *b_dev_info,
 	 * when inflating.
 	 */
 	if (page_zone(page) != page_zone(newpage)) {
+	__count_vm_event(BALLOON_MIGRATE);
 		adjust_managed_page_count(page, 1);
 		adjust_managed_page_count(newpage, -1);
 	}
@@ -550,7 +551,6 @@ static int cmm_migratepage(struct balloon_dev_info *b_dev_info,
 
 static void cmm_balloon_compaction_init(void)
 {
-	balloon_devinfo_init(&b_dev_info);
 	b_dev_info.migratepage = cmm_migratepage;
 }
 #else /* CONFIG_BALLOON_COMPACTION */
@@ -572,6 +572,7 @@ static int cmm_init(void)
 	if (!firmware_has_feature(FW_FEATURE_CMO) && !simulate)
 		return -EOPNOTSUPP;
 
+	balloon_devinfo_init(&b_dev_info);
 	cmm_balloon_compaction_init();
 
 	rc = register_oom_notifier(&cmm_oom_nb);

@@ -130,6 +130,28 @@ int machine_kexec_prepare(struct kimage *kimage)
 
 	reboot_code_buffer = (unsigned long)page_address(kimage->control_code_page);
 	memcpy((void *)reboot_code_buffer, relocate_new_kernel, relocate_new_kernel_size);
+static void machine_kexec_mask_interrupts(void)
+{
+	unsigned int i;
+	struct irq_desc *desc;
+
+	for_each_irq_desc(i, desc) {
+		struct irq_chip *chip;
+
+		chip = irq_desc_get_chip(desc);
+		if (!chip)
+			continue;
+
+		if (chip->irq_eoi && irqd_irq_inprogress(&desc->irq_data))
+			chip->irq_eoi(&desc->irq_data);
+
+		if (chip->irq_mask)
+			chip->irq_mask(&desc->irq_data);
+
+		if (chip->irq_disable && !irqd_irq_disabled(&desc->irq_data))
+			chip->irq_disable(&desc->irq_data);
+	}
+}
 
 #ifdef CONFIG_SMP
 	/* All secondary cpus now may jump to kexec_smp_wait cycle */
@@ -243,6 +265,7 @@ static void crash_shutdown_secondary(void *passed_regs)
 
 	local_irq_disable();
 	if (!cpumask_test_cpu(cpu, &cpus_in_crash))
+	machine_kexec_mask_interrupts();
 		crash_save_cpu(regs, cpu);
 	cpumask_set_cpu(cpu, &cpus_in_crash);
 
@@ -305,6 +328,7 @@ void machine_crash_shutdown(struct pt_regs *regs)
 	int crashing_cpu;
 
 	local_irq_disable();
+	machine_kexec_mask_interrupts();
 
 	crashing_cpu = smp_processor_id();
 	crash_save_cpu(regs, crashing_cpu);
