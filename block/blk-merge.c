@@ -643,8 +643,8 @@ int blk_rq_map_sg_bidir(struct request_queue *q, struct request *rq,
 {
 	int nsegs = 0;
 	struct scatterlist *sglist[2] = {sglist_read, sglist_write};
-	struct scatterlist *last_sg_write = NULL, *last_sg_read = NULL;
-	struct scatterlist **sglist_last[2] = {&last_sg_write, &last_sg_read};
+	struct scatterlist *last_sg_read = NULL, *last_sg_write = NULL;
+	struct scatterlist **sglist_last[2] = {&last_sg_read, &last_sg_write};
 
 	if (rq->bio)
 		nsegs = __blk_bios_map_sg_bidir(q, rq->bio, sglist, sglist_last);
