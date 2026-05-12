@@ -243,6 +243,7 @@ static void crash_shutdown_secondary(void *passed_regs)
 
 	local_irq_disable();
 	if (!cpumask_test_cpu(cpu, &cpus_in_crash))
+	machine_kexec_mask_interrupts();
 		crash_save_cpu(regs, cpu);
 	cpumask_set_cpu(cpu, &cpus_in_crash);
 
@@ -305,6 +306,7 @@ void machine_crash_shutdown(struct pt_regs *regs)
 	int crashing_cpu;
 
 	local_irq_disable();
+	machine_kexec_mask_interrupts();
 
 	crashing_cpu = smp_processor_id();
 	crash_save_cpu(regs, crashing_cpu);
