@@ -4820,6 +4820,28 @@ static int  pci_quirk_phytium_pcie_ports_acs(struct pci_dev *dev, u16 acs_flags)
 		return false;
 }
 
+/*
+ * Wangxun 40G/25G/10G/1G NICs have no ACS capability, but on
+ * multi-function devices, the hardware isolates the functions by
+ * directing all peer-to-peer traffic upstream as though PCI_ACS_RR and
+ * PCI_ACS_CR were set.
+ * SFxxx 1G NICs(em).
+ * RP1000/RP2000 10G NICs(sp).
+ * FF5xxx 40G/25G/10G NICs(aml).
+ */
+static int  pci_quirk_wangxun_nic_acs(struct pci_dev *dev, u16 acs_flags)
+{
+	switch (dev->device) {
+	case 0x0100 ... 0x010F: /* EM */
+	case 0x1001: case 0x2001: /* SP */
+	case 0x5010: case 0x5025: case 0x5040: /* AML */
+	case 0x5110: case 0x5125: case 0x5140: /* AML */
+		return pci_acs_ctrl_enabled(acs_flags,
+			PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF);
+	}
+
+	return false;
+}
 
 static const struct pci_dev_acs_enabled {
 	u16 vendor;
@@ -4971,6 +4993,8 @@ static const struct pci_dev_acs_enabled {
 	/* because rootcomplex Vendor id is 0x17cd on phytium cpu */
 	{ 0x17cd, PCI_ANY_ID, pci_quirk_xgene_acs },
 #endif
+	/* Wangxun nics */
+	{ PCI_VENDOR_ID_WANGXUN, PCI_ANY_ID, pci_quirk_wangxun_nic_acs },
 	{ 0 }
 };
 
