@@ -103,11 +103,27 @@ endif
 ifeq ($(CONFIG_STACKPROTECTOR_PER_TASK),y)
 prepare: stack_protector_prepare
 stack_protector_prepare: prepare0
-	$(eval KBUILD_CFLAGS += -mstack-protector-guard=tls		  \
-				-mstack-protector-guard-reg=tp		  \
-				-mstack-protector-guard-offset=$(shell	  \
-			awk '{if ($$2 == "TSK_STACK_CANARY") print $$3;}' \
-					include/generated/asm-offsets.h))
+	$(eval _OFF := $(shell awk '/TSK_STACK_CANARY/{print $$3}' \
+		$(objtree)/include/generated/asm-offsets.h))
+
+	$(if $(_OFF),,$(error TSK_STACK_CANARY offset not found in asm-offsets.h))
+	$(if $(shell echo "$(_OFF)" | grep -qE '^[0-9]+$$' && echo OK),,\
+		$(error Invalid TSK_STACK_CANARY offset '$(_OFF)'))
+
+	$(eval _GUARD_FLAGS := $(shell \
+		OFF=$(_OFF); \
+		if [ "$$OFF" -gt 2047 ]; then \
+			echo "WARNING: TSK_STACK_CANARY offset ($$OFF) exceeds RISC-V immediate limit (2047)," >&2; \
+			echo "         falling back to global stack protector mode." >&2; \
+			echo "-mstack-protector-guard=global"; \
+			echo "#define CONFIG_STACKPROTECTOR_GUARD_GLOBAL 1" > $(objtree)/include/generated/stackguard.h; \
+			echo "#undef CONFIG_STACKPROTECTOR_GUARD_TLS" >> $(objtree)/include/generated/stackguard.h; \
+		else \
+			echo "-mstack-protector-guard=tls -mstack-protector-guard-reg=tp -mstack-protector-guard-offset=$$OFF"; \
+			echo "#undef CONFIG_STACKPROTECTOR_GUARD_GLOBAL" > $(objtree)/include/generated/stackguard.h; \
+			echo "#define CONFIG_STACKPROTECTOR_GUARD_TLS 1" >> $(objtree)/include/generated/stackguard.h; \
+		fi))
+	$(eval KBUILD_CFLAGS += $(_GUARD_FLAGS))
 endif
 
 # arch specific predefines for sparse
