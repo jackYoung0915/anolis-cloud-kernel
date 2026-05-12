@@ -61,11 +61,19 @@
 # define TRACE_GFP_FLAGS_SLAB
 #endif
 
+#ifdef CONFIG_KFENCE
+# define TRACE_GFP_FLAGS_KFENCE			\
+	TRACE_GFP_EM(NOKFENCE)
+#else
+# define TRACE_GFP_FLAGS_KFENCE
+#endif
+
 #define TRACE_GFP_FLAGS				\
 	TRACE_GFP_FLAGS_GENERAL			\
 	TRACE_GFP_FLAGS_KASAN			\
 	TRACE_GFP_FLAGS_LOCKDEP			\
-	TRACE_GFP_FLAGS_SLAB
+	TRACE_GFP_FLAGS_SLAB			\
+	TRACE_GFP_FLAGS_KFENCE
 
 #undef TRACE_GFP_EM
 #define TRACE_GFP_EM(a) TRACE_DEFINE_ENUM(___GFP_##a##_BIT);
@@ -85,6 +93,7 @@ TRACE_DEFINE_ENUM(___GFP_LAST_BIT);
 #undef TRACE_GFP_EM
 #define TRACE_GFP_EM(a) gfpflag_string(__GFP_##a),
 
+/* Used by mm/debug.c - must end with {0, NULL} sentinel */
 #define __def_gfpflag_names			\
 	gfpflag_string(GFP_TRANSHUGE),		\
 	gfpflag_string(GFP_TRANSHUGE_LIGHT),	\
@@ -106,6 +115,7 @@ TRACE_DEFINE_ENUM(___GFP_LAST_BIT);
 #define show_gfp_flags(flags)						\
 	(flags) ? __print_flags(flags, "|", __def_gfpflag_names		\
 	) : "none"
+
 
 #ifdef CONFIG_MMU
 #define IF_HAVE_PG_MLOCK(_name) ,{1UL << PG_##_name, __stringify(_name)}
@@ -137,9 +147,16 @@ TRACE_DEFINE_ENUM(___GFP_LAST_BIT);
 #define IF_HAVE_PG_ARCH_3(_name)
 #endif
 
+#ifdef CONFIG_KFENCE
+#define IF_HAVE_PG_KFENCE(_name) DEF_PAGEFLAG_NAME(_name),
+#else
+#define IF_HAVE_PG_KFENCE(_name)
+#endif
+
 #define DEF_PAGEFLAG_NAME(_name) { 1UL <<  PG_##_name, __stringify(_name) }
 
 #define __def_pageflag_names						\
+	IF_HAVE_PG_KFENCE(kfence)					\
 	DEF_PAGEFLAG_NAME(locked),					\
 	DEF_PAGEFLAG_NAME(waiters),					\
 	DEF_PAGEFLAG_NAME(referenced),					\

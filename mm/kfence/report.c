@@ -158,9 +158,12 @@ static void kfence_print_stack(struct seq_file *seq, const struct kfence_metadat
 
 void kfence_print_object(struct seq_file *seq, const struct kfence_metadata *meta)
 {
+	/* Use pool-local base so object index is correct in multi-pool setup. */
+	struct kfence_metadata *kfence_metadata = meta->kpa->meta;
 	const int size = abs(meta->size);
 	const unsigned long start = meta->addr;
 	const struct kmem_cache *const cache = meta->cache;
+	struct page *page = virt_to_page((void *)start);
 
 	lockdep_assert_held(&meta->lock);
 
@@ -171,7 +174,8 @@ void kfence_print_object(struct seq_file *seq, const struct kfence_metadata *met
 
 	seq_con_printf(seq, "kfence-#%td: 0x%p-0x%p, size=%d, cache=%s\n\n",
 		       meta - kfence_metadata, (void *)start, (void *)(start + size - 1),
-		       size, (cache && cache->name) ? cache->name : "<destroyed>");
+		       size, (cache && cache->name) ? cache->name : PageSlab(page) ?
+		       "<destroyed>" : "PAGE");
 
 	kfence_print_stack(seq, meta, true);
 
@@ -193,7 +197,11 @@ static void print_diff_canary(unsigned long address, size_t bytes_to_show,
 
 	/* Do not show contents of object nor read into following guard page. */
 	end = (const u8 *)(address < meta->addr ? min(show_until_addr, meta->addr)
-						: min(show_until_addr, PAGE_ALIGN(address)));
+						: static_branch_likely(&kfence_short_canary) ?
+						  min(show_until_addr,
+						      ALIGN(meta->addr + meta->size + 1,
+							    L1_CACHE_BYTES)) :
+						  min(show_until_addr, PAGE_ALIGN(address)));
 
 	pr_cont("[");
 	for (cur = (const u8 *)address; cur < end; cur++) {
@@ -217,7 +225,7 @@ kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
 		    const struct kfence_metadata *meta, enum kfence_error_type type)
 {
 	unsigned long stack_entries[KFENCE_STACK_DEPTH] = { 0 };
-	const ptrdiff_t object_index = meta ? meta - kfence_metadata : -1;
+	ptrdiff_t object_index = -1;
 	int num_stack_entries;
 	int skipnr = 0;
 
@@ -231,6 +239,11 @@ kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
 	/* Require non-NULL meta, except if KFENCE_ERROR_INVALID. */
 	if (WARN_ON(type != KFENCE_ERROR_INVALID && !meta))
 		return KFENCE_FAULT_NONE;
+
+	if (meta) {
+		lockdep_assert_held(&meta->lock);
+		object_index = meta - meta->kpa->meta;
+	}
 
 	/*
 	 * Because we may generate reports in printk-unfriendly parts of the
