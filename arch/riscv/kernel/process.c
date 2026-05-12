@@ -32,6 +32,12 @@
 #include <linux/stackprotector.h>
 unsigned long __stack_chk_guard __read_mostly;
 EXPORT_SYMBOL(__stack_chk_guard);
+#elif defined(CONFIG_STACKPROTECTOR_PER_TASK)
+#include <generated/stackguard.h>
+#if defined(CONFIG_STACKPROTECTOR_GUARD_GLOBAL)
+unsigned long __stack_chk_guard __read_mostly;
+EXPORT_SYMBOL(__stack_chk_guard);
+#endif
 #endif
 
 extern asmlinkage void ret_from_fork(void);
