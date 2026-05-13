@@ -32,20 +32,6 @@ ifneq ($(wildcard $(CURDIR)/vercode_build.sh),)
   endif
 endif
 
-# Whether auxiliary device drivers are to be compiled
-ifeq ($(SPECIFIC_LINUX),BCLINUX_21_10U4)
-obj-$(CONFIG_SXE2_VF) += sxe2_auxiliary.o
-sxe2_auxiliary-objs += $(patsubst %.c, base/auxiliary/%.o, $(notdir $(wildcard $(CURDIR)/base/auxiliary/*.c)))
-else
-CHECK_AUX_BUS ?= $(CURDIR)/check_aux_support.sh
-NEED_AUX_BUS := $(shell bash ${CHECK_AUX_BUS} --ksrc="$(KDIR)" >/dev/null 2>&1; echo $$?)
-$(info "NEED_AUX_BUS = $(NEED_AUX_BUS)")
-ifeq ($(NEED_AUX_BUS), 2)
-obj-$(CONFIG_SXE2_VF) += sxe2_auxiliary.o
-sxe2_auxiliary-objs += $(patsubst %.c, base/auxiliary/%.o, $(notdir $(wildcard $(CURDIR)/base/auxiliary/*.c)))
-endif
-endif
-
 # Add compiler options and macros
 ccflags-y += -Werror -Wmaybe-uninitialized
 ccflags-y += -I$(CURDIR)/sxe2vf
