@@ -535,6 +535,7 @@ SYM_CODE_START(vectors)
 	kernel_ventry	0, t, 32, fiq		// FIQ 32-bit EL0
 	kernel_ventry	0, t, 32, error		// Error 32-bit EL0
 SYM_CODE_END(vectors)
+EXPORT_SYMBOL(vectors)
 
 SYM_CODE_START_LOCAL(__bad_stack)
 	/*
