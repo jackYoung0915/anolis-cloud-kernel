@@ -51,6 +51,7 @@
 #define KVM_REQ_RELOAD_PMU	KVM_ARCH_REQ(5)
 #define KVM_REQ_SUSPEND		KVM_ARCH_REQ(6)
 #define KVM_REQ_RESYNC_PMU_EL0	KVM_ARCH_REQ(7)
+#define KVM_REQ_RELOAD_TLBI_DVMBM	KVM_ARCH_REQ(8)
 
 #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 				     KVM_DIRTY_LOG_INITIALLY_SET)
@@ -347,6 +348,12 @@ struct kvm_arch {
 	 * the associated pKVM instance in the hypervisor.
 	 */
 	struct kvm_protected_vm pkvm;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	spinlock_t sched_lock;
+	cpumask_var_t sched_cpus;       /* Union of all vcpu's cpus_ptr */
+	u64 tlbi_dvmbm;
+#endif
 
 	CK_KABI_RESERVE(1)
 };
@@ -732,6 +739,12 @@ struct kvm_vcpu_arch {
 
 	/* Per-vcpu CCSIDR override or NULL */
 	u32 *ccsidr;
+
+#ifdef CONFIG_KVM_HISI_VIRT
+	/* pCPUs this vCPU can be scheduled on. Pure copy of current->cpus_ptr */
+	cpumask_var_t sched_cpus;
+	cpumask_var_t pre_sched_cpus;
+#endif
 };
 
 /*
@@ -1428,6 +1441,9 @@ bool kvm_arm_vcpu_stopped(struct kvm_vcpu *vcpu);
 #define kvm_has_feat_range(kvm, id, fld, min, max)			\
 	(get_idreg_field((kvm), id, fld) >= expand_field_sign(id, fld, min) && \
 	 get_idreg_field((kvm), id, fld) <= expand_field_sign(id, fld, max))
+
+extern bool kvm_ncsnp_support;
+extern bool kvm_dvmbm_support;
 
 #ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
 struct kvm_pmu_ops {
