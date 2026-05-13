@@ -1,1 +1,1 @@
-# CONFIG_XFRM_IPTFS is not set
+CONFIG_XFRM_IPTFS=m
