@@ -104,7 +104,7 @@ extern spinlock_t sxe2_handler_lock;
 #define SXE2_CC_TIMELY_BETA_VAL	    620
 #define SXE2_CC_TIMELY_ALPHA_VAL    500
 #define SXE2_CC_TIMELY_RTT_DIFF_VAL 0
-#define RDMA_DRIVER_SXE2            20
+
 struct sxe2_rdma_device_init_info {
 	u64 fpm_query_buf_pa;
 	u64 fpm_commit_buf_pa;
