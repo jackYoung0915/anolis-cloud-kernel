@@ -24,6 +24,7 @@
 #define PCI_DEVICE_ID_HYGON_18H_DF_F4		0x1464
 #define PCI_DEVICE_ID_HYGON_18H_M04H_DF_F4	0x1494
 #define PCI_DEVICE_ID_HYGON_18H_M05H_DF_F4	0x14b4
+#define PCI_DEVICE_ID_HYGON_18H_M06H_DF_F5	0x14b5
 
 static u16 node_num;
 static struct pci_dev **hygon_roots;
@@ -153,6 +154,17 @@ static int get_df_register(struct pci_dev *misc,  u8 func, int offset, u32 *valu
 			else
 				device = PCI_DEVICE_ID_HYGON_18H_M04H_DF_F1;
 			break;
+		case 0x6 ... 0x8:
+			device = PCI_DEVICE_ID_HYGON_18H_M05H_DF_F1;
+			break;
+		default:
+			return -ENODEV;
+		}
+	} else if (func == 5) {
+		switch (boot_cpu_data.x86_model) {
+		case 0x6 ... 0x8:
+			device = PCI_DEVICE_ID_HYGON_18H_M06H_DF_F5;
+			break;
 		default:
 			return -ENODEV;
 		}
@@ -197,9 +209,16 @@ int get_df_id(struct pci_dev *misc, u8 *id)
 	u32 value;
 	int ret;
 
-	/* F1x200[23:20]: DF ID */
-	ret = get_df_register(misc, 1, 0x200, &value);
-	*id = (value >> 20) & 0xf;
+	if (boot_cpu_data.x86_model >= 0x6 &&
+	    boot_cpu_data.x86_model <= 0xf) {
+		/* F5x180[19:16]: DF ID */
+		ret = get_df_register(misc, 5, 0x180, &value);
+		*id = (value >> 16) & 0xf;
+	} else {
+		/* F1x200[23:20]: DF ID */
+		ret = get_df_register(misc, 1, 0x200, &value);
+		*id = (value >> 20) & 0xf;
+	}
 
 	return ret;
 }
