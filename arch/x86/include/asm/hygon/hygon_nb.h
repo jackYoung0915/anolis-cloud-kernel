@@ -24,6 +24,23 @@ int northbridge_init_hygon(void);
 u16 hygon_nb_num(void);
 struct hygon_northbridge *node_to_hygon_nb(int node);
 
+static inline u16 hygon_pci_dev_to_node_id(struct pci_dev *pdev)
+{
+	struct pci_dev *misc;
+	int i;
+
+	for (i = 0; i != hygon_nb_num(); i++) {
+		misc = node_to_hygon_nb(i)->misc;
+
+		if (pci_domain_nr(misc->bus) == pci_domain_nr(pdev->bus) &&
+		    PCI_SLOT(misc->devfn) == PCI_SLOT(pdev->devfn))
+			return i;
+	}
+
+	WARN(1, "Unable to find Hygon Northbridge id for %s\n", pci_name(pdev));
+	return 0;
+}
+
 #else
 
 #define northbridge_init_hygon(x)	0
