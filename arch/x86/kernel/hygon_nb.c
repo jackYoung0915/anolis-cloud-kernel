@@ -16,11 +16,14 @@
 #include <asm/hygon/hygon_nb.h>
 
 #define PCI_DEVICE_ID_HYGON_18H_ROOT		0x1450
+#define PCI_DEVICE_ID_HYGON_18H_M05H_ROOT	0x14a0
 #define PCI_DEVICE_ID_HYGON_18H_M04H_ROOT	0x1480
 
 #define PCI_DEVICE_ID_HYGON_18H_M04H_DF_F1	0x1491
+#define PCI_DEVICE_ID_HYGON_18H_M05H_DF_F1	0x14b1
 #define PCI_DEVICE_ID_HYGON_18H_DF_F4		0x1464
 #define PCI_DEVICE_ID_HYGON_18H_M04H_DF_F4	0x1494
+#define PCI_DEVICE_ID_HYGON_18H_M05H_DF_F4	0x14b4
 
 static u16 node_num;
 static struct pci_dev **hygon_roots;
@@ -32,18 +35,21 @@ static DEFINE_MUTEX(smn_mutex);
 static const struct pci_device_id hygon_root_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_ROOT) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_M04H_ROOT) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_M05H_ROOT) },
 	{}
 };
 
 static const struct pci_device_id hygon_nb_misc_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_DF_F3) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_M04H_DF_F3) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_M05H_DF_F3) },
 	{}
 };
 
 static const struct pci_device_id hygon_nb_link_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_DF_F4) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_M04H_DF_F4) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_M05H_DF_F4) },
 	{}
 };
 
@@ -140,6 +146,12 @@ static int get_df_register(struct pci_dev *misc,  u8 func, int offset, u32 *valu
 		switch (boot_cpu_data.x86_model) {
 		case 0x4:
 			device = PCI_DEVICE_ID_HYGON_18H_M04H_DF_F1;
+			break;
+		case 0x5:
+			if (misc->device == PCI_DEVICE_ID_HYGON_18H_M05H_DF_F3)
+				device = PCI_DEVICE_ID_HYGON_18H_M05H_DF_F1;
+			else
+				device = PCI_DEVICE_ID_HYGON_18H_M04H_DF_F1;
 			break;
 		default:
 			return -ENODEV;
