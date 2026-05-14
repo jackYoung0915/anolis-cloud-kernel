@@ -561,7 +561,10 @@ struct blk_mq_tag_set {
 
 	struct rw_semaphore	update_nr_hwq_lock;
 
-	CK_KABI_RESERVE(1)
+	 /* number of static alloc rqs if dyn_alloc flag is set */
+	unsigned int		nr_static_rqs;
+
+	CK_KABI_RESERVE(1);
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -726,10 +729,12 @@ enum {
 	 */
 	BLK_MQ_F_NO_SCHED_BY_DEFAULT	= 1 << 6,
 
-	BLK_MQ_F_MAX = 1 << 7,
+	BLK_MQ_F_DYN_ALLOC	= 1 << 7,
+
+	BLK_MQ_F_MAX = 1 << 8,
 };
 
-#define BLK_MQ_MAX_DEPTH	(10240)
+#define BLK_MQ_MAX_DEPTH	(65536)
 #define BLK_MQ_NO_HCTX_IDX	(-1U)
 
 enum {
@@ -1264,6 +1269,8 @@ static inline int blk_rq_map_sg(struct request *rq, struct scatterlist *sglist)
 
 	return __blk_rq_map_sg(rq, sglist, &last_sg);
 }
+int blk_rq_map_sg_bidir(struct request *rq, struct scatterlist *sglist_write,
+			struct scatterlist *sglist_read);
 void blk_dump_rq_flags(struct request *, char *);
 
 #endif /* BLK_MQ_H */

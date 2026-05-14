@@ -91,6 +91,23 @@ int virtqueue_add_sgs(struct virtqueue *vq,
 		      void *data,
 		      gfp_t gfp);
 
+int virtqueue_add_sgs_premapped(struct virtqueue *vq,
+		      struct scatterlist *sgs[],
+		      unsigned int out_sgs,
+		      unsigned int in_sgs,
+		      void *data,
+		      gfp_t gfp);
+
+int virtqueue_add_sgs_rpair(struct virtqueue *vq,
+		      struct scatterlist *sgs[],
+		      unsigned int out_sgs,
+		      unsigned int in_sgs,
+		      void *data,
+		      gfp_t gfp);
+
+struct vring_desc *virtqueue_indir_get_last_desc_split(struct virtqueue *_vq,
+						dma_addr_t *dma_addr, u32 *len);
+
 struct device *virtqueue_dma_dev(struct virtqueue *vq);
 
 bool virtqueue_kick(struct virtqueue *vq);
@@ -124,6 +141,7 @@ const struct vring *virtqueue_get_vring(const struct virtqueue *vq);
 dma_addr_t virtqueue_get_desc_addr(const struct virtqueue *vq);
 dma_addr_t virtqueue_get_avail_addr(const struct virtqueue *vq);
 dma_addr_t virtqueue_get_used_addr(const struct virtqueue *vq);
+void virtqueue_set_save_indir(struct virtqueue *_vq);
 
 int virtqueue_resize(struct virtqueue *vq, u32 num,
 		     void (*recycle)(struct virtqueue *vq, void *buf),
@@ -308,6 +326,11 @@ dma_addr_t virtqueue_map_single_attrs(const struct virtqueue *_vq, void *ptr, si
 void virtqueue_unmap_single_attrs(const struct virtqueue *_vq, dma_addr_t addr,
 				      size_t size, enum dma_data_direction dir,
 				      unsigned long attrs);
+dma_addr_t virtqueue_dma_map_page_attrs(struct virtqueue *_vq, struct page *page,
+					size_t offset, size_t size,
+					enum dma_data_direction dir, unsigned long attrs);
+void virtqueue_dma_unmap_page_attrs(struct virtqueue *_vq, dma_addr_t addr, size_t size,
+				    enum dma_data_direction dir, unsigned long attrs);
 int virtqueue_map_mapping_error(const struct virtqueue *_vq, dma_addr_t addr);
 
 bool virtqueue_map_need_sync(const struct virtqueue *_vq, dma_addr_t addr);
@@ -345,5 +368,7 @@ static inline void virtio_debug_exit(void)
 {
 }
 #endif
+
+void virtqueue_show_split_message(struct virtqueue *_vq, struct seq_file *s);
 
 #endif /* _LINUX_VIRTIO_H */

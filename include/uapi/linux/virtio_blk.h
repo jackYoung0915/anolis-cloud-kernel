@@ -220,7 +220,13 @@ struct virtio_blk_outhdr {
 	/* VIRTIO_BLK_T* */
 	__virtio32 type;
 	/* io priority. */
-	__virtio32 ioprio;
+	union {
+		struct {
+			__virtio16 ioprio;
+			__virtio16 tag;
+		} rpair;
+		__virtio32 ioprio;
+	};
 	/* Sector (ie. 512 byte offset) */
 	__virtio64 sector;
 };
@@ -312,6 +318,25 @@ struct virtio_scsi_inhdr {
 	__virtio32 residual;
 };
 #endif /* !VIRTIO_BLK_NO_LEGACY */
+
+struct virtblk_uring_cmd {
+	/* VIRTIO_BLK_T* */
+	__u32 type;
+	/* io priority. */
+	__u32 ioprio;
+	/* Sector (ie. 512 byte offset) */
+	__u64 sector;
+
+	__u64 data;
+	__u32 data_len;
+	__u32 flag;
+	__u32 write_iov_count;
+};
+
+#define VIRTBLK_URING_CMD_IO		1
+#define VIRTBLK_URING_CMD_IO_VEC	2
+
+#define VIRTBLK_URING_F_BIDIR	(1 << 0)
 
 /* And this is the final byte of the write scatter-gather list. */
 #define VIRTIO_BLK_S_OK		0
