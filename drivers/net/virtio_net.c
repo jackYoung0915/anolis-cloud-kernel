@@ -36,6 +36,10 @@ module_param(csum, bool, 0444);
 module_param(gso, bool, 0444);
 module_param(napi_tx, bool, 0644);
 
+/* 7 days are long enough by default. */
+static unsigned int cvq_timeout = 7 * 24 * 3600 * 1000;
+module_param(cvq_timeout, uint, 0644);
+
 #define VIRTIO_OFFLOAD_MAP_MIN	46
 #define VIRTIO_OFFLOAD_MAP_MAX	47
 #define VIRTIO_FEATURES_MAP_MIN	65
@@ -618,7 +622,6 @@ static void __free_old_xmit(struct send_queue *sq, struct netdev_queue *txq,
 			break;
 		}
 	}
-	netdev_tx_completed_queue(txq, stats->napi_packets, stats->napi_bytes);
 }
 
 static void virtnet_free_old_xmit(struct send_queue *sq,
@@ -3269,7 +3272,7 @@ static int virtnet_poll_tx(struct napi_struct *napi, int budget)
 	return 0;
 }
 
-static int xmit_skb(struct send_queue *sq, struct sk_buff *skb, bool orphan)
+static int xmit_skb(struct send_queue *sq, struct sk_buff *skb)
 {
 	const unsigned char *dest = ((struct ethhdr *)skb->data)->h_dest;
 	struct virtnet_info *vi = sq->vq->vdev->priv;
@@ -3323,8 +3326,7 @@ static int xmit_skb(struct send_queue *sq, struct sk_buff *skb, bool orphan)
 		num_sg++;
 	}
 
-	return virtnet_add_outbuf(sq, num_sg, skb,
-				  orphan ? VIRTNET_XMIT_TYPE_SKB_ORPHAN : VIRTNET_XMIT_TYPE_SKB);
+	return virtnet_add_outbuf(sq, num_sg, skb, VIRTNET_XMIT_TYPE_SKB);
 }
 
 static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -3334,9 +3336,8 @@ static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct send_queue *sq = &vi->sq[qnum];
 	int err;
 	struct netdev_queue *txq = netdev_get_tx_queue(dev, qnum);
-	bool xmit_more = netdev_xmit_more();
+	bool kick = !netdev_xmit_more();
 	bool use_napi = sq->napi.weight;
-	bool kick;
 
 	if (!use_napi)
 		free_old_xmit(sq, txq, false);
@@ -3347,7 +3348,7 @@ static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb_tx_timestamp(skb);
 
 	/* Try to transmit */
-	err = xmit_skb(sq, skb, !use_napi);
+	err = xmit_skb(sq, skb);
 
 	/* This should not happen! */
 	if (unlikely(err)) {
@@ -3373,9 +3374,7 @@ static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 	else
 		check_sq_full_and_disable(vi, dev,sq);
 
-	kick = use_napi ? __netdev_tx_sent_queue(txq, skb->len, xmit_more) :
-			  !xmit_more || netif_xmit_stopped(txq);
-	if (kick) {
+	if (kick || netif_xmit_stopped(txq)) {
 		if (virtqueue_kick_prepare(sq->vq) && virtqueue_notify(sq->vq)) {
 			u64_stats_update_begin(&sq->stats.syncp);
 			u64_stats_inc(&sq->stats.kicks);
@@ -3535,6 +3534,7 @@ static bool virtnet_send_command_reply(struct virtnet_info *vi, u8 class, u8 cmd
 				       struct scatterlist *out,
 				       struct scatterlist *in)
 {
+	unsigned long time_end = jiffies + msecs_to_jiffies(cvq_timeout);
 	struct scatterlist *sgs[5], hdr, stat;
 	u32 out_num = 0, tmp, in_num = 0;
 	bool ok;
@@ -3578,6 +3578,14 @@ static bool virtnet_send_command_reply(struct virtnet_info *vi, u8 class, u8 cmd
 	 */
 	while (!virtqueue_get_buf(vi->cvq, &tmp) &&
 	       !virtqueue_is_broken(vi->cvq)) {
+		if (time_after_eq(jiffies, time_end)) {
+			netdev_warn(vi->dev,
+				    "Timeout occurs when waiting the CVQ "
+				    "request, break the virtio device.\n");
+			virtio_break_device(vi->vdev);
+			return false;
+		}
+
 		cond_resched();
 		cpu_relax();
 	}
@@ -6343,10 +6351,6 @@ static void virtnet_sq_free_unused_buf(struct virtqueue *vq, void *buf)
 
 static void virtnet_sq_free_unused_buf_done(struct virtqueue *vq)
 {
-	struct virtnet_info *vi = vq->vdev->priv;
-	int i = vq2txq(vq);
-
-	netdev_tx_reset_queue(netdev_get_tx_queue(vi->dev, i));
 }
 
 static void free_unused_bufs(struct virtnet_info *vi)
@@ -7115,19 +7119,10 @@ free:
 
 static void remove_vq_common(struct virtnet_info *vi)
 {
-	int i;
-
 	virtio_reset_device(vi->vdev);
 
 	/* Free unused buffers in both send and recv, if any. */
 	free_unused_bufs(vi);
-
-	/*
-	 * Rule of thumb is netdev_tx_reset_queue() should follow any
-	 * skb freeing not followed by netdev_tx_completed_queue()
-	 */
-	for (i = 0; i < vi->max_queue_pairs; i++)
-		netdev_tx_reset_queue(netdev_get_tx_queue(vi->dev, i));
 
 	free_receive_bufs(vi);
 
