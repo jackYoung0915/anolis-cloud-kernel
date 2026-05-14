@@ -903,6 +903,10 @@ EXPORT_SYMBOL(transfer_args_to_stack);
 
 #endif /* CONFIG_MMU */
 
+/*
+ * On success, caller must call do_close_execat() on the returned
+ * struct file to close it.
+ */
 static struct file *do_open_execat(int fd, struct filename *name, int flags)
 {
 	struct file *file;
@@ -935,7 +939,7 @@ static struct file *do_open_execat(int fd, struct filename *name, int flags)
 	    path_noexec(&file->f_path))
 		goto exit;
 
-	err = deny_write_access(file);
+	err = exe_file_deny_write_access(file);
 	if (err)
 		goto exit;
 
@@ -946,6 +950,17 @@ exit:
 	return ERR_PTR(err);
 }
 
+/**
+ * open_exec - Open a path name for execution
+ *
+ * @name: path name to open with the intent of executing it.
+ *
+ * Returns ERR_PTR on failure or allocated struct file on success.
+ *
+ * As this is a wrapper for the internal do_open_execat(), callers
+ * must call exe_file_allow_write_access() before fput() on release. Also see
+ * do_close_execat().
+ */
 struct file *open_exec(const char *name)
 {
 	struct filename *filename = getname_kernel(name);
@@ -1509,6 +1524,15 @@ static int prepare_bprm_creds(struct linux_binprm *bprm)
 	return -ENOMEM;
 }
 
+/* Matches do_open_execat() */
+static void do_close_execat(struct file *file)
+{
+	if (!file)
+		return;
+	exe_file_allow_write_access(file);
+	fput(file);
+}
+
 static void free_bprm(struct linux_binprm *bprm)
 {
 	if (bprm->mm) {
@@ -1522,10 +1546,7 @@ static void free_bprm(struct linux_binprm *bprm)
 		mutex_unlock(&current->signal->cred_guard_mutex);
 		abort_creds(bprm->cred);
 	}
-	if (bprm->file) {
-		allow_write_access(bprm->file);
-		fput(bprm->file);
-	}
+	do_close_execat(bprm->file);
 	if (bprm->executable)
 		fput(bprm->executable);
 	/* If a binfmt changed the interp, free it. */
@@ -1826,7 +1847,7 @@ static int exec_binprm(struct linux_binprm *bprm)
 		bprm->file = bprm->interpreter;
 		bprm->interpreter = NULL;
 
-		allow_write_access(exec);
+		exe_file_allow_write_access(exec);
 		if (unlikely(bprm->have_execfd)) {
 			if (bprm->executable) {
 				fput(exec);
