@@ -62,17 +62,6 @@ struct amd_northbridge *node_to_amd_nb(int node)
 }
 EXPORT_SYMBOL_GPL(node_to_amd_nb);
 
-static struct pci_dev *next_northbridge(struct pci_dev *dev,
-					const struct pci_device_id *ids)
-{
-	do {
-		dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev);
-		if (!dev)
-			break;
-	} while (!pci_match_id(ids, dev));
-	return dev;
-}
-
 static int amd_cache_northbridges(void)
 {
 	struct amd_northbridge *nb;

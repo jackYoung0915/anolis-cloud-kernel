@@ -23,6 +23,9 @@ int hygon_smn_write(u16 node, u32 address, u32 value);
 int northbridge_init_hygon(void);
 u16 hygon_nb_num(void);
 struct hygon_northbridge *node_to_hygon_nb(int node);
+bool hygon_f18h_m4h(void);
+int get_df_id(struct pci_dev *misc, u8 *id);
+u16 hygon_node_num(void);
 
 static inline u16 hygon_pci_dev_to_node_id(struct pci_dev *pdev)
 {
@@ -45,6 +48,10 @@ static inline u16 hygon_pci_dev_to_node_id(struct pci_dev *pdev)
 
 #define northbridge_init_hygon(x)	0
 #define hygon_nb_num(x)	0
+#define hygon_f18h_m4h		false
+#define get_df_id(x, y)	NULL
+#define hygon_node_num(x)
+
 static inline struct hygon_northbridge *node_to_hygon_nb(int node)
 {
 	return NULL;
