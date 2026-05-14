@@ -22,6 +22,9 @@
 static struct pci_dev **hygon_roots;
 static struct hygon_northbridge_info hygon_northbridges;
 
+/* Protect the PCI config register pairs used for SMN and DF indirect access. */
+static DEFINE_MUTEX(smn_mutex);
+
 static const struct pci_device_id hygon_root_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_ROOT) },
 	{}
@@ -36,6 +39,60 @@ static const struct pci_device_id hygon_nb_link_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_HYGON_18H_DF_F4) },
 	{}
 };
+
+#define HYGON_SMN_INDEX_OFFSET	0x60
+#define HYGON_SMN_DATA_OFFSET		0x64
+
+static int __hygon_smn_rw(u16 node, u32 address, u32 *value, bool write)
+{
+	struct pci_dev *root;
+	int err = -ENODEV;
+
+	if (node >= hygon_nb_num())
+		goto out;
+
+	root = hygon_roots[node];
+	if (!root)
+		goto out;
+
+	mutex_lock(&smn_mutex);
+
+	err = pci_write_config_dword(root, HYGON_SMN_INDEX_OFFSET, address);
+	if (err) {
+		pr_warn("Error programming SMN address 0x%x.\n", address);
+		goto out_unlock;
+	}
+
+	err = (write ? pci_write_config_dword(root, HYGON_SMN_DATA_OFFSET, *value)
+		     : pci_read_config_dword(root, HYGON_SMN_DATA_OFFSET, value));
+	if (err)
+		pr_warn("Error %s SMN address 0x%x.\n",
+			(write ? "writing to" : "reading from"), address);
+
+out_unlock:
+	mutex_unlock(&smn_mutex);
+
+out:
+	return err;
+}
+
+int hygon_smn_read(u16 node, u32 address, u32 *value)
+{
+	int err =  __hygon_smn_rw(node, address, value, false);
+	if (PCI_POSSIBLE_ERROR(*value)) {
+		err = -ENODEV;
+		*value = 0;
+	}
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(hygon_smn_read);
+
+int hygon_smn_write(u16 node, u32 address, u32 value)
+{
+	return __hygon_smn_rw(node, address, &value, true);
+}
+EXPORT_SYMBOL_GPL(hygon_smn_write);
 
 static struct pci_dev *next_northbridge(struct pci_dev *dev,
 					const struct pci_device_id *ids)

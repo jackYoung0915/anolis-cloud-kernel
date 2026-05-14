@@ -15,6 +15,9 @@ struct hygon_northbridge_info {
 	struct hygon_northbridge *nb;
 };
 
+int hygon_smn_read(u16 node, u32 address, u32 *value);
+int hygon_smn_write(u16 node, u32 address, u32 value);
+
 #ifdef CONFIG_HYGON_NB
 
 int northbridge_init_hygon(void);
