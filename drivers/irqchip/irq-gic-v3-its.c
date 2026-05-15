@@ -188,6 +188,7 @@ static int probe_devid_pool_one(void)
 #define ITS_FLAGS_WORKAROUND_CAVIUM_22375	(1ULL << 1)
 #define ITS_FLAGS_WORKAROUND_CAVIUM_23144	(1ULL << 2)
 #define ITS_FLAGS_FORCE_NON_SHAREABLE		(1ULL << 3)
+#define ITS_FLAGS_WORKAROUND_HISILICON_162100801	(1ULL << 4)
 #define ITS_FLAGS_WORKAROUND_HISILICON_162100803	(1ULL << 5)
 
 #define RD_LOCAL_LPI_ENABLED                    BIT(0)
@@ -264,6 +265,8 @@ struct its_node {
 	u32			pre_its_base; /* for Socionext Synquacer */
 	int			vlpi_redist_offset;
 };
+
+static DEFINE_PER_CPU(struct its_node *, local_4_1_its);
 
 #define is_v4(its)		(!!((its)->typer & GITS_TYPER_VLPIS))
 #define is_v4_1(its)		(!!((its)->typer & GITS_TYPER_VMAPP))
@@ -1608,11 +1611,18 @@ static void its_send_vmapp(struct its_node *its,
 	its_send_single_vcommand(its, its_build_vmapp_cmd, &desc);
 }
 
+static void its_send_vinvall(struct its_node *its, struct its_vpe *vpe)
+{
+	struct its_cmd_desc desc;
+
+	desc.its_vinvall_cmd.vpe = vpe;
+	its_send_single_vcommand(its, its_build_vinvall_cmd, &desc);
+}
+
 static void its_send_vmovp(struct its_vpe *vpe)
 {
 	struct its_cmd_desc desc = {};
 	struct its_node *its;
-	unsigned long flags;
 	int col_id = vpe->col_idx;
 
 	desc.its_vmovp_cmd.vpe = vpe;
@@ -1632,8 +1642,7 @@ static void its_send_vmovp(struct its_vpe *vpe)
 	 *
 	 * Wall <-- Head.
 	 */
-	raw_spin_lock_irqsave(&vmovp_lock, flags);
-
+	guard(raw_spinlock)(&vmovp_lock);
 	desc.its_vmovp_cmd.seq_num = vmovp_seq_num++;
 	desc.its_vmovp_cmd.its_list = get_its_list(vpe->its_vm);
 
@@ -1647,17 +1656,10 @@ static void its_send_vmovp(struct its_vpe *vpe)
 
 		desc.its_vmovp_cmd.col = &its->collections[col_id];
 		its_send_single_vcommand(its, its_build_vmovp_cmd, &desc);
+		if (is_v4_1(its) && (its->flags &
+			    ITS_FLAGS_WORKAROUND_HISILICON_162100801))
+			its_send_vinvall(its, vpe);
 	}
-
-	raw_spin_unlock_irqrestore(&vmovp_lock, flags);
-}
-
-static void its_send_vinvall(struct its_node *its, struct its_vpe *vpe)
-{
-	struct its_cmd_desc desc;
-
-	desc.its_vinvall_cmd.vpe = vpe;
-	its_send_single_vcommand(its, its_build_vinvall_cmd, &desc);
 }
 
 static void its_send_vinv(struct its_device *dev, u32 event_id)
@@ -2084,12 +2086,10 @@ static bool gic_requires_eager_mapping(void)
 
 static void its_map_vm(struct its_node *its, struct its_vm *vm)
 {
-	unsigned long flags;
-
 	if (gic_requires_eager_mapping())
 		return;
 
-	raw_spin_lock_irqsave(&vmovp_lock, flags);
+	guard(raw_spinlock_irqsave)(&vm->vmapp_lock);
 
 	/*
 	 * If the VM wasn't mapped yet, iterate over the vpes and get
@@ -2102,37 +2102,31 @@ static void its_map_vm(struct its_node *its, struct its_vm *vm)
 
 		for (i = 0; i < vm->nr_vpes; i++) {
 			struct its_vpe *vpe = vm->vpes[i];
-			struct irq_data *d = irq_get_irq_data(vpe->irq);
 
-			/* Map the VPE to the first possible CPU */
-			vpe->col_idx = cpumask_first(cpu_online_mask);
-			its_send_vmapp(its, vpe, true);
+			scoped_guard(raw_spinlock, &vpe->vpe_lock)
+				its_send_vmapp(its, vpe, true);
+
 			its_send_vinvall(its, vpe);
-			irq_data_update_effective_affinity(d, cpumask_of(vpe->col_idx));
 		}
 	}
-
-	raw_spin_unlock_irqrestore(&vmovp_lock, flags);
 }
 
 static void its_unmap_vm(struct its_node *its, struct its_vm *vm)
 {
-	unsigned long flags;
-
 	/* Not using the ITS list? Everything is always mapped. */
 	if (gic_requires_eager_mapping())
 		return;
 
-	raw_spin_lock_irqsave(&vmovp_lock, flags);
+	guard(raw_spinlock_irqsave)(&vm->vmapp_lock);
 
 	if (!--vm->vlpi_count[its->list_nr]) {
 		int i;
 
-		for (i = 0; i < vm->nr_vpes; i++)
+		for (i = 0; i < vm->nr_vpes; i++) {
+			guard(raw_spinlock)(&vm->vpes[i]->vpe_lock);
 			its_send_vmapp(its, vm->vpes[i], false);
+		}
 	}
-
-	raw_spin_unlock_irqrestore(&vmovp_lock, flags);
 }
 
 static int its_vlpi_map(struct irq_data *d, struct its_cmd_info *info)
@@ -3019,6 +3013,7 @@ static u64 inherit_vpe_l1_table_from_its(void)
 		}
 		val |= FIELD_PREP(GICR_VPROPBASER_4_1_SIZE, GITS_BASER_NR_PAGES(baser) - 1);
 
+		*this_cpu_ptr(&local_4_1_its) = its;
 		return val;
 	}
 
@@ -3056,6 +3051,7 @@ static u64 inherit_vpe_l1_table_from_rd(cpumask_t **mask)
 		gic_data_rdist()->vpe_l1_base = gic_data_rdist_cpu(cpu)->vpe_l1_base;
 		*mask = gic_data_rdist_cpu(cpu)->vpe_table_mask;
 
+		*this_cpu_ptr(&local_4_1_its) = *per_cpu_ptr(&local_4_1_its, cpu);
 		return val;
 	}
 
@@ -3139,6 +3135,7 @@ static int allocate_vpe_l1_table(void)
 	unsigned int psz = SZ_64K;
 	unsigned int np, epp, esz;
 	struct page *page;
+	bool indirect;
 
 	if (!gic_rdists->has_rvpeid)
 		return 0;
@@ -3173,10 +3170,12 @@ static int allocate_vpe_l1_table(void)
 
 	/* First probe the page size */
 	val = FIELD_PREP(GICR_VPROPBASER_4_1_PAGE_SIZE, GIC_PAGE_SIZE_64K);
+	val |= GICR_VPROPBASER_4_1_INDIRECT;
 	gicr_write_vpropbaser(val, vlpi_base + GICR_VPROPBASER);
 	val = gicr_read_vpropbaser(vlpi_base + GICR_VPROPBASER);
 	gpsz = FIELD_GET(GICR_VPROPBASER_4_1_PAGE_SIZE, val);
 	esz = FIELD_GET(GICR_VPROPBASER_4_1_ENTRY_SIZE, val);
+	indirect = !!(val & GICR_VPROPBASER_4_1_INDIRECT);
 
 	switch (gpsz) {
 	default:
@@ -3209,7 +3208,7 @@ static int allocate_vpe_l1_table(void)
 	 * If we need more than just a single L1 page, flag the table
 	 * as indirect and compute the number of required L1 pages.
 	 */
-	if (epp < ITS_MAX_VPEID) {
+	if (epp < ITS_MAX_VPEID && indirect) {
 		int nl2;
 
 		val |= GICR_VPROPBASER_4_1_INDIRECT;
@@ -3220,7 +3219,8 @@ static int allocate_vpe_l1_table(void)
 		/* Number of L1 pages to point to the L2 pages */
 		npg = DIV_ROUND_UP(nl2 * SZ_8, psz);
 	} else {
-		npg = 1;
+		npg = DIV_ROUND_UP(ITS_MAX_VPEID, epp);
+		npg = clamp_val(npg, 1, (GICR_VPROPBASER_4_1_SIZE + 1));
 	}
 
 	val |= FIELD_PREP(GICR_VPROPBASER_4_1_SIZE, npg - 1);
@@ -4169,7 +4169,14 @@ static int its_vpe_set_affinity(struct irq_data *d,
 	 * protect us, and that we must ensure nobody samples vpe->col_idx
 	 * during the update, hence the lock below which must also be
 	 * taken on any vLPI handling path that evaluates vpe->col_idx.
+	 *
+	 * Finally, we must protect ourselves against concurrent updates of
+	 * the mapping state on this VM should the ITS list be in use (see
+	 * the shortcut in its_send_vmovp() otherewise).
 	 */
+	if (its_list_map)
+		raw_spin_lock(&vpe->its_vm->vmapp_lock);
+
 	from = vpe_to_cpuid_lock(vpe, &flags);
 	table_mask = gic_data_rdist_cpu(from)->vpe_table_mask;
 
@@ -4193,6 +4200,9 @@ static int its_vpe_set_affinity(struct irq_data *d,
 out:
 	irq_data_update_effective_affinity(d, cpumask_of(cpu));
 	vpe_to_cpuid_unlock(vpe, flags);
+
+	if (its_list_map)
+		raw_spin_unlock(&vpe->its_vm->vmapp_lock);
 
 	return IRQ_SET_MASK_OK_DONE;
 }
@@ -4261,6 +4271,8 @@ static void its_vpe_deschedule(struct its_vpe *vpe)
 static void its_vpe_invall(struct its_vpe *vpe)
 {
 	struct its_node *its;
+
+	guard(raw_spinlock_irqsave)(&vpe->its_vm->vmapp_lock);
 
 	list_for_each_entry(its, &its_nodes, entry) {
 		if (!is_v4(its))
@@ -4394,7 +4406,7 @@ static struct irq_chip its_vpe_irq_chip = {
 
 static struct its_node *find_4_1_its(void)
 {
-	static struct its_node *its = NULL;
+	struct its_node *its = *this_cpu_ptr(&local_4_1_its);
 
 	if (!its) {
 		list_for_each_entry(its, &its_nodes, entry) {
@@ -4952,6 +4964,7 @@ static int its_vpe_irq_domain_alloc(struct irq_domain *domain, unsigned int virq
 	vm->db_lpi_base = base;
 	vm->nr_db_lpis = nr_ids;
 	vm->vprop_page = vprop_page;
+	raw_spin_lock_init(&vm->vmapp_lock);
 
 	if (gic_rdists->has_rvpeid) {
 		irqchip = &its_vpe_4_1_irq_chip;
@@ -5006,6 +5019,10 @@ static int its_vpe_irq_domain_activate(struct irq_domain *domain,
 	struct its_vpe *vpe = irq_data_get_irq_chip_data(d);
 	struct its_node *its;
 
+	/* Map the VPE to the first possible CPU */
+	vpe->col_idx = cpumask_first(cpu_online_mask);
+	irq_data_update_effective_affinity(d, cpumask_of(vpe->col_idx));
+
 	/*
 	 * If we use the list map, we issue VMAPP on demand... Unless
 	 * we're on a GICv4.1 and we eagerly map the VPE on all ITSs
@@ -5014,9 +5031,6 @@ static int its_vpe_irq_domain_activate(struct irq_domain *domain,
 	if (!gic_requires_eager_mapping())
 		return 0;
 
-	/* Map the VPE to the first possible CPU */
-	vpe->col_idx = cpumask_first(cpu_online_mask);
-
 	list_for_each_entry(its, &its_nodes, entry) {
 		if (!is_v4(its))
 			continue;
@@ -5024,8 +5038,6 @@ static int its_vpe_irq_domain_activate(struct irq_domain *domain,
 		its_send_vmapp(its, vpe, true);
 		its_send_vinvall(its, vpe);
 	}
-
-	irq_data_update_effective_affinity(d, cpumask_of(vpe->col_idx));
 
 	return 0;
 }
@@ -5207,13 +5219,20 @@ static bool its_set_non_coherent(void *data)
 	return true;
 }
 
+static bool __maybe_unused its_enable_quirk_hip09_162100801(void *data)
+{
+	struct its_node *its = data;
+
+	its->flags |= ITS_FLAGS_WORKAROUND_HISILICON_162100801;
+	return true;
+}
+
 static bool __maybe_unused its_enable_quirk_162100803(void *data)
 {
 	struct its_node *its = data;
 
 	if (is_v4_1(its))
 		its->flags |= ITS_FLAGS_WORKAROUND_HISILICON_162100803;
-
 	return true;
 }
 
@@ -5261,6 +5280,14 @@ static const struct gic_quirk its_quirks[] = {
 		.iidr	= 0x00000004,
 		.mask	= 0xffffffff,
 		.init	= its_enable_quirk_hip07_161600802,
+	},
+#endif
+#ifdef CONFIG_HISILICON_ERRATUM_162100801
+	{
+		.desc = "ITS: Hip09 erratum 162100801",
+		.iidr = 0x00051736,
+		.mask = 0xffffffff,
+		.init = its_enable_quirk_hip09_162100801,
 	},
 #endif
 #ifdef CONFIG_HISILICON_ERRATUM_162100803

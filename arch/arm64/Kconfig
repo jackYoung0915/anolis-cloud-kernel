@@ -1260,6 +1260,39 @@ config HISILICON_ERRATUM_162100803
 
 	  If unsure, say Y.
 
+config HISILICON_ERRATUM_162100801
+	bool "Hip09 162100801 erratum support"
+	default y
+	help
+	  When enabled GICv4.1 in hip09, there are some invalid vPE config
+	  in configuration tables for some situation, which will cause vSGI
+	  interrupts lost. So fix it by sending vinvall commands after vmovp.
+
+	  If unsure, say Y.
+
+config HISILICON_ERRATUM_162100602
+	bool "Hisilicon erratum 162100602"
+	depends on ARM_SMMU_V3 && ARCH_HISI
+	default y
+	help
+	  SMMU pagetable prefetch features may prefetch and use a invalid PTE even
+	  the PTE is valid at that time. This will cause the device trigger fake
+	  pagefaults. If the SMMU works in terminate mode, transactions which occur
+	  fake pagefaults will be aborted, and could result in unexpected errors.
+
+	  If unsure, say Y.
+
+config HISILICON_ERRATUM_162102203
+	bool "Hisilicon erratum 162102203"
+	default n
+	help
+	  On HIP09, SMS_ATN bit may be cleared by hardware before it is driven
+	  to process. This will causes bridge commands timeout. Avoid these issues
+	  by modifying the IPMI driver to use variables to store SMS_ATNs that may
+	  be lost.
+
+	  If unsure, say N.
+
 config QCOM_FALKOR_ERRATUM_1003
 	bool "Falkor E1003: Incorrect translation due to ASID change"
 	default y
