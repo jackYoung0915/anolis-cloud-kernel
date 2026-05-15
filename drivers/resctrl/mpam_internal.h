@@ -227,6 +227,8 @@ enum mpam_device_quirks {
 	T241_FORCE_MBW_MIN_TO_ONE,
 	T241_MBW_COUNTER_SCALE_64,
 	IGNORE_CSU_NRDY,
+	HISI_CSU_WORKAROUND,
+	HISI_EXPAND_CPBM_WD,
 	MPAM_QUIRK_LAST
 };
 
@@ -239,6 +241,7 @@ struct mpam_quirk {
 	u32 iidr;
 	u32 iidr_mask;
 
+	struct acpi_platform_list *plat;
 	enum mpam_device_quirks workaround;
 };
 

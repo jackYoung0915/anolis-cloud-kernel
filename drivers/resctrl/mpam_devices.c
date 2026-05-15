@@ -39,6 +39,11 @@
 #define SMCCC_SOC_ID_T241		0x036b0241
 static void __iomem *t241_scratch_regs[T241_CHIPS_MAX];
 
+/* Values for the HISI workaround */
+#define HIP12_ACPI_PLAT  { "HISI  ", "HIP12   ", 0, ACPI_SIG_MPAM, all_versions }
+#define HISI_CONFIGURE_CPBM_WD		19
+#define HISI_HARDWARE_CPBM_WD		21
+
 /*
  * mpam_list_lock protects the SRCU lists when writing. Once the
  * mpam_enabled key is enabled these lists are read-only,
@@ -671,6 +676,62 @@ static int mpam_enable_quirk_nvidia_t241_1(struct mpam_msc *msc,
 	return 0;
 }
 
+static int mpam_enable_quirk_hisi_csu(struct mpam_msc *msc,
+				      const struct mpam_quirk *quirk)
+{
+	struct mpam_msc_ris *ris;
+
+	if (!quirk->plat || acpi_match_platform_list(quirk->plat) < 0)
+		return -EINVAL;
+
+	list_for_each_entry(ris, &msc->ris, msc_list) {
+		struct mpam_class *class = ris->vmsc->comp->class;
+
+		if (class->type == MPAM_CLASS_CACHE && class->level == 3)
+			return 0;
+	}
+	return -EINVAL;
+}
+
+static int mpam_enable_quirk_hisi_cpbm_wd(struct mpam_msc *msc,
+					  const struct mpam_quirk *quirk)
+{
+	struct mpam_msc_ris *ris;
+
+	if (!quirk->plat || acpi_match_platform_list(quirk->plat) < 0)
+		return -EINVAL;
+
+	list_for_each_entry(ris, &msc->ris, msc_list) {
+		struct mpam_class *class = ris->vmsc->comp->class;
+
+		if (class->type == MPAM_CLASS_CACHE && class->level == 3) {
+			mpam_set_quirk(quirk->workaround, msc);
+			class->quirks |= msc->quirks;
+			return -EEXIST;
+		}
+	}
+	return -EINVAL;
+}
+
+/*
+ * Hardware restriction: Cacheways 17 to 20 only have half the normal capacity.
+ * To meet the expected capacity requirements:
+ * 1. Configuring BIT(17) requires using both BIT(17) and BIT(18).
+ * 2. Configuring BIT(18) requires using both BIT(19) and BIT(20).
+ */
+static u32 mpam_cpbm_hisi_workaround(u32 cpbm)
+{
+	if (cpbm & BIT(18))
+		cpbm |= (BIT(19) | BIT(20));
+
+	if (cpbm & BIT(17))
+		cpbm |= BIT(18);
+	else
+		cpbm &= ~BIT(18);
+
+	return cpbm;
+}
+
 static const struct mpam_quirk mpam_quirks[] = {
 	{
 	/* NVIDIA t241 erratum T241-MPAM-1 */
@@ -696,6 +757,22 @@ static const struct mpam_quirk mpam_quirks[] = {
 	.iidr       = MPAM_IIDR_ARM_CMN_650,
 	.iidr_mask  = MPAM_IIDR_MATCH_ONE,
 	.workaround = IGNORE_CSU_NRDY,
+	},
+	{
+	.init       = mpam_enable_quirk_hisi_csu,
+	.iidr_mask  = MPAM_IIDR_MATCH_ONE,
+	.plat       = (struct acpi_platform_list[]) {
+		HIP12_ACPI_PLAT,
+		{} },
+	.workaround = HISI_CSU_WORKAROUND,
+	},
+	{
+	.init       = mpam_enable_quirk_hisi_cpbm_wd,
+	.iidr_mask  = MPAM_IIDR_MATCH_ONE,
+	.plat       = (struct acpi_platform_list[]) {
+		HIP12_ACPI_PLAT,
+		{} },
+	.workaround = HISI_EXPAND_CPBM_WD,
 	},
 	{ NULL } /* Sentinel */
 };
@@ -795,7 +872,11 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 	if (FIELD_GET(MPAMF_IDR_HAS_CPOR_PART, ris->idr)) {
 		u32 cpor_features = mpam_read_partsel_reg(msc, CPOR_IDR);
 
-		props->cpbm_wd = FIELD_GET(MPAMF_CPOR_IDR_CPBM_WD, cpor_features);
+		if (mpam_has_quirk(HISI_EXPAND_CPBM_WD, class))
+			props->cpbm_wd = HISI_CONFIGURE_CPBM_WD;
+		else
+			props->cpbm_wd = FIELD_GET(MPAMF_CPOR_IDR_CPBM_WD, cpor_features);
+
 		if (props->cpbm_wd)
 			mpam_set_feature(mpam_feat_cpor_part, props);
 	}
@@ -1209,6 +1290,9 @@ static void __ris_msmon_read(void *arg)
 		  FIELD_PREP(MSMON_CFG_MON_SEL_RIS, ris->ris_idx);
 	mpam_write_monsel_reg(msc, CFG_MON_SEL, mon_sel);
 
+	/* Selects a monitor instance to configure PARTID. */
+	wmb();
+
 	switch (m->type) {
 	case mpam_feat_msmon_mbwu_31counter:
 	case mpam_feat_msmon_mbwu_44counter:
@@ -1250,12 +1334,20 @@ static void __ris_msmon_read(void *arg)
 					MSMON_CFG_MBWU_CTL_OFLOW_STATUS_L));
 	}
 
+	/*
+	 * Selects the monitor instance associated to the specified PARTID
+	 * to read counter value.
+	 */
+	wmb();
+
 	switch (m->type) {
 	case mpam_feat_msmon_csu:
 		now = mpam_read_monsel_reg(msc, CSU);
 		if (mpam_has_feature(mpam_feat_msmon_csu_hw_nrdy, rprops))
 			nrdy = now & MSMON___NRDY;
 		now = FIELD_GET(MSMON___VALUE, now);
+		if (mpam_has_quirk(HISI_CSU_WORKAROUND, ris->vmsc->msc))
+			now >>= 1;
 
 		if (mpam_has_quirk(IGNORE_CSU_NRDY, msc) && m->waited_timeout)
 			nrdy = false;
@@ -1562,10 +1654,21 @@ static void mpam_reprogram_ris_partid(struct mpam_msc_ris *ris, u16 partid,
 	}
 
 	if (mpam_has_feature(mpam_feat_cpor_part, rprops)) {
-		if (mpam_has_feature(mpam_feat_cpor_part, cfg))
-			mpam_write_partsel_reg(msc, CPBM, cfg->cpbm);
-		else
-			mpam_reset_msc_bitmap(msc, MPAMCFG_CPBM, rprops->cpbm_wd);
+		if (mpam_has_feature(mpam_feat_cpor_part, cfg)) {
+			u32 cpbm = cfg->cpbm;
+
+			if (mpam_has_quirk(HISI_EXPAND_CPBM_WD, ris->vmsc->comp->class))
+				cpbm = mpam_cpbm_hisi_workaround(cpbm);
+
+			mpam_write_partsel_reg(msc, CPBM, cpbm);
+		} else {
+			u16 cpbm_wd = rprops->cpbm_wd;
+
+			if (mpam_has_quirk(HISI_EXPAND_CPBM_WD, ris->vmsc->comp->class))
+				cpbm_wd = HISI_HARDWARE_CPBM_WD;
+
+			mpam_reset_msc_bitmap(msc, MPAMCFG_CPBM, cpbm_wd);
+		}
 	}
 
 	if (mpam_has_feature(mpam_feat_mbw_part, rprops)) {
