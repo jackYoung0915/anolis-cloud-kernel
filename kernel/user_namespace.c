@@ -23,6 +23,19 @@
 #include <linux/sort.h>
 #include <linux/nstree.h>
 
+/*
+ * sysctl determining whether unprivileged users may unshare a new
+ * userns.  Allowed by default
+ */
+int unprivileged_userns_clone = 1;
+
+/*
+ * sysctl determining the maximum of nested level.
+ * Default to 33 to keep compatible with upstream.
+ */
+int userns_max_level = 33;
+int userns_max_level_max = 33;
+
 static struct kmem_cache *user_ns_cachep __ro_after_init;
 static DEFINE_MUTEX(userns_state_mutex);
 
@@ -89,7 +102,7 @@ int create_user_ns(struct cred *new)
 	int ret, i;
 
 	ret = -ENOSPC;
-	if (parent_ns->level > 32)
+	if (parent_ns->level >= userns_max_level)
 		goto fail;
 
 	ucounts = inc_user_namespaces(parent_ns, owner);
