@@ -20,12 +20,17 @@ struct its_vm {
 	struct fwnode_handle	*fwnode;
 	struct irq_domain	*domain;
 	struct page		*vprop_page;
+	struct page		*vpeid_page;
 	struct its_vpe		**vpes;
 	int			nr_vpes;
 	irq_hw_number_t		db_lpi_base;
 	unsigned long		*db_bitmap;
 	int			nr_db_lpis;
 	u32			vlpi_count[GICv4_ITS_LIST_MAX];
+#ifdef CONFIG_ARM64_HISI_IPIV
+	bool			enable_ipiv_from_vmm;
+	bool			enable_ipiv_from_guest;
+#endif
 };
 
 /* Embedded in kvm_vcpu.arch */
