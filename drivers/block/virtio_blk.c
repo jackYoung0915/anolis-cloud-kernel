@@ -2489,8 +2489,10 @@ static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
 		struct iov_iter iter;
 
 		/* fixedbufs is only for non-vectored io */
-		if (vec)
-			return -EINVAL;
+		if (vec) {
+			ret = -EINVAL;
+			goto out;
+		}
 		ret = io_uring_cmd_import_fixed(ubuffer, bufflen,
 				rq_data_dir(req), &iter, ioucmd);
 		if (ret < 0)
