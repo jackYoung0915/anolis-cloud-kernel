@@ -474,8 +474,16 @@ unsigned long tg_running(struct task_group *tg, int cpu)
 	if (!tg_cfs_throttled(tg, cpu))
 		nr_running += tg->cfs_rq[cpu]->h_nr_runnable;
 #ifdef CONFIG_RT_GROUP_SCHED
-	if (!tg_rt_throttled(tg, cpu))
-		nr_running += tg->rt_rq[cpu]->rt_nr_running;
+	/*
+	 * tg->rt_rq is only allocated when rt_group_sched is runtime-enabled.
+	 * With rt_group_sched=off (default when CONFIG_RT_GROUP_SCHED_DEFAULT_
+	 * DISABLED=y), alloc_rt_sched_group() short-circuits and leaves
+	 * tg->rt_rq NULL for non-root task_groups, so we must guard the access.
+	 */
+	if (rt_group_sched_enabled() && tg->rt_rq && tg->rt_rq[cpu]) {
+		if (!tg_rt_throttled(tg, cpu))
+			nr_running += tg->rt_rq[cpu]->rt_nr_running;
+	}
 #endif
 	/* SCHED_DEADLINE doesn't support cgroup yet */
 
@@ -495,7 +503,9 @@ unsigned long tg_uninterruptible(struct task_group *tg, int cpu)
 
 	nr = tg->cfs_rq[cpu]->nr_uninterruptible;
 #ifdef CONFIG_RT_GROUP_SCHED
-	nr += tg->rt_rq[cpu]->nr_uninterruptible;
+	/* See comment in tg_running(): tg->rt_rq may be NULL at runtime. */
+	if (rt_group_sched_enabled() && tg->rt_rq && tg->rt_rq[cpu])
+		nr += tg->rt_rq[cpu]->nr_uninterruptible;
 #endif
 
 	rcu_read_unlock();
