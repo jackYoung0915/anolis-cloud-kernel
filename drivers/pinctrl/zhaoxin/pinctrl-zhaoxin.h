@@ -1,5 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Zhaoxin pinctrl common code
  * Copyright(c) 2021 Shanghai Zhaoxin Corporation. All rights reserved.
@@ -20,6 +19,8 @@
 struct platform_device;
 struct device;
 struct zhaoxin_pinctrl;
+
+#define SOCKET_PINCTRL_PIN(sock, a, b) PINCTRL_PIN(a, b"_"#sock)
 
 #define PMIO_RX90 100
 #define PMIO_RX8C 200
