@@ -2498,7 +2498,7 @@ retry:
 	return true;
 }
 
-static void nvme_dev_add(struct nvme_dev *dev)
+static bool nvme_dev_add(struct nvme_dev *dev)
 {
 	int ret;
 
@@ -2528,17 +2528,29 @@ static void nvme_dev_add(struct nvme_dev *dev)
 		if (ret) {
 			dev_warn(dev->ctrl.device,
 				"IO queues tagset allocation failed %d\n", ret);
-			return;
+			return true;
 		}
 		dev->ctrl.tagset = &dev->tagset;
 	} else {
+		/* Give up if we are racing with nvme_dev_disable() */
+		if (!mutex_trylock(&dev->shutdown_lock))
+			return false;
+
+		/* Check if nvme_dev_disable() has been executed already */
+		if (!dev->online_queues) {
+			mutex_unlock(&dev->shutdown_lock);
+			return false;
+		}
+
 		blk_mq_update_nr_hw_queues(&dev->tagset, dev->online_queues - 1);
 
 		/* Free previously allocated queues that are no longer usable */
 		nvme_free_queues(dev, dev->online_queues);
+		mutex_unlock(&dev->shutdown_lock);
 	}
 
 	nvme_dbbuf_set(dev);
+	return true;
 }
 
 static int nvme_pci_enable(struct nvme_dev *dev)
@@ -2934,7 +2946,8 @@ static void nvme_reset_work(struct work_struct *work)
 	} else {
 		nvme_start_queues(&dev->ctrl);
 		nvme_wait_freeze(&dev->ctrl);
-		nvme_dev_add(dev);
+		if (!nvme_dev_add(dev))
+			goto out;
 		nvme_unfreeze(&dev->ctrl);
 	}
 
