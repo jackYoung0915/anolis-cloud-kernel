@@ -215,6 +215,21 @@ amdv1pt_install_leaf_entry(struct pt_state *pts, pt_oaddr_t oa,
 		unsigned int num_contig_lg2 = oasz_lg2 - isz_lg2;
 		u64 *end = tablep + log2_to_int(num_contig_lg2);
 
+		/*
+		 * When oasz_lg2 is constant, some version of gcc/clang could
+		 * report build issue while expanding FIELD_PREP macro.
+		 * There's a routine where oasz_lg2 is constant: PAGE_SHIFT
+		 * (for mapping 4K page).
+		 * However in that routine, this 'else' condition can never
+		 * be reached: see pt_table_item_lg2sz(), it returns
+		 * PT_GRANULE_LG2SZ when pts level is 0 (4K page).
+		 * oasz_lg2 - PT_GRANULE_LG2SZ <= 0 should never happend in
+		 * this routine.
+		 */
+#ifdef CONFIG_GCOV_KERNEL
+		if (unlikely(oasz_lg2 - PT_GRANULE_LG2SZ <= 0))
+			BUG();
+#endif
 		entry |= FIELD_PREP(AMDV1PT_FMT_NEXT_LEVEL,
 				    AMDV1PT_FMT_NL_SIZE) |
 			 FIELD_PREP(AMDV1PT_FMT_OA,
