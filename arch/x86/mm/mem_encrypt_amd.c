@@ -275,7 +275,7 @@ static void amd_enc_status_change_prepare(unsigned long vaddr, int npages, bool 
 static bool amd_enc_status_change_finish(unsigned long vaddr, int npages, bool enc)
 {
 	if (!cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT))
-		enc_dec_hypercall(vaddr, npages << PAGE_SHIFT, enc);
+		enc_dec_hypercall(vaddr, (unsigned long)npages << PAGE_SHIFT, enc);
 
 	return true;
 }
