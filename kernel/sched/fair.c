@@ -21,6 +21,7 @@
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  */
 #include <linux/energy_model.h>
+#include <linux/context_tracking_state.h>
 #include <linux/mmap_lock.h>
 #include <linux/hugetlb_inline.h>
 #include <linux/jiffies.h>
@@ -1456,6 +1457,33 @@ static inline bool has_task_on_expel(struct rq *rq)
 	return false;
 }
 
+bool is_sys_aware_enabled(void)
+{
+	return sched_feat(ID_SYS_AWARE);
+}
+EXPORT_SYMBOL_GPL(is_sys_aware_enabled);
+
+#if defined(CONFIG_PREEMPT) || !defined(CONFIG_CONTEXT_TRACKING)
+static inline bool is_cpu_in_sys_mode(int cpu)
+{
+	return false;
+}
+#else
+static inline bool is_cpu_in_sys_mode(int cpu)
+{
+	if (!is_sys_aware_enabled())
+		return false;
+
+	if (!cpu_online(cpu))
+		return false;
+
+	if (cpu_rq(cpu)->curr == cpu_rq(cpu)->idle)
+		return false;
+
+	return per_cpu(sys_tracking.state, cpu) == ST_KERNEL;
+}
+#endif
+
 static noinline bool id_idle_cpu(struct task_struct *p, int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
@@ -1463,6 +1491,8 @@ static noinline bool id_idle_cpu(struct task_struct *p, int cpu)
 	if (task_will_be_expelled(rq, p))
 		return false;
 	if (!id_expeller_share_core() && task_is_expeller(p) && rq_on_expel_by_smt_expeller(rq))
+		return false;
+	if (task_is_highclass(p) && is_cpu_in_sys_mode(cpu))
 		return false;
 	return true;
 }
@@ -1578,6 +1608,15 @@ static inline unsigned int rq_on_expel(struct rq *rq)
 	return false;
 }
 static inline bool rq_on_expel_by_smt_expeller(struct rq *rq)
+{
+	return false;
+}
+bool is_sys_aware_enabled(void)
+{
+	return false;
+}
+EXPORT_SYMBOL_GPL(is_sys_aware_enabled);
+static inline bool is_cpu_in_sys_mode(int cpu)
 {
 	return false;
 }
