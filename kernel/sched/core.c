@@ -7072,7 +7072,9 @@ asmlinkage __visible void __sched schedule_user(void)
 	 * too frequently to make sense yet.
 	 */
 	enum ctx_state prev_state = exception_enter();
+	enum sys_state prev_st_state = st_exception_enter();
 	schedule();
+	st_exception_exit(prev_st_state);
 	exception_exit(prev_state);
 }
 #endif
@@ -7186,6 +7188,7 @@ EXPORT_SYMBOL(dynamic_preempt_schedule);
 asmlinkage __visible void __sched notrace preempt_schedule_notrace(void)
 {
 	enum ctx_state prev_ctx;
+	enum sys_state prev_st_state;
 
 	if (likely(!preemptible()))
 		return;
@@ -7212,7 +7215,9 @@ asmlinkage __visible void __sched notrace preempt_schedule_notrace(void)
 		 * an infinite recursion.
 		 */
 		prev_ctx = exception_enter();
+		prev_st_state = st_exception_enter();
 		__schedule(SM_PREEMPT);
+		st_exception_exit(prev_st_state);
 		exception_exit(prev_ctx);
 
 		preempt_latency_stop(1);
@@ -7253,11 +7258,13 @@ EXPORT_SYMBOL(dynamic_preempt_schedule_notrace);
 asmlinkage __visible void __sched preempt_schedule_irq(void)
 {
 	enum ctx_state prev_state;
+	enum sys_state prev_st_state;
 
 	/* Catch callers which need to be fixed */
 	BUG_ON(preempt_count() || !irqs_disabled());
 
 	prev_state = exception_enter();
+	prev_st_state = st_exception_enter();
 
 	do {
 		preempt_disable();
@@ -7267,6 +7274,7 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 		sched_preempt_enable_no_resched();
 	} while (need_resched());
 
+	st_exception_exit(prev_st_state);
 	exception_exit(prev_state);
 }
 
