@@ -399,12 +399,17 @@ static bool pcpu_should_reclaim_chunk(struct pcpu_chunk *chunk)
 
 	/*
 	 * If it is isolated, it may be on the sidelined list so move it back to
-	 * the to_depopulate list.  If we hit at least 1/4 pages empty pages AND
-	 * there is no system-wide shortage of empty pages aside from this
-	 * chunk, move it to the to_depopulate list.
+	 * the to_depopulate list.  If the chunk's empty-pop-page ratio meets
+	 * sysctl_percpu_reclaim_threshold (percent) AND the system has more
+	 * than sysctl_pcpu_empty_pages_high free populated pages aside from
+	 * this chunk, move it to the to_depopulate list.
+	 *
+	 * Both thresholds are tunable via /proc/sys/vm/{percpu_reclaim_threshold,
+	 * pcpu_empty_pages_high}; see mm/percpu.c.
 	 */
 	return ((chunk->isolated && chunk->nr_empty_pop_pages) ||
 		(pcpu_nr_empty_pop_pages >
-		 (PCPU_EMPTY_POP_PAGES_HIGH + chunk->nr_empty_pop_pages) &&
-		 chunk->nr_empty_pop_pages >= chunk->nr_pages / 4));
+		 (sysctl_pcpu_empty_pages_high + chunk->nr_empty_pop_pages) &&
+		 chunk->nr_empty_pop_pages * 100 >=
+		 chunk->nr_pages * sysctl_percpu_reclaim_threshold));
 }

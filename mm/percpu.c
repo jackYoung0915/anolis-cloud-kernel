@@ -83,6 +83,7 @@
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
+#include <linux/sysctl.h>
 #include <linux/kmemleak.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
@@ -108,6 +109,26 @@
 
 #define PCPU_EMPTY_POP_PAGES_LOW	2
 #define PCPU_EMPTY_POP_PAGES_HIGH	4
+
+/*
+ * Number of empty populated pages the percpu allocator tries to keep
+ * for atomic allocations.  Default is PCPU_EMPTY_POP_PAGES_HIGH (4);
+ * exposed via /proc/sys/vm/pcpu_empty_pages_high so operators can
+ * experiment.  Lowering allows more aggressive partial depopulation
+ * but raises atomic-allocation pressure.
+ */
+static int sysctl_pcpu_empty_pages_high __read_mostly = PCPU_EMPTY_POP_PAGES_HIGH;
+
+/*
+ * Minimum percentage of empty populated pages within a chunk for it
+ * to qualify for partial depopulation.  Historically hardcoded to 25
+ * (chunk->nr_pages / 4); exposed via
+ * /proc/sys/vm/percpu_reclaim_threshold.  Lowering makes more chunks
+ * reclaim-eligible at the cost of more frequent depopulation work
+ * and TLB flushes.  Takes effect on the next free_percpu() that
+ * evaluates the affected chunk.
+ */
+static int sysctl_percpu_reclaim_threshold __read_mostly = 25;
 
 #ifdef CONFIG_SMP
 /* default addr <-> pcpu_ptr mapping, override in asm/percpu.h if necessary */
@@ -2034,13 +2055,13 @@ static void pcpu_balance_populated(void)
 	 */
 retry_pop:
 	if (pcpu_atomic_alloc_failed) {
-		nr_to_pop = PCPU_EMPTY_POP_PAGES_HIGH;
+		nr_to_pop = sysctl_pcpu_empty_pages_high;
 		/* best effort anyway, don't worry about synchronization */
 		pcpu_atomic_alloc_failed = false;
 	} else {
-		nr_to_pop = clamp(PCPU_EMPTY_POP_PAGES_HIGH -
+		nr_to_pop = clamp(sysctl_pcpu_empty_pages_high -
 				  pcpu_nr_empty_pop_pages,
-				  0, PCPU_EMPTY_POP_PAGES_HIGH);
+				  0, sysctl_pcpu_empty_pages_high);
 	}
 
 	for (slot = pcpu_size_to_slot(PAGE_SIZE); slot <= pcpu_free_slot; slot++) {
@@ -2140,7 +2161,7 @@ static void pcpu_reclaim_populated(void)
 				break;
 
 			/* reintegrate chunk to prevent atomic alloc failures */
-			if (pcpu_nr_empty_pop_pages < PCPU_EMPTY_POP_PAGES_HIGH) {
+			if (pcpu_nr_empty_pop_pages < sysctl_pcpu_empty_pages_high) {
 				reintegrate = true;
 				break;
 			}
@@ -3421,3 +3442,32 @@ static int __init percpu_enable_async(void)
 	return 0;
 }
 subsys_initcall(percpu_enable_async);
+
+static struct ctl_table percpu_sysctls[] = {
+	{
+		.procname	= "percpu_reclaim_threshold",
+		.data		= &sysctl_percpu_reclaim_threshold,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE_HUNDRED,
+	},
+	{
+		.procname	= "pcpu_empty_pages_high",
+		.data		= &sysctl_pcpu_empty_pages_high,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE_HUNDRED,
+	},
+	{}
+};
+
+static int __init percpu_sysctl_init(void)
+{
+	register_sysctl_init("vm", percpu_sysctls);
+	return 0;
+}
+late_initcall(percpu_sysctl_init);
