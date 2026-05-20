@@ -56,6 +56,7 @@
 #include <linux/slab.h>
 #include <linux/sched/mm.h>
 #include <linux/vfio_pci_core.h>
+#include <linux/memfd.h>
 
 #include "double_span.h"
 #include "io_pagetable.h"
@@ -1514,6 +1515,7 @@ struct iopt_pages *iopt_alloc_file_pages(struct file *file,
 
 {
 	struct iopt_pages *pages;
+	int seals;
 
 	pages = iopt_alloc_pages(start_byte, length, writable);
 	if (IS_ERR(pages))
@@ -1521,6 +1523,11 @@ struct iopt_pages *iopt_alloc_file_pages(struct file *file,
 	pages->file = get_file(file);
 	pages->start = start - start_byte;
 	pages->type = IOPT_ADDRESS_FILE;
+
+	seals = memfd_get_seals(file);
+	if (seals > 0)
+		pages->seals = seals;
+
 	return pages;
 }
 
