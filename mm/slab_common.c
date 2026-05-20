@@ -1224,7 +1224,11 @@ void *oot___kmalloc_node_ ## index(size_t size, gfp_t flags, int node)	\
 {									\
 	return oot__do_kmalloc_node(index, size, flags, node, _RET_IP_);;	\
 }									\
-EXPORT_SYMBOL(oot___kmalloc_node_ ## index)
+EXPORT_SYMBOL(oot___kmalloc_node_ ## index);					\
+extern __malloc typeof(oot___kmalloc_node_ ## index)			\
+	oot___kmalloc_node_noprof_ ## index							\
+	__attribute__((alias("oot___kmalloc_node_" #index)));		\
+EXPORT_SYMBOL(oot___kmalloc_node_noprof_ ## index)
 
 DEFINE_OOT_FUNC___kmalloc_node(0);
 DEFINE_OOT_FUNC___kmalloc_node(1);
@@ -1258,7 +1262,11 @@ void *oot___kmalloc_ ## index(size_t size, gfp_t flags)			\
 {									\
 	return oot__do_kmalloc_node(index, size, flags, NUMA_NO_NODE, _RET_IP_);  \
 }									\
-EXPORT_SYMBOL(oot___kmalloc_ ## index)
+EXPORT_SYMBOL(oot___kmalloc_ ## index);					\
+extern __malloc typeof(oot___kmalloc_ ## index)			\
+	oot___kmalloc_noprof_ ## index						\
+	__attribute__((alias("oot___kmalloc_" #index)));	\
+EXPORT_SYMBOL(oot___kmalloc_noprof_ ## index)
 
 DEFINE_OOT_FUNC___kmalloc(0);
 DEFINE_OOT_FUNC___kmalloc(1);

@@ -354,6 +354,8 @@ struct redirect_sym {
 
 static struct redirect_sym redirect_syms[] = {
 	DEFINE_REDIRECT_SYM("kmalloc_caches", "oot_kmalloc_caches"),
+	DEFINE_REDIRECT_SYM("__kmalloc_noprof", "oot___kmalloc_noprof"),
+	DEFINE_REDIRECT_SYM("__kmalloc_node_noprof", "oot___kmalloc_node_noprof"),
 	DEFINE_REDIRECT_SYM("__kmalloc", "oot___kmalloc"),
 	DEFINE_REDIRECT_SYM("__kmalloc_node", "oot___kmalloc_node"),
 	{},
