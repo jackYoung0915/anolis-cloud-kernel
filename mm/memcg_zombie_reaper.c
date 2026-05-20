@@ -25,6 +25,7 @@
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
+#include <linux/kstrtox.h>
 #include <linux/memcontrol.h>
 #include <linux/swap.h> /* try_to_free_mem_cgroup_pages */
 
@@ -320,3 +321,19 @@ static int __init memcg_zombie_reaper_init(void)
 }
 
 module_init(memcg_zombie_reaper_init);
+
+static int __init global_memcg_reaper_setup(char *str)
+{
+	bool enable;
+
+	if (!str || kstrtobool(str, &enable))
+		return -EINVAL;
+
+	if (enable) {
+		reaper_kthread_on |= REAP_BACKGROUND_GLOBAL;
+		pr_info("memcg zombie reaper: global mode enabled via kernel cmdline\n");
+	}
+
+	return 1;
+}
+__setup("global_memcg_reaper=", global_memcg_reaper_setup);

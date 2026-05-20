@@ -1683,6 +1683,15 @@
 			When zero, profiling data is discarded and associated
 			debugfs files are removed at module unload time.
 
+	global_memcg_reaper=	[KNL,MM] Enable the global zombie memcg reaper
+			kthread at boot, equivalent to writing the value to
+			/sys/kernel/mm/memcg_reaper/reap_background after
+			rootfs is mounted.  Only controls the global reaping
+			mode; per-memcg background reaping is still toggled
+			at runtime via the cgroup interface.
+			Format: { on | off | 1 | 0 | yes | no } (default: off)
+			Requires CONFIG_MEMCG.
+
 	goldfish	[X86] Enable the goldfish android emulator platform.
 			Don't use this when you are not running on the
 			android emulator
