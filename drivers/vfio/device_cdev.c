@@ -221,6 +221,11 @@ int vfio_df_ioctl_attach_pt(struct vfio_device_file *df,
 		return -EINVAL;
 
 	mutex_lock(&device->dev_set->lock);
+	if (iommufd_device_is_preserved(device->iommufd_device)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
 	ret = device->ops->attach_ioas(device, &attach.pt_id);
 	if (ret)
 		goto out_unlock;
@@ -256,6 +261,11 @@ int vfio_df_ioctl_detach_pt(struct vfio_device_file *df,
 		return -EINVAL;
 
 	mutex_lock(&device->dev_set->lock);
+	if (iommufd_device_is_preserved(device->iommufd_device)) {
+		mutex_unlock(&device->dev_set->lock);
+		return -EBUSY;
+	}
+
 	device->ops->detach_ioas(device);
 	mutex_unlock(&device->dev_set->lock);
 
