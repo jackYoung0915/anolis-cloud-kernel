@@ -1492,8 +1492,6 @@ static noinline bool id_idle_cpu(struct task_struct *p, int cpu)
 		return false;
 	if (!id_expeller_share_core() && task_is_expeller(p) && rq_on_expel_by_smt_expeller(rq))
 		return false;
-	if (task_is_highclass(p) && is_cpu_in_sys_mode(cpu))
-		return false;
 	return true;
 }
 
@@ -8934,7 +8932,8 @@ static inline int __select_idle_cpu(int cpu, struct task_struct *p, int *id_back
 	if ((available_idle_cpu(cpu) || sched_idle_cpu(cpu)) &&
 	    sched_cpu_cookie_match(cpu_rq(cpu), p)) {
 		if (!id_idle_cpu(p, cpu) && id_backup) {
-			*id_backup = cpu;
+			if (*id_backup == -1 || !is_cpu_in_sys_mode(cpu))
+				*id_backup = cpu;
 			return -1;
 		}
 		return cpu;
