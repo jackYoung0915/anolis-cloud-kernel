@@ -1,1 +1,1 @@
-# CONFIG_ACPI_TAD is not set
+CONFIG_ACPI_TAD=m
