@@ -1473,4 +1473,11 @@ config RECLAIM_COLDPGS
 	  will be reclaimed so that they can be reused by somebody else, like
 	  newly created cgroups to increase the whole system density.
 
+config COMPRESSED_FILE_UNEVICTABLE
+	bool "Set mapping unevictable if file compressed"
+	default n
+	depends on SHMEM
+	help
+	  Set mapping unevictable if file compressed
+
 endmenu

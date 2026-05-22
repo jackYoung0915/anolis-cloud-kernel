@@ -1189,6 +1189,10 @@ void shmem_truncate_range(struct inode *inode, loff_t lstart, loff_t lend)
 }
 EXPORT_SYMBOL_GPL(shmem_truncate_range);
 
+#ifdef CONFIG_COMPRESSED_FILE_UNEVICTABLE
+static void set_file_unevictable(struct inode *inode, const unsigned char *name);
+static bool extension_list_enable = false;
+#endif
 static int shmem_getattr(struct mnt_idmap *idmap,
 			 const struct path *path, struct kstat *stat,
 			 u32 request_mask, unsigned int query_flags)
@@ -3808,6 +3812,11 @@ shmem_mknod(struct mnt_idmap *idmap, struct inode *dir,
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 
+#ifdef CONFIG_COMPRESSED_FILE_UNEVICTABLE
+	if(extension_list_enable){
+		set_file_unevictable(inode, dentry->d_name.name);
+	}
+#endif
 	error = simple_acl_create(dir, inode);
 	if (error)
 		goto out_iput;
@@ -4834,6 +4843,282 @@ static int shmem_show_options(struct seq_file *seq, struct dentry *root)
 
 #endif /* CONFIG_TMPFS */
 
+#ifdef CONFIG_COMPRESSED_FILE_UNEVICTABLE
+#define SHMEM_MAX_EXTENSION              8
+#define SHMEM_EXTENSION_LEN              8
+#define SHMEM_S_ID	"tmpfs"
+struct shmem_extension {
+	struct rw_semaphore rw_sem;
+	unsigned int extension_count;
+	unsigned char extension_list[SHMEM_MAX_EXTENSION][SHMEM_EXTENSION_LEN];
+};
+
+struct shmem_extension *g_shmem_extension;
+
+struct shmem_attr {
+	struct attribute attr;
+	ssize_t (*show)(struct shmem_attr *a, char *buf);
+	ssize_t (*store)(struct shmem_attr *a, const char *buf, size_t count);
+};
+
+static ssize_t shmem_enable_show(struct shmem_attr *a, char *buf)
+{
+	int enable;
+
+	enable = extension_list_enable;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", enable);
+}
+
+static ssize_t shmem_enable_store(struct shmem_attr *a, const char *buf, size_t count)
+{
+	unsigned long val;
+	int ret = kstrtoul(buf, 0, &val);
+
+	if (ret)
+		return ret;
+
+	if (val != 0 && val != 1)
+		return -EINVAL;
+
+	extension_list_enable = val;
+
+	pr_info("shmem: extension_list %s\n", val ? "enabled" : "disabled");
+
+	return count;
+}
+
+static int is_extension_exist(const unsigned char *s, const char *sub)
+{
+	size_t slen = strlen(s);
+	size_t sublen = strlen(sub);
+	int i;
+
+	if (slen < sublen + 2)
+		return 0;
+
+	for (i = 1; i < slen - sublen; i++) {
+		if (s[i] != '.')
+			continue;
+		if (!strncasecmp(s + i + 1, sub, sublen))
+			return 1;
+	}
+
+	return 0;
+}
+
+static void set_file_unevictable(struct inode *inode, const unsigned char *name)
+{
+	__u8 (*extlist)[SHMEM_EXTENSION_LEN];
+	int i, count;
+
+	if (!g_shmem_extension)
+		return;
+	down_read(&g_shmem_extension->rw_sem);
+	extlist = g_shmem_extension->extension_list;
+	count = g_shmem_extension->extension_count;
+	for (i = 0; i < count; i++) {
+		if (!is_extension_exist(name, extlist[i]))
+			continue;
+
+		mapping_set_unevictable(inode->i_mapping);
+		break;
+	}
+	up_read(&g_shmem_extension->rw_sem);
+}
+
+static ssize_t shmem_sbinfo_show(struct shmem_attr *a, char *buf)
+{
+	__u8 (*extlist)[SHMEM_EXTENSION_LEN];
+	int count;
+	int len = 0, i;
+
+	if (strcmp(a->attr.name, "extension_list"))
+		return -EINVAL;
+
+	len += snprintf(buf + len, PAGE_SIZE - len,
+					"unevictable file extension:");
+	down_read(&g_shmem_extension->rw_sem);
+	extlist = g_shmem_extension->extension_list;
+	count = g_shmem_extension->extension_count;
+	for (i = 0; i < count; i++)
+		len += snprintf(buf + len, PAGE_SIZE - len, " %s ", extlist[i]);
+	len += snprintf(buf + len, PAGE_SIZE - len, "\n");
+	up_read(&g_shmem_extension->rw_sem);
+
+	return len;
+}
+
+static int shmem_update_extension_list(const char *name, bool set)
+{
+
+	__u8 (*extlist)[SHMEM_EXTENSION_LEN];
+	int count;
+	int i;
+	int err = 0;
+
+	down_write(&g_shmem_extension->rw_sem);
+	extlist = g_shmem_extension->extension_list;
+	count = g_shmem_extension->extension_count;
+	if (set) {
+		if (count == SHMEM_MAX_EXTENSION){
+			up_write(&g_shmem_extension->rw_sem);
+			return -EINVAL;
+		}
+	} else if (!count){
+		up_write(&g_shmem_extension->rw_sem);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (strcmp(name, extlist[i]))
+			continue;
+
+		if (set) {
+			err = -EINVAL;
+			goto out;
+		}
+
+		memcpy(extlist[i], extlist[i + 1],
+				SHMEM_EXTENSION_LEN * (count - i - 1));
+		memset(extlist[count - 1], 0, SHMEM_EXTENSION_LEN);
+		g_shmem_extension->extension_count = count - 1;
+		goto out;
+	}
+
+	if (!set) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	memcpy(extlist[count], name, strlen(name));
+	g_shmem_extension->extension_count = count + 1;
+out:
+	up_write(&g_shmem_extension->rw_sem);
+	return 0;
+}
+
+static void shmem_set_extension_default(void)
+{
+	shmem_update_extension_list("gz", true);
+	shmem_update_extension_list("bz2", true);
+	shmem_update_extension_list("xz", true);
+}
+
+static ssize_t __sbinfo_store(struct shmem_attr *a, const char *buf, size_t count)
+{
+	const char *name = strim((char *)buf);
+	ssize_t ret;
+	bool set = true;
+
+	if (strcmp(a->attr.name, "extension_list"))
+		return -EINVAL;
+
+	if (*name == '!') {
+		name++;
+		set = false;
+	}
+
+	if (strlen(name) >= SHMEM_EXTENSION_LEN)
+		return -EINVAL;
+
+	ret = shmem_update_extension_list(name, set);
+
+	return ret ? ret : count;
+}
+
+static ssize_t shmem_sbinfo_store(struct shmem_attr *a, const char *buf, size_t count)
+{
+	ssize_t ret;
+
+	ret = __sbinfo_store(a, buf, count);
+
+	return ret;
+}
+
+static ssize_t shmem_attr_show(struct kobject *kobj,
+				struct attribute *attr, char *buf)
+{
+	struct shmem_attr *a = container_of(attr, struct shmem_attr, attr);
+
+	return a->show ? a->show(a, buf) : 0;
+}
+
+static ssize_t shmem_attr_store(struct kobject *kobj, struct attribute *attr,
+						const char *buf, size_t len)
+{
+	struct shmem_attr *a = container_of(attr, struct shmem_attr, attr);
+
+	return a->store ? a->store(a, buf, len) : 0;
+}
+
+#define SHMEM_ATTR_OFFSET(_name, _mode, _show, _store) \
+static struct shmem_attr shmem_attr_##_name = {			\
+	.attr = {.name = __stringify(_name), .mode = _mode },	\
+	.show	= _show,					\
+	.store	= _store,					\
+}
+
+#define SHMEM_RW_ATTR(name)	\
+	SHMEM_ATTR_OFFSET(name, 0644, shmem_sbinfo_show, shmem_sbinfo_store)
+
+SHMEM_RW_ATTR(extension_list);
+
+SHMEM_ATTR_OFFSET(extension_list_enable, 0644,
+                  shmem_enable_show, shmem_enable_store);
+
+#define ATTR_LIST(name) (&shmem_attr_##name.attr)
+
+static struct attribute *shmem_attrs[] = {
+	ATTR_LIST(extension_list),
+	ATTR_LIST(extension_list_enable),
+	NULL,
+};
+ATTRIBUTE_GROUPS(shmem);
+
+static const struct sysfs_ops shmem_attr_ops = {
+	.show	= shmem_attr_show,
+	.store	= shmem_attr_store,
+};
+
+static const struct kobj_type shmem_ktype = {
+	.default_groups	= shmem_groups,
+	.sysfs_ops	= &shmem_attr_ops,
+};
+
+static struct kset shmem_kset = {
+	.kobj   = {.ktype = &shmem_ktype},
+};
+
+int __init shmem_init_sysfs(void)
+{
+	int ret;
+
+	g_shmem_extension = kzalloc(sizeof(struct shmem_extension), GFP_KERNEL);
+	if (!g_shmem_extension)
+		return -ENOMEM;
+	init_rwsem(&g_shmem_extension->rw_sem);
+	kobject_set_name(&shmem_kset.kobj, "shmem");
+	shmem_kset.kobj.parent = fs_kobj;
+	ret = kset_register(&shmem_kset);
+	if (ret)
+		goto fail_register;
+
+	shmem_set_extension_default();
+
+	return 0;
+fail_register:
+	kfree(g_shmem_extension);
+	g_shmem_extension = NULL;
+
+	return ret;
+}
+
+void shmem_exit_sysfs(void)
+{
+	kset_unregister(&shmem_kset);
+}
+#endif
 static void shmem_put_super(struct super_block *sb)
 {
 	struct shmem_sb_info *sbinfo = SHMEM_SB(sb);
@@ -5188,6 +5473,11 @@ void __init shmem_init(void)
 {
 	int error;
 
+#ifdef CONFIG_COMPRESSED_FILE_UNEVICTABLE
+	error = shmem_init_sysfs();
+	if (error)
+		pr_err("Could not register shmem kset\n");
+#endif
 	shmem_init_inodecache();
 
 #ifdef CONFIG_TMPFS_QUOTA
@@ -5227,6 +5517,9 @@ out1:
 out2:
 #ifdef CONFIG_TMPFS_QUOTA
 	unregister_quota_format(&shmem_quota_format);
+#endif
+#ifdef CONFIG_COMPRESSED_FILE_UNEVICTABLE
+	shmem_exit_sysfs();
 #endif
 	shmem_destroy_inodecache();
 	shm_mnt = ERR_PTR(error);
