@@ -575,6 +575,8 @@ static inline struct cftype *of_cft(struct kernfs_open_file *of)
 }
 
 struct cgroup_subsys_state *of_css(struct kernfs_open_file *of);
+struct cgroup *cgroup_kn_lock_live(struct kernfs_node *kn, bool drain_offline);
+void cgroup_kn_unlock(struct kernfs_node *kn);
 
 /* cft/css accessors for cftype->seq_*() operations */
 static inline struct cftype *seq_cft(struct seq_file *seq)

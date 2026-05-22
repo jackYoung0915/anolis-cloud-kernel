@@ -5236,12 +5236,14 @@ static ssize_t memory_wmark_scale_factor_write(struct kernfs_open_file *of,
  * wmark_min_adj:  A -10, B -25, C 0, D 50, E -25, F 50
  * wmark_min_eadj: A -10, B -10, C 0, D 50, E -10, F 50
  */
-static void memcg_update_wmark_min_adj(struct mem_cgroup *memcg, int val)
+static void memcg_update_wmark_min_adj_locked(struct mem_cgroup *memcg,
+					      int val)
 {
 	struct mem_cgroup *p;
 	struct mem_cgroup *iter;
 
-	mutex_lock(&cgroup_mutex);
+	lockdep_assert_held(&cgroup_mutex);
+
 	memcg->wmark_min_adj = val;
 	/* update hierarchical wmark_min_eadj, pre-order iteration */
 	for_each_mem_cgroup_tree(iter, memcg) {
@@ -5253,7 +5255,6 @@ static void memcg_update_wmark_min_adj(struct mem_cgroup *memcg, int val)
 			val = p->wmark_min_eadj;
 		iter->wmark_min_eadj = val;
 	}
-	mutex_unlock(&cgroup_mutex);
 }
 
 static int memory_wmark_min_adj_show(struct seq_file *m, void *v)
@@ -5269,7 +5270,8 @@ static int memory_wmark_min_adj_show(struct seq_file *m, void *v)
 static ssize_t memory_wmark_min_adj_write(struct kernfs_open_file *of,
 				char *buf, size_t nbytes, loff_t off)
 {
-	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	struct cgroup *cgrp;
+	struct mem_cgroup *memcg;
 	int ret, wmark_min_adj;
 
 	buf = strstrip(buf);
@@ -5280,8 +5282,14 @@ static ssize_t memory_wmark_min_adj_write(struct kernfs_open_file *of,
 	if (wmark_min_adj < -25 || wmark_min_adj > 50)
 		return -EINVAL;
 
-	memcg_update_wmark_min_adj(memcg, wmark_min_adj);
+	cgrp = cgroup_kn_lock_live(of->kn, false);
+	if (!cgrp)
+		return -ENODEV;
 
+	memcg = mem_cgroup_from_css(of_css(of));
+	memcg_update_wmark_min_adj_locked(memcg, wmark_min_adj);
+
+	cgroup_kn_unlock(of->kn);
 	return nbytes;
 }
 

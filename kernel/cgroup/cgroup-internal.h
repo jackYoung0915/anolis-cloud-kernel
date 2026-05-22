@@ -227,8 +227,6 @@ struct cgroup *kn_priv(struct kernfs_node *kn);
 struct cgroup_root *cgroup_root_from_kf(struct kernfs_root *kf_root);
 struct cgroup *task_cgroup_from_root(struct task_struct *task,
 				     struct cgroup_root *root);
-struct cgroup *cgroup_kn_lock_live(struct kernfs_node *kn, bool drain_offline);
-void cgroup_kn_unlock(struct kernfs_node *kn);
 int cgroup_path_ns_locked(struct cgroup *cgrp, char *buf, size_t buflen,
 			  struct cgroup_namespace *ns);
 
