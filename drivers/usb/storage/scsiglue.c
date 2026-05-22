@@ -496,6 +496,16 @@ static int bus_reset(struct scsi_cmnd *srb)
 	return result < 0 ? FAILED : SUCCESS;
 }
 
+static bool device_dead(struct Scsi_Host *shost)
+{
+	struct us_data *us = host_to_us(shost);
+
+	if (us->pusb_dev->state < USB_STATE_CONFIGURED)
+		return true;
+
+	return false;
+}
+
 /*
  * Report a driver-initiated device reset to the SCSI layer.
  * Calling this for a SCSI-initiated reset is unnecessary but harmless.
@@ -634,7 +644,7 @@ static const struct scsi_host_template usb_stor_host_template = {
 	.eh_abort_handler =		command_abort,
 	.eh_device_reset_handler =	device_reset,
 	.eh_bus_reset_handler =		bus_reset,
-
+	.mark_dead =			device_dead,
 	/* queue commands only, only one command per LUN */
 	.can_queue =			1,
 

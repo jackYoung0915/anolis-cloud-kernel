@@ -3809,8 +3809,12 @@ static int sd_probe(struct device *dev)
 static int sd_remove(struct device *dev)
 {
 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
+	struct scsi_device *sdev = sdkp->device;
 
 	scsi_autopm_get_device(sdkp->device);
+
+	if (sdev->host->hostt->mark_dead && sdev->host->hostt->mark_dead(sdev->host))
+		blk_mark_disk_dead(sdkp->disk);
 
 	device_del(&sdkp->disk_dev);
 	del_gendisk(sdkp->disk);

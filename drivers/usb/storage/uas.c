@@ -810,6 +810,15 @@ static int uas_eh_device_reset_handler(struct scsi_cmnd *cmnd)
 	return SUCCESS;
 }
 
+static bool uas_device_dead(struct Scsi_Host *shost)
+{
+	struct uas_dev_info *devinfo = (struct uas_dev_info *)shost->hostdata;
+
+	if (devinfo->udev->state < USB_STATE_CONFIGURED)
+		return true;
+	return false;
+}
+
 static int uas_target_alloc(struct scsi_target *starget)
 {
 	struct uas_dev_info *devinfo = (struct uas_dev_info *)
@@ -909,6 +918,7 @@ static const struct scsi_host_template uas_host_template = {
 	.module = THIS_MODULE,
 	.name = "uas",
 	.queuecommand = uas_queuecommand,
+	.mark_dead = uas_device_dead,
 	.target_alloc = uas_target_alloc,
 	.slave_alloc = uas_slave_alloc,
 	.slave_configure = uas_slave_configure,
