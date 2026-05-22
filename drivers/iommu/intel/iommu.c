@@ -2583,8 +2583,6 @@ static inline int acpi_rmrr_andd_probe(struct device *dev)
 	u8 bus, devfn;
 	int ret = 0;
 
-	ret = iommu_probe_device(dev);
-
 	iommu = device_lookup_iommu(dev, &bus, &devfn);
 	if (!iommu) {
 		pr_info("dpoint-- cannot get acpi device corresponding iommu\n");
