@@ -1313,6 +1313,65 @@ static const struct file_operations proc_oom_score_adj_operations = {
 	.llseek		= default_llseek,
 };
 
+#ifdef CONFIG_MAX_MAP_COUNT
+static ssize_t proc_max_map_count_read(struct file *file, char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	struct task_struct *task = get_proc_task(file_inode(file));
+	char buffer[PROC_NUMBUF];
+	int max_map_count = 0;
+	size_t len;
+
+	if (!task)
+		return -ESRCH;
+	if (!task->mm)
+		goto out;
+	max_map_count = task->mm->max_map_count;
+out:
+	put_task_struct(task);
+	len = snprintf(buffer, sizeof(buffer), "%d\n", max_map_count);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t proc_max_map_count_write(struct file *file,
+			const char __user *buf, size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	char buffer[PROC_NUMBUF];
+	int max_map_count;
+	int err;
+
+	memset(buffer, 0, sizeof(buffer));
+
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+	err = kstrtoint(strstrip(buffer), 0, &max_map_count);
+	if (err < 0)
+		return err;
+
+	if (max_map_count != 0)
+		return -EINVAL;
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+	if (!task->mm)
+		goto out;
+	task->mm->max_map_count = max_map_count;
+out:
+	put_task_struct(task);
+	return count;
+}
+
+static const struct file_operations proc_max_map_count_operations = {
+	.read           = proc_max_map_count_read,
+	.write          = proc_max_map_count_write,
+	.llseek         = generic_file_llseek,
+};
+#endif
+
 #ifdef CONFIG_AUDIT
 #define TMPBUFLEN 11
 static ssize_t proc_loginuid_read(struct file * file, char __user * buf,
@@ -2726,7 +2785,7 @@ static struct dentry *proc_pident_instantiate(struct dentry *dentry,
 	return d_splice_alias(inode, dentry);
 }
 
-static struct dentry *proc_pident_lookup(struct inode *dir, 
+static struct dentry *proc_pident_lookup(struct inode *dir,
 					 struct dentry *dentry,
 					 const struct pid_entry *p,
 					 const struct pid_entry *end)
@@ -2939,7 +2998,7 @@ static const struct pid_entry attr_dir_stuff[] = {
 
 static int proc_attr_dir_readdir(struct file *file, struct dir_context *ctx)
 {
-	return proc_pident_readdir(file, ctx, 
+	return proc_pident_readdir(file, ctx,
 				   attr_dir_stuff, ARRAY_SIZE(attr_dir_stuff));
 }
 
@@ -3381,6 +3440,9 @@ static const struct pid_entry tgid_base_stuff[] = {
 	ONE("oom_score",  S_IRUGO, proc_oom_score),
 	REG("oom_adj",    S_IRUGO|S_IWUSR, proc_oom_adj_operations),
 	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
+#ifdef CONFIG_MAX_MAP_COUNT
+	REG("max_map_count", S_IRUGO|S_IWUSR, proc_max_map_count_operations),
+#endif
 #ifdef CONFIG_AUDIT
 	REG("loginuid",   S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),
@@ -3731,6 +3793,9 @@ static const struct pid_entry tid_base_stuff[] = {
 	ONE("oom_score", S_IRUGO, proc_oom_score),
 	REG("oom_adj",   S_IRUGO|S_IWUSR, proc_oom_adj_operations),
 	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
+#ifdef CONFIG_MAX_MAP_COUNT
+	REG("max_map_count", S_IRUGO|S_IWUSR, proc_max_map_count_operations),
+#endif
 #ifdef CONFIG_AUDIT
 	REG("loginuid",  S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),

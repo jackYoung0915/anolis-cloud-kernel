@@ -1473,4 +1473,9 @@ config RECLAIM_COLDPGS
 	  will be reclaimed so that they can be reused by somebody else, like
 	  newly created cgroups to increase the whole system density.
 
+config MAX_MAP_COUNT
+	bool "Show max map count for a task"
+	default n
+	help
+	  show max map count for a task, and can only be set 0.
 endmenu

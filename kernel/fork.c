@@ -776,6 +776,10 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 		vma_iter_bulk_store(&vmi, tmp);
 
 		mm->map_count++;
+#ifdef CONFIG_MAX_MAP_COUNT
+		if (mm->map_count > mm->max_map_count)
+			mm->max_map_count = mm->map_count;
+#endif
 		if (!(tmp->vm_flags & VM_WIPEONFORK)) {
 			if (async_fork)
 				retval = async_fork_cpr_fast(tmp, mpnt);
@@ -1806,6 +1810,9 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 		mm = dup_mm(tsk, current->mm);
 		if (!mm)
 			return -ENOMEM;
+#ifdef CONFIG_MAX_MAP_COUNT
+		mm->max_map_count = 0;
+#endif
 	}
 
 	tsk->mm = mm;

@@ -887,6 +887,9 @@ struct mm_struct {
 		atomic_long_t pgtables_bytes;	/* size of all page tables */
 #endif
 		int map_count;			/* number of VMAs */
+#ifdef CONFIG_MAX_MAP_COUNT
+		int max_map_count;	/* number of max VMAs */
+#endif
 
 		spinlock_t page_table_lock; /* Protects page tables and some
 					     * counters
