@@ -83,20 +83,15 @@
 .endm
 
 #ifdef CONFIG_SMP
-#ifdef CONFIG_32BIT
-#define PER_CPU_OFFSET_SHIFT 2
-#else
-#define PER_CPU_OFFSET_SHIFT 3
-#endif
-
 .macro asm_per_cpu_with_cpu dst sym tmp cpu
-	slli  \tmp, \cpu, PER_CPU_OFFSET_SHIFT
+	slli  \tmp, \cpu, RISCV_LGPTR
 	la    \dst, __per_cpu_offset
 	add   \dst, \dst, \tmp
 	REG_L \tmp, 0(\dst)
 	la    \dst, \sym
 	add   \dst, \dst, \tmp
 .endm
+
 .macro asm_per_cpu dst sym tmp
 	lw \tmp, TASK_TI_CPU_NUM(tp)
 	asm_per_cpu_with_cpu \dst \sym \tmp \tmp
@@ -110,6 +105,25 @@
 	la    \dst, \sym
 .endm
 #endif /* CONFIG_SMP */
+
+.macro load_per_cpu dst ptr tmp
+	asm_per_cpu \dst \ptr \tmp
+	REG_L \dst, 0(\dst)
+.endm
+
+#ifdef CONFIG_SHADOW_CALL_STACK
+/* gp is used as the shadow call stack pointer instead */
+.macro load_global_pointer
+.endm
+#else
+/* load __global_pointer to gp */
+.macro load_global_pointer
+.option push
+.option norelax
+	la gp, __global_pointer$
+.option pop
+.endm
+#endif /* CONFIG_SHADOW_CALL_STACK */
 
 	/* save all GPs except x1 ~ x5 */
 	.macro save_from_x6_to_x31

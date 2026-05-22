@@ -55,6 +55,10 @@ endif
 endif
 endif
 
+ifeq ($(CONFIG_SHADOW_CALL_STACK),y)
+	KBUILD_LDFLAGS += --no-relax-gp
+endif
+
 include $(srctree)/${RISCV_ARCH_PATH}/Makefile.isa
 
 # Check if the toolchain supports Zacas

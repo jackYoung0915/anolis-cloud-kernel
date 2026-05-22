@@ -48,7 +48,7 @@ config ACPI_APEI_SEA
 
 config ACPI_APEI_SSE
 	bool
-	depends on RISCV && RISCV_SSE && ACPI_APEI_GHES
+	depends on RISCV && RISCV_SBI_SSE && ACPI_APEI_GHES
 	default y
 
 config ACPI_APEI_MEMORY_FAILURE

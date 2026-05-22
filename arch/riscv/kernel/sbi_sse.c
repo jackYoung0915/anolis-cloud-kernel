@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2024 Rivos Inc.
+ * Copyright (C) 2025 Rivos Inc.
  */
 #include <linux/nmi.h>
 #include <linux/scs.h>
 #include <linux/bitfield.h>
-#include <linux/riscv_sse.h>
 #include <linux/percpu-defs.h>
 
 #include <asm/asm-prototypes.h>
@@ -14,7 +13,7 @@
 #include <asm/sbi.h>
 #include <asm/sse.h>
 
-DEFINE_PER_CPU(struct task_struct *, __sse_entry_task);
+DEFINE_PER_CPU(struct task_struct *, __sbi_sse_entry_task);
 
 void __weak sse_handle_event(struct sse_event_arch_data *arch_evt, struct pt_regs *regs)
 {
@@ -33,18 +32,6 @@ void do_sse(struct sse_event_arch_data *arch_evt, struct pt_regs *regs)
 	memcpy(&regs->a6, &arch_evt->interrupted, sizeof(arch_evt->interrupted));
 
 	sse_handle_event(arch_evt, regs);
-
-	/*
-	 * The SSE delivery path does not uses the "standard" exception path
-	 * (see sse_entry.S) and does not process any pending signal/softirqs
-	 * due to being similar to a NMI.
-	 * Some drivers (PMU, RAS) enqueue pending work that needs to be handled
-	 * as soon as possible by bottom halves. For that purpose, set the SIP
-	 * software interrupt pending bit which will force a software interrupt
-	 * to be serviced once interrupts are reenabled in the interrupted
-	 * context if they were masked or directly if unmasked.
-	 */
-	csr_set(CSR_IP, IE_SIE);
 
 	nmi_exit();
 }
@@ -71,6 +58,22 @@ static void sse_stack_free(void *stack)
 {
 	vfree(stack_pointer_to_alloc(stack));
 }
+
+static void arch_sse_stack_cpu_sync(struct sse_event_arch_data *arch_evt)
+{
+	void *p_stack = arch_evt->stack;
+	unsigned long stack = (unsigned long)stack_pointer_to_alloc(p_stack);
+	unsigned long stack_end = stack + SSE_STACK_SIZE;
+
+	/*
+	 * Flush the tlb to avoid taking any exception when accessing the
+	 * vmapped stack inside the SSE handler
+	 */
+	if (sse_event_is_global(arch_evt->evt_id))
+		flush_tlb_kernel_range(stack, stack_end);
+	else
+		local_flush_tlb_kernel_range(stack, stack_end);
+}
 #else /* CONFIG_VMAP_STACK */
 static void *sse_stack_alloc(unsigned int cpu)
 {
@@ -83,6 +86,8 @@ static void sse_stack_free(void *stack)
 {
 	kfree(stack_pointer_to_alloc(stack));
 }
+
+static void arch_sse_stack_cpu_sync(struct sse_event_arch_data *arch_evt) {}
 #endif /* CONFIG_VMAP_STACK */
 
 static int sse_init_scs(int cpu, struct sse_event_arch_data *arch_evt)
@@ -107,7 +112,8 @@ void arch_sse_event_update_cpu(struct sse_event_arch_data *arch_evt, int cpu)
 	arch_evt->hart_id = cpuid_to_hartid_map(cpu);
 }
 
-int arch_sse_init_event(struct sse_event_arch_data *arch_evt, u32 evt_id, int cpu)
+int arch_sse_init_event(struct sse_event_arch_data *arch_evt, u32 evt_id,
+			int cpu)
 {
 	void *stack;
 
@@ -145,6 +151,8 @@ void arch_sse_free_event(struct sse_event_arch_data *arch_evt)
 int arch_sse_register_event(struct sse_event_arch_data *arch_evt)
 {
 	struct sbiret sret;
+
+	arch_sse_stack_cpu_sync(arch_evt);
 
 	sret = sbi_ecall(SBI_EXT_SSE, SBI_SSE_EVENT_REGISTER, arch_evt->evt_id,
 			 (unsigned long)handle_sse, (unsigned long)arch_evt, 0,

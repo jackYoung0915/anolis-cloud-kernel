@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2024 Rivos Inc.
+ * Copyright (C) 2025 Rivos Inc.
  */
 
 #define pr_fmt(fmt) "riscv_sse_test: " fmt
@@ -11,7 +11,7 @@
 #include <linux/io.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
-#include <linux/riscv_sse.h>
+#include <linux/riscv_sbi_sse.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
 
@@ -79,14 +79,14 @@ static const char *sse_evt_name(u32 evt)
 {
 	struct sse_event_desc *desc = sse_get_evt_desc(evt);
 
-	return desc != NULL ? desc->name : NULL;
+	return desc ? desc->name : NULL;
 }
 
 static bool sse_test_can_inject_event(u32 evt)
 {
 	struct sse_event_desc *desc = sse_get_evt_desc(evt);
 
-	return desc != NULL ? desc->can_inject : false;
+	return desc ? desc->can_inject : false;
 }
 
 static struct sbiret sbi_sse_ecall(int fid, unsigned long arg0, unsigned long arg1)
@@ -121,7 +121,7 @@ static int sse_test_signal(u32 evt, unsigned int cpu)
 	unsigned int hart_id = cpuid_to_hartid_map(cpu);
 	struct sbiret ret;
 
-	ret = sbi_sse_ecall(SBI_SSE_EVENT_SIGNAL, evt, hart_id);
+	ret = sbi_sse_ecall(SBI_SSE_EVENT_INJECT, evt, hart_id);
 	if (ret.error) {
 		sse_err("Failed to signal event %x, error %ld\n", evt, ret.error);
 		return sbi_err_map_linux_errno(ret.error);
@@ -210,7 +210,7 @@ static void sse_run_fast_test(struct fast_test_arg *test_arg, struct sse_event *
 		timeout = jiffies + HZ / 100;
 		/* We can not use <linux/completion.h> since they are not NMI safe */
 		while (!READ_ONCE(test_arg->completion) &&
-			time_before(jiffies, timeout)) {
+		       time_before(jiffies, timeout)) {
 			cpu_relax();
 		}
 		if (!time_before(jiffies, timeout)) {
@@ -287,7 +287,7 @@ static int sse_hi_priority_test_handler(u32 evt, void *arg,
 		sse_test_signal(next->evt, smp_processor_id());
 		if (!READ_ONCE(next->called)) {
 			sse_err("Higher priority event %s was not handled %s\n",
-			      sse_evt_name(next->evt), sse_evt_name(evt));
+				sse_evt_name(next->evt), sse_evt_name(evt));
 		}
 	}
 
@@ -313,7 +313,7 @@ static int sse_low_priority_test_handler(u32 evt, void *arg, struct pt_regs *reg
 }
 
 static void sse_test_injection_priority_arg(struct priority_test_arg *args, unsigned int args_size,
-					    sse_event_handler handler, const char *test_name)
+					    sse_event_handler_fn handler, const char *test_name)
 {
 	unsigned int i;
 	int ret;
@@ -382,10 +382,9 @@ static void sse_test_injection_priority_arg(struct priority_test_arg *args, unsi
 	while (arg) {
 		if (!READ_ONCE(arg->called)) {
 			sse_err("Event %s handler was not called\n",
-			      sse_evt_name(arg->evt));
+				sse_evt_name(arg->evt));
 			ret = -EINVAL;
 		}
-
 
 		event = arg->event;
 		arg = READ_ONCE(arg->next_evt_arg);
@@ -462,7 +461,6 @@ static void sse_test_injection_priority(void)
 	sse_test_injection_priority_arg(same_prio_args, ARRAY_SIZE(same_prio_args),
 					sse_low_priority_test_handler, "same_prio_args");
 }
-
 
 static bool sse_get_inject_status(u32 evt)
 {

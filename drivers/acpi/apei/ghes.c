@@ -17,7 +17,8 @@
  *   Author: Huang Ying <ying.huang@intel.com>
  */
 
-#include <linux/riscv_sse.h>
+#include <linux/err.h>
+#include <linux/riscv_sbi_sse.h>
 #include <linux/arm_sdei.h>
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
@@ -100,7 +101,7 @@
 #define FIX_APEI_GHES_SDEI_CRITICAL	__end_of_fixed_addresses
 #endif
 
-#ifndef CONFIG_RISCV_SSE
+#ifndef CONFIG_RISCV_SBI_SSE
 #define FIX_APEI_GHES_SSE_LOW_PRIORITY	__end_of_fixed_addresses
 #define FIX_APEI_GHES_SSE_HIGH_PRIORITY	__end_of_fixed_addresses
 #endif
@@ -1685,7 +1686,8 @@ static int ghes_probe(struct platform_device *ghes_dev)
 	case ACPI_HEST_NOTIFY_SSE:
 		rc = apei_sse_register_ghes(ghes);
 		if (rc) {
-			pr_err(GHES_PFX "Failed to register for SSE notification on vector %d\n",
+			pr_err(GHES_PFX "Failed to register for SSE notification"
+			       " on vector %d\n",
 			       generic->notify.vector);
 			goto err;
 		}
@@ -1756,6 +1758,7 @@ static int ghes_remove(struct platform_device *ghes_dev)
 	case ACPI_HEST_NOTIFY_SOFTWARE_DELEGATED:
 		apei_sdei_unregister_ghes(ghes);
 		break;
+
 	case ACPI_HEST_NOTIFY_SSE:
 		apei_sse_unregister_ghes(ghes);
 		break;

@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2024 Rivos Inc.
+ * Copyright (C) 2025 Rivos Inc.
  */
 
 #define pr_fmt(fmt) "sse: " fmt
@@ -14,7 +14,7 @@
 #include <linux/list.h>
 #include <linux/percpu-defs.h>
 #include <linux/reboot.h>
-#include <linux/riscv_sse.h>
+#include <linux/riscv_sbi_sse.h>
 #include <linux/slab.h>
 
 #include <asm/sbi.h>
@@ -24,7 +24,7 @@ struct sse_event {
 	struct list_head list;
 	u32 evt_id;
 	u32 priority;
-	sse_event_handler *handler;
+	sse_event_handler_fn *handler;
 	void *handler_arg;
 	/* Only valid for global events */
 	unsigned int cpu;
@@ -182,7 +182,7 @@ static void sse_global_event_update_cpu(struct sse_event *event,
 static int sse_event_set_target_cpu_nolock(struct sse_event *event,
 					   unsigned int cpu)
 {
-	unsigned int hart_id = cpuid_to_hartid_map(cpu);
+	unsigned long hart_id = cpuid_to_hartid_map(cpu);
 	struct sse_registered_event *reg_evt = event->global;
 	u32 evt = event->evt_id;
 	bool was_enabled;
@@ -292,7 +292,8 @@ err_free_per_cpu:
 }
 
 static struct sse_event *sse_event_alloc(u32 evt, u32 priority,
-					 sse_event_handler *handler, void *arg)
+					 sse_event_handler_fn *handler,
+					 void *arg)
 {
 	int err;
 	struct sse_event *event;
@@ -390,8 +391,8 @@ static void sse_event_free(struct sse_event *event)
 	kfree(event);
 }
 
-static void sse_on_each_cpu(struct sse_event *event, unsigned long func,
-			    unsigned long revert_func)
+static int sse_on_each_cpu(struct sse_event *event, unsigned long func,
+			   unsigned long revert_func)
 {
 	struct sse_per_cpu_evt cpu_evt;
 
@@ -409,7 +410,11 @@ static void sse_on_each_cpu(struct sse_event *event, unsigned long func,
 		cpumask_andnot(&revert, cpu_online_mask, &cpu_evt.error);
 		cpu_evt.func = revert_func;
 		on_each_cpu_mask(&revert, sse_event_per_cpu_func, &cpu_evt, 1);
+
+		return -EIO;
 	}
+
+	return 0;
 }
 
 int sse_event_enable(struct sse_event *event)
@@ -421,8 +426,9 @@ int sse_event_enable(struct sse_event *event)
 			if (sse_event_is_global(event->evt_id)) {
 				ret = sse_event_enable_local(event);
 			} else {
-				sse_on_each_cpu(event, SBI_SSE_EVENT_ENABLE,
-						SBI_SSE_EVENT_DISABLE);
+				ret = sse_on_each_cpu(event,
+						      SBI_SSE_EVENT_ENABLE,
+						      SBI_SSE_EVENT_DISABLE);
 			}
 		}
 	}
@@ -434,7 +440,7 @@ static int sse_events_mask(void)
 {
 	struct sbiret ret;
 
-	ret = sbi_ecall(SBI_EXT_SSE, SBI_SSE_EVENT_HART_MASK, 0, 0, 0, 0, 0, 0);
+	ret = sbi_ecall(SBI_EXT_SSE, SBI_SSE_HART_MASK, 0, 0, 0, 0, 0, 0);
 
 	return sbi_err_map_linux_errno(ret.error);
 }
@@ -443,7 +449,7 @@ static int sse_events_unmask(void)
 {
 	struct sbiret ret;
 
-	ret = sbi_ecall(SBI_EXT_SSE, SBI_SSE_EVENT_HART_UNMASK, 0, 0, 0, 0, 0, 0);
+	ret = sbi_ecall(SBI_EXT_SSE, SBI_SSE_HART_UNMASK, 0, 0, 0, 0, 0, 0);
 
 	return sbi_err_map_linux_errno(ret.error);
 }
@@ -472,7 +478,7 @@ void sse_event_disable(struct sse_event *event)
 EXPORT_SYMBOL_GPL(sse_event_disable);
 
 struct sse_event *sse_event_register(u32 evt, u32 priority,
-				     sse_event_handler *handler, void *arg)
+				     sse_event_handler_fn *handler, void *arg)
 {
 	struct sse_event *event;
 	int cpu;
@@ -494,8 +500,8 @@ struct sse_event *sse_event_register(u32 evt, u32 priority,
 			unsigned long preferred_hart;
 
 			ret = sse_event_attr_get_no_lock(event->global,
-							SBI_SSE_ATTR_PREFERRED_HART,
-							&preferred_hart);
+							 SBI_SSE_ATTR_PREFERRED_HART,
+							 &preferred_hart);
 			if (ret)
 				goto err_event_free;
 
@@ -507,8 +513,10 @@ struct sse_event *sse_event_register(u32 evt, u32 priority,
 				goto err_event_free;
 
 		} else {
-			sse_on_each_cpu(event, SBI_SSE_EVENT_REGISTER,
-					SBI_SSE_EVENT_DISABLE);
+			ret = sse_on_each_cpu(event, SBI_SSE_EVENT_REGISTER,
+					      SBI_SSE_EVENT_DISABLE);
+			if (ret)
+				goto err_event_free;
 		}
 	}
 
@@ -575,6 +583,7 @@ static int sse_cpu_teardown(unsigned int cpu)
 	int ret = 0;
 	unsigned int next_cpu;
 	struct sse_event *event;
+	struct sse_registered_event *reg_evt;
 
 	/* Mask the sse events */
 	ret = sse_events_mask();
@@ -583,8 +592,10 @@ static int sse_cpu_teardown(unsigned int cpu)
 
 	scoped_guard(spinlock, &events_list_lock) {
 		list_for_each_entry(event, &events, list) {
+			/* Disable local event on current cpu */
 			if (!sse_event_is_global(event->evt_id)) {
-				if (event->global->is_enabled)
+				reg_evt = sse_get_reg_evt(event);
+				if (reg_evt->is_enabled)
 					sse_event_disable_local(event);
 
 				sse_sbi_unregister_event(event);
@@ -601,16 +612,6 @@ static int sse_cpu_teardown(unsigned int cpu)
 	}
 
 	return ret;
-}
-
-static void sse_reset(void)
-{
-	struct sse_event *event;
-
-	list_for_each_entry(event, &events, list) {
-		sse_event_disable_nolock(event);
-		sse_event_unregister_nolock(event);
-	}
 }
 
 static int sse_pm_notifier(struct notifier_block *nb, unsigned long action,
@@ -644,7 +645,6 @@ static int sse_reboot_notifier(struct notifier_block *nb, unsigned long action,
 			       void *data)
 {
 	cpuhp_remove_state(sse_hp_state);
-	sse_reset();
 
 	return NOTIFY_OK;
 }
@@ -658,7 +658,7 @@ static int __init sse_init(void)
 	int ret;
 
 	if (sbi_probe_extension(SBI_EXT_SSE) <= 0) {
-		pr_err("Missing SBI SSE extension\n");
+		pr_info("Missing SBI SSE extension\n");
 		return -EOPNOTSUPP;
 	}
 	pr_info("SBI SSE extension detected\n");
@@ -698,7 +698,7 @@ arch_initcall(sse_init);
 struct sse_ghes_callback {
 	struct list_head head;
 	struct ghes *ghes;
-	sse_event_handler *callback;
+	sse_event_handler_fn *callback;
 };
 
 struct sse_ghes_event_data {
@@ -724,8 +724,8 @@ static int sse_ghes_handler(u32 event_num, void *arg, struct pt_regs *regs)
 	return 0;
 }
 
-int sse_register_ghes(struct ghes *ghes, sse_event_handler *lo_cb,
-		      sse_event_handler *hi_cb)
+int sse_register_ghes(struct ghes *ghes, sse_event_handler_fn *lo_cb,
+		      sse_event_handler_fn *hi_cb)
 {
 	struct sse_ghes_event_data *ev_data, *evd;
 	struct sse_ghes_callback *cb;

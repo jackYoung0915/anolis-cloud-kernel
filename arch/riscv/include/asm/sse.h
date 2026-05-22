@@ -7,7 +7,7 @@
 
 #include <asm/sbi.h>
 
-#ifdef CONFIG_RISCV_SSE
+#ifdef CONFIG_RISCV_SBI_SSE
 
 struct sse_event_interrupted_state {
 	unsigned long a6;

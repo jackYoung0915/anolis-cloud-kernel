@@ -30,9 +30,6 @@
 #define PCI_IOBASE		((void __iomem *)PCI_IO_START)
 #endif /* CONFIG_MMU */
 
-#define ioremap_cache(addr, size)					\
-	((__force void *)ioremap_prot((addr), (size), _PAGE_KERNEL))
-
 /*
  * Emulation routines for the port-mapped IO space used by some PCI drivers.
  * These are defined as being "fully synchronous", but also "not guaranteed to
@@ -141,6 +138,8 @@ __io_writes_outs(outs, u64, q, __io_pbr(), __io_paw())
 #ifdef CONFIG_MMU
 #define arch_memremap_wb(addr, size)	\
 	((__force void *)ioremap_prot((addr), (size), _PAGE_KERNEL))
-#endif
 
+#define ioremap_cache(addr, size)					\
+	((__force void *)ioremap_prot((addr), (size), _PAGE_KERNEL))
+#endif
 #endif /* _ASM_RISCV_IO_H */

@@ -1,6 +1,6 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (C) 2024 Rivos Inc.
+ * Copyright (C) 2025 Rivos Inc.
  */
 
 #include <linux/init.h>
@@ -8,36 +8,12 @@
 
 #include <asm/asm.h>
 #include <asm/csr.h>
-#include <asm/asm-offsets.h>
+#include <asm/scs.h>
 
 /* When entering handle_sse, the following registers are set:
  * a6: contains the hartid
  * a7: contains a sse_event_arch_data struct pointer
  */
-
-#ifdef CONFIG_SHADOW_CALL_STACK
-/* gp is used as the shadow call stack pointer instead */
-.macro load_global_pointer
-.endm
-
-/* Load the per-CPU SSE shadow call stack to gp. */
-.macro scs_load_sse_stack reg_evt
-	REG_L gp, SSE_REG_EVT_SHADOW_STACK(\reg_evt)
-.endm
-#else
-/* load __global_pointer to gp */
-.macro load_global_pointer
-.option push
-.option norelax
-	la gp, __global_pointer$
-.option pop
-.endm
-
-/* Don't load shadow stack if SCS is disabled */
-.macro scs_load_sse_stack reg_evt
-.endm
-#endif /* CONFIG_SHADOW_CALL_STACK */
-
 SYM_CODE_START(handle_sse)
 	/* Save stack temporarily */
 	REG_S sp, SSE_REG_EVT_TMP(a7)
@@ -95,19 +71,18 @@ SYM_CODE_START(handle_sse)
 	load_global_pointer
 	scs_load_sse_stack a7
 
-	/* Restore current task struct from __sse_entry_task */
-	li t1, ASM_NR_CPUS
-	mv t3, zero
-
 #ifdef CONFIG_SMP
-	REG_L t4, SSE_REG_HART_ID(a7)
-	REG_L t3, SSE_REG_CPU_ID(a7)
+	lw t4, SSE_REG_HART_ID(a7)
+	lw t3, SSE_REG_CPU_ID(a7)
 
 	bne t4, a6, .Lfind_hart_id_slowpath
 
 .Lcpu_id_found:
+#else
+	mv t3, zero
 #endif
-	asm_per_cpu_with_cpu t2 __sse_entry_task t1 t3
+
+	asm_per_cpu_with_cpu t2 __sbi_sse_entry_task t1 t3
 	REG_L tp, 0(t2)
 
 	mv a1, sp /* pt_regs on stack */
@@ -117,9 +92,7 @@ SYM_CODE_START(handle_sse)
 	 * kernel in early exception path and thus, we don't know the content of
 	 * sscratch.
 	 */
-	csrr s4, CSR_SSCRATCH
-	/* In-kernel scratch is 0 */
-	csrw CSR_SCRATCH, x0
+	csrrw s4, CSR_SSCRATCH, x0
 
 	mv a0, a7
 
@@ -174,8 +147,10 @@ SYM_CODE_START(handle_sse)
 #ifdef CONFIG_SMP
 .Lfind_hart_id_slowpath:
 
-/* Slowpath to find the CPU id associated to the hart id */
-la t0, __cpuid_to_hartid_map
+	/* Restore current task struct from __sbi_sse_entry_task */
+	li t1, ASM_NR_CPUS
+	/* Slowpath to find the CPU id associated to the hart id */
+	la t0, __cpuid_to_hartid_map
 
 .Lhart_id_loop:
 	REG_L t2, 0(t0)
@@ -194,7 +169,6 @@ la t0, __cpuid_to_hartid_map
 	la a0, sse_hart_id_panic_string
 	la t0, panic
 	jalr t0
-
 #endif
 
 SYM_CODE_END(handle_sse)

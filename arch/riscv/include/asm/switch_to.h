@@ -103,15 +103,15 @@ static inline void __switch_to_envcfg(struct task_struct *next)
 			:: "r" (next->thread.envcfg) : "memory");
 }
 
-#ifdef CONFIG_RISCV_SSE
-DECLARE_PER_CPU(struct task_struct *, __sse_entry_task);
+#ifdef CONFIG_RISCV_SBI_SSE
+DECLARE_PER_CPU(struct task_struct *, __sbi_sse_entry_task);
 
-static inline void __switch_sse_entry_task(struct task_struct *next)
+static inline void __switch_sbi_sse_entry_task(struct task_struct *next)
 {
-	__this_cpu_write(__sse_entry_task, next);
+	__this_cpu_write(__sbi_sse_entry_task, next);
 }
 #else
-static inline void __switch_sse_entry_task(struct task_struct *next)
+static inline void __switch_sbi_sse_entry_task(struct task_struct *next)
 {
 }
 #endif
@@ -150,7 +150,7 @@ do {							\
 	if (switch_to_should_flush_icache(__next))	\
 		local_flush_icache_all();		\
 	__switch_to_envcfg(__next);			\
-	__switch_sse_entry_task(__next);			\
+	__switch_sbi_sse_entry_task(__next);			\
 	((last) = __switch_to(__prev, __next));		\
 } while (0)
 
