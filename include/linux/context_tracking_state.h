@@ -44,8 +44,18 @@ struct context_tracking {
 #endif
 };
 
+struct sys_tracking {
+	enum sys_state {
+		ST_DISABLED = -1,	/* returned by sys_state() if unknown */
+		ST_KERNEL = 0,
+		ST_USER,
+		ST_GUEST,
+	} state;
+};
+
 #ifdef CONFIG_CONTEXT_TRACKING
 DECLARE_PER_CPU(struct context_tracking, context_tracking);
+DECLARE_PER_CPU(struct sys_tracking, sys_tracking);
 #endif
 
 #ifdef CONFIG_CONTEXT_TRACKING_USER

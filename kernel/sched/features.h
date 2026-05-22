@@ -160,6 +160,8 @@ SCHED_FEAT(ID_RESCUE_EXPELLEE, false)
  * extra conditional on the pick hot-path.
  */
 SCHED_FEAT(ID_GI_STAT, true)
+SCHED_FEAT(ID_SYS_AWARE, false)
+SCHED_FEAT(ID_IRQ_AWARE, true)
 #endif
 
 SCHED_FEAT(SCHED_FEAT_RESERVE1, false)
