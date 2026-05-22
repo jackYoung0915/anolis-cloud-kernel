@@ -2023,13 +2023,17 @@ static u64 its_irq_get_msi_base(struct its_device *its_dev)
 static void its_irq_compose_msi_msg(struct irq_data *d, struct msi_msg *msg)
 {
 	struct its_device *its_dev = irq_data_get_irq_chip_data(d);
+	msg->data = its_get_event_id(d);
 
 #ifdef CONFIG_ARCH_PHYTIUM
-	if (typeof_ft2000plus())
+	if (typeof_ft2000plus()) {
+		u64 addr = its_dev->its->get_msi_base(its_dev);
+		msg->address_hi = upper_32_bits(addr);
+		msg->address_lo = lower_32_bits(addr);
 		return;
+	}
 #endif
 
-	msg->data = its_get_event_id(d);
 	msi_msg_set_addr(irq_data_get_msi_desc(d), msg,
 			 its_dev->its->get_msi_base(its_dev));
 }
