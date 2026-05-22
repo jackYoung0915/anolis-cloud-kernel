@@ -882,8 +882,13 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 				if (folio_test_large(folio)) {
 					if (!my_can_split_folio(folio, NULL))
 						goto keep_unlocked;
-
-					if (!folio_entire_mapcount(folio) &&
+					/*
+					 * Split partially mapped folios right
+					 * away. We can free the unmapped pages
+					 * without IO.
+					 */
+					if (data_race(!list_empty(&folio->_deferred_list) &&
+						      folio_test_partially_mapped(folio)) &&
 					    my_split_folio_to_list(folio, list))
 						goto keep_unlocked;
 				}
@@ -896,8 +901,17 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 								   list))
 						goto keep_unlocked;
 
+					/* Original folio size; now order-0. */
+					reclaim_coldpgs_update_stats(memcg,
+						RECLAIM_COLDPGS_STAT_LARGE_FOLIO_SWPOUT_FALLBACK,
+						nr_pages << PAGE_SHIFT);
+
 					if (!my_add_to_swap(folio))
 						goto keep_unlocked;
+				} else if (folio_test_large(folio)) {
+					reclaim_coldpgs_update_stats(memcg,
+						RECLAIM_COLDPGS_STAT_LARGE_FOLIO_SWPOUT,
+						nr_pages << PAGE_SHIFT);
 				}
 
 				/* Update address space */
@@ -1598,6 +1612,8 @@ static int reclaim_coldpgs_read_stats(struct seq_file *m, void *v)
 		"slab drop",
 		"mlock dropped",
 		"mlock refault",
+		"large folio swap out",
+		"large folio swap out fallback",
 	};
 
 	self = kzalloc(sizeof(*self) * 3, GFP_KERNEL);
