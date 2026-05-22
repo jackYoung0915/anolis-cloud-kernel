@@ -14925,6 +14925,13 @@ S:	Supported
 F:	Documentation/networking/device_drivers/ethernet/neterion/s2io.rst
 F:	drivers/net/ethernet/neterion/
 
+NETTRACE
+M:	Peilin He <he.peilin@zte.com.cn>
+M:	xu xin <xu.xin16@zte.com.cn>
+L:	netdev@vger.kernel.org
+S:	Maintained
+F:	net/nettrace/
+
 NETFILTER
 M:	Pablo Neira Ayuso <pablo@netfilter.org>
 M:	Jozsef Kadlecsik <kadlec@netfilter.org>
