@@ -610,7 +610,7 @@ AutoReqProv: no\
 Requires(pre): findutils\
 Requires: findutils\
 Requires: perl-interpreter\
-%ifarch riscv64\
+%if %{with_cross}\
 Requires: openssl-devel\
 Requires: elfutils-libelf-devel\
 Requires: bison\
@@ -988,7 +988,7 @@ BuildKernel() {
     gzip -c9 < Module.symvers > $RPM_BUILD_ROOT/boot/symvers-$KernelVer.gz
     cp $RPM_BUILD_ROOT/boot/symvers-$KernelVer.gz $RPM_BUILD_ROOT/lib/modules/$KernelVer/symvers.gz
 
-%ifarch riscv64
+%if %{with_cross}
     # Files for 'make scripts' to succeed with kernel-devel.
     mkdir -p $RPM_BUILD_ROOT/lib/modules/$KernelVer/build/security/selinux/include
     cp -a --parents security/selinux/include/classmap.h $RPM_BUILD_ROOT/lib/modules/$KernelVer/build
