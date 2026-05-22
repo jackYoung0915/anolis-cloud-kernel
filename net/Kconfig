@@ -510,4 +510,11 @@ config NETDEV_ADDR_LIST_TEST
 	default KUNIT_ALL_TESTS
 	depends on KUNIT
 
+config DROP_REASON_STAT
+	tristate "Drop reason statistics"
+	default m
+	help
+	  This option enables the /proc/net/drop_reason_stat file which
+	  provides detailed statistics about the reasons for packet drops
+
 endif   # if NET
