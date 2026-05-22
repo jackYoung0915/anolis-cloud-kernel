@@ -11,7 +11,7 @@ Prerequisites:
     gnuplot 5.0 or higher
     gnuplot-py 1.8 or higher
     (Most of the distributions have these required packages. They may be called
-     gnuplot-py, phython-gnuplot or phython3-gnuplot, gnuplot-nox, ... )
+     gnuplot-py, python-gnuplot or python3-gnuplot, gnuplot-nox, ... )
 
     Kernel config for Linux trace is enabled
 
@@ -27,11 +27,15 @@ import re
 import signal
 import sys
 import getopt
-import Gnuplot
+try:
+    import Gnuplot
+    GNUPLOT_AVAILABLE = True
+except ImportError:
+    GNUPLOT_AVAILABLE = False
+    print("Warning: Gnuplot module not available. Plotting will be skipped.")
 from numpy import *
 from decimal import *
-sys.path.append('../intel_pstate_tracer')
-#import intel_pstate_tracer
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "intel_pstate_tracer"))
 import intel_pstate_tracer as ipt
 
 __license__ = "GPL version 2"
@@ -338,14 +342,17 @@ if graph_data_present == False:
     print('No valid data to plot')
     sys.exit(2)
 
-for cpu_no in range(0, current_max_cpu + 1):
-    plot_per_cpu_freq(cpu_no)
-    plot_per_cpu_des_perf(cpu_no)
-    plot_per_cpu_load(cpu_no)
+if GNUPLOT_AVAILABLE:
+    for cpu_no in range(0, current_max_cpu + 1):
+        plot_per_cpu_freq(cpu_no)
+        plot_per_cpu_des_perf(cpu_no)
+        plot_per_cpu_load(cpu_no)
 
-plot_all_cpu_des_perf()
-plot_all_cpu_frequency()
-plot_all_cpu_load()
+    plot_all_cpu_des_perf()
+    plot_all_cpu_frequency()
+    plot_all_cpu_load()
+else:
+    print('Gnuplot not available. Skipping plot generation. CSV files have been generated.')
 
 for root, dirs, files in os.walk('.'):
     for f in files:
