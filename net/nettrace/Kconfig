@@ -1,0 +1,6 @@
+config NET_TRACE
+	tristate "Net trace"
+	depends on KPROBES
+	default n
+	help
+	  Trace net package from the kernel network proto stack.
