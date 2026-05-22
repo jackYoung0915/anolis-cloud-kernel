@@ -376,6 +376,9 @@ static struct block_device *add_partition(struct gendisk *disk, int partno,
 			goto out_put;
 	}
 
+	bdev->bd_inode->i_state |= I_NEW;
+	bdev_add(bdev, devt);
+
 	/* delay uevent until 'holders' subdir is created */
 	dev_set_uevent_suppress(pdev, 1);
 	err = device_add(pdev);
@@ -398,7 +401,7 @@ static struct block_device *add_partition(struct gendisk *disk, int partno,
 	err = xa_insert(&disk->part_tbl, partno, bdev, GFP_KERNEL);
 	if (err)
 		goto out_del;
-	bdev_add(bdev, devt);
+	unlock_new_inode(bdev->bd_inode);
 
 	/* suppress uevent if the disk suppresses it */
 	if (!dev_get_uevent_suppress(ddev))
@@ -409,6 +412,7 @@ out_del:
 	kobject_put(bdev->bd_holder_dir);
 	device_del(pdev);
 out_put:
+	bdev_inode_failed(bdev);
 	put_device(pdev);
 	return ERR_PTR(err);
 out_put_disk:
