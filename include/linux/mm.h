@@ -2377,7 +2377,7 @@ static inline pmd_t *pmd_alloc(struct mm_struct *mm, pud_t *pud, unsigned long a
 #if USE_SPLIT_PTE_PTLOCKS
 #if ALLOC_SPLIT_PTLOCKS
 void __init ptlock_cache_init(void);
-extern bool ptlock_alloc(struct page *page);
+extern bool ptlock_alloc(struct page *page, bool atomic);
 extern void ptlock_free(struct page *page);
 
 static inline spinlock_t *ptlock_ptr(struct page *page)
@@ -2389,7 +2389,7 @@ static inline void ptlock_cache_init(void)
 {
 }
 
-static inline bool ptlock_alloc(struct page *page)
+static inline bool ptlock_alloc(struct page *page, bool atomic)
 {
 	return true;
 }
@@ -2409,7 +2409,7 @@ static inline spinlock_t *pte_lockptr(struct mm_struct *mm, pmd_t *pmd)
 	return ptlock_ptr(pmd_page(*pmd));
 }
 
-static inline bool ptlock_init(struct page *page)
+static inline bool ptlock_init(struct page *page, bool atomic)
 {
 	/*
 	 * prep_new_page() initialize page->private (and therefore page->ptl)
@@ -2419,7 +2419,7 @@ static inline bool ptlock_init(struct page *page)
 	 * slab code uses page->slab_cache, which share storage with page->ptl.
 	 */
 	VM_BUG_ON_PAGE(*(unsigned long *)&page->ptl, page);
-	if (!ptlock_alloc(page))
+	if (!ptlock_alloc(page, atomic))
 		return false;
 	spin_lock_init(ptlock_ptr(page));
 	return true;
@@ -2434,7 +2434,7 @@ static inline spinlock_t *pte_lockptr(struct mm_struct *mm, pmd_t *pmd)
 	return &mm->page_table_lock;
 }
 static inline void ptlock_cache_init(void) {}
-static inline bool ptlock_init(struct page *page) { return true; }
+static inline bool ptlock_init(struct page *page, bool atomic) { return true; }
 static inline void ptlock_free(struct page *page) {}
 #endif /* USE_SPLIT_PTE_PTLOCKS */
 
@@ -2446,7 +2446,16 @@ static inline void pgtable_init(void)
 
 static inline bool pgtable_pte_page_ctor(struct page *page)
 {
-	if (!ptlock_init(page))
+	if (!ptlock_init(page, false))
+		return false;
+	__SetPageTable(page);
+	inc_lruvec_page_state(page, NR_PAGETABLE);
+	return true;
+}
+
+static inline bool pgtable_pte_page_ctor_atomic(struct page *page)
+{
+	if (!ptlock_init(page, true))
 		return false;
 	__SetPageTable(page);
 	inc_lruvec_page_state(page, NR_PAGETABLE);
@@ -2500,12 +2509,12 @@ static inline spinlock_t *pmd_lockptr(struct mm_struct *mm, pmd_t *pmd)
 	return ptlock_ptr(pmd_to_page(pmd));
 }
 
-static inline bool pmd_ptlock_init(struct page *page)
+static inline bool pmd_ptlock_init(struct page *page, bool atomic)
 {
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	page->pmd_huge_pte = NULL;
 #endif
-	return ptlock_init(page);
+	return ptlock_init(page, atomic);
 }
 
 static inline void pmd_ptlock_free(struct page *page)
@@ -2525,7 +2534,7 @@ static inline spinlock_t *pmd_lockptr(struct mm_struct *mm, pmd_t *pmd)
 	return &mm->page_table_lock;
 }
 
-static inline bool pmd_ptlock_init(struct page *page) { return true; }
+static inline bool pmd_ptlock_init(struct page *page, bool atomic) { return true; }
 static inline void pmd_ptlock_free(struct page *page) {}
 
 #define pmd_huge_pte(mm, pmd) ((mm)->pmd_huge_pte)
@@ -2541,7 +2550,16 @@ static inline spinlock_t *pmd_lock(struct mm_struct *mm, pmd_t *pmd)
 
 static inline bool pgtable_pmd_page_ctor(struct page *page)
 {
-	if (!pmd_ptlock_init(page))
+	if (!pmd_ptlock_init(page, false))
+		return false;
+	__SetPageTable(page);
+	inc_lruvec_page_state(page, NR_PAGETABLE);
+	return true;
+}
+
+static inline bool pgtable_pmd_page_ctor_atomic(struct page *page)
+{
+	if (!pmd_ptlock_init(page, true))
 		return false;
 	__SetPageTable(page);
 	inc_lruvec_page_state(page, NR_PAGETABLE);
