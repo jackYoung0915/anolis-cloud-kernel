@@ -1,40 +1,51 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
+/*
+ * Base on arch/riscv/lib/strlen.S
+ *
+ * Copyright (C) Feng Jiang <jiangfeng@kylinos.cn>
+ */
+
 #include <linux/linkage.h>
 #include <asm/asm.h>
 #include <asm/alternative-macros.h>
 #include <asm/hwcap.h>
 
-/* int strlen(const char *s) */
-SYM_FUNC_START(strlen)
+/* size_t strnlen(const char *s, size_t count) */
+SYM_FUNC_START(strnlen)
 
-	ALTERNATIVE("nop", "j strlen_zbb", 0, RISCV_ISA_EXT_ZBB, CONFIG_RISCV_ISA_ZBB)
+	__ALTERNATIVE_CFG("nop", "j strnlen_zbb", 0, RISCV_ISA_EXT_ZBB,
+		IS_ENABLED(CONFIG_RISCV_ISA_ZBB) && IS_ENABLED(CONFIG_TOOLCHAIN_HAS_ZBB))
+
 
 	/*
 	 * Returns
-	 *   a0 - string length
+	 *   a0 - String length
 	 *
 	 * Parameters
 	 *   a0 - String to measure
+	 *   a1 - Max length of string
 	 *
-	 * Clobbers:
-	 *   t0, t1
+	 * Clobbers
+	 *   t0, t1, t2
 	 */
-	mv	t1, a0
+	addi	t1, a0, -1
+	add	t2, a0, a1
 1:
-	lbu	t0, 0(t1)
-	beqz	t0, 2f
 	addi	t1, t1, 1
-	j	1b
+	beq	t1, t2, 2f
+	lbu	t0, 0(t1)
+	bnez	t0, 1b
 2:
 	sub	a0, t1, a0
 	ret
 
+
 /*
- * Variant of strlen using the ZBB extension if available
+ * Variant of strnlen using the ZBB extension if available
  */
-#ifdef CONFIG_RISCV_ISA_ZBB
-strlen_zbb:
+#if defined(CONFIG_RISCV_ISA_ZBB) && defined(CONFIG_TOOLCHAIN_HAS_ZBB)
+strnlen_zbb:
 
 #ifdef CONFIG_CPU_BIG_ENDIAN
 # define CZ	clz
@@ -49,14 +60,18 @@ strlen_zbb:
 
 	/*
 	 * Returns
-	 *   a0 - string length
+	 *   a0 - String length
 	 *
 	 * Parameters
 	 *   a0 - String to measure
+	 *   a1 - Max length of string
 	 *
 	 * Clobbers
-	 *   t0, t1, t2, t3
+	 *   t0, t1, t2, t3, t4
 	 */
+
+	/* If maxlen is 0, return 0. */
+	beqz	a1, 3f
 
 	/* Number of irrelevant bytes in the first word. */
 	andi	t2, a0, SZREG-1
@@ -67,6 +82,10 @@ strlen_zbb:
 	li	t3, SZREG
 	sub	t3, t3, t2
 	slli	t2, t2, 3
+
+	/* Aligned boundary. */
+	add	t4, a0, a1
+	andi	t4, t4, -SZREG
 
 	/* Get the first word.  */
 	REG_L	t1, 0(t0)
@@ -95,6 +114,10 @@ strlen_zbb:
 	 * of valid bytes in this chunk.
 	 */
 	srli	a0, t1, 3
+
+	/* Limit the result by maxlen. */
+	minu	a0, a0, a1
+
 	bgtu	t3, a0, 2f
 
 	/* Prepare for the word comparison loop. */
@@ -110,8 +133,9 @@ strlen_zbb:
 	REG_L	t1, SZREG(t0)
 	addi	t0, t0, SZREG
 	orc.b	t1, t1
+	bgeu	t0, t4, 4f
 	beq	t1, t3, 1b
-
+4:
 	not	t1, t1
 	CZ	t1, t1
 	srli	t1, t1, 3
@@ -124,11 +148,17 @@ strlen_zbb:
 
 	/* Add number of characters in the last word.  */
 	add	a0, a0, t1
+
+	/* Ensure the final result does not exceed maxlen. */
+	minu	a0, a0, a1
 2:
+	ret
+3:
+	mv	a0, a1
 	ret
 
 .option pop
 #endif
-SYM_FUNC_END(strlen)
-SYM_FUNC_ALIAS(__pi_strlen, strlen)
-EXPORT_SYMBOL(strlen)
+SYM_FUNC_END(strnlen)
+SYM_FUNC_ALIAS(__pi_strnlen, strnlen)
+EXPORT_SYMBOL(strnlen)
