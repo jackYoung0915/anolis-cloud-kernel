@@ -971,7 +971,7 @@ int security_capable(const struct cred *cred,
  *
  * Return: Returns 0 if permission is granted.
  */
-int security_quotactl(int cmds, int type, int id, struct super_block *sb)
+int security_quotactl(int cmds, int type, int id, const struct super_block *sb)
 {
 	return call_int_hook(quotactl, 0, cmds, type, id, sb);
 }
@@ -1039,15 +1039,14 @@ int security_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 	int rc;
 
 	/*
-	 * The module will respond with a positive value if
-	 * it thinks the __vm_enough_memory() call should be
-	 * made with the cap_sys_admin set. If all of the modules
-	 * agree that it should be set it will. If any module
-	 * thinks it should not be set it won't.
+	 * The module will respond with 0 if it thinks the __vm_enough_memory()
+	 * call should be made with the cap_sys_admin set. If all of the modules
+	 * agree that it should be set it will. If any module thinks it should
+	 * not be set it won't.
 	 */
 	hlist_for_each_entry(hp, &security_hook_heads.vm_enough_memory, list) {
 		rc = hp->hook.vm_enough_memory(mm, pages);
-		if (rc <= 0) {
+		if (rc < 0) {
 			cap_sys_admin = 0;
 			break;
 		}
@@ -1132,7 +1131,7 @@ int security_bprm_check(struct linux_binprm *bprm)
  * open file descriptors to which access will no longer be granted when the
  * attributes are changed.  This is called immediately before commit_creds().
  */
-void security_bprm_committing_creds(struct linux_binprm *bprm)
+void security_bprm_committing_creds(const struct linux_binprm *bprm)
 {
 	call_void_hook(bprm_committing_creds, bprm);
 }
@@ -1148,7 +1147,7 @@ void security_bprm_committing_creds(struct linux_binprm *bprm)
  * process such as clearing out non-inheritable signal state.  This is called
  * immediately after commit_creds().
  */
-void security_bprm_committed_creds(struct linux_binprm *bprm)
+void security_bprm_committed_creds(const struct linux_binprm *bprm)
 {
 	call_void_hook(bprm_committed_creds, bprm);
 }
@@ -1333,7 +1332,7 @@ EXPORT_SYMBOL(security_sb_remount);
  *
  * Return: Returns 0 if permission is granted.
  */
-int security_sb_kern_mount(struct super_block *sb)
+int security_sb_kern_mount(const struct super_block *sb)
 {
 	return call_int_hook(sb_kern_mount, 0, sb);
 }
@@ -1600,7 +1599,7 @@ EXPORT_SYMBOL(security_dentry_init_security);
  * Return: Returns 0 on success, error on failure.
  */
 int security_dentry_create_files_as(struct dentry *dentry, int mode,
-				    struct qstr *name,
+				    const struct qstr *name,
 				    const struct cred *old, struct cred *new)
 {
 	return call_int_hook(dentry_create_files_as, 0, dentry, mode,
@@ -2819,6 +2818,8 @@ int security_file_fcntl(struct file *file, unsigned int cmd, unsigned long arg)
  * Save owner security information (typically from current->security) in
  * file->f_security for later use by the send_sigiotask hook.
  *
+ * This hook is called with file->f_owner.lock held.
+ *
  * Return: Returns 0 on success.
  */
 void security_file_set_fowner(struct file *file)
@@ -4008,7 +4009,7 @@ void security_inode_invalidate_secctx(struct inode *inode)
 EXPORT_SYMBOL(security_inode_invalidate_secctx);
 
 /**
- * security_inode_notifysecctx() - Nofify the LSM of an inode's security label
+ * security_inode_notifysecctx() - Notify the LSM of an inode's security label
  * @inode: inode
  * @ctx: secctx
  * @ctxlen: length of secctx
