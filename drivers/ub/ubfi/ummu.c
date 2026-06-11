@@ -252,7 +252,7 @@ static int acpi_update_ummu_config(struct ummu_node *ummu_node, u32 index)
 		return ret;
 	}
 
-	node_flag = index | (((u64)UBRT_UMMU) << 32);
+	node_flag = index | ((u64)ummu_types[i].type << SZ_32);
 
 	status = acpi_get_devices(ACPI_UMMU_DEVICE_HID,
 				  acpi_processor_ummu,
