@@ -132,6 +132,24 @@ mtx_unlock:
 	return ret;
 }
 
+
+
+enum iommu_dev_features {
+        IOMMU_DEV_FEAT_SVA,
+        IOMMU_DEV_FEAT_IOPF,
+        IOMMU_DEV_FEAT_KSVA
+};
+
+static int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features feat)
+{
+        return 0;
+}
+
+static int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features feat)
+{
+        return 0;
+}
+
 static int enable_dev_feat(struct device *dev)
 {
 	int ret;
