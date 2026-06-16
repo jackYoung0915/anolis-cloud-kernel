@@ -11,6 +11,7 @@
 #include <linux/iommu.h>
 #include <linux/ioport.h>
 #include <linux/types.h>
+#include <uapi/ub/ubus/ubus.h>
 #include <uapi/ub/ubus/ubus_regs.h>
 #include <ub/ubus/ubus_ids.h>
 #include <linux/mod_devicetable.h>
@@ -19,6 +20,14 @@
 #define UB_ENTITY(v, d) \
 	.vendor = (v), .device = (d), \
 	.mod_vendor = (u32)UB_ANY_ID, .module = (u32)UB_ANY_ID
+
+#define UB_ENTITY_DRIVER_OVERRIDE(v, d, driver_override) \
+	.vendor = (v), .device = (d), \
+	.mod_vendor = (u32)UB_ANY_ID, .module = (u32)UB_ANY_ID, \
+	.override_only = (driver_override)
+
+#define UB_DRIVER_OVERRIDE_ENTITY_VFIO(v, d) \
+	UB_ENTITY_DRIVER_OVERRIDE(v, d, UB_ID_F_VFIO_DRIVER_OVERRIDE)
 
 #define UB_ENTITY_MODULE(v, d, m_v, m) \
 	.vendor = (v), .device = (d), \
@@ -173,6 +182,7 @@ struct ub_entity {
 	unsigned int eid;
 	unsigned short entity_idx;
 	u32 uent_num; /* ub dev number */
+	u32 fm_cna;
 	struct mmio_zone zone[MAX_UB_RES_NUM];
 	unsigned int total_funcs;
 	u32 token_id;
@@ -233,6 +243,10 @@ struct ub_entity {
 	u32 saved_config_space[24]; /* Config space saved at reset time */
 
 	/* entity bus instance info */
+	struct mutex instance_lock;
+	struct list_head instance_node;
+	struct ub_bus_instance *bi;
+	u32 user_eid;
 	struct ub_eu_table *eu_table;
 
 	u32 support_feature;
@@ -360,9 +374,35 @@ struct ub_bus_controller {
 	struct list_head devs;
 	struct ub_bus_controller_ops *ops;
 	bool cluster;
+	struct ub_bus_instance *bi;
+	struct ub_bus_instance *cluster_bi;
 
 	void *data;
 };
+
+struct ub_bus_instance_info {
+	u8 type;
+	u16 upi;
+	u32 eid : 20;
+	struct ub_guid guid;
+};
+
+struct ub_bus_instance {
+	bool registered;
+	bool destroy;
+	struct list_head node;
+	struct kref kref;
+
+	struct ub_bus_instance_info info;
+
+	struct ub_bus_controller *major;
+
+	struct list_head uents;
+	struct mutex lock;
+};
+
+#define ub_bi_is_dynamic(bi) ((bi)->info.type == UBUS_INSTANCE_DYNAMIC_SERVER \
+		|| (bi)->info.type == UBUS_INSTANCE_DYNAMIC_CLUSTER)
 
 static inline struct ub_driver *to_ub_driver(struct device_driver *drv)
 {
