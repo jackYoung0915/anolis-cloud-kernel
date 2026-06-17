@@ -49,6 +49,7 @@ struct ub_entity *ub_alloc_ent(void)
 	INIT_LIST_HEAD(&uent->mue_list);
 	INIT_LIST_HEAD(&uent->ue_list);
 	INIT_LIST_HEAD(&uent->cna_list);
+	INIT_LIST_HEAD(&uent->slot_list);
 	INIT_LIST_HEAD(&uent->instance_node);
 
 	uent->dev.type = &ub_dev_type;
@@ -61,7 +62,7 @@ struct ub_entity *ub_alloc_ent(void)
 EXPORT_SYMBOL_GPL(ub_alloc_ent);
 
 static DEFINE_IDA(uent_num_ida);
-void ub_entity_num_free(struct ub_entity *uent)
+static void ub_entity_num_free(struct ub_entity *uent)
 {
 	ida_free(&uent_num_ida, uent->uent_num);
 }
@@ -436,6 +437,8 @@ void ub_start_ent(struct ub_entity *uent)
 	ret = ub_default_bus_instance_init(uent);
 	WARN_ON(ret);
 
+	ub_create_sysfs_dev_files(uent);
+
 	if (!((is_p_device(uent) || is_p_idevice(uent)) && is_dynamic(uent->bi))) {
 		uent->match_driver = true;
 		ret = device_attach(&uent->dev);
@@ -497,6 +500,7 @@ void ub_stop_ent(struct ub_entity *uent)
 
 	device_release_driver(&uent->dev);
 	uent->match_driver = false;
+	ub_remove_sysfs_ent_files(uent);
 
 	ub_default_bus_instance_uninit(uent);
 
