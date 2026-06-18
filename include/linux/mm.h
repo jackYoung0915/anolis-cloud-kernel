@@ -1340,6 +1340,7 @@ void put_pages_list(struct list_head *pages);
 
 void split_page(struct page *page, unsigned int order);
 void folio_copy(struct folio *dst, struct folio *src);
+int folio_mc_copy(struct folio *dst, struct folio *src);
 
 unsigned long nr_free_buffer_pages(void);
 
@@ -4686,5 +4687,58 @@ static inline void pgalloc_tag_swap(struct folio *new, struct folio *old)
 {
 }
 #endif /* CONFIG_MEM_ALLOC_PROFILING */
+
+enum reclaim_reason {
+	RR_KSWAPD,
+	RR_DIRECT_RECLAIM,
+	RR_TYPES
+};
+
+#ifdef CONFIG_RECLAIM_NOTIFY
+
+struct reclaim_notify_data {
+	int nr_nid;		/* Number of nodes in nid[] */
+	int nid[MAX_NUMNODES];	/* Nodes who getting trouble in reclaiming */
+
+	/*
+	 * Indicates whether notification caller is required to return
+	 * synchronously.
+	 * @true:  the caller do related works first, then return.
+	 * @false: the caller return first and then do related works.
+	 */
+	bool sync;
+
+	/*
+	 * Indicates at which situation the notifier is called, notified
+	 * module could take different action according to the reason.
+	 */
+	enum reclaim_reason reason;
+
+	/*
+	 * Number of pages released by the notified module, which is
+	 * returned after the notification is executed.
+	 */
+	unsigned long nr_freed;
+};
+
+int register_reclaim_notifier(struct notifier_block *nb);
+int unregister_reclaim_notifier(struct notifier_block *nb);
+unsigned long do_reclaim_notify(enum reclaim_reason reason,
+				const void *reclaim_context);
+#else
+static inline int register_reclaim_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+static inline int unregister_reclaim_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+static inline unsigned long do_reclaim_notify(enum reclaim_reason reason,
+				const void *reclaim_context)
+{
+	return 0;
+}
+#endif
 
 #endif /* _LINUX_MM_H */
