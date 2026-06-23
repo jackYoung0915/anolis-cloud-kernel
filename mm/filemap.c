@@ -1046,6 +1046,11 @@ struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order)
 	int n;
 	struct folio *folio;
 
+	filemap_prepare_alloc(&gfp);
+
+	if (filemap_alloc_local_enabled())
+		return filemap_try_alloc_local(gfp, order);
+
 	if (cpuset_do_page_mem_spread()) {
 		unsigned int cpuset_mems_cookie;
 		do {
@@ -2896,6 +2901,9 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 			 */
 			if (writably_mapped)
 				flush_dcache_folio(folio);
+
+			if (IS_ENABLED(CONFIG_ARM64) && iov_iter_is_kvec(iter))
+				iov_iter_set_copy_mc(iter);
 
 			copied = copy_folio_to_iter(folio, offset, bytes, iter);
 
