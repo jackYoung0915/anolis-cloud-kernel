@@ -24,6 +24,8 @@ struct iova_slot;
 #error "UBASE_MAX_VL_NUM can't less than IEEE_8021QAZ_MAX_TCS"
 #endif
 
+#define UBASE_NIC_MAX_VL_NUM	(2)
+
 #define UBASE_SUP_UBL		BIT(0)
 #define UBASE_SUP_ETH		BIT(1)
 #define UBASE_SUP_UNIC		BIT(2)
@@ -101,7 +103,6 @@ struct ubase_caps {
 struct ubase_res_caps {
 	u32	max_cnt;
 	u32	start_idx;
-	u32	reserved_cnt;
 	u32	depth;
 };
 
@@ -121,10 +122,6 @@ struct ubase_adev_caps {
 	u32			jtg_max_cnt;
 	u32			rc_max_cnt;
 	u32			rc_que_depth;
-	u32			ccc_max_cnt;
-	u32			dest_addr_max_cnt;
-	u32			seid_upi_max_cnt;
-	u32			tpm_max_cnt;
 	u16			cqe_size;
 };
 
