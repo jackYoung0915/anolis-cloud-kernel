@@ -227,13 +227,12 @@ static int ub_uent_cfg(struct ub_entity *uent, u32 uent_num)
 
 	dev_set_name(&uent->dev, "%05x", uent_num);
 	uent->uent_num = uent_num;
-
-	(void)ub_show_guid(guid, buf);
-	ub_info(uent, "guid=%s, uent_num=%#05x\n", buf, uent_num);
-
 	uent->dev.bus = &ub_bus_type;
 	/* Card driver set to 64bit if support */
 	uent->dma_mask = GENMASK(31, 0);
+
+	(void)ub_show_guid(guid, buf);
+	ub_info(uent, "guid=%s\n", buf);
 
 	if (is_primary(uent) || is_p_device(uent))
 		ret = ub_setup_ent_primary(uent);
@@ -769,21 +768,29 @@ failed:
 	return ret;
 }
 
-void ub_virt_notify(struct ub_entity *pue, u16 entity_idx, bool is_en)
+int ub_virt_notify(struct ub_entity *pue, u16 entity_idx, bool is_en)
 {
 	const char *operate = is_en ? "enable" : "disable";
 	struct ub_driver *pdrv;
-	int ret;
+	int ret = 0;
 
-	if (pue) {
-		pdrv = pue->driver;
-		if (pdrv && pdrv->virt_notify) {
-			ret = pdrv->virt_notify(pue, entity_idx, is_en);
-			if (ret)
-				ub_warn(pue, "drv virt notify %s ue with entity_idx %u failed, ret=%d\n",
-					operate, entity_idx, ret);
-		}
+	if (!pue)
+		return -EINVAL;
+
+	pdrv = pue->driver;
+	if (!pdrv || !ub_entity_test_priv_flag(pue, UB_ENTITY_PROBED)) {
+		ub_warn(pue, "virt notify entity_idx %u, drv not ready\n", entity_idx);
+		return -EAGAIN;
 	}
+
+	if (pdrv->virt_notify) {
+		ret = pdrv->virt_notify(pue, entity_idx, is_en);
+		if (ret)
+			ub_warn(pue, "drv virt notify %s ue with entity_idx %u failed, ret=%d\n",
+				operate, entity_idx, ret);
+	}
+
+	return ret;
 }
 
 void ub_disable_ent(struct ub_entity *uent)
@@ -964,7 +971,7 @@ static int ub_entity_enable_base(struct ub_entity *uent, u8 enable, bool force)
 		}
 	}
 
-	ub_info(uent, "Change the entity status to %s\n", enable ?  "normal" : "disable");
+	ub_info(uent, "Change the entity status to %s\n", enable ? "normal" : "disable");
 
 	if (enable)
 		ub_entity_assign_priv_flag(uent, UB_ENTITY_ACTIVE, true);
@@ -996,10 +1003,12 @@ EXPORT_SYMBOL_GPL(ub_entity_enable);
 
 int ub_set_user_info(struct ub_entity *uent)
 {
+	u32 eid;
+
 	if (!uent || !uent->ubc || !uent->ubc->uent)
 		return -EINVAL;
 
-	u32 eid = uent->ubc->uent->eid;
+	eid = uent->ubc->uent->eid;
 
 	if (is_p_device(uent) ||
 	    (uent->ubc->cluster && is_ibus_controller(uent)))
@@ -1071,7 +1080,7 @@ int ub_activate_entity(struct ub_entity *uent, u32 entity_idx)
 
 	udrv = uent->driver;
 	if (!udrv || !udrv->activate) {
-		ub_err(uent, "udrv or activate is null\n");
+		ub_err(uent, "udrv or activate is NULL\n");
 		return -EINVAL;
 	}
 
@@ -1111,7 +1120,7 @@ int ub_deactivate_entity(struct ub_entity *uent, u32 entity_idx)
 
 	udrv = uent->driver;
 	if (!udrv || !udrv->deactivate) {
-		ub_err(uent, "udrv or deactivate is null\n");
+		ub_err(uent, "udrv or deactivate is NULL\n");
 		return -EINVAL;
 	}
 

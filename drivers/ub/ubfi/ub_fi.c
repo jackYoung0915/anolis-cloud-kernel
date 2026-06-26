@@ -14,6 +14,7 @@
 
 #define ACPI_SIG_UBRT "UBRT" /* UB Root Table */
 #define UBIOS_INFO_TABLE "linux,ubios-information-table"
+#define UBFI_MOD_VERSION "2.0.0"
 
 enum firmware_report_mode firmware_mode = UNKNOWN;
 
@@ -24,7 +25,8 @@ static void ub_firmware_mode_init(void)
 	else
 		firmware_mode = ACPI;
 
-	pr_info("Starting with mode: %d\n", firmware_mode);
+	pr_info("Starting with mode: %d, version: %s\n", firmware_mode,
+		UBFI_MOD_VERSION);
 }
 
 static int ubfi_get_acpi_ubrt(void)
@@ -57,8 +59,10 @@ static int ubfi_get_dts_ubrt(void)
 
 	if (of_property_read_u64(node, UBIOS_INFO_TABLE, &phys_addr)) {
 		pr_err("Failed to get %s node\n", UBIOS_INFO_TABLE);
+		of_node_put(node);
 		return -EINVAL;
 	}
+	of_node_put(node);
 
 	ubios_table = (struct ubios_root_table *)ub_table_get(phys_addr);
 	if (!ubios_table)
@@ -127,3 +131,4 @@ module_exit(ubfi_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("UnifiedBus firmware interface driver");
 MODULE_IMPORT_NS(UB_UBFI);
+MODULE_VERSION(UBFI_MOD_VERSION);
