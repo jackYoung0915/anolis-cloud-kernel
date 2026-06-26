@@ -203,12 +203,12 @@ typedef void (*rx_msg_handler_t)(struct ub_bus_controller *ubc, void *pkt, u16 l
 struct message_ops {
 	int (*sync_request)(struct message_device *mdev, struct msg_info *info,
 			    u8 code);
-	int (*send)(struct message_device *mdev, struct msg_info *info,
-		    u8 code);
 	int (*response)(struct message_device *mdev, struct msg_info *info,
 			u8 code);
 	int (*sync_enum)(struct message_device *mdev, struct msg_info *info,
 			 u8 cmd);
+	int (*send)(struct message_device *mdev, struct msg_info *info,
+		    u8 code);
 	rx_msg_handler_t vdm_rx_handler;
 	struct module *owner;
 };
@@ -224,6 +224,12 @@ struct message_device {
 	struct list_head list;
 	const struct message_ops *ops;
 	struct fwnode_handle *fwnode;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
 };
 
 /**
@@ -294,6 +300,7 @@ struct ub_rx_msg_task {
 };
 
 struct workqueue_struct *get_rx_msg_wq(u8 msg_code);
+int get_msg_rx_flag(void);
 int message_rx_handler(struct ub_bus_controller *ubc, void *pkt, u16 len);
 int message_rx_init(void);
 void message_rx_uninit(void);
