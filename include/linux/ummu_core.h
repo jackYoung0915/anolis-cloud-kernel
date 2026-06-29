@@ -323,6 +323,10 @@ static inline void tdev_attr_init(struct tdev_attr *attr)
 }
 
 #ifdef CONFIG_UB_UMMU_CORE
+int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f);
+
+int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f);
+
 /* EID API */
 /**
  * Add a new EID to the UMMU.
@@ -385,6 +389,16 @@ int ummu_fill_pages(struct iova_slot *slot, dma_addr_t iova, unsigned long nr_pa
  */
 int ummu_drain_pages(struct iova_slot *slot, dma_addr_t iova, unsigned long nr_pages);
 #else
+static inline int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int ummu_core_add_eid(guid_t *guid, eid_t eid, enum eid_type type)
 {
 	return -EOPNOTSUPP;
