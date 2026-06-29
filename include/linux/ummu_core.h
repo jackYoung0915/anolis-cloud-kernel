@@ -323,6 +323,18 @@ static inline void tdev_attr_init(struct tdev_attr *attr)
 }
 
 #ifdef CONFIG_UB_UMMU_CORE
+int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(ummu_dev_enable_feat);
+
+int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(ummu_dev_disable_feat);
+
 /* EID API */
 /**
  * Add a new EID to the UMMU.
