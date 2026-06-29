@@ -36,24 +36,24 @@ static int ubase_dbg_dump_rst_info(struct seq_file *s, void *data)
 static void ubase_dbg_dump_caps_bits(struct seq_file *s, struct ubase_dev *udev)
 {
 #define CAP_FMT(name) "\tsupport_" #name ": %d\n"
-#define PTRINT_CAP(name, func) seq_printf(s, CAP_FMT(name), func(udev))
+#define PRTINT_CAP(name, func) seq_printf(s, CAP_FMT(name), func(udev))
 
-	PTRINT_CAP(ub_link, ubase_dev_ubl_supported);
-	PTRINT_CAP(ta_extdb_buffer_config, ubase_dev_ta_extdb_buf_supported);
-	PTRINT_CAP(ta_timer_buffer_config, ubase_dev_ta_timer_buf_supported);
-	PTRINT_CAP(err_handle, ubase_dev_err_handle_supported);
-	PTRINT_CAP(ctrlq, ubase_dev_ctrlq_supported);
-	PTRINT_CAP(eth_mac, ubase_dev_eth_mac_supported);
-	PTRINT_CAP(mac_stats, ubase_dev_mac_stats_supported);
-	PTRINT_CAP(prealloc, __ubase_dev_prealloc_supported);
-	PTRINT_CAP(udma, ubase_dev_udma_supported);
-	PTRINT_CAP(unic, ubase_dev_unic_supported);
-	PTRINT_CAP(uvb, ubase_dev_uvb_supported);
-	PTRINT_CAP(ip_over_urma, ubase_ip_over_urma_supported);
+	PRTINT_CAP(ub_link, ubase_dev_ubl_supported);
+	PRTINT_CAP(ta_extdb_buffer_config, ubase_dev_ta_extdb_buf_supported);
+	PRTINT_CAP(ta_timer_buffer_config, ubase_dev_ta_timer_buf_supported);
+	PRTINT_CAP(err_handle, ubase_dev_err_handle_supported);
+	PRTINT_CAP(ctrlq, ubase_dev_ctrlq_supported);
+	PRTINT_CAP(eth_mac, ubase_dev_eth_mac_supported);
+	PRTINT_CAP(mac_stats, ubase_dev_mac_stats_supported);
+	PRTINT_CAP(prealloc, __ubase_dev_prealloc_supported);
+	PRTINT_CAP(udma, ubase_dev_udma_supported);
+	PRTINT_CAP(unic, ubase_dev_unic_supported);
+	PRTINT_CAP(uvb, ubase_dev_uvb_supported);
+	PRTINT_CAP(ip_over_urma, ubase_ip_over_urma_supported);
 	if (ubase_ip_over_urma_supported(udev))
-		PTRINT_CAP(ip_over_urma_utp, ubase_ip_over_urma_utp_supported);
-	PTRINT_CAP(activate_proxy, ubase_activate_proxy_supported);
-	PTRINT_CAP(utp, ubase_utp_supported);
+		PRTINT_CAP(ip_over_urma_utp, ubase_ip_over_urma_utp_supported);
+	PRTINT_CAP(activate_proxy, ubase_activate_proxy_supported);
+	PRTINT_CAP(utp, ubase_utp_supported);
 }
 
 static void ubase_dbg_dump_caps_info(struct seq_file *s, struct ubase_dev *udev)
@@ -130,12 +130,8 @@ static void ubase_dbg_dump_adev_caps(struct seq_file *s,
 		{"\tjfr_depth: %u\n", caps->jfr.depth},
 		{"\tjfc_max_cnt: %u\n", caps->jfc.max_cnt},
 		{"\tjfc_depth: %u\n", caps->jfc.depth},
-		{"\ttp_max_cnt: %u\n", caps->tp.max_cnt},
-		{"\ttp_depth: %u\n", caps->tp.depth},
 		{"\ttpg_max_cnt: %u\n", caps->tpg.max_cnt},
-		{"\ttpg_depth: %u\n", caps->tpg.depth},
 		{"\tcqe_size: %hu\n", caps->cqe_size},
-		{"\tutp_port_bitmap: 0x%x\n", caps->utp_port_bitmap},
 		{"\tjtg_max_cnt: %u\n", caps->jtg_max_cnt},
 		{"\trc_max_cnt: %u\n", caps->rc_max_cnt},
 		{"\trc_depth: %u\n", caps->rc_que_depth},
@@ -399,6 +395,18 @@ static bool __ubase_dbg_dentry_support(struct device *dev, u32 property)
 	return false;
 }
 
+/**
+ * ubase_dbg_dentry_support() - determine whether to create debugfs dentries and debugfs cmd files
+ * @adev: auxiliary device
+ * @property: property of debugfs dentry or debufs cmd file
+ *
+ * The function is used in the 'support' functions of 'struct ubase_dbg_cmd_info'
+ * and 'struct ubase_dbg_cmd_info‘ to determine whether to create debugfs dentries
+ * and debugfs cmd files.
+ *
+ * Context: Any context.
+ * Return: true or false
+ */
 bool ubase_dbg_dentry_support(struct auxiliary_device *adev, u32 property)
 {
 	if (!adev)
@@ -426,6 +434,19 @@ static int __ubase_dbg_seq_file_init(struct device *dev,
 	return 0;
 }
 
+/**
+ * ubase_dbg_seq_file_init() - ubase init debugfs cmd file
+ * @dev: the device
+ * @dirs: ubase debugfs dentry information
+ * @dbgfs: ubase debugfs data structure
+ * @idx: index of dirs
+ *
+ * This function is used in the 'init' function within 'struct ubase_dbg_cmd_info'
+ * to create a ubase debugfs cmd file.
+ *
+ * Context: Any context.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_dbg_seq_file_init(struct device *dev,
 			    struct ubase_dbg_dentry_info *dirs,
 			    struct ubase_dbgfs *dbgfs, u32 idx)
@@ -509,14 +530,6 @@ static struct ubase_dbg_cmd_info ubase_dbg_cmd[] = {
 		.support = __ubase_dbg_dentry_support,
 		.init = __ubase_dbg_seq_file_init,
 		.read_func = ubase_dbg_dump_activate_record,
-	},
-	{
-		.name = "tpg_context",
-		.dentry_index = UBASE_DBG_DENTRY_CONTEXT,
-		.property = UBASE_SUP_URMA | UBASE_SUP_UBL_ETH,
-		.support = __ubase_dbg_dentry_support,
-		.init = __ubase_dbg_seq_file_init,
-		.read_func = ubase_dbg_dump_tpg_ctx,
 	},
 	{
 		.name = "tp_context_hw",
@@ -714,6 +727,18 @@ static int ubase_dbg_create_file(struct device *dev, struct ubase_dbgfs *dbgfs,
 	return 0;
 }
 
+/**
+ * ubase_dbg_create_dentry() - ubase debugfs create dentry
+ * @dev: the device
+ * @dbgfs: ubase debugfs data structure
+ * @dirs: ubase debugfs dentry information
+ * @root_idx: index of the root dentry in dirs, and the root dentry must be the last one in the path
+ *
+ * This function is used to create a ubase debugfs cmd file.
+ *
+ * Context: Any context.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_dbg_create_dentry(struct device *dev, struct ubase_dbgfs *dbgfs,
 			    struct ubase_dbg_dentry_info *dirs, u32 root_idx)
 {
@@ -794,6 +819,15 @@ void ubase_dbg_unregister_debugfs(void)
 	debugfs_remove_recursive(ubase_dbgfs_root);
 }
 
+/**
+ * ubase_diag_debugfs_root() - get ubase debugfs root dentry
+ * @adev: auxiliary device
+ *
+ * This function is used to get ubase debugfs root dentry.
+ *
+ * Context: Any context.
+ * Return: NULL if the adev is empty, otherwise the pointer to struct dentry
+ */
 struct dentry *ubase_diag_debugfs_root(struct auxiliary_device *adev)
 {
 	if (!adev)
@@ -803,6 +837,17 @@ struct dentry *ubase_diag_debugfs_root(struct auxiliary_device *adev)
 }
 EXPORT_SYMBOL(ubase_diag_debugfs_root);
 
+/**
+ * ubase_dbg_format_time() - formatted the time output to seq file
+ * @time: time value
+ * @s: seq_file
+ *
+ * The function outputs the time in the format of
+ * 'week month day hour:minute:second year' to seq_file.
+ *
+ * Context: Any context.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_dbg_format_time(time64_t time, struct seq_file *s)
 {
 #define YEAR_OFFSET 1900
