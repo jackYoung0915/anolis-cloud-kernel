@@ -337,6 +337,7 @@ static int ubase_enable_period_service_task(struct ubase_dev *udev)
 static void ubase_period_service_task(struct work_struct *work)
 {
 #define UBASE_STATS_TIMER_INTERVAL		(300000 / (UBASE_PERIOD_100MS))
+#define UBASE_CTRLQ_TIMER_INTERVAL		(3000 / (UBASE_PERIOD_100MS))
 
 	struct ubase_delay_work *ubase_work =
 		container_of(work, struct ubase_delay_work, service_task.work);
@@ -351,6 +352,10 @@ static void ubase_period_service_task(struct work_struct *work)
 	if (test_bit(UBASE_STATE_INITED_B, &udev->state_bits) &&
 	    !(udev->serv_proc_cnt % UBASE_STATS_TIMER_INTERVAL))
 		ubase_update_stats_for_all(udev);
+
+	if (test_bit(UBASE_STATE_INITED_B, &udev->state_bits) &&
+	    !(udev->serv_proc_cnt % UBASE_CTRLQ_TIMER_INTERVAL))
+		ubase_ctrlq_clean_service_task(udev);
 
 	udev->serv_proc_cnt++;
 	ubase_enable_period_service_task(udev);
@@ -379,13 +384,21 @@ static void ubase_service_task(struct work_struct *work)
 
 	ubase_crq_service_task(ubase_work);
 	ubase_errhandle_service_task(ubase_work);
-	ubase_ctrlq_service_task(ubase_work);
-	ubase_ctrlq_clean_service_task(ubase_work);
+}
+
+static void ubase_ctrlq_service_task(struct work_struct *work)
+{
+	struct ubase_delay_work *ubase_work =
+		container_of(work, struct ubase_delay_work, service_task.work);
+
+	ubase_ctrlq_crq_service_task(ubase_work);
 }
 
 static void ubase_init_delayed_work(struct ubase_dev *udev)
 {
 	INIT_DELAYED_WORK(&udev->service_task.service_task, ubase_service_task);
+	INIT_DELAYED_WORK(&udev->ctrlq_service_task.service_task,
+			  ubase_ctrlq_service_task);
 	INIT_DELAYED_WORK(&udev->reset_service_task.service_task,
 			  ubase_reset_service_task);
 	INIT_DELAYED_WORK(&udev->period_service_task.service_task,
@@ -402,6 +415,12 @@ static int ubase_wq_init(struct ubase_dev *udev)
 	if (!udev->ubase_wq) {
 		ubase_err(udev, "failed to alloc ubase workqueue.\n");
 		goto err_alloc_ubase_wq;
+	}
+
+	udev->ubase_ctrlq_wq = UBASE_ALLOC_WQ("ubase_ctrlq_service");
+	if (!udev->ubase_ctrlq_wq) {
+		ubase_err(udev, "failed to alloc ubase ctrlq workqueue.\n");
+		goto err_alloc_ubase_ctrlq_wq;
 	}
 
 	udev->ubase_async_wq = UBASE_ALLOC_WQ("ubase_async_service");
@@ -438,6 +457,8 @@ err_alloc_ubase_period_wq:
 err_alloc_ubase_reset_wq:
 	destroy_workqueue(udev->ubase_async_wq);
 err_alloc_ubase_async_wq:
+	destroy_workqueue(udev->ubase_ctrlq_wq);
+err_alloc_ubase_ctrlq_wq:
 	destroy_workqueue(udev->ubase_wq);
 err_alloc_ubase_wq:
 	return -ENOMEM;
@@ -449,6 +470,7 @@ static void ubase_wq_uninit(struct ubase_dev *udev)
 	destroy_workqueue(udev->ubase_period_wq);
 	destroy_workqueue(udev->ubase_reset_wq);
 	destroy_workqueue(udev->ubase_async_wq);
+	destroy_workqueue(udev->ubase_ctrlq_wq);
 	destroy_workqueue(udev->ubase_wq);
 }
 
@@ -657,7 +679,23 @@ static int ubase_notify_drv_capbilities(struct ubase_dev *udev)
 	return __ubase_cmd_send_in(udev, &in);
 }
 
+static int ubase_log_rs_init(struct ubase_dev *udev)
+{
+#define UBASE_RATELIMIT_INTERVAL (2 * HZ)
+#define UBASE_RATELIMIT_BURST 40
+
+	raw_spin_lock_init(&udev->log_rs.rs.lock);
+	udev->log_rs.rs.interval = UBASE_RATELIMIT_INTERVAL;
+	udev->log_rs.rs.burst = UBASE_RATELIMIT_BURST;
+
+	return 0;
+}
+
 static const struct ubase_init_function ubase_init_func_map[] = {
+	{
+		"init log rs", UBASE_SUP_ALL, 0,
+		ubase_log_rs_init, NULL
+	},
 	{
 		"init work queue", UBASE_SUP_ALL, 0,
 		ubase_wq_init, ubase_wq_uninit
@@ -1011,6 +1049,36 @@ struct ubase_caps *ubase_get_dev_caps(struct auxiliary_device *adev)
 EXPORT_SYMBOL(ubase_get_dev_caps);
 
 /**
+ * ubase_get_mdrv_data() - get unic netdev
+ * @adev: auxiliary device
+ *
+ * The function is used to get unic netdev.
+ *
+ * Context: Any context.
+ * Return: NULL if the adev is empty or does not support the unic device,
+ * otherwise the pointer to struct ubase_adev_com
+ */
+const struct ubase_adev_com *ubase_get_mdrv_data(struct auxiliary_device *adev)
+{
+	struct auxiliary_device *unic_adev;
+	struct ubase_priv *priv;
+	struct ubase_dev *udev;
+
+	if (!adev)
+		return NULL;
+
+	udev = __ubase_get_udev_by_adev(adev);
+	if (!ubase_dev_unic_supported(udev))
+		return NULL;
+
+	priv = &udev->priv;
+	unic_adev = &priv->uadev[UBASE_DRV_UNIC]->adev;
+
+	return dev_get_drvdata(&unic_adev->dev);
+}
+EXPORT_SYMBOL(ubase_get_mdrv_data);
+
+/**
  * ubase_get_udma_caps() - get udma auxiliary device capabilities
  * @adev: udma auxiliary device pointer
  *
@@ -1357,6 +1425,45 @@ bool ubase_adev_mac_stats_supported(struct auxiliary_device *adev)
 }
 EXPORT_SYMBOL(ubase_adev_mac_stats_supported);
 
+/**
+ * ubase_adev_ip_over_urma_supported() - determine whether to support IP over
+ * urma
+ * @adev: auxiliary device
+ *
+ * This function is used to determine whether to support IP over urma.
+ *
+ * Context: Any context.
+ * Return: true or false
+ */
+bool ubase_adev_ip_over_urma_supported(struct auxiliary_device *adev)
+{
+	if (!adev)
+		return false;
+
+	return ubase_ip_over_urma_supported(__ubase_get_udev_by_adev(adev));
+}
+EXPORT_SYMBOL(ubase_adev_ip_over_urma_supported);
+
+/**
+ * ubase_adev_ip_over_urma_utp_supported() - determine whether to support utp
+ * when IP over urma is supported
+ * @adev: auxiliary device
+ *
+ * This function is used to determine whether to support utp when IP over urma
+ * is supported
+ *
+ * Context: Any context.
+ * Return: true or false
+ */
+bool ubase_adev_ip_over_urma_utp_supported(struct auxiliary_device *adev)
+{
+	if (!adev)
+		return false;
+
+	return ubase_ip_over_urma_utp_supported(__ubase_get_udev_by_adev(adev));
+}
+EXPORT_SYMBOL(ubase_adev_ip_over_urma_utp_supported);
+
 static void ubase_activate_notify(struct ubase_dev *udev,
 				  struct auxiliary_device *adev, bool activate)
 {
@@ -1541,26 +1648,39 @@ int ubase_activate_dev(struct auxiliary_device *adev)
 {
 	struct ubase_dev *udev;
 	struct ub_entity *ue;
-	int ret;
+	int ret = 0;
 
 	if (!adev)
 		return 0;
 
 	udev = __ubase_get_udev_by_adev(adev);
 
+	ubase_info(udev, "ubase activate dev, state_bits = 0x%lx.\n",
+		   udev->state_bits);
+
+	if (test_bit(UBASE_STATE_RST_HANDLING_B, &udev->state_bits)) {
+		ubase_info(udev, "skip activate dev while resetting.\n");
+		goto skip_activate_dev;
+	}
+
 	ue = container_of(udev->dev, struct ub_entity, dev);
-	if (ubase_activate_proxy_supported(udev) &&
-	    !test_bit(UBASE_STATE_DISABLED_B, &udev->state_bits))
+	if (ubase_activate_proxy_supported(udev))
 		ret = ub_activate_entity(ue, ue->entity_idx);
 	else
 		ret = ubase_activate_handler(udev, ue->entity_idx);
 
 	if (ret) {
+		if (test_bit(UBASE_STATE_RST_HANDLING_B, &udev->state_bits)) {
+			ubase_info(udev, "skip activate dev while resetting.\n");
+			ret = 0;
+			goto skip_activate_dev;
+		}
 		ubase_err(udev,
 			  "failed to activate ubase dev, ret = %d.\n", ret);
 		goto activate_dev_err;
 	}
 
+skip_activate_dev:
 	ubase_activate_notify(udev, adev, true);
 
 activate_dev_err:
@@ -1569,6 +1689,27 @@ activate_dev_err:
 	return ret;
 }
 EXPORT_SYMBOL(ubase_activate_dev);
+
+static int ubase_deactivate_wait_reset_done(struct ubase_dev *udev)
+{
+#define UBASE_MAX_WAIT_RST_CNT	1000
+#define UBASE_WAIT_RST_TIME	10
+
+	u16 cnt = 0;
+
+	while (test_bit(UBASE_STATE_RST_WAIT_DEACTIVE_B, &udev->state_bits)) {
+		if (!cnt)
+			ubase_info(udev,
+				   "waitting for reset done in deactivate process.\n");
+		msleep(UBASE_WAIT_RST_TIME);
+		if (++cnt >= UBASE_MAX_WAIT_RST_CNT) {
+			ubase_err(udev, "wait reset done timeout.\n");
+			return -EBUSY;
+		}
+	}
+
+	return 0;
+}
 
 /**
  * ubase_deactivate_dev() - deactivate device
@@ -1592,14 +1733,29 @@ int ubase_deactivate_dev(struct auxiliary_device *adev)
 
 	udev = __ubase_get_udev_by_adev(adev);
 
-	ue = container_of(udev->dev, struct ub_entity, dev);
+	ubase_info(udev, "ubase deactivate dev, state_bits = 0x%lx.\n",
+		   udev->state_bits);
+
+	if (test_bit(UBASE_STATE_RST_HANDLING_B, &udev->state_bits)) {
+		ret = ubase_deactivate_wait_reset_done(udev);
+		if (ret) {
+			ubase_update_activate_stats(udev, false, ret);
+			return ret;
+		}
+		ubase_activate_notify(udev, adev, false);
+		goto out;
+	}
+
 	ubase_activate_notify(udev, adev, false);
 
-	if (ubase_activate_proxy_supported(udev) &&
-	    !test_bit(UBASE_STATE_DISABLED_B, &udev->state_bits))
+	ue = container_of(udev->dev, struct ub_entity, dev);
+	if (ubase_activate_proxy_supported(udev))
 		ret = ub_deactivate_entity(ue, ue->entity_idx);
 	else
 		ret = ubase_deactivate_handler(udev, ue->entity_idx);
+
+	if (ret && test_bit(UBASE_STATE_RST_HANDLING_B, &udev->state_bits))
+		ret = ubase_deactivate_wait_reset_done(udev);
 
 	if (ret) {
 		ubase_err(udev,
@@ -1607,6 +1763,7 @@ int ubase_deactivate_dev(struct auxiliary_device *adev)
 		ubase_activate_notify(udev, adev, true);
 	}
 
+out:
 	ubase_update_activate_stats(udev, false, ret);
 
 	return ret;
