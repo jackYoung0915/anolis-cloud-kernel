@@ -24,3 +24,15 @@ void setup_tdev_dma_ops(struct device *dev, bool coherent)
 	arch_setup_dma_ops(dev, coherent);
 }
 EXPORT_SYMBOL_NS_GPL(setup_tdev_dma_ops, UMMU_CORE_INTERNAL);
+
+int ummu_dev_enable_feat(struct device *dev, enum iommu_dev_features f)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(ummu_dev_enable_feat);
+
+int ummu_dev_disable_feat(struct device *dev, enum iommu_dev_features f)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(ummu_dev_disable_feat);
