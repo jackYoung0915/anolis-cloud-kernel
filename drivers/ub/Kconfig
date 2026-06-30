@@ -19,5 +19,4 @@ source "drivers/ub/ubase/Kconfig"
 source "drivers/ub/cdma/Kconfig"
 source "drivers/ub/ubdevshm/Kconfig"
 source "drivers/ub/sentry/Kconfig"
-
 endif # UB
