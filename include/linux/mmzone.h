@@ -1056,6 +1056,10 @@ struct zone {
 
 enum pgdat_flags {
 	PGDAT_RECLAIM_LOCKED,		/* prevents concurrent reclaim */
+
+#ifdef CONFIG_ACPI_APEI_RAS_CRITICAL
+	PGDAT_CRITICAL_ERR = 31,	/* the whole node is unusable */
+#endif
 };
 
 enum zone_flags {

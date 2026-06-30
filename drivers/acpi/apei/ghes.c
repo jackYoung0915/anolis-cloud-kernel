@@ -497,7 +497,7 @@ static void ghes_handle_critical_ras(unsigned long pfn, unsigned long flags)
 	struct page *p;
 	int nid;
 
-	if (!IS_ENABLED(CONFIG_ACPI_APEI_RAS_CRITICAL))
+	if (!IS_ENABLED(CONFIG_ACPI_APEI_RAS_CRITICAL) || !(flags & MF_ACTION_REQUIRED))
 		return;
 
 	p = pfn_to_online_page(pfn);
@@ -506,6 +506,10 @@ static void ghes_handle_critical_ras(unsigned long pfn, unsigned long flags)
 
 	nid = page_to_nid(p);
 	if (!numa_is_remote_node(nid))
+		return;
+
+	set_node_critical_err(nid);
+	if (!mm)
 		return;
 
 	if (test_bit(MMF_CRITICAL_ERR, &mm->flags))

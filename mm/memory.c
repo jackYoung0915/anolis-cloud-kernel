@@ -7250,6 +7250,8 @@ int __access_remote_vm(struct mm_struct *mm, unsigned long addr, void *buf,
 			if (bytes <= 0)
 				break;
 		} else {
+			int ret = 0;
+
 			if (mm_is_critical_error(mm)) {
 				mmap_read_unlock(mm);
 				return 0;
@@ -7261,15 +7263,21 @@ int __access_remote_vm(struct mm_struct *mm, unsigned long addr, void *buf,
 
 			maddr = kmap(page);
 			if (write) {
-				copy_to_user_page(vma, page, addr,
-						  maddr + offset, buf, bytes);
-				set_page_dirty_lock(page);
+				ret = copy_mc_to_user_page(vma, page, addr,
+							   maddr + offset,
+							   buf, bytes);
+				if (!ret)
+					set_page_dirty_lock(page);
 			} else {
-				copy_from_user_page(vma, page, addr,
+				ret = copy_mc_from_user_page(vma, page, addr,
 						    buf, maddr + offset, bytes);
 			}
 			kunmap(page);
 			put_page(page);
+			if (ret) {
+				mmap_read_unlock(mm);
+				return 0;
+			}
 		}
 		len -= bytes;
 		buf += bytes;

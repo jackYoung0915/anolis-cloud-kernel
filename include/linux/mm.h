@@ -1340,6 +1340,14 @@ void put_pages_list(struct list_head *pages);
 void split_page(struct page *page, unsigned int order);
 void folio_copy(struct folio *dst, struct folio *src);
 int folio_mc_copy(struct folio *dst, struct folio *src);
+#ifdef CONFIG_MIGRATE_PAGES_DMA_OFFLOADING
+int folio_dma_copy(struct folio *dst, struct folio *src);
+#else
+static inline int folio_dma_copy(struct folio *dst, struct folio *src)
+{
+	return -ENODEV;
+}
+#endif
 
 unsigned long nr_free_buffer_pages(void);
 
@@ -4810,11 +4818,30 @@ static inline bool mm_is_critical_error(struct mm_struct *mm)
 {
 	return mm && test_bit(MMF_CRITICAL_ERR, &mm->flags);
 }
+
+static inline void set_node_critical_err(int nid)
+{
+	set_bit(PGDAT_CRITICAL_ERR, &NODE_DATA(nid)->flags);
+}
+
+static inline void clear_node_critical_err(int nid)
+{
+	clear_bit(PGDAT_CRITICAL_ERR, &NODE_DATA(nid)->flags);
+}
+
+static inline bool node_is_critical_err(int nid)
+{
+	return test_bit(PGDAT_CRITICAL_ERR, &NODE_DATA(nid)->flags);
+}
 #else
 static inline bool mm_is_critical_error(struct mm_struct *mm)
 {
 	return false;
 }
+
+static inline void set_node_critical_err(int nid) { return; }
+static inline void clear_node_critical_err(int nid) { return; }
+static inline bool node_is_critical_err(int nid) { return false; }
 #endif
 
 #endif /* _LINUX_MM_H */
