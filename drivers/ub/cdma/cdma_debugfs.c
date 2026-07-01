@@ -8,15 +8,14 @@
 #include <linux/errno.h>
 #include <ub/ubase/ubase_comm_debugfs.h>
 #include <ub/ubase/ubase_comm_dev.h>
-#include "cdma_queue.h"
 #include "cdma.h"
+#include "cdma_queue.h"
 #include "cdma_jfc.h"
 #include "cdma_jfs.h"
 #include "cdma_mbox.h"
 #include "cdma_cmd.h"
 #include "cdma_debugfs.h"
 
-#define CDMA_DBG_READ_LEN 65536
 #define BUF_10_BASE 10
 #define BUF_SIZE 8
 
@@ -26,8 +25,6 @@ static void cdma_get_ctx_info(struct cdma_dev *cdev,
 			      enum cdma_dbg_ctx_type ctx_type,
 			      struct cdma_ctx_info *ctx_info)
 {
-	struct auxiliary_device *adev = cdev->adev;
-
 #define CDMA_DBG_CTX_SIZE_256 256
 #define UBASE_CTX_SIZE_128 128
 	switch (ctx_type) {
@@ -44,8 +41,6 @@ static void cdma_get_ctx_info(struct cdma_dev *cdev,
 		ctx_info->ctx_name = "sq_jfc";
 		break;
 	default:
-		dev_err(&adev->dev, "get ctx info failed, ctx_type = %d.\n",
-			ctx_type);
 		break;
 	}
 }
@@ -232,7 +227,7 @@ static int cdma_dbg_dump_ctx(struct seq_file *s, enum cdma_dbg_ctx_type ctx_type
 	return 0;
 }
 
-int cdma_dbg_dump_jfs_ctx(struct seq_file *s, void *data)
+static int cdma_dbg_dump_jfs_ctx(struct seq_file *s, void *data)
 {
 	if (!s || !s->private)
 		return -EINVAL;
@@ -240,7 +235,7 @@ int cdma_dbg_dump_jfs_ctx(struct seq_file *s, void *data)
 	return cdma_dbg_dump_ctx(s, CDMA_DBG_JFS_CTX);
 }
 
-int cdma_dbg_dump_sq_jfc_ctx(struct seq_file *s, void *data)
+static int cdma_dbg_dump_sq_jfc_ctx(struct seq_file *s, void *data)
 {
 	if (!s || !s->private)
 		return -EINVAL;
@@ -722,16 +717,15 @@ static int cdma_dbg_create_cfg_file(struct cdma_dev *cdev,
 	return 0;
 }
 
-int cdma_dbg_init(struct auxiliary_device *adev)
+int cdma_dbg_init(struct cdma_dev *cdev)
 {
 	struct ubase_dbg_dentry_info dbg_dentry[CDMA_DBG_DENTRY_ROOT + 1] = {0};
-	struct dentry *ubase_root_dentry = ubase_diag_debugfs_root(adev);
+	struct auxiliary_device *adev = cdev->adev;
+	struct dentry *ubase_root_dentry;
 	struct device *dev = &adev->dev;
-	struct cdma_dev *cdev;
 	int ret;
 
-	cdev = dev_get_drvdata(dev);
-
+	ubase_root_dentry = ubase_diag_debugfs_root(adev);
 	if (!ubase_root_dentry) {
 		dev_err(dev, "dbgfs root dentry does not exist.\n");
 		return -ENOENT;
@@ -771,10 +765,8 @@ create_dentry_err:
 	return ret;
 }
 
-void cdma_dbg_uninit(struct auxiliary_device *adev)
+void cdma_dbg_uninit(struct cdma_dev *cdev)
 {
-	struct cdma_dev *cdev = dev_get_drvdata(&adev->dev);
-
 	if (!cdev->cdbgfs.dbgfs.dentry)
 		return;
 

@@ -14,6 +14,10 @@
 
 extern u32 jfc_arm_mode;
 extern bool cqe_mode;
+extern struct list_head g_client_list;
+extern struct rw_semaphore g_clients_rwsem;
+extern struct rw_semaphore g_device_rwsem;
+extern struct mutex g_cdma_reset_mutex;
 
 #define CDMA_HW_PAGE_SHIFT	12
 #define CDMA_HW_PAGE_SIZE	(1 << CDMA_HW_PAGE_SHIFT)
@@ -24,6 +28,8 @@ extern bool cqe_mode;
 
 #define CDMA_UPI_MASK		0x7FFF
 
+#define DMA_MAX_DEV_NAME 64
+
 enum cdma_cqe_size {
 	CDMA_64_CQE_SIZE,
 	CDMA_128_CQE_SIZE,
@@ -32,6 +38,13 @@ enum cdma_cqe_size {
 enum cdma_status {
 	CDMA_NORMAL,
 	CDMA_SUSPEND,
+	CDMA_INVALID
+};
+
+enum cdma_client_ops {
+	CDMA_CLIENT_STOP,
+	CDMA_CLIENT_REMOVE,
+	CDMA_CLIENT_ADD,
 };
 
 enum {
@@ -195,6 +208,10 @@ struct cdma_dev {
 	struct mutex file_mutex;
 	struct list_head file_list;
 	struct page *arm_db_page;
+	atomic_t cmdcnt;
+	atomic_t kcmdcnt;
+	struct completion cmddone;
+	struct completion kcmddone;
 };
 
 struct cdma_jfs_event {
@@ -216,4 +233,4 @@ static inline struct cdma_dev *get_cdma_dev(struct auxiliary_device *adev)
 	return (struct cdma_dev *)dev_get_drvdata(&adev->dev);
 }
 
-#endif /* _CDMA_H_ */
+#endif /* __CDMA_H__ */

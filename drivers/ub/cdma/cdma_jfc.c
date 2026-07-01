@@ -249,11 +249,19 @@ static int cdma_query_jfc_destroy_done(struct cdma_dev *cdev, uint32_t jfcn)
 	return ret;
 }
 
-static int cdma_destroy_and_flush_jfc(struct cdma_dev *cdev, u32 jfcn)
+static int cdma_destroy_and_flush_jfc(struct cdma_dev *cdev, struct cdma_jfc *jfc)
 {
 #define QUERY_MAX_TIMES 5
+	struct cdma_context *ctx = jfc->base.ctx;
+	u32 jfcn = jfc->jfcn;
 	u32 wait_times = 0;
 	int ret;
+
+	if (cdev->status == CDMA_INVALID || (ctx && ctx->invalid)) {
+		dev_info(cdev->dev,
+			 "resetting Ignore jfc ctx, jfcn = %u\n", jfcn);
+		return 0;
+	}
 
 	ret = cdma_post_destroy_jfc_mbox(cdev, jfcn, CDMA_JFC_STATE_INVALID);
 	if (ret) {
@@ -394,8 +402,9 @@ static enum jfc_poll_state cdma_parse_cqe_for_jfc(struct cdma_dev *cdev,
 	cr->remote_id = cqe->rmt_idx;
 
 	if (cqe->status)
-		dev_warn(cdev->dev, "get sq %u cqe status abnormal, ci = %u, pi = %u.\n",
-			 queue->id, queue->ci, queue->pi);
+		dev_warn(cdev->dev,
+			 "get sq %u cqe status abnormal, ci = %u, pi = %u, status = %u, substatus = %u.\n",
+			 queue->id, queue->ci, queue->pi, cqe->status, cqe->substatus);
 
 	if (cdma_update_flush_cr(queue, cqe, cr)) {
 		dev_err(cdev->dev,
@@ -511,7 +520,7 @@ struct cdma_base_jfc *cdma_create_jfc(struct cdma_dev *cdev,
 	jfc->base.jfce_handler = cdma_jfc_comp_event_cb;
 	jfc->base.dev = cdev;
 
-	dev_dbg(cdev->dev, "create jfc id = %u, queue id = %u.\n",
+	dev_info(cdev->dev, "create jfc, id = %u, queue id = %u.\n",
 		jfc->jfcn, cfg->queue_id);
 
 	return &jfc->base;
@@ -555,7 +564,7 @@ int cdma_delete_jfc(struct cdma_dev *cdev, u32 jfcn,
 		return -EINVAL;
 	}
 
-	ret = cdma_destroy_and_flush_jfc(cdev, jfc->jfcn);
+	ret = cdma_destroy_and_flush_jfc(cdev, jfc);
 	if (ret)
 		dev_err(cdev->dev, "jfc delete failed, jfcn = %u.\n", jfcn);
 
@@ -571,7 +580,7 @@ int cdma_delete_jfc(struct cdma_dev *cdev, u32 jfcn,
 		arg->out.async_events_reported = jfc_event->async_events_reported;
 	}
 
-	pr_debug("Leave %s, jfcn: %u.\n", __func__, jfc->jfcn);
+	dev_info(cdev->dev, "delete jfc, id = %u.\n", jfc->jfcn);
 
 	cdma_release_jfc_event(jfc);
 	kfree(jfc);

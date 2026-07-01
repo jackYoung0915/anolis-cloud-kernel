@@ -8,19 +8,20 @@
 #include <linux/iommu.h>
 #include <linux/dma-mapping.h>
 #include <linux/bitmap.h>
-
+#include <ub/ubase/ubase_comm_ctrlq.h>
+#include <ub/ubase/ubase_comm_dev.h>
 #include "cdma.h"
 #include "cdma_cmd.h"
 #include "cdma_tid.h"
 #include "cdma_context.h"
-#include <ub/ubase/ubase_comm_ctrlq.h>
-#include <ub/ubase/ubase_comm_dev.h>
+#include "cdma_debugfs.h"
 #include "cdma_common.h"
 #include "cdma_tp.h"
 #include "cdma_jfs.h"
 #include "cdma_jfc.h"
 #include "cdma_queue.h"
 #include "cdma_dev.h"
+#include "cdma_eq.h"
 
 static DEFINE_XARRAY(cdma_devs_tbl);
 static atomic_t cdma_devs_num = ATOMIC_INIT(0);
@@ -55,15 +56,18 @@ static int cdma_add_device_to_list(struct cdma_dev *cdev)
 		return -EINVAL;
 	}
 
+	down_write(&g_device_rwsem);
 	ret = xa_err(xa_store(&cdma_devs_tbl, adev->id, cdev, GFP_KERNEL));
 	if (ret) {
 		dev_err(cdev->dev,
 			"store cdma device to table failed, adev id = %u.\n",
 			adev->id);
+		up_write(&g_device_rwsem);
 		return ret;
 	}
 
 	atomic_inc(&cdma_devs_num);
+	up_write(&g_device_rwsem);
 
 	return 0;
 }
@@ -77,8 +81,10 @@ static void cdma_del_device_from_list(struct cdma_dev *cdev)
 		return;
 	}
 
+	down_write(&g_device_rwsem);
 	atomic_dec(&cdma_devs_num);
 	xa_erase(&cdma_devs_tbl, adev->id);
+	up_write(&g_device_rwsem);
 }
 
 static void cdma_tbl_init(struct cdma_table *table, u32 max, u32 min)
@@ -131,6 +137,27 @@ static void cdma_destroy_tables(struct cdma_dev *cdev)
 	cdma_tbl_destroy(cdev, &cdev->queue_table, "QUEUE");
 }
 
+static void cdma_release_table_res(struct cdma_dev *cdev)
+{
+	struct cdma_queue *queue;
+	struct cdma_segment *seg;
+	struct cdma_jfc *jfc;
+	struct cdma_jfs *jfs;
+	struct cdma_tp *tmp;
+	int id;
+
+	idr_for_each_entry(&cdev->ctp_table.idr_tbl.idr, tmp, id)
+		cdma_destroy_ctp_imm(cdev, tmp->base.tp_id);
+	idr_for_each_entry(&cdev->jfs_table.idr_tbl.idr, jfs, id)
+		cdma_delete_jfs(cdev, jfs->id);
+	idr_for_each_entry(&cdev->jfc_table.idr_tbl.idr, jfc, id)
+		cdma_delete_jfc(cdev, jfc->jfcn, NULL);
+	idr_for_each_entry(&cdev->queue_table.idr_tbl.idr, queue, id)
+		cdma_delete_queue(cdev, queue->id);
+	idr_for_each_entry(&cdev->seg_table.idr_tbl.idr, seg, id)
+		cdma_unregister_seg(cdev, seg);
+}
+
 static void cdma_init_base_dev(struct cdma_dev *cdev)
 {
 	struct cdma_device_attr *attr = &cdev->base.attr;
@@ -150,9 +177,9 @@ static void cdma_init_base_dev(struct cdma_dev *cdev)
 	dev_cap->max_jfs_inline_len = caps->jfs_inline_sz;
 }
 
-static int cdma_init_dev_param(struct cdma_dev *cdev,
-			       struct auxiliary_device *adev)
+static int cdma_init_dev_param(struct cdma_dev *cdev)
 {
+	struct auxiliary_device *adev = cdev->adev;
 	struct ubase_resource_space *mem_base;
 	int ret;
 
@@ -160,8 +187,6 @@ static int cdma_init_dev_param(struct cdma_dev *cdev,
 	if (!mem_base)
 		return -EINVAL;
 
-	cdev->adev = adev;
-	cdev->dev = adev->dev.parent;
 	cdev->k_db_base = mem_base->addr;
 	cdev->db_base = mem_base->addr_unmapped;
 
@@ -171,50 +196,43 @@ static int cdma_init_dev_param(struct cdma_dev *cdev,
 
 	cdma_init_base_dev(cdev);
 	cdma_init_tables(cdev);
-
-	dev_set_drvdata(&adev->dev, cdev);
-
 	mutex_init(&cdev->db_mutex);
 	mutex_init(&cdev->eu_mutex);
-	INIT_LIST_HEAD(&cdev->db_page);
 	mutex_init(&cdev->file_mutex);
+	INIT_LIST_HEAD(&cdev->db_page);
 	INIT_LIST_HEAD(&cdev->file_list);
+
+	idr_init(&cdev->ctx_idr);
+	spin_lock_init(&cdev->ctx_lock);
+	atomic_set(&cdev->cmdcnt, 1);
+	atomic_set(&cdev->kcmdcnt, 1);
+	init_completion(&cdev->cmddone);
+	init_completion(&cdev->kcmddone);
+	dev_set_drvdata(&adev->dev, cdev);
+
+	ret = cdma_ctrlq_query_eu(cdev);
+	if (ret)
+		dev_warn(cdev->dev, "query eu failed, ret = %d.\n", ret);
 
 	return 0;
 }
 
 static void cdma_uninit_dev_param(struct cdma_dev *cdev)
 {
-	mutex_destroy(&cdev->db_mutex);
-	mutex_destroy(&cdev->eu_mutex);
-	mutex_destroy(&cdev->file_mutex);
-	dev_set_drvdata(&cdev->adev->dev, NULL);
-	cdma_destroy_tables(cdev);
-}
-
-static void cdma_release_table_res(struct cdma_dev *cdev)
-{
-	struct cdma_queue *queue;
-	struct cdma_segment *seg;
-	struct cdma_jfc *jfc;
-	struct cdma_jfs *jfs;
-	struct cdma_tp *tmp;
+	struct cdma_context *tmp;
 	int id;
 
-	idr_for_each_entry(&cdev->ctp_table.idr_tbl.idr, tmp, id)
-		cdma_destroy_ctp_imm(cdev, tmp->base.tp_id);
+	dev_set_drvdata(&cdev->adev->dev, NULL);
 
-	idr_for_each_entry(&cdev->jfs_table.idr_tbl.idr, jfs, id)
-		cdma_delete_jfs(cdev, jfs->id);
+	cdma_release_table_res(cdev);
+	idr_for_each_entry(&cdev->ctx_idr, tmp, id)
+		cdma_free_context(cdev, tmp);
+	idr_destroy(&cdev->ctx_idr);
 
-	idr_for_each_entry(&cdev->jfc_table.idr_tbl.idr, jfc, id)
-		cdma_delete_jfc(cdev, jfc->jfcn, NULL);
-
-	idr_for_each_entry(&cdev->queue_table.idr_tbl.idr, queue, id)
-		cdma_delete_queue(cdev, queue->id);
-
-	idr_for_each_entry(&cdev->seg_table.idr_tbl.idr, seg, id)
-		cdma_unregister_seg(cdev, seg);
+	mutex_destroy(&cdev->file_mutex);
+	mutex_destroy(&cdev->eu_mutex);
+	mutex_destroy(&cdev->db_mutex);
+	cdma_destroy_tables(cdev);
 }
 
 static int cdma_ctrlq_eu_add(struct cdma_dev *cdev, struct eu_info *eu)
@@ -227,10 +245,10 @@ static int cdma_ctrlq_eu_add(struct cdma_dev *cdev, struct eu_info *eu)
 		if (eu->eid_idx != eus[i].eid_idx)
 			continue;
 
-		dev_dbg(cdev->dev,
-			"cdma.%u: eid_idx[0x%x] eid[0x%x->0x%x] upi[0x%x->0x%x] update success.\n",
-			cdev->adev->id, eu->eid_idx, eus[i].eid.dw0,
-			eu->eid.dw0, eus[i].upi, eu->upi & CDMA_UPI_MASK);
+		dev_info(cdev->dev,
+			 "cdma.%u: eid_idx[0x%x] eid[0x%x->0x%x] upi[0x%x->0x%x] update success.\n",
+			 cdev->adev->id, eu->eid_idx, eus[i].eid.dw0,
+			 eu->eid.dw0, eus[i].upi, eu->upi & CDMA_UPI_MASK);
 
 		eus[i].eid = eu->eid;
 		eus[i].upi = eu->upi & CDMA_UPI_MASK;
@@ -249,7 +267,7 @@ static int cdma_ctrlq_eu_add(struct cdma_dev *cdev, struct eu_info *eu)
 	}
 
 	eus[attr->eu_num++] = *eu;
-	dev_dbg(cdev->dev,
+	dev_info(cdev->dev,
 		 "cdma.%u: eid_idx[0x%x] eid[0x%x] upi[0x%x] add success.\n",
 		 cdev->adev->id, eu->eid_idx, eu->eid.dw0,
 		 eu->upi & CDMA_UPI_MASK);
@@ -293,33 +311,69 @@ static int cdma_ctrlq_eu_del(struct cdma_dev *cdev, struct eu_info *eu)
 	return ret;
 }
 
-static int cdma_ctrlq_eu_update(struct auxiliary_device *adev, u8 service_ver,
-			 void *data, u16 len, u16 seq)
+static int cdma_ctrlq_eu_update_response(struct cdma_dev *cdev, u16 seq, int ret_val)
 {
-	struct cdma_dev *cdev = dev_get_drvdata(&adev->dev);
-	struct cdma_ctrlq_eu_info *ctrlq_eu;
-	int ret = -EINVAL;
+	struct ubase_ctrlq_msg msg = { 0 };
+	int inbuf = 0;
+	int ret;
 
-	if (len < sizeof(*ctrlq_eu)) {
-		dev_err(cdev->dev, "ctrlq data len is invalid.\n");
-		return -EINVAL;
-	}
+	msg.service_ver = UBASE_CTRLQ_SER_VER_01;
+	msg.service_type = UBASE_CTRLQ_SER_TYPE_DEV_REGISTER;
+	msg.opcode = CDMA_CTRLQ_EU_UPDATE;
+	msg.need_resp = 0;
+	msg.is_resp = 1;
+	msg.resp_seq = seq;
+	msg.resp_ret = (uint8_t)(-ret_val);
+	msg.in = (void *)&inbuf;
+	msg.in_size = sizeof(inbuf);
 
-	ctrlq_eu = (struct cdma_ctrlq_eu_info *)data;
-
-	mutex_lock(&cdev->eu_mutex);
-	if (ctrlq_eu->op == CDMA_CTRLQ_EU_ADD)
-		ret = cdma_ctrlq_eu_add(cdev, &ctrlq_eu->eu);
-	else if (ctrlq_eu->op == CDMA_CTRLQ_EU_DEL)
-		ret = cdma_ctrlq_eu_del(cdev, &ctrlq_eu->eu);
-	else
-		dev_err(cdev->dev, "ctrlq eu op is invalid.\n");
-	mutex_unlock(&cdev->eu_mutex);
-
+	ret = ubase_ctrlq_send_msg(cdev->adev, &msg);
+	if (ret)
+		dev_err(cdev->dev, "send eu update response failed, ret = %d, ret_val = %d.\n",
+			ret, ret_val);
 	return ret;
 }
 
-int cdma_create_arm_db_page(struct cdma_dev *cdev)
+static int cdma_ctrlq_eu_update(struct auxiliary_device *adev, u8 service_ver,
+				void *data, u16 len, u16 seq)
+{
+	struct cdma_dev *cdev = dev_get_drvdata(&adev->dev);
+	struct cdma_ctrlq_eu_info eu = { 0 };
+	int ret = -EINVAL;
+
+	if (cdev->status != CDMA_NORMAL) {
+		dev_err(cdev->dev, "status is abnormal and don't update eu.\n");
+		return cdma_ctrlq_eu_update_response(cdev, seq, 0);
+	}
+
+	if (len < sizeof(eu)) {
+		dev_err(cdev->dev, "update eu msg len = %u is invalid.\n", len);
+		return cdma_ctrlq_eu_update_response(cdev, seq, -EINVAL);
+	}
+
+	memcpy(&eu, data, sizeof(eu));
+	if (eu.op != CDMA_CTRLQ_EU_ADD && eu.op != CDMA_CTRLQ_EU_DEL) {
+		dev_err(cdev->dev, "update eu op = %u is invalid.\n", eu.op);
+		return cdma_ctrlq_eu_update_response(cdev, seq, -EINVAL);
+	}
+
+	if (eu.eu.eid_idx >= CDMA_MAX_EU_NUM) {
+		dev_err(cdev->dev, "update eu invalid eid_idx = %u.\n",
+			eu.eu.eid_idx);
+		return cdma_ctrlq_eu_update_response(cdev, seq, -EINVAL);
+	}
+
+	mutex_lock(&cdev->eu_mutex);
+	if (eu.op == CDMA_CTRLQ_EU_ADD)
+		ret = cdma_ctrlq_eu_add(cdev, &eu.eu);
+	else if (eu.op == CDMA_CTRLQ_EU_DEL)
+		ret = cdma_ctrlq_eu_del(cdev, &eu.eu);
+	mutex_unlock(&cdev->eu_mutex);
+
+	return cdma_ctrlq_eu_update_response(cdev, seq, ret);
+}
+
+static int cdma_create_arm_db_page(struct cdma_dev *cdev)
 {
 	cdev->arm_db_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
 	if (!cdev->arm_db_page) {
@@ -329,7 +383,7 @@ int cdma_create_arm_db_page(struct cdma_dev *cdev)
 	return 0;
 }
 
-void cdma_destroy_arm_db_page(struct cdma_dev *cdev)
+static void cdma_destroy_arm_db_page(struct cdma_dev *cdev)
 {
 	if (!cdev->arm_db_page)
 		return;
@@ -338,7 +392,7 @@ void cdma_destroy_arm_db_page(struct cdma_dev *cdev)
 	cdev->arm_db_page = NULL;
 }
 
-int cdma_register_crq_event(struct auxiliary_device *adev)
+static int cdma_register_crq_event(struct auxiliary_device *adev)
 {
 	struct ubase_ctrlq_event_nb nb = {
 		.service_type = UBASE_CTRLQ_SER_TYPE_DEV_REGISTER,
@@ -361,81 +415,107 @@ int cdma_register_crq_event(struct auxiliary_device *adev)
 	return 0;
 }
 
-void cdma_unregister_crq_event(struct auxiliary_device *adev)
+static void cdma_unregister_crq_event(struct auxiliary_device *adev)
 {
 	ubase_ctrlq_unregister_crq_event(adev,
 					 UBASE_CTRLQ_SER_TYPE_DEV_REGISTER,
 					 CDMA_CTRLQ_EU_UPDATE);
 }
 
+static int cdma_register_event(struct cdma_dev *cdev)
+{
+	struct auxiliary_device *adev = cdev->adev;
+	int ret;
+
+	ret = cdma_reg_ae_event(adev);
+	if (ret)
+		return ret;
+
+	ret = cdma_reg_ce_event(adev);
+	if (ret)
+		goto err_ce_register;
+
+	ret = cdma_register_crq_event(adev);
+	if (ret)
+		goto err_crq_register;
+
+	return 0;
+err_crq_register:
+	cdma_unreg_ce_event(adev);
+err_ce_register:
+	cdma_unreg_ae_event(adev);
+
+	return ret;
+}
+
+static inline void cdma_unregister_event(struct cdma_dev *cdev)
+{
+	struct auxiliary_device *adev = cdev->adev;
+
+	cdma_unregister_crq_event(adev);
+	cdma_unreg_ce_event(adev);
+	cdma_unreg_ae_event(adev);
+}
+
+struct cdma_func_map {
+	char err_msg[SZ_64];
+	int (*init_func)(struct cdma_dev *cdev);
+	void (*uninit_func)(struct cdma_dev *cdev);
+};
+
+static const struct cdma_func_map cdma_dev_func_map[] = {
+	{"dev tid", cdma_alloc_dev_tid, cdma_free_dev_tid},
+	{"dev param", cdma_init_dev_param, cdma_uninit_dev_param},
+	{"debugfs", cdma_dbg_init, cdma_dbg_uninit},
+	{"db page", cdma_create_arm_db_page, cdma_destroy_arm_db_page},
+	{"event", cdma_register_event, cdma_unregister_event},
+	{"device list", cdma_add_device_to_list, cdma_del_device_from_list},
+};
+
+void cdma_destroy_dev(struct cdma_dev *cdev)
+{
+	int i;
+
+	for (i = ARRAY_SIZE(cdma_dev_func_map) - 1; i >= 0; i--)
+		if (cdma_dev_func_map[i].uninit_func)
+			cdma_dev_func_map[i].uninit_func(cdev);
+
+	kfree(cdev);
+}
+
 struct cdma_dev *cdma_create_dev(struct auxiliary_device *adev)
 {
 	struct cdma_dev *cdev;
+	int ret, i;
 
 	cdev = kzalloc((sizeof(*cdev)), GFP_KERNEL);
 	if (!cdev)
 		return NULL;
 
-	if (cdma_init_dev_param(cdev, adev))
-		goto free;
+	cdev->adev = adev;
+	cdev->dev = adev->dev.parent;
 
-	if (cdma_add_device_to_list(cdev))
-		goto free_param;
+	for (i = 0; i < ARRAY_SIZE(cdma_dev_func_map); i++) {
+		if (!cdma_dev_func_map[i].init_func)
+			continue;
 
-	if (cdma_alloc_dev_tid(cdev))
-		goto del_list;
-
-	if (cdma_register_crq_event(adev))
-		goto free_tid;
-
-	if (cdma_create_arm_db_page(cdev))
-		goto unregister_crq;
-
-	idr_init(&cdev->ctx_idr);
-	spin_lock_init(&cdev->ctx_lock);
-
-	dev_dbg(&adev->dev, "cdma.%u init succeeded.\n", adev->id);
+		ret = cdma_dev_func_map[i].init_func(cdev);
+		if (ret) {
+			dev_err(cdev->dev, "Failed to init %s, ret = %d\n",
+				cdma_dev_func_map[i].err_msg, ret);
+			goto err_init;
+		}
+	}
 
 	return cdev;
 
-unregister_crq:
-	cdma_unregister_crq_event(adev);
-free_tid:
-	cdma_free_dev_tid(cdev);
-del_list:
-	cdma_del_device_from_list(cdev);
-free_param:
-	cdma_uninit_dev_param(cdev);
-free:
+err_init:
+	for (i -= 1; i >= 0; i--)
+		if (cdma_dev_func_map[i].uninit_func)
+			cdma_dev_func_map[i].uninit_func(cdev);
+
 	kfree(cdev);
 	return NULL;
-}
-
-void cdma_destroy_dev(struct cdma_dev *cdev)
-{
-	struct cdma_context *tmp;
-	int id;
-
-	if (!cdev)
-		return;
-
-	ubase_virt_unregister(cdev->adev);
-
-	cdma_release_table_res(cdev);
-
-	idr_for_each_entry(&cdev->ctx_idr, tmp, id)
-		cdma_free_context(cdev, tmp);
-	idr_destroy(&cdev->ctx_idr);
-
-	cdma_destroy_arm_db_page(cdev);
-	ubase_ctrlq_unregister_crq_event(cdev->adev,
-					 UBASE_CTRLQ_SER_TYPE_DEV_REGISTER,
-					 CDMA_CTRLQ_EU_UPDATE);
-	cdma_free_dev_tid(cdev);
-
-	cdma_del_device_from_list(cdev);
-	cdma_uninit_dev_param(cdev);
-	kfree(cdev);
 }
 
 bool cdma_find_seid_in_eus(struct eu_info *eus, u8 eu_num, struct dev_eid *eid,
@@ -444,8 +524,7 @@ bool cdma_find_seid_in_eus(struct eu_info *eus, u8 eu_num, struct dev_eid *eid,
 	u32 i;
 
 	for (i = 0; i < eu_num; i++)
-		if (eus[i].eid.dw0 == eid->dw0 && eus[i].eid.dw1 == eid->dw1 &&
-		    eus[i].eid.dw2 == eid->dw2 && eus[i].eid.dw3 == eid->dw3) {
+		if (memcmp(&eus[i].eid, eid, sizeof(*eid)) == 0) {
 			*eu_out = eus[i];
 			return true;
 		}

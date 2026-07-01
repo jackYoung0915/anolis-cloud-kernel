@@ -29,9 +29,5 @@ struct cdma_dev *get_cdma_dev_by_eid(u32 eid);
 struct xarray *get_cdma_dev_tbl(u32 *devices_num);
 bool cdma_find_seid_in_eus(struct eu_info *eus, u8 eu_num, struct dev_eid *eid,
 			   struct eu_info *eu_out);
-int cdma_register_crq_event(struct auxiliary_device *adev);
-void cdma_unregister_crq_event(struct auxiliary_device *adev);
-int cdma_create_arm_db_page(struct cdma_dev *cdev);
-void cdma_destroy_arm_db_page(struct cdma_dev *cdev);
 
-#endif /* _CDMA_DEV_H_ */
+#endif /* __CDMA_DEV_H__ */

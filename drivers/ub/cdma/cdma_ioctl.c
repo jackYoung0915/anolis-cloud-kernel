@@ -71,8 +71,7 @@ static int cdma_create_ucontext(struct cdma_ioctl_hdr *hdr,
 	int ret;
 
 	if (cfile->uctx) {
-		dev_err(cdev->dev, "create jfae failed, ctx handle = %d.\n",
-			ctx->handle);
+		dev_err(cdev->dev, "cdma context has been created.\n");
 		return -EEXIST;
 	}
 
@@ -92,12 +91,13 @@ static int cdma_create_ucontext(struct cdma_ioctl_hdr *hdr,
 
 	ctx->jfae = cdma_alloc_jfae(cfile);
 	if (!ctx->jfae) {
-		dev_err(cdev->dev, "create jfae failed.\n");
+		dev_err(cdev->dev, "create jfae failed, ctx handle = %d.\n",
+			ctx->handle);
 		ret = -EFAULT;
 		goto free_context;
 	}
 
-	jfae = (struct cdma_jfae *)ctx->jfae;
+	jfae = ctx->jfae;
 	jfae->ctx = ctx;
 	args.out.cqe_size = cdev->caps.cqe_size;
 	args.out.dwqe_enable =
@@ -116,7 +116,7 @@ static int cdma_create_ucontext(struct cdma_ioctl_hdr *hdr,
 
 free_jfae:
 	cfile->uctx = NULL;
-	cdma_free_jfae((struct cdma_jfae *)ctx->jfae);
+	cdma_free_jfae(ctx->jfae);
 free_context:
 	cdma_free_context(cdev, ctx);
 
@@ -210,7 +210,7 @@ static int cdma_cmd_create_ctp(struct cdma_ioctl_hdr *hdr,
 	return 0;
 
 delete_ctp:
-	cdma_delete_ctp(cdev, ctp->tp_id);
+	cdma_delete_ctp(cdev, ctp->tp_id, false);
 delete_obj:
 	cdma_uobj_delete(uobj);
 
@@ -255,7 +255,7 @@ static int cdma_cmd_delete_ctp(struct cdma_ioctl_hdr *hdr,
 	}
 	ctp = uobj->object;
 
-	cdma_delete_ctp(cdev, ctp->tp_id);
+	cdma_delete_ctp(cdev, ctp->tp_id, cfile->uctx->invalid);
 	cdma_uobj_delete(uobj);
 	cdma_set_queue_res(cdev, queue, QUEUE_RES_TP, NULL);
 
@@ -806,7 +806,7 @@ int cdma_cmd_parse(struct cdma_file *cfile, struct cdma_ioctl_hdr *hdr)
 		dev_err(cdev->dev,
 			"invalid cdma user command or no handler, command = %u\n",
 			hdr->command);
-		return -EINVAL;
+		return -ENOIOCTLCMD;
 	}
 
 	mutex_lock(&cfile->ctx_mutex);
