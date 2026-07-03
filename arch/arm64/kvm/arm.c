@@ -906,6 +906,20 @@ int kvm_arch_vcpu_run_pid_change(struct kvm_vcpu *vcpu)
 	return ret;
 }
 
+int kvm_arch_pinned_vmid_get(struct kvm *kvm)
+{
+	int vmid;
+
+	vmid = kvm_arm_pinned_vmid_get(&kvm->arch.mmu.vmid);
+
+	return (vmid == 0) ? -EINVAL : vmid;
+}
+
+void kvm_arch_pinned_vmid_put(struct kvm *kvm)
+{
+	kvm_arm_pinned_vmid_put(&kvm->arch.mmu.vmid);
+}
+
 bool kvm_arch_intc_initialized(struct kvm *kvm)
 {
 	return vgic_initialized(kvm);
@@ -1955,6 +1969,9 @@ int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 		if (copy_from_user(&range, argp, sizeof(range)))
 			return -EFAULT;
 		return kvm_vm_ioctl_get_reg_writable_masks(kvm, &range);
+	}
+	case KVM_POD_TOUCHED_LOG: {
+		return kvm_mmu_mark_touched_log(kvm);
 	}
 #ifdef CONFIG_VIRT_PLAT_DEV
 	case KVM_CREATE_SHADOW_DEV: {

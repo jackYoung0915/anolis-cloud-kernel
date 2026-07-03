@@ -1361,6 +1361,10 @@ static void kvm_destroy_vm(struct kvm *kvm)
 
 	kvm_destroy_pm_notifier(kvm);
 	kvm_uevent_notify_change(KVM_EVENT_DESTROY_VM, kvm);
+
+	if (mm->kvm == kvm)
+		mm->kvm = NULL;
+
 	kvm_destroy_vm_debugfs(kvm);
 	kvm_arch_sync_events(kvm);
 	mutex_lock(&kvm_lock);
@@ -1639,6 +1643,7 @@ static int check_memory_region_flags(struct kvm *kvm,
 	if (kvm_arch_has_readonly_mem(kvm) &&
 	    !(mem->flags & KVM_MEM_GUEST_MEMFD))
 		valid_flags |= KVM_MEM_READONLY;
+	valid_flags |= KVM_MEM_HUGE_POD;
 
 	if (mem->flags & ~valid_flags)
 		return -EINVAL;
@@ -3954,6 +3959,29 @@ bool kvm_vcpu_wake_up(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_wake_up);
 
+#ifdef CONFIG_HAVE_KVM_PINNED_VMID
+int kvm_pinned_vmid_get(struct kvm *kvm)
+{
+	int ret;
+
+	if (!kvm_get_kvm_safe(kvm))
+		return -ENOENT;
+	ret  = kvm_arch_pinned_vmid_get(kvm);
+	if (ret < 0)
+		kvm_put_kvm(kvm);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(kvm_pinned_vmid_get);
+
+void kvm_pinned_vmid_put(struct kvm *kvm)
+{
+	kvm_arch_pinned_vmid_put(kvm);
+	kvm_put_kvm(kvm);
+}
+EXPORT_SYMBOL_GPL(kvm_pinned_vmid_put);
+#endif
+
 #ifndef CONFIG_S390
 /*
  * Kick a sleeping VCPU, or a guest VCPU in guest mode, into host kernel mode.
@@ -5554,6 +5582,9 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 		r = PTR_ERR(file);
 		goto put_kvm;
 	}
+
+	if (kvm->mm->kvm == NULL)
+		kvm->mm->kvm = kvm;
 
 	/*
 	 * Don't call kvm_put_kvm anymore at this point; file->f_op is

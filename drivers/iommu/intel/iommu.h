@@ -1219,7 +1219,7 @@ int dmar_ir_support(void);
 void iommu_flush_write_buffer(struct intel_iommu *iommu);
 struct iommu_domain *
 intel_iommu_domain_alloc_nested(struct device *dev, struct iommu_domain *parent,
-				u32 flags,
+				u32 flags, struct kvm *kvm,
 				const struct iommu_user_data *user_data);
 struct device *device_rbtree_find(struct intel_iommu *iommu, u16 rid);
 

@@ -44,6 +44,8 @@ int iommufd_sw_msi_install(struct iommufd_ctx *ictx,
 			   struct iommufd_sw_msi_map *msi_map);
 #endif
 
+struct kvm;
+
 struct iommufd_ctx {
 	struct file *file;
 	struct xarray objects;
@@ -69,6 +71,9 @@ struct iommufd_ctx {
 #ifdef CONFIG_LIVEUPDATE
 	struct iommufd_ser *ser;
 #endif
+
+	/* Associated KVM pointer */
+	struct kvm *kvm;
 };
 
 /* Entry for iommufd_ctx::mt_mmap */

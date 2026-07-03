@@ -175,6 +175,9 @@ u32 hugetlb_fault_mutex_hash(struct address_space *mapping, pgoff_t idx);
 
 pte_t *huge_pmd_share(struct mm_struct *mm, struct vm_area_struct *vma,
 		      unsigned long addr, pud_t *pud);
+bool hugetlbfs_pagecache_present(struct hstate *h,
+				 struct vm_area_struct *vma,
+				 unsigned long address);
 
 struct address_space *hugetlb_folio_mapping_lock_write(struct folio *folio);
 
@@ -1287,6 +1290,12 @@ static inline void hugetlb_register_node(struct node *node)
 
 static inline void hugetlb_unregister_node(struct node *node)
 {
+}
+
+static inline bool hugetlbfs_pagecache_present(
+    struct hstate *h, struct vm_area_struct *vma, unsigned long address)
+{
+	return false;
 }
 #endif	/* CONFIG_HUGETLB_PAGE */
 

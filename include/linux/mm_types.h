@@ -1072,6 +1072,9 @@ struct mm_struct {
 #ifdef CONFIG_FUTEX
 		unsigned int futex_nid;
 #endif
+#if IS_ENABLED(CONFIG_KVM)
+		struct kvm *kvm;
+#endif
 
 #ifdef CONFIG_BPF_MM
 		struct bpf_mm_ops bpf_mm;
