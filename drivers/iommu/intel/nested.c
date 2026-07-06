@@ -194,8 +194,7 @@ static const struct iommu_domain_ops intel_nested_domain_ops = {
 
 struct iommu_domain *
 intel_iommu_domain_alloc_nested(struct device *dev, struct iommu_domain *parent,
-				u32 flags, struct kvm *kvm,
-				const struct iommu_user_data *user_data)
+				u32 flags, const struct iommu_user_data *user_data)
 {
 	struct device_domain_info *info = dev_iommu_priv_get(dev);
 	struct dmar_domain *s2_domain = to_dmar_domain(parent);
