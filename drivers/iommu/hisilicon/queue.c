@@ -14,6 +14,7 @@
 
 #include "ummu.h"
 #include "regs.h"
+#include "sva.h"
 #include "queue.h"
 
 #define ENTRY_DWORDS_TO_SIZE(dwords) ((dwords) << 3)
@@ -250,7 +251,8 @@ static int ummu_mcmdq_init(struct ummu_device *ummu)
 	int cpu, ret;
 
 	ummu->nr_mcmdq = 1UL << ummu->cap.mcmdq_log2num;
-	ummu->nr_mcmdq -= 1;
+	if (ummu->cap.options & UMMU_OPT_MCMDQ_DECREASE)
+		ummu->nr_mcmdq -= 1;
 	shift = order_base_2(num_possible_cpus() / ummu->nr_mcmdq);
 
 	ummu->mcmdq = devm_alloc_percpu(ummu->dev, struct ummu_mcmdq *);
@@ -386,11 +388,20 @@ int ummu_write_evtq_regs(struct ummu_device *ummu)
 static int ummu_evtq_init(struct ummu_device *ummu)
 {
 	struct ummu_queue *q = &ummu->evtq.q;
+	int ret;
 
 	q->llq.log2size = min(EVTQ_MAX_SZ_SHIFT, ummu->cap.evtq_log2size);
 	q->prod_reg = (u32 *)(ummu->base + UMMU_EVTQ_PROD_OFFSET);
 	q->cons_reg = (u32 *)(ummu->base + UMMU_EVTQ_CONS_OFFSET);
-	return ummu_common_init_queue(ummu, q, EVTQ_ENT_DWORDS);
+	ret = ummu_common_init_queue(ummu, q, EVTQ_ENT_DWORDS);
+	if (ret)
+		return ret;
+
+	if ((ummu->cap.features & UMMU_FEAT_SVA) &&
+	    (ummu->cap.features & UMMU_FEAT_STALLS))
+		return ummu_iopf_queue_alloc(ummu);
+
+	return 0;
 }
 
 int ummu_init_queues(struct ummu_device *ummu)

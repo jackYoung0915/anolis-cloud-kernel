@@ -16,6 +16,12 @@
 #include "perm_table.h"
 
 extern struct platform_driver ummu_driver;
+extern const struct ummu_core_ops ummu_ops;
+extern const struct ummu_device_helper ummu_helper;
+
+#define MSI_IOVA_BASE 0x8000000
+#define MSI_IOVA_LENGTH 0x100000
+
 #define EID_HIGH_SZ_SHIFT 64
 #define UMMU_CTRL_PAGE_SIZE ((PAGE_SIZE == SZ_4K) ? SZ_4K : SZ_64K)
 
@@ -25,14 +31,12 @@ struct ummu_l1_tct_desc {
 	phys_addr_t	l2ptr_phys;
 };
 
-enum ummu_ver {
-	NO_PROD_ID = 0,
-	MAX_VER,
-};
-
 enum ummu_device_msi_index {
 	EVTQ_MSI_INDEX,
 	GERROR_MSI_INDEX,
+#if IS_ENABLED(CONFIG_UB_UBMEM_UMMU)
+	RESERVED_MSI_INDEX,
+#endif
 	UMMU_MAX_MSIS,
 };
 
@@ -80,6 +84,14 @@ enum ummu_domain_stage {
 	UMMU_DOMAIN_S2,
 };
 
+enum ummu_sva_mode {
+	UMMU_MODE_DMA = 0,
+	UMMU_MODE_KSVA,
+	UMMU_MODE_SVA,
+	UMMU_MODE_SVA_DISABLE_PTB,
+	UMMU_MODE_END,
+};
+
 struct ummu_ll_queue {
 	union {
 		u64 val;
@@ -121,6 +133,7 @@ struct ummu_mcmdq {
 
 struct ummu_evtq {
 	struct ummu_queue q;
+	struct iopf_queue *iopf;
 	u32 max_stalls;
 };
 
@@ -154,7 +167,6 @@ struct ummu_capability {
 #define UMMU_FEAT_TOKEN_CHK		BIT(26)
 #define UMMU_FEAT_PERMQ			BIT(27)
 #define UMMU_FEAT_NESTING		BIT(28)
-
 	u32 features;
 	u32 deid_bits;
 	u32 tid_bits;
@@ -165,6 +177,9 @@ struct ummu_capability {
 #define UMMU_OPT_MSIPOLL		(1UL << 0)
 #define UMMU_OPT_DOUBLE_PLBI		(1UL << 1)
 #define UMMU_OPT_KCMD_PLBI		(1UL << 2)
+#define UMMU_OPT_CHK_MAPT_CONTINUITY	(1UL << 3)
+#define UMMU_OPT_MCMDQ_DECREASE		(1UL << 4)
+#define UMMU_OPT_SYNC_WITH_PLBI		(1UL << 5)
 	u32 options;
 
 #define UMMU_MAX_ASIDS			(1UL << 16)
@@ -172,7 +187,6 @@ struct ummu_capability {
 #define UMMU_MAX_VMIDS			(1UL << 16)
 	unsigned int vmid_bits;
 
-	bool support_mapt;
 	u32 mcmdq_log2num;
 	u32 mcmdq_log2size;
 	u32 evtq_log2num;
@@ -184,7 +198,6 @@ struct ummu_capability {
 	} permq_ent_num;
 	u32 mtm_gp_max;
 	u32 mtm_id_max;
-	u16 prod_ver;
 };
 
 struct ummu_permq_addr {
@@ -222,9 +235,9 @@ struct ummu_hash_table_cfg {
 
 /* ummu device inner helper functions */
 enum ummu_dom_cfg_sync_type {
+	SYNC_TYPE_NONE,
 	SYNC_DOM_ALL_CFG,
 	SYNC_DOM_MUTI_CFG,
-	SYNC_NESTED_DOM_MUTI_CFG,
 	SYNC_CLEAR_DOM_ALL_CFG,
 };
 
@@ -265,11 +278,17 @@ struct ummu_device {
 struct ummu_dev_impl_ops {
 	int (*hw_probe)(struct ummu_device *ummu);
 	int (*mcmdq_cfg)(struct ummu_device *ummu);
+	void (*write_msi_msg)(struct msi_desc *desc, struct msi_msg *msg);
+	void (*set_msis)(struct ummu_device *ummu);
+	void (*setup_irqs)(struct ummu_device *ummu);
+	int (*dev_probe)(struct ummu_device *ummu);
+	void (*dev_remove)(struct ummu_device *ummu);
 };
 
 struct ummu_domain_cfgs {
 	struct io_pgtable_ops *pgtbl_ops;
 	enum ummu_domain_stage stage;
+	enum ummu_sva_mode sva_mode;
 
 	u32 tecte_tag;
 
@@ -277,19 +296,29 @@ struct ummu_domain_cfgs {
 		struct ummu_s1_cfg	s1_cfg;
 		struct ummu_s2_cfg	s2_cfg;
 	};
+	bool btm_enabled : 1;
+	bool nested_parent : 1;
 };
 
 struct ummu_domain {
 	struct mutex init_mutex; /* protect domain resources */
 	struct ummu_base_domain base_domain;
 	u32 qid;
+	bool has_cfged;
+	bool dirty_tracking;
 	struct ummu_domain_cfgs cfgs;
+	struct kvm *kvm;
 };
 
 /* UMMU private data for each master */
 struct ummu_master {
 	struct ummu_device	*ummu;
 	struct device		*dev;
+	bool			sva_enabled;
+	bool			iopf_enabled;
+	bool			ksva_enabled;
+	refcount_t		sva_ref;
+	refcount_t		ksva_ref;
 };
 
 static inline
@@ -324,4 +353,5 @@ bool ummu_get_mapt_blk_exp(void);
  */
 size_t ummu_get_mapt_base_blk_size(void);
 
+int ummu_bypass_dev_domain_type(struct device *dev);
 #endif /* __UMMU_H__ */

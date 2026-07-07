@@ -903,7 +903,14 @@ int ummu_write_tct_desc(struct ummu_device *ummu, struct ummu_domain_cfgs *cfgs,
 		      (tct_desc->mapt_mode == MAPT_MODE_TABLE ? TCT_ENT0_MAPT_MOD : 0) |
 		      FIELD_PREP(TCT_ENT0_RTES, (tct_desc->mapt_mode == MAPT_MODE_TABLE ?
 				 RTE_GRANULE_4K : 0)) |
+		      (cfgs->btm_enabled ? 0 : TCT_ENT0_ASH) |
 		      FIELD_PREP(TCT_ENT0_ASID, tct_desc->asid) | TCT_ENT0_V;
+
+		if (cfgs->sva_mode == UMMU_MODE_DMA ||
+		    cfgs->sva_mode == UMMU_MODE_SVA_DISABLE_PTB)
+			val |= TCT_ENT0_EBIT_EN;
+		else
+			val &= ~TCT_ENT0_EBIT_EN;
 
 		if (ummu->cap.features & UMMU_FEAT_HA)
 			val |= TCT_ENT0_HAF;
@@ -1116,7 +1123,7 @@ static void ummu_device_make_default_tecte(struct ummu_device *ummu,
 		  TECT_ENT0_TCR_EL2 : TECT_ENT0_TCR_NSEL1;
 	target->data[0] = cpu_to_le64(
 		TECT_ENT0_V | FIELD_PREP(TECT_ENT0_TCRC_SEL, tcr_sel) |
-		(ummu->cap.support_mapt ? TECT_ENT0_MAPT_EN : 0) |
+		((ummu->cap.features & UMMU_FEAT_MAPT) ? TECT_ENT0_MAPT_EN : 0) |
 		FIELD_PREP(TECT_ENT0_ST_MODE, TECT_ENT0_ST_MODE_S1) |
 		FIELD_PREP(TECT_ENT0_PRIV_SEL, TECT_ENT0_PRIV_SEL_PRIV));
 
@@ -1165,7 +1172,12 @@ void ummu_build_s2_domain_tecte(struct ummu_domain *u_domain,
 static bool check_tecte_can_set(const struct ummu_tecte_data *tecte,
 				const struct ummu_tecte_data *src)
 {
-	u32 st_mode = FIELD_GET(TECT_ENT0_ST_MODE, le64_to_cpu(tecte->data[0]));
+	u32 st_mode;
+
+	if (!src->data[0])
+		return true;
+
+	st_mode = FIELD_GET(TECT_ENT0_ST_MODE, le64_to_cpu(tecte->data[0]));
 
 	switch (st_mode) {
 	case TECT_ENT0_ST_MODE_ABORT:
@@ -1289,8 +1301,11 @@ void ummu_del_eid(struct ummu_core_device *core_dev, guid_t *guid, eid_t eid, en
 	}
 
 	ummu_device_delete_kvtbl(ummu, meta->tecte_tag, eid, kv_index);
-	if (kref_read(&meta->ref) == 1)
+	/* 2 indicates that only the last EID remains. */
+	if (kref_read(&meta->ref) == 2) {
 		ummu_device_write_tecte(ummu, meta->tecte_tag, &ummu_clear_tecte);
+		meta->valid = false;
+	}
 
 	os_meta_del_eid(meta, eid);
 }

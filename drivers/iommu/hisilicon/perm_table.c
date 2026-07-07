@@ -9,6 +9,7 @@
 #include <linux/cleanup.h>
 #include <linux/random.h>
 
+#include "trace/trace.h"
 #include "ummu.h"
 #include "flush.h"
 #include "seg_mng.h"
@@ -73,20 +74,6 @@ static const u32 g_mapt_range_bits[MAPT_MAX_LVL_INDEX + 1][2] = { { 47, 39 },
 	(((u64)(addr) >> g_mapt_range_bits[level][1]) & \
 	 (GET_BITS_MASK(g_mapt_range_bits[level][0] -        \
 			g_mapt_range_bits[level][1] + 1)))
-
-#define GET_LEVEL_INDEX_RANGE(base, limit, lvl, base_index, limit_index,   \
-			      cross_level)                                 \
-	do {                                                               \
-		(base_index) = GET_LEVEL_BLOCK_INDEX(base, lvl);           \
-		if ((limit) >> (g_mapt_range_bits[lvl][0] + 1) ==          \
-		    (base) >> (g_mapt_range_bits[lvl][0] + 1)) {           \
-			(limit_index) = GET_LEVEL_BLOCK_INDEX(limit, lvl); \
-			cross_level = false;                               \
-		} else {                                                   \
-			(limit_index) = MAPT_MAX_ENTRY_INDEX - 1;          \
-			cross_level = true;                                \
-		}                                                          \
-	} while (0)
 
 #define ENTRY_ADDR_LOW(addr) FIELD_GET(GENMASK(31, 0), (addr))
 #define ENTRY_ADDR_HIGH(addr) FIELD_GET(GENMASK(47, 32), (addr))
@@ -216,7 +203,7 @@ static int ummu_alloc_mapt_mem_for_table(struct ummu_domain *ummu_domain,
 		goto err_out;
 	}
 
-	if (ummu->cap.prod_ver == NO_PROD_ID) {
+	if (ummu->cap.options & UMMU_OPT_CHK_MAPT_CONTINUITY) {
 		ret = ummu_device_check_pa_continuity(ummu,
 			virt_to_phys(alloc_ptr),
 			PAGE_ORDER_TO_MAPT_ORDER(blk_para->block_size_order),
@@ -944,7 +931,7 @@ static int ummu_table_clear_node_by_level(struct ummu_data_info *data_info,
 static int ummu_table_clear_head_node(struct ummu_data_info *data_info,
 				      u32 level, struct ummu_mapt_table_node *pre_node,
 				      struct ummu_mapt_table_node *cur_node, u64 node_base,
-	u64 node_limit)
+				      u64 node_limit)
 {
 	u16 loop_cnt, max_loop = MAPT_MAX_ENTRY_INDEX << MAPT_MAX_LVL_INDEX;
 	u64 rest_node_base, cur_base, cur_limit;
@@ -1240,6 +1227,9 @@ int ummu_perm_grant(struct iommu_domain *domain, void *va, size_t size,
 
 	ummu_perm_data_preproc(&data_info);
 
+	trace_ummu_perm_grant(ummu_dom->base_domain.tid, (u64)va, size, perm,
+			      data_info.token != NULL);
+
 	data_info.op = ummu_grant_check(mapt_info, &data_info);
 	if (data_info.op == UMMU_OP_END)
 		return -EINVAL;
@@ -1249,6 +1239,11 @@ int ummu_perm_grant(struct iommu_domain *domain, void *va, size_t size,
 		ret = ummu_update_info(data_info.op, mapt_info, &data_info);
 
 	plb_gather->va = (void *)data_info.data_base;
+	if (data_info.op == UMMU_GRANT)
+		plb_gather->size = 0;
+	else
+		plb_gather->size = data_info.data_size;
+
 	plb_gather->size = data_info.data_size;
 	data_info.tokenval = 0;
 	return ret;
@@ -1303,6 +1298,9 @@ int ummu_perm_ungrant(struct iommu_domain *domain, void *va, size_t size,
 		ret = -EINVAL;
 		goto clear_info;
 	}
+
+	trace_ummu_perm_ungrant(ummu_dom->base_domain.tid, (u64)va, size,
+				cookie != NULL, ret);
 
 	data_info.op = ummu_ungrant_check(mapt_info, &data_info);
 	if (data_info.op == UMMU_OP_END) {
