@@ -147,19 +147,21 @@ static int ummu_alloc_mapt_mem_for_entry(struct ummu_domain *ummu_domain,
 					 struct block_args *blk_para)
 {
 	struct ummu_tct_desc *tct_desc = &ummu_domain->cfgs.s1_cfg.tct;
+	struct page *page;
 	void *alloc_ptr;
 
 	if (tct_desc->mapt_en)
 		return ummu_get_mapt_mem(ummu_domain, blk_para);
 
 	/* allocate new mapt blk */
-	alloc_ptr = (void *)__get_free_pages(GFP_KERNEL | __GFP_COMP | __GFP_ZERO,
-					     blk_para->block_size_order);
-	if (!alloc_ptr) {
+	page = alloc_pages(GFP_HIGHUSER_MOVABLE | __GFP_COMP | __GFP_ZERO,
+			   blk_para->block_size_order);
+	if (!page) {
 		pr_err("allocate mapt block(%lu bytes) failed\n",
 		       (1U << blk_para->block_size_order) * PAGE_SIZE);
 		return -ENOMEM;
 	}
+	alloc_ptr = page_address(page);
 	blk_para->out_addr = virt_to_phys(alloc_ptr);
 	tct_desc->mapt_en = 1;
 	tct_desc->token_en = 0;
@@ -178,6 +180,7 @@ static int ummu_alloc_mapt_mem_for_table(struct ummu_domain *ummu_domain,
 	struct ummu_tct_desc *tct_desc = &ummu_domain->cfgs.s1_cfg.tct;
 	size_t blk_size = (1U << blk_para->block_size_order) * PAGE_SIZE;
 	struct io_pt_blk_table blk_table;
+	struct page *page;
 	__le64 *cfg_ptr;
 	void *alloc_ptr;
 	int ret;
@@ -194,15 +197,16 @@ static int ummu_alloc_mapt_mem_for_table(struct ummu_domain *ummu_domain,
 		return -ENOMEM;
 
 	/* allocate new mapt blk */
-	alloc_ptr = (void *)__get_free_pages(GFP_KERNEL | __GFP_COMP | __GFP_ZERO,
-					     blk_para->block_size_order);
-	if (!alloc_ptr) {
+	page = alloc_pages(GFP_HIGHUSER_MOVABLE | __GFP_COMP | __GFP_ZERO,
+			   blk_para->block_size_order);
+	if (!page) {
 		pr_err("allocate mapt block(%lu bytes) failed.\n",
 		       (1U << blk_para->block_size_order) * PAGE_SIZE);
 		ret = -ENOMEM;
 		goto err_out;
 	}
 
+	alloc_ptr = page_address(page);
 	if (ummu->cap.options & UMMU_OPT_CHK_MAPT_CONTINUITY) {
 		ret = ummu_device_check_pa_continuity(ummu,
 			virt_to_phys(alloc_ptr),
@@ -210,7 +214,7 @@ static int ummu_alloc_mapt_mem_for_table(struct ummu_domain *ummu_domain,
 			blk_para->index);
 		if (ret) {
 			pr_err("mapt block is discontinuous ret = %d\n", ret);
-			free_pages((unsigned long)alloc_ptr, blk_para->block_size_order);
+			__free_pages(page, blk_para->block_size_order);
 			goto err_out;
 		}
 	}
@@ -245,8 +249,6 @@ int ummu_alloc_mapt_blk_mem(struct ummu_domain *ummu_domain,
 {
 	int mode;
 
-	guard(mutex)(&ummu_domain->init_mutex);
-
 	mode = ummu_domain->cfgs.s1_cfg.io_pt_cfg.mode;
 	if (mode == MAPT_MODE_TABLE)
 		return ummu_alloc_mapt_mem_for_table(ummu_domain, blk_para);
@@ -278,9 +280,9 @@ int ummu_init_sva_mapt_context(struct ummu_domain *ummu_domain,
 
 static void ummu_free_blk_tbl_ent(__le64 *dst)
 {
-	unsigned long blk_ptr;
 	phys_addr_t blk_phys;
 	u32 free_page_order;
+	struct page *page;
 	bool ent_live;
 	u64 val;
 
@@ -292,17 +294,17 @@ static void ummu_free_blk_tbl_ent(__le64 *dst)
 	WRITE_ONCE(dst[0], 0);
 
 	blk_phys = FIELD_GET(BLK_ADDR_MASK, val) << BLK_PHY_OFFSET;
+	page = virt_to_page(phys_to_virt(blk_phys));
 	free_page_order = FIELD_GET(BLK_SIZE_ORDER_MASK, val);
 	free_page_order = MAPT_ORDER_TO_PAGE_ORDER(free_page_order);
-	blk_ptr = (unsigned long)phys_to_virt(blk_phys);
-	free_pages(blk_ptr, free_page_order);
+	__free_pages(page, free_page_order);
 }
 
 static void ummu_release_mapt_for_entry(struct ummu_domain *ummu_domain)
 {
 	struct ummu_tct_desc *tct_desc = &ummu_domain->cfgs.s1_cfg.tct;
 	phys_addr_t phys_addr = tct_desc->mapt_blk_phys;
-	unsigned long addr;
+	struct page *page;
 	u32 size_order;
 
 	tct_desc->mapt_en = 0;
@@ -311,8 +313,8 @@ static void ummu_release_mapt_for_entry(struct ummu_domain *ummu_domain)
 			    &ummu_domain->cfgs, true);
 
 	size_order = MAPT_ORDER_TO_PAGE_ORDER(tct_desc->blk_size_order);
-	addr = (unsigned long)phys_to_virt(phys_addr);
-	free_pages(addr, size_order);
+	page = virt_to_page(phys_to_virt(phys_addr));
+	__free_pages(page, size_order);
 }
 
 static void ummu_release_mapt_for_table(struct ummu_domain *ummu_domain,
@@ -665,7 +667,7 @@ err_free_blk:
 	return ERR_PTR(ret);
 }
 
-struct ummu_mapt_table_node *ummu_alloc_level_block(struct ummu_mapt_info *mapt_info,
+static struct ummu_mapt_table_node *ummu_alloc_level_block(struct ummu_mapt_info *mapt_info,
 						    struct ummu_mapt_table_node *pre_node,
 						    struct ummu_mapt_block *pre_node_mapt_blk)
 {
@@ -1135,13 +1137,18 @@ static int ummu_table_op(struct ummu_mapt_info *mapt_info,
 			 struct ummu_data_info *data_info)
 {
 	struct ummu_mapt_table_node node = {0};
+	int ret;
 
 	data_info->mapt_info = mapt_info;
 
 	switch (data_info->op) {
 	case UMMU_GRANT:
-		return ummu_table_fill_node_by_level(data_info, 0,
+		ret = ummu_table_fill_node_by_level(data_info, 0,
 			&node, data_info->data_base, data_info->data_limit);
+		if (ret)
+			ummu_table_clear_node_by_level(data_info, 0, &node,
+				data_info->data_base, data_info->data_limit);
+		return ret;
 	case UMMU_ADD_TOKEN:
 	case UMMU_REMOVE_TOKEN:
 		return ummu_table_update_token_by_level(data_info, 0,
@@ -1239,12 +1246,12 @@ int ummu_perm_grant(struct iommu_domain *domain, void *va, size_t size,
 		ret = ummu_update_info(data_info.op, mapt_info, &data_info);
 
 	plb_gather->va = (void *)data_info.data_base;
-	if (data_info.op == UMMU_GRANT)
+	/* plb_gather->size = 0 indicates PLB will not be flushed */
+	if (data_info.op == UMMU_GRANT && !ret)
 		plb_gather->size = 0;
 	else
 		plb_gather->size = data_info.data_size;
 
-	plb_gather->size = data_info.data_size;
 	data_info.tokenval = 0;
 	return ret;
 }
@@ -1309,10 +1316,8 @@ int ummu_perm_ungrant(struct iommu_domain *domain, void *va, size_t size,
 	}
 
 	ret = ummu_ungrant_imp(mapt_info, &data_info);
-	if (ret)
-		goto clear_info;
-
-	ret = ummu_update_info(data_info.op, mapt_info, &data_info);
+	if (ret == 0)
+		ret = ummu_update_info(data_info.op, mapt_info, &data_info);
 
 	if (data_info.op == UMMU_UNGRANT) {
 		data_info.lvl = data_info.lvl ? data_info.lvl - 1 : 0;

@@ -18,6 +18,7 @@
 #include "cfg_table.h"
 #include "queue.h"
 #include "flush.h"
+#include "sva.h"
 
 static DEFINE_MUTEX(ummu_sva_mutex);
 
@@ -100,6 +101,16 @@ static int ummu_master_sva_enable_iopf(struct ummu_master *master)
 	master->iopf_enabled = true;
 
 	return 0;
+}
+
+bool ummu_master_iopf_enabled(struct ummu_master *master)
+{
+	bool enabled;
+
+	mutex_lock(&ummu_sva_mutex);
+	enabled = master->iopf_enabled;
+	mutex_unlock(&ummu_sva_mutex);
+	return enabled;
 }
 
 static void ummu_master_sva_disable_iopf(struct ummu_master *master)
@@ -291,7 +302,7 @@ static int ummu_sva_collect_domain_cfg(struct ummu_domain *domain, ioasid_t id)
 {
 	struct ummu_device *ummu = core_to_ummu_device(
 					domain->base_domain.core_dev);
-	bool ksva = ummu_is_ksva(&domain->base_domain.domain);
+	bool ksva = iommu_is_ksva_domain(&domain->base_domain.domain);
 	enum ummu_mapt_mode mode;
 	int ret;
 
@@ -361,7 +372,7 @@ static int ummu_sva_set_dev_pasid(struct iommu_domain *domain,
 	struct ummu_domain *u_domain = to_ummu_domain(domain);
 	struct ummu_device *ummu = core_to_ummu_device(
 					u_domain->base_domain.core_dev);
-	bool is_ksva = ummu_is_ksva(domain);
+	bool is_ksva = iommu_is_ksva_domain(domain);
 	struct ummu_master *master;
 	u32 asid;
 	int ret;
@@ -429,7 +440,7 @@ static void ummu_invalidate_plb(struct iommu_domain *domain,
 		pr_warn("failed to plbi by va!\n");
 }
 
-static const struct iommu_perm_ops ummu_sva_perm_ops = {
+const struct iommu_perm_ops ummu_sva_perm_ops = {
 	.grant = ummu_perm_grant,
 	.ungrant = ummu_perm_ungrant,
 	.plb_sync = ummu_invalidate_plb,
@@ -459,7 +470,7 @@ struct iommu_domain *ummu_domain_alloc_sva(struct device *dev,
 void ummu_sva_domain_remove_tid(struct ummu_domain *domain,
 				struct ummu_master *master, u32 tid)
 {
-	bool is_ksva = ummu_is_ksva(&domain->base_domain.domain);
+	bool is_ksva = iommu_is_ksva_domain(&domain->base_domain.domain);
 
 	guard(mutex)(&ummu_sva_mutex);
 	ummu_sva_master_put(master, is_ksva);
@@ -493,8 +504,11 @@ void ummu_sva_tcte_invalidate(struct ummu_domain *u_domain)
 {
 	struct ummu_device *ummu =
 		core_to_ummu_device(u_domain->base_domain.core_dev);
+	struct ummu_tct_desc *tct_desc = &u_domain->cfgs.s1_cfg.tct;
 
 	guard(mutex)(&ummu_sva_mutex);
-	ummu_write_tct_desc(ummu, &u_domain->cfgs, true);
+	tct_desc->tcr0 &= ~TCT_ENT0_FBR;
+	tct_desc->tcr1 |= TCT_ENT1_TTWD;
+	ummu_write_tct_desc(ummu, &u_domain->cfgs, false);
 	ummu_flush_iotlb_all(&u_domain->base_domain.domain);
 }

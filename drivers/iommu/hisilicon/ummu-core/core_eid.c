@@ -55,7 +55,7 @@ int ummu_core_add_eid(guid_t *guid, eid_t eid, enum eid_type type)
 	/* cached the eid */
 	spin_lock(&eid_func_lock);
 	list_for_each_entry(info, &eid_pre_insmode, list)
-		if (guid_equal(guid, &info->guid) && info->eid == eid) {
+		if (info->eid == eid) {
 			ret = -EEXIST;
 			goto out_unlock_spin;
 		}
@@ -83,9 +83,6 @@ void ummu_core_del_eid(guid_t *guid, eid_t eid, enum eid_type type)
 {
 	struct eid_info *info, *next;
 
-	if (WARN_ON(type >= EID_TYPE_MAX))
-		return;
-
 	mutex_lock(&global_device_lock);
 	if (global_core_device) {
 		global_core_device->ops->del_eid(global_core_device, guid, eid, type);
@@ -95,7 +92,7 @@ void ummu_core_del_eid(guid_t *guid, eid_t eid, enum eid_type type)
 	/* uncache the eid */
 	spin_lock(&eid_func_lock);
 	list_for_each_entry_safe(info, next, &eid_pre_insmode, list)
-		if (guid_equal(guid, &info->guid) && info->eid == eid) {
+		if (info->eid == eid) {
 			list_del(&info->list);
 			kfree(info);
 		}
