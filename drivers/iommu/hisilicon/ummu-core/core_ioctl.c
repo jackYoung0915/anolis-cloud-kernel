@@ -24,10 +24,6 @@
 #define MMAP_BLOCK_INDEX_MASK GENMASK(11, 2)
 #define MMAP_BLK_TID_MASK GENMASK(31, 12)
 #define MMAP_QUE_TID_MASK GENMASK(21, 2)
-#define KEY_TIME_REGIN GENMASK_ULL(47, 16)
-#define KEY_OFFSET_SHIFT 32
-#define GET_PROC_KEY(tgid, stime) ((((u64)(tgid)) << (KEY_OFFSET_SHIFT)) \
-			| ((u64)(FIELD_GET(KEY_TIME_REGIN, stime))))
 
 struct ktid_info {
 	u8 pcmdq_order;
@@ -38,6 +34,7 @@ struct ktid_info {
 	struct iommu_sva *sva;
 	struct device *dev;
 	u64 hw_cap;
+	atomic_t mmap_count;
 };
 
 struct mmap_info {
@@ -93,13 +90,12 @@ static int get_tid_res(struct ktid_info *entry)
 
 static int proc_manager_open(struct inode *inode, struct file *filp)
 {
+	struct mm_struct *mm = current->mm;
 	struct proc_manager *manager;
-	unsigned long key;
 	int ret;
 
 	mutex_lock(&global_proc_mtx);
-	key = GET_PROC_KEY(current->tgid, current->start_time);
-	manager = xa_load(&proc_info_xa, key);
+	manager = xa_load(&proc_info_xa, (unsigned long)mm);
 	if (manager) {
 		mutex_unlock(&global_proc_mtx);
 		return -EEXIST;
@@ -113,14 +109,15 @@ static int proc_manager_open(struct inode *inode, struct file *filp)
 
 	mutex_init(&manager->proc_mtx);
 	mutex_lock(&manager->proc_mtx);
-	ret = xa_err(xa_store(&proc_info_xa, key, manager, GFP_KERNEL));
+	ret = xa_err(xa_store(&proc_info_xa, (unsigned long)mm, manager, GFP_KERNEL));
 	if (ret)
 		goto mtx_unlock;
 
 	mutex_unlock(&global_proc_mtx);
+	mmgrab(mm);
 
 	xa_init(&manager->tid_xa);
-	filp->private_data = (void *)(uintptr_t)key;
+	filp->private_data = mm;
 	mutex_unlock(&manager->proc_mtx);
 
 	return 0;
@@ -170,21 +167,22 @@ static void release_tid_resource(struct ktid_info *entry)
 
 static int proc_manager_close(struct inode *inode, struct file *filp)
 {
-	unsigned long key = (unsigned long)(uintptr_t)filp->private_data;
+	struct mm_struct *mm = filp->private_data;
 	struct proc_manager *manager;
 	struct ktid_info *entry;
 	unsigned long idx = 0;
 
 	mutex_lock(&global_proc_mtx);
-	manager = xa_load(&proc_info_xa, key);
+	manager = xa_load(&proc_info_xa, (unsigned long)mm);
 	if (!manager) {
 		mutex_unlock(&global_proc_mtx);
 		return -EINVAL;
 	}
 
-	WARN_ON(!xa_erase(&proc_info_xa, key));
+	xa_erase(&proc_info_xa, (unsigned long)mm);
 	mutex_lock(&manager->proc_mtx);
 	mutex_unlock(&global_proc_mtx);
+	mmdrop(mm);
 	if (!xa_empty(&manager->tid_xa))
 		xa_for_each(&manager->tid_xa, idx, entry) {
 			release_tid_resource(entry);
@@ -226,6 +224,9 @@ static void tid_munmap(struct vm_area_struct *area)
 	bool set;
 
 	map_info = area->vm_private_data;
+	if (!map_info)
+		return;
+
 	start = (area->vm_start - map_info->vm_start) / PAGE_SIZE;
 	end = (area->vm_end - map_info->vm_start) / PAGE_SIZE;
 
@@ -238,38 +239,43 @@ static void tid_munmap(struct vm_area_struct *area)
 	}
 
 	area->vm_private_data = NULL;
+
+	/*
+	 * Release block/queue resources when all pages are unmapped.
+	 */
 	if (map_info->page_cnt <= 0) {
 		WARN_ON(map_info->page_cnt < 0);
-		goto release;
+
+		if (map_info->type == MMAP_TYPE_BLOCK) {
+			release_args.block_index = map_info->block_index;
+			release_args.type = UMMU_BLOCK;
+		} else {
+			release_args.type = UMMU_QUEUE_LIST;
+		}
+
+		mutex_lock(&global_proc_mtx);
+		manager = xa_load(&proc_info_xa, key);
+		if (manager) {
+			mutex_lock(&manager->proc_mtx);
+			mutex_unlock(&global_proc_mtx);
+
+			entry = xa_load(&manager->tid_xa, map_info->tid);
+			if (entry && entry->tid == map_info->tid) {
+				ummu_core_put_resource(entry->sva, entry->dev,
+							&release_args);
+				atomic_dec(&entry->mmap_count);
+			}
+			mutex_unlock(&manager->proc_mtx);
+		} else {
+			mutex_unlock(&global_proc_mtx);
+		}
 	}
 
-	return;
-
-release:
-	if (map_info->type == MMAP_TYPE_BLOCK) {
-		release_args.block_index = map_info->block_index;
-		release_args.type = UMMU_BLOCK;
-	} else
-		release_args.type = UMMU_QUEUE_LIST;
-
-	mutex_lock(&global_proc_mtx);
-	manager = xa_load(&proc_info_xa, key);
-	if (!manager) {
-		mutex_unlock(&global_proc_mtx);
-		return;
-	}
-
-	mutex_lock(&manager->proc_mtx);
-	mutex_unlock(&global_proc_mtx);
-
-	entry = xa_load(&manager->tid_xa, map_info->tid);
-	if (!entry || entry->tid != map_info->tid) {
-		mutex_unlock(&manager->proc_mtx);
-		return;
-	}
-
-	ummu_core_put_resource(entry->sva, entry->dev, &release_args);
-	mutex_unlock(&manager->proc_mtx);
+	/*
+	 * Always release mmap_info via kref_put.
+	 * Each VMA close corresponds to one VMA open (during split),
+	 * so kref_put must be called for every close to maintain balance.
+	 */
 	kref_put(&map_info->ref, release_tid_mmap_info);
 }
 
@@ -545,6 +551,12 @@ static int tid_map_resource(struct file *filp, struct vm_area_struct *vma)
 		goto free_map_info;
 	}
 
+	/*
+	 * Increment mmap count to prevent FREE_TID while mmap is active.
+	 * This must be done while holding proc_mtx to prevent race with
+	 * FREE_TID checking the count.
+	 */
+	atomic_inc(&entry->mmap_count);
 	mutex_unlock(&manager->proc_mtx);
 
 	bitmap_fill(map_info->bitmap, map_info->page_cnt);
@@ -680,6 +692,7 @@ static int sva_mode_alloc_tid(struct proc_manager *manager,
 	if (!entry)
 		return -ENOMEM;
 
+	atomic_set(&entry->mmap_count, 0);
 	entry->mode = tid_data->mode;
 	entry->tid = UMMU_INVALID_TID;
 
@@ -735,6 +748,14 @@ static int sva_mode_free_tid(struct proc_manager *manager,
 	if (!entry)
 		return -EINVAL;
 
+	/*
+	 * Prevent FREE_TID while there are active mmaps.
+	 * This ensures sva and dev remain valid for munmap to release
+	 * block/queue resources.
+	 */
+	if (atomic_read(&entry->mmap_count) > 0)
+		return -EBUSY;
+
 	xa_erase(&manager->tid_xa, entry->tid);
 	release_tid_resource(entry);
 	return 0;
@@ -755,6 +776,7 @@ static int sva_mode_plbi(struct proc_manager *manager,
 		iommu_get_domain_for_dev(entry->dev);
 
 	if (cmd == UMMU_IOCPLBI_VA) {
+		iommu_plb_gather_init(&plb_gather);
 		plb_gather.va = (void *)(uintptr_t)tid_data->va;
 		plb_gather.size = tid_data->size;
 		iommu_plb_sync(domain, &plb_gather);
@@ -843,6 +865,40 @@ static long tid_ioctl(struct file *filp, u32 cmd, unsigned long arg)
 	return ret;
 }
 
+int ummu_core_invalidate_tid(struct mm_struct *mm, u32 tid)
+{
+	struct proc_manager *manager;
+	struct iommu_domain *domain;
+	struct ktid_info *entry;
+
+	mutex_lock(&global_proc_mtx);
+	manager = xa_load(&proc_info_xa, (unsigned long)mm);
+	if (!manager) {
+		mutex_unlock(&global_proc_mtx);
+		return -ESRCH;
+	}
+
+	guard(mutex)(&manager->proc_mtx);
+	mutex_unlock(&global_proc_mtx);
+
+	entry = xa_load(&manager->tid_xa, tid);
+	if (!entry)
+		return -ENOENT;
+
+	if (entry->sva)
+		domain = entry->sva->handle.domain;
+	else
+		domain = iommu_get_domain_for_dev(entry->dev);
+
+	if (!domain)
+		return -ENODEV;
+
+	if (!global_core_device->ops || !global_core_device->ops->invalidate_cfg)
+		return -EOPNOTSUPP;
+
+	return global_core_device->ops->invalidate_cfg(to_ummu_base_domain(domain));
+}
+
 static const struct file_operations misc_fops = {
 	.owner = THIS_MODULE,
 	.open = proc_manager_open,
@@ -855,17 +911,12 @@ static struct miscdevice tid_misc_device = {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name = TID_MISC_NAME,
 	.fops = &misc_fops,
+	.mode = 0666,
 };
 
 int tid_misc_init(void)
 {
-	int ret;
-
-	ret = misc_register(&tid_misc_device);
-	if (ret)
-		return ret;
-
-	return ret;
+	return misc_register(&tid_misc_device);
 }
 
 void tid_misc_exit(void)

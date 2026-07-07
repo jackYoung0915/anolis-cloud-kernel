@@ -261,6 +261,25 @@ struct tdev_attr {
 };
 
 /**
+ * struct tdev_opt - option for tdev
+ * @mm: mm of the process that creates tid
+ * @share_by_mm: indicates whether the same mm returns the same tid.
+ *               true: share tid for same mm
+ *               false: allocate new tid
+ */
+struct tdev_opt {
+	struct mm_struct *mm;
+	bool share_by_mm;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+};
+
+/**
  * struct ummu_invalid_cfg_param - param of invalid tid config
  * @mm: mm of the process that creates tid
  * @tid: tid to invalidate
@@ -599,6 +618,7 @@ static inline int ummu_drain_pages(struct iova_slot *slot, dma_addr_t iova,
 /* UMMU SVA API */
 /**
  * ummu_sva_grant_range() - Grant va range permission to sva.
+ * @Deprecated: use iommu_sva_grant instead.
  * @sva: related sva handle.
  * @va: va start
  * @size: va size
@@ -623,6 +643,7 @@ int ummu_sva_grant_range(struct iommu_sva *sva, void *va, size_t size, int perm,
 
 /**
  * ummu_sva_ungrant_range() - Ungrant va range permission from sva.
+ * @Deprecated: use iommu_sva_ungrant instead.
  * @sva: related sva handle.
  * @va: va start
  * @size: va size
@@ -664,6 +685,7 @@ struct iommu_domain *ummu_core_get_domain_by_tid(struct device *dev,
 
 /**
  * ummu_is_ksva() - Check whether the UMMU works in ksva mode.
+ * @Deprecated: use iommu_is_ksva_domain instead.
  * @domain: related iommu domain
  *
  * Return: true or false.
@@ -672,6 +694,7 @@ bool ummu_is_ksva(struct iommu_domain *domain);
 
 /**
  * ummu_is_sva() - Check whether the UMMU works in sva mode.
+ * @Deprecated: use iommu_is_ksva_domain instead.
  * @domain: related iommu domain
  *
  * Return: true or false.
@@ -696,6 +719,7 @@ u32 ummu_sva_get_features(struct device *dev);
 
 /**
  * ummu_sva_bind_device() - Bind device to a process mm.
+ * @Deprecated: use iommu_sva_bind_device_isolated instead.
  * @dev: related device.
  * @mm: process memory management.
  * @drvdata: ummu_param related to tid.
@@ -715,6 +739,7 @@ struct iommu_sva *ummu_sva_bind_device(struct device *dev, struct mm_struct *mm,
 
 /**
  * ummu_ksva_bind_device() - Bind device to kernel mm.
+ * @Deprecated: use iommu_ksva_bind_device instead.
  * @dev: related device.
  * @drvdata: ummu_param related to tid. ksva doesn't support bypass mapt.
  *
@@ -722,7 +747,15 @@ struct iommu_sva *ummu_sva_bind_device(struct device *dev, struct mm_struct *mm,
  */
 struct iommu_sva *ummu_ksva_bind_device(struct device *dev,
 					struct ummu_param *drvdata);
+/**
+ * ummu_sva_unbind_device() - Unbind device to a process mm.
+ * @Deprecated: use iommu_sva_unbind_device_isolated instead.
+ */
 void ummu_sva_unbind_device(struct iommu_sva *handle);
+/**
+ * ummu_ksva_unbind_device() - Unbind device to kernel mm.
+ * @Deprecated: use iommu_ksva_unbind_device instead.
+ */
 void ummu_ksva_unbind_device(struct iommu_sva *handle);
 
 /* UMMU CORE API */
@@ -839,6 +872,7 @@ struct device *ummu_core_alloc_tdev(struct tdev_attr *attr, u32 *ptid);
 
 /**
  * ummu_alloc_tdev_separated() - Allocate a virtual device for sva separated mode.
+ * @Deprecated: use ummu_core_alloc_separate_tdev instead.
  * @ptid: tid pointer
  * Return: device on success or NULL error.
  */
@@ -1007,6 +1041,13 @@ static inline int ummu_core_get_tid_type(struct ummu_core_device *dev, u32 tid,
 
 #if IS_ENABLED(CONFIG_UB_UMMU_SVA_SEPARATED_PAGES)
 /**
+ * ummu_core_alloc_separate_tdev() - Allocate a virtual device for sva separated mode.
+ * @opt: option for tdev
+ * @ptid: tid pointer
+ * Return: device on success or NULL error.
+ */
+struct device *ummu_core_alloc_separate_tdev(struct tdev_opt *opt, u32 *ptid);
+/**
  * ummu_sva_matt_map() - Mapping interface in SVA-separated page table mode.
  * @matt_domain: page table mapping context.
  * @addr: mapping start address.
@@ -1029,6 +1070,12 @@ int ummu_sva_matt_map(struct ummu_matt_domain *matt_domain,
 int ummu_sva_matt_unmap(struct ummu_matt_domain *matt_domain,
 			unsigned long addr, size_t size);
 #else
+static inline struct device *ummu_core_alloc_separate_tdev(
+				struct tdev_opt *opt, u32 *ptid)
+{
+	return NULL;
+}
+
 static inline int ummu_sva_matt_map(struct ummu_matt_domain *matt_domain,
 				    unsigned long addr, struct sg_table *sgt,
 				    int prot)
